@@ -1,0 +1,156 @@
+[
+  {
+    "categoria": "PIZZAS",
+    "productos": [
+      {
+        "nombre": "Pizza de Muzzarella",
+        "descripcion": "Salsa de tomate, muzzarella y aceitunas."
+      },
+      {
+        "nombre": "Pizza Napolitana",
+        "descripcion": "Salsa de tomate, muzzarella, rodajas de tomate, ajo y aceitunas."
+      },
+      {
+        "nombre": "Pizza Margherita",
+        "descripcion": "Salsa de tomate, muzzarella, tomate fresco y albahaca."
+      },
+      {
+        "nombre": "Pizza Fugazzeta",
+        "descripcion": "Muzzarella, cebolla, orégano y aceitunas."
+      },
+      {
+        "nombre": "Pizza Fugazza",
+        "descripcion": "Cebolla, orégano, aceite de oliva y aceitunas."
+      },
+      {
+        "nombre": "Pizza Calabresa",
+        "descripcion": "Salsa de tomate, muzzarella, longaniza calabresa y aceitunas."
+      },
+      {
+        "nombre": "Pizza de Jamón y Morrones",
+        "descripcion": "Salsa de tomate, muzzarella, jamón, morrones y aceitunas."
+      },
+      {
+        "nombre": "Pizza de Cuatro Quesos",
+        "descripcion": "Muzzarella, provolone, roquefort y parmesano."
+      },
+      {
+        "nombre": "Pizza de Provolone",
+        "descripcion": "Salsa de tomate, muzzarella, provolone, orégano y aceitunas."
+      },
+      {
+        "nombre": "Pizza de Roquefort",
+        "descripcion": "Salsa de tomate, muzzarella, queso roquefort y aceitunas."
+      },
+      {
+        "nombre": "Pizza de Anchoas",
+        "descripcion": "Salsa de tomate, anchoas, ajo, orégano y aceitunas."
+      },
+      {
+        "nombre": "Pizza Hawaiana",
+        "descripcion": "Salsa de tomate, muzzarella, jamón, ananá y aceitunas."
+      },
+      {
+        "nombre": "Pizza Caprese",
+        "descripcion": "Salsa de tomate, muzzarella, tomate fresco y albahaca."
+      },
+      {
+        "nombre": "Pizza Diavola",
+        "descripcion": "Salsa de tomate, muzzarella, salame picante y ají."
+      },
+      {
+        "nombre": "Pizza Especial de la Casa",
+        "descripcion": "Salsa de tomate, muzzarella, jamón, morrones, huevo y aceitunas."
+      }
+    ]
+  },
+  {
+    "categoria": "EMPANADAS",
+    "productos": [
+      {
+        "nombre": "Empanada de Carne",
+        "descripcion": "Carne vacuna, cebolla, huevo y condimentos."
+      },
+      {
+        "nombre": "Empanada de Carne Picante",
+        "descripcion": "Carne vacuna, cebolla, huevo, ají y condimentos."
+      },
+      {
+        "nombre": "Empanada de Jamón y Queso",
+        "descripcion": "Jamón cocido y queso muzzarella."
+      },
+      {
+        "nombre": "Empanada de Pollo",
+        "descripcion": "Pollo, cebolla, morrón y condimentos."
+      },
+      {
+        "nombre": "Empanada de Humita",
+        "descripcion": "Choclo, salsa blanca, cebolla y queso."
+      },
+      {
+        "nombre": "Empanada de Verdura",
+        "descripcion": "Acelga, cebolla, salsa blanca y queso."
+      },
+      {
+        "nombre": "Empanada de Cebolla y Queso",
+        "descripcion": "Cebolla salteada, queso muzzarella y orégano."
+      },
+      {
+        "nombre": "Empanada de Roquefort y Nuez",
+        "descripcion": "Queso roquefort, muzzarella y nueces."
+      }
+    ]
+  },
+  {
+    "categoria": "BEBIDAS",
+    "productos": [
+      {
+        "nombre": "Coca-Cola"
+      },
+      {
+        "nombre": "Coca-Cola Zero"
+      },
+      {
+        "nombre": "Sprite"
+      },
+      {
+        "nombre": "Fanta"
+      },
+      {
+        "nombre": "Agua mineral"
+      },
+      {
+        "nombre": "Jugo de naranja"
+      },
+      {
+        "nombre": "Jugo de manzana"
+      },
+      {
+        "nombre": "Vino tinto Malbec"
+      },
+      {
+        "nombre": "Vino blanco Chardonnay"
+      },
+      {
+        "nombre": "Vino espumante"
+      }
+    ]
+  },
+  {
+    "categoria": "POSTRES",
+    "productos": [
+      {
+        "nombre": "Flan casero"
+      },
+      {
+        "nombre": "Tiramisú"
+      },
+      {
+        "nombre": "Helado"
+      },
+      {
+        "nombre": "Brownie con helado"
+      }
+    ]
+  }
+]

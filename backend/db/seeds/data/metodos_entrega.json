@@ -1,0 +1,20 @@
+[
+  {
+    "codigo": "RETIRO_EN_LOCAL",
+    "descripcion": "Retiro en local",
+    "orden": 0,
+    "activo": true
+  },
+  {
+    "codigo": "DELIVERY",
+    "descripcion": "Delivery",
+    "orden": 1,
+    "activo": true
+  },
+  {
+    "codigo": "CONSUMO_EN_SALON",
+    "descripcion": "Consumo en salón",
+    "orden": 2,
+    "activo": true
+  }
+]

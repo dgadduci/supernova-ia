@@ -1,0 +1,122 @@
+[
+  {
+    "comercio_cuit": "30-71234567-2",
+    "descripcion": "Pizzas",
+    "activo": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "descripcion": "Empanadas",
+    "activo": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "descripcion": "Bebidas",
+    "activo": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "descripcion": "Postres",
+    "activo": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "descripcion": "Pizzas",
+    "activo": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "descripcion": "Empanadas",
+    "activo": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "descripcion": "Bebidas",
+    "activo": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "descripcion": "Postres",
+    "activo": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "descripcion": "Pizzas",
+    "activo": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "descripcion": "Empanadas",
+    "activo": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "descripcion": "Bebidas",
+    "activo": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "descripcion": "Postres",
+    "activo": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "descripcion": "Pizzas",
+    "activo": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "descripcion": "Empanadas",
+    "activo": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "descripcion": "Bebidas",
+    "activo": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "descripcion": "Postres",
+    "activo": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "descripcion": "Pizzas",
+    "activo": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "descripcion": "Empanadas",
+    "activo": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "descripcion": "Bebidas",
+    "activo": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "descripcion": "Postres",
+    "activo": true,
+    "orden": 3
+  }
+]

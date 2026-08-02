@@ -1,0 +1,18 @@
+[
+  {
+    "codigo": "EFECTIVO",
+    "descripcion": "Efectivo"
+  },
+  {
+    "codigo": "TARJETA_DEBITO",
+    "descripcion": "Tarjeta de débito"
+  },
+  {
+    "codigo": "TARJETA_CREDITO",
+    "descripcion": "Tarjeta de crédito"
+  },
+  {
+    "codigo": "TRANSFERENCIA",
+    "descripcion": "Transferencia bancaria"
+  }
+]

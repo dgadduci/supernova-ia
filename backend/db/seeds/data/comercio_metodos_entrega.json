@@ -1,0 +1,92 @@
+[
+  {
+    "comercio_cuit": "30-71234567-2",
+    "metodo_entrega_codigo": "RETIRO_EN_LOCAL",
+    "activo": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "metodo_entrega_codigo": "DELIVERY",
+    "activo": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "metodo_entrega_codigo": "CONSUMO_EN_SALON",
+    "activo": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "metodo_entrega_codigo": "RETIRO_EN_LOCAL",
+    "activo": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "metodo_entrega_codigo": "DELIVERY",
+    "activo": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "metodo_entrega_codigo": "CONSUMO_EN_SALON",
+    "activo": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "metodo_entrega_codigo": "RETIRO_EN_LOCAL",
+    "activo": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "metodo_entrega_codigo": "DELIVERY",
+    "activo": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "metodo_entrega_codigo": "CONSUMO_EN_SALON",
+    "activo": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "metodo_entrega_codigo": "RETIRO_EN_LOCAL",
+    "activo": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "metodo_entrega_codigo": "DELIVERY",
+    "activo": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "metodo_entrega_codigo": "CONSUMO_EN_SALON",
+    "activo": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "metodo_entrega_codigo": "RETIRO_EN_LOCAL",
+    "activo": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "metodo_entrega_codigo": "DELIVERY",
+    "activo": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "metodo_entrega_codigo": "CONSUMO_EN_SALON",
+    "activo": true,
+    "orden": 2
+  }
+]

@@ -1,0 +1,317 @@
+[
+  {
+    "comercio_cuit": "30-71234567-2",
+    "codigo": "GRANDE",
+    "descripcion": "Grande",
+    "activo": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "codigo": "CHICA",
+    "descripcion": "Chica",
+    "activo": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "codigo": "UNIDAD",
+    "descripcion": "Unidad",
+    "activo": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "codigo": "PORCION",
+    "descripcion": "Porción",
+    "activo": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "codigo": "LATA",
+    "descripcion": "Lata",
+    "activo": true,
+    "orden": 4
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "codigo": "LITRO",
+    "descripcion": "Litro",
+    "activo": true,
+    "orden": 5
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "codigo": "LITRO_MEDIO",
+    "descripcion": "Litro 1/2",
+    "activo": true,
+    "orden": 6
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "codigo": "DOS_LITROS",
+    "descripcion": "2 litros",
+    "activo": true,
+    "orden": 7
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "codigo": "KILO",
+    "descripcion": "Kilo",
+    "activo": true,
+    "orden": 8
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "codigo": "GRANDE",
+    "descripcion": "Grande",
+    "activo": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "codigo": "CHICA",
+    "descripcion": "Chica",
+    "activo": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "codigo": "UNIDAD",
+    "descripcion": "Unidad",
+    "activo": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "codigo": "PORCION",
+    "descripcion": "Porción",
+    "activo": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "codigo": "LATA",
+    "descripcion": "Lata",
+    "activo": true,
+    "orden": 4
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "codigo": "LITRO",
+    "descripcion": "Litro",
+    "activo": true,
+    "orden": 5
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "codigo": "LITRO_MEDIO",
+    "descripcion": "Litro 1/2",
+    "activo": true,
+    "orden": 6
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "codigo": "DOS_LITROS",
+    "descripcion": "2 litros",
+    "activo": true,
+    "orden": 7
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "codigo": "KILO",
+    "descripcion": "Kilo",
+    "activo": true,
+    "orden": 8
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "codigo": "GRANDE",
+    "descripcion": "Grande",
+    "activo": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "codigo": "CHICA",
+    "descripcion": "Chica",
+    "activo": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "codigo": "UNIDAD",
+    "descripcion": "Unidad",
+    "activo": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "codigo": "PORCION",
+    "descripcion": "Porción",
+    "activo": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "codigo": "LATA",
+    "descripcion": "Lata",
+    "activo": true,
+    "orden": 4
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "codigo": "LITRO",
+    "descripcion": "Litro",
+    "activo": true,
+    "orden": 5
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "codigo": "LITRO_MEDIO",
+    "descripcion": "Litro 1/2",
+    "activo": true,
+    "orden": 6
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "codigo": "DOS_LITROS",
+    "descripcion": "2 litros",
+    "activo": true,
+    "orden": 7
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "codigo": "KILO",
+    "descripcion": "Kilo",
+    "activo": true,
+    "orden": 8
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "codigo": "GRANDE",
+    "descripcion": "Grande",
+    "activo": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "codigo": "CHICA",
+    "descripcion": "Chica",
+    "activo": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "codigo": "UNIDAD",
+    "descripcion": "Unidad",
+    "activo": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "codigo": "PORCION",
+    "descripcion": "Porción",
+    "activo": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "codigo": "LATA",
+    "descripcion": "Lata",
+    "activo": true,
+    "orden": 4
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "codigo": "LITRO",
+    "descripcion": "Litro",
+    "activo": true,
+    "orden": 5
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "codigo": "LITRO_MEDIO",
+    "descripcion": "Litro 1/2",
+    "activo": true,
+    "orden": 6
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "codigo": "DOS_LITROS",
+    "descripcion": "2 litros",
+    "activo": true,
+    "orden": 7
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "codigo": "KILO",
+    "descripcion": "Kilo",
+    "activo": true,
+    "orden": 8
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "codigo": "GRANDE",
+    "descripcion": "Grande",
+    "activo": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "codigo": "CHICA",
+    "descripcion": "Chica",
+    "activo": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "codigo": "UNIDAD",
+    "descripcion": "Unidad",
+    "activo": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "codigo": "PORCION",
+    "descripcion": "Porción",
+    "activo": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "codigo": "LATA",
+    "descripcion": "Lata",
+    "activo": true,
+    "orden": 4
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "codigo": "LITRO",
+    "descripcion": "Litro",
+    "activo": true,
+    "orden": 5
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "codigo": "LITRO_MEDIO",
+    "descripcion": "Litro 1/2",
+    "activo": true,
+    "orden": 6
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "codigo": "DOS_LITROS",
+    "descripcion": "2 litros",
+    "activo": true,
+    "orden": 7
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "codigo": "KILO",
+    "descripcion": "Kilo",
+    "activo": true,
+    "orden": 8
+  }
+]

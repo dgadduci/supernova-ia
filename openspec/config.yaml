@@ -1,0 +1,34 @@
+schema: spec-driven
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+# Example:
+#   context: |
+#     Tech stack: TypeScript, React, Node.js
+#     We use conventional commits
+#     Domain: e-commerce platform
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+context: |
+  Workflow rule:
+  /opsx:apply must only implement the active change and update its tasks.
+  It must not synchronize specifications and must not archive the change.
+  After apply completes, the change must remain under openspec/changes/.
+
+  Specification synchronization is manual and requires a separate explicit
+  user command: /opsx:sync.
+
+  Archival is also manual and requires a separate explicit user command:
+  /opsx:archive.
+
+  The agent must stop after implementation, tests, task updates, and reporting.
+  It must never run sync or archive automatically.

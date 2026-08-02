@@ -1,0 +1,50 @@
+## 1. Schema Implementation
+
+- [x] 1.1 Create `backend/intents/schemas/customer_response.py` with `__all__ = ["CustomerResponse"]` and the documented imports (only Pydantic and standard typing). Define `CustomerResponse` as a Pydantic `BaseModel` with exactly three string fields: `message: str`, `intent: str`, `status: str`.
+- [x] 1.2 Do not add `Config` classes, validators, default values, JSON encoders, locale support, or any extra fields beyond `message` / `intent` / `status`.
+
+## 2. Response Package Initialization
+
+- [x] 2.1 Create the empty package marker `backend/intents/responses/__init__.py` (no imports, no re-exports).
+- [x] 2.2 Do not add a registry, factory, multi-intent dispatcher, or shared base class in `__init__.py`.
+
+## 3. Response Builder Implementation
+
+- [x] 3.1 Create `backend/intents/responses/agregar_producto_response.py` with `__all__ = ["build_agregar_producto_response"]` and the typed-alias imports: `Session as DatabaseSession` from `sqlalchemy.orm`, `Session as ConversationSession` from `backend.models.session`, `ProcessedIntent` from `backend.intents.schemas.processed_intent`, and `ProductoQueryService` from `backend.services.producto_query_service`.
+- [x] 3.2 Define module-level constants for the four deterministic message templates: a clarification prefix, an apology message, a retry message, and a confirmation prefix; keep the templates as plain f-string format strings.
+- [x] 3.3 Implement `build_agregar_producto_response(db, session, intent)` so the first check is `intent.intent != "agregar_producto"` returning the apology fallback preserving `intent.intent` and `intent.status`; route the four `agregar_producto` statuses (`pending_resolution`, `executed`, `rejected`, `failed`) to their dedicated branches.
+- [x] 3.4 Implement the `pending_resolution` branch: when `candidate_ids` is empty, return the apology fallback with `status="pending_resolution"`; otherwise call `ProductoQueryService(db).list_presentaciones_by_ids(candidate_ids)`, build one `"producto_nombre presentacion_descripcion"` label per returned dict, and join them with `", "` plus an `" o "` before the last entry. Never include IDs, prices, stock, or the literal substring `"id"` in the clarification.
+- [x] 3.5 Implement the `executed` branch: read `resolved_data["producto_presentacion_id"]` and `resolved_data["cantidad"]`; if `cantidad` is missing, non-int, or less than 1, return the retry fallback with `status="failed"`; otherwise call `ProductoQueryService(db).list_presentaciones_by_ids([producto_presentacion_id])` and build the confirmation string with singular phrasing for `cantidad == 1` and plural phrasing for `cantidad > 1`; if the service returns no presentation, return the retry fallback with `status="failed"`.
+- [x] 3.6 Implement the `rejected` branch returning the fixed apology string with `intent="agregar_producto"` and `status="rejected"`.
+- [x] 3.7 Implement the `failed` branch returning the fixed retry string with `intent="agregar_producto"` and `status="failed"`.
+- [x] 3.8 Ensure the builder never assigns to `session.pending_intents`, `session.context_type`, `session.id_pedido`, or any field of `intent`; the only outbound mutation allowed is constructing a new `CustomerResponse` instance.
+
+## 4. Module Boundaries
+
+- [x] 4.1 Keep the response module free of `sqlalchemy.select` / `sqlalchemy.orm.joinedload` / `backend.repositories.*` / `backend.intents.orchestration.*` / `backend.intents.handlers.*` / `backend.intents.resolvers.*` / `backend.intents.services.*` / `backend.intents.context.*` / `backend.llm.*` / `backend.routers.*` / `backend.dependencies.*` / `backend.old_project.*` / `requests` / `fastapi` / `twilio` imports.
+- [x] 4.2 Do not call `db.commit`, `db.rollback`, `db.flush`, `db.refresh`, `db.expire`, or `db.begin`; the only allowed database interaction is the read through `ProductoQueryService.list_presentaciones_by_ids`.
+- [x] 4.3 Do not introduce logging, retry/backoff, async wrappers, caching, locale selection, template engines, response beautification, or response objects for other intents.
+
+## 5. Test Implementation
+
+- [x] 5.1 Append `test_agregar_producto_customer_response()` to `backend/tests/api_smoke.py`. Reuse the existing `engine`, `TestingSessionLocal`, and `_estado_id_activo()` helpers; create a fresh commerce, categoria, two presentaciones (`chica`, `grande`), one producto, two `ProductoPresentacion` rows, two `Precio` rows, and the required `Pedido` / `Session` fixtures inline (same style as `test_agregar_producto_end_to_end`).
+- [x] 5.2 `pending_resolution` clarification test: build a `ProcessedIntent(intent="agregar_producto", status="pending_resolution", candidate_ids=[chica_pp_id, grande_pp_id], resolved_data={})`, call `build_agregar_producto_response(db, session, intent)`, and `record(...)` that `message` contains both `"Pizza Mozzarella"`, both `"chica"` and `"grande"`, contains the `"o "` conjunction before the last entry, does NOT contain `str(chica_pp_id)`, `str(grande_pp_id)`, the literal `"id"`, any price string, or any stock text; `intent == "agregar_producto"` and `status == "pending_resolution"`.
+- [x] 5.3 Empty `candidate_ids` clarification test: build a `pending_resolution` intent with `candidate_ids=[]`, call the builder, and `record(...)` that `message == apology_message` and `status == "pending_resolution"`.
+- [x] 5.4 `executed` confirmation test with `cantidad == 1`: build an `executed` intent with `resolved_data={"producto_presentacion_id": grande_pp_id, "cantidad": 1}`, call the builder, and `record(...)` that `message` contains `"Pizza Mozzarella"`, `"grande"`, `"1"`, the singular phrasing marker (`"agregué"`), does NOT contain `str(grande_pp_id)`, and does NOT contain any price string.
+- [x] 5.5 `executed` confirmation test with `cantidad == 2`: same as 5.4 but with `cantidad == 2`; assert the message contains `"2"` and does NOT contain the singular-only phrasing.
+- [x] 5.6 `executed` missing-presentation fallback test: build an `executed` intent with `resolved_data={"producto_presentacion_id": 999999, "cantidad": 1}` (an ID that does not exist), call the builder, and `record(...)` that `message == retry_message`, `intent == "agregar_producto"`, `status == "failed"`.
+- [x] 5.7 `executed` invalid-cantidad fallback test: build an `executed` intent with `resolved_data={"producto_presentacion_id": grande_pp_id, "cantidad": 0}`, call the builder, and `record(...)` that `message == retry_message` and `status == "failed"`.
+- [x] 5.8 `rejected` apology test: build a `rejected` intent, call the builder, and `record(...)` that `message == apology_message`, `intent == "agregar_producto"`, `status == "rejected"`.
+- [x] 5.9 `failed` retry test: build a `failed` intent, call the builder, and `record(...)` that `message == retry_message`, `intent == "agregar_producto"`, `status == "failed"`, and the message does NOT contain any of `"Exception"`, `"Traceback"`, `"Error"`, or `str(grande_pp_id)`.
+- [x] 5.10 Non-`agregar_producto` intent fallback test: build a `ProcessedIntent(intent="consultar_pedido", status="executed", ...)`, call the builder, and `record(...)` that `message == apology_message`, `intent == "consultar_pedido"`, `status == "executed"`.
+- [x] 5.11 No-mutation / no-database-call guarantee test: snapshot `session.pending_intents`, `session.context_type`, `session.id_pedido`, and the entire `intent` model; call the builder for one `pending_resolution` and one `executed` intent using a `MagicMock(name="DatabaseSession")` whose `commit`, `rollback`, `flush`, `refresh`, `expire`, `begin` are also mocks; `record(...)` that `db.commit.assert_not_called()`, `db.rollback.assert_not_called()`, `db.flush.assert_not_called()`, `db.refresh.assert_not_called()`, `db.expire.assert_not_called()`, `db.begin.assert_not_called()`, and the session/intent snapshots are equal to the values after the call.
+- [x] 5.12 Module source-code boundary test: read `backend/intents/responses/agregar_producto_response.py` and `backend/intents/schemas/customer_response.py` from disk; `record(...)` that the response module source does not contain `"from sqlalchemy import select"`, `"joinedload"`, `"from backend.repositories"`, `"from backend.intents.orchestration"`, `"from backend.intents.handlers"`, `"from backend.intents.resolvers"`, `"from backend.intents.services"`, `"from backend.intents.context"`, `"from backend.llm"`, `"from backend.routers"`, `"from backend.dependencies"`, `"from backend.old_project"`, `"import requests"`, `"import fastapi"`, `"import twilio"`, `"HTTPException"`, `"JSONResponse"`, `"MessagingResponse"`, `"QueryLlm"`, `"retry"`, `"backoff"`, or `"async def"`; and that the schema module source does not contain any field other than `message`, `intent`, `status`.
+- [x] 5.13 `__all__` discipline test: import `backend.intents.responses.agregar_producto_response` and `backend.intents.schemas.customer_response`; `record(...)` that `agregar_producto_response.__all__ == ["build_agregar_producto_response"]` and `customer_response.__all__ == ["CustomerResponse"]`.
+- [x] 5.14 Wire `test_agregar_producto_customer_response()` into the `__main__` runner of `backend/tests/api_smoke.py` alongside the existing `test_agregar_producto_*` invocations.
+
+## 6. Verification
+
+- [x] 6.1 Run `PYTHONPATH=. venv/bin/python backend/tests/api_smoke.py` and confirm every new `record(...)` entry passes (no `False` rows for the `test_agregar_producto_customer_response` group).
+- [x] 6.2 Run `PYTHONPATH=. venv/bin/python -m compileall backend` and confirm exit 0.
+- [x] 6.3 Run `openspec validate agregar-producto-customer-response-3-27 --strict` and confirm valid.
+- [x] 6.4 Roll back by deleting `backend/intents/schemas/customer_response.py`, `backend/intents/responses/__init__.py`, `backend/intents/responses/agregar_producto_response.py`, and the appended test function; no other module imports them, so no ripple effects.

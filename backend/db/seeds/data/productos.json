@@ -1,0 +1,1667 @@
+[
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Muzzarella",
+    "descripcion": "Salsa de tomate, muzzarella y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Napolitana",
+    "descripcion": "Salsa de tomate, muzzarella, rodajas de tomate, ajo y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Margherita",
+    "descripcion": "Salsa de tomate, muzzarella, tomate fresco y albahaca.",
+    "activo": true,
+    "disponible": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Fugazzeta",
+    "descripcion": "Muzzarella, cebolla, orégano y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Fugazza",
+    "descripcion": "Cebolla, orégano, aceite de oliva y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 4
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Calabresa",
+    "descripcion": "Salsa de tomate, muzzarella, longaniza calabresa y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 5
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Jamón y Morrones",
+    "descripcion": "Salsa de tomate, muzzarella, jamón, morrones y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 6
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Cuatro Quesos",
+    "descripcion": "Muzzarella, provolone, roquefort y parmesano.",
+    "activo": true,
+    "disponible": true,
+    "orden": 7
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Provolone",
+    "descripcion": "Salsa de tomate, muzzarella, provolone, orégano y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 8
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Roquefort",
+    "descripcion": "Salsa de tomate, muzzarella, queso roquefort y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 9
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Anchoas",
+    "descripcion": "Salsa de tomate, anchoas, ajo, orégano y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 10
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Hawaiana",
+    "descripcion": "Salsa de tomate, muzzarella, jamón, ananá y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 11
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Caprese",
+    "descripcion": "Salsa de tomate, muzzarella, tomate fresco y albahaca.",
+    "activo": true,
+    "disponible": true,
+    "orden": 12
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Diavola",
+    "descripcion": "Salsa de tomate, muzzarella, salame picante y ají.",
+    "activo": true,
+    "disponible": true,
+    "orden": 13
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Especial de la Casa",
+    "descripcion": "Salsa de tomate, muzzarella, jamón, morrones, huevo y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 14
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Carne",
+    "descripcion": "Carne vacuna, cebolla, huevo y condimentos.",
+    "activo": true,
+    "disponible": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Carne Picante",
+    "descripcion": "Carne vacuna, cebolla, huevo, ají y condimentos.",
+    "activo": true,
+    "disponible": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Jamón y Queso",
+    "descripcion": "Jamón cocido y queso muzzarella.",
+    "activo": true,
+    "disponible": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Pollo",
+    "descripcion": "Pollo, cebolla, morrón y condimentos.",
+    "activo": true,
+    "disponible": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Humita",
+    "descripcion": "Choclo, salsa blanca, cebolla y queso.",
+    "activo": true,
+    "disponible": true,
+    "orden": 4
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Verdura",
+    "descripcion": "Acelga, cebolla, salsa blanca y queso.",
+    "activo": true,
+    "disponible": true,
+    "orden": 5
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Cebolla y Queso",
+    "descripcion": "Cebolla salteada, queso muzzarella y orégano.",
+    "activo": true,
+    "disponible": true,
+    "orden": 6
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Roquefort y Nuez",
+    "descripcion": "Queso roquefort, muzzarella y nueces.",
+    "activo": true,
+    "disponible": true,
+    "orden": 7
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Coca-Cola",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Coca-Cola Zero",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Sprite",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Fanta",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Agua mineral",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 4
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Jugo de naranja",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 5
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Jugo de manzana",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 6
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Vino tinto Malbec",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 7
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Vino blanco Chardonnay",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 8
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Vino espumante",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 9
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "POSTRES",
+    "nombre": "Flan casero",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "POSTRES",
+    "nombre": "Tiramisú",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "POSTRES",
+    "nombre": "Helado",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "POSTRES",
+    "nombre": "Brownie con helado",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Muzzarella",
+    "descripcion": "Salsa de tomate, muzzarella y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Napolitana",
+    "descripcion": "Salsa de tomate, muzzarella, rodajas de tomate, ajo y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Margherita",
+    "descripcion": "Salsa de tomate, muzzarella, tomate fresco y albahaca.",
+    "activo": true,
+    "disponible": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Fugazzeta",
+    "descripcion": "Muzzarella, cebolla, orégano y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Fugazza",
+    "descripcion": "Cebolla, orégano, aceite de oliva y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 4
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Calabresa",
+    "descripcion": "Salsa de tomate, muzzarella, longaniza calabresa y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 5
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Jamón y Morrones",
+    "descripcion": "Salsa de tomate, muzzarella, jamón, morrones y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 6
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Cuatro Quesos",
+    "descripcion": "Muzzarella, provolone, roquefort y parmesano.",
+    "activo": true,
+    "disponible": true,
+    "orden": 7
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Provolone",
+    "descripcion": "Salsa de tomate, muzzarella, provolone, orégano y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 8
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Roquefort",
+    "descripcion": "Salsa de tomate, muzzarella, queso roquefort y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 9
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Anchoas",
+    "descripcion": "Salsa de tomate, anchoas, ajo, orégano y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 10
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Hawaiana",
+    "descripcion": "Salsa de tomate, muzzarella, jamón, ananá y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 11
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Caprese",
+    "descripcion": "Salsa de tomate, muzzarella, tomate fresco y albahaca.",
+    "activo": true,
+    "disponible": true,
+    "orden": 12
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Diavola",
+    "descripcion": "Salsa de tomate, muzzarella, salame picante y ají.",
+    "activo": true,
+    "disponible": true,
+    "orden": 13
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Especial de la Casa",
+    "descripcion": "Salsa de tomate, muzzarella, jamón, morrones, huevo y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 14
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Carne",
+    "descripcion": "Carne vacuna, cebolla, huevo y condimentos.",
+    "activo": true,
+    "disponible": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Carne Picante",
+    "descripcion": "Carne vacuna, cebolla, huevo, ají y condimentos.",
+    "activo": true,
+    "disponible": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Jamón y Queso",
+    "descripcion": "Jamón cocido y queso muzzarella.",
+    "activo": true,
+    "disponible": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Pollo",
+    "descripcion": "Pollo, cebolla, morrón y condimentos.",
+    "activo": true,
+    "disponible": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Humita",
+    "descripcion": "Choclo, salsa blanca, cebolla y queso.",
+    "activo": true,
+    "disponible": true,
+    "orden": 4
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Verdura",
+    "descripcion": "Acelga, cebolla, salsa blanca y queso.",
+    "activo": true,
+    "disponible": true,
+    "orden": 5
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Cebolla y Queso",
+    "descripcion": "Cebolla salteada, queso muzzarella y orégano.",
+    "activo": true,
+    "disponible": true,
+    "orden": 6
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Roquefort y Nuez",
+    "descripcion": "Queso roquefort, muzzarella y nueces.",
+    "activo": true,
+    "disponible": true,
+    "orden": 7
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Coca-Cola",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Coca-Cola Zero",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Sprite",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Fanta",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Agua mineral",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 4
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Jugo de naranja",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 5
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Jugo de manzana",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 6
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Vino tinto Malbec",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 7
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Vino blanco Chardonnay",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 8
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Vino espumante",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 9
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "POSTRES",
+    "nombre": "Flan casero",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "POSTRES",
+    "nombre": "Tiramisú",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "POSTRES",
+    "nombre": "Helado",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "POSTRES",
+    "nombre": "Brownie con helado",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Muzzarella",
+    "descripcion": "Salsa de tomate, muzzarella y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Napolitana",
+    "descripcion": "Salsa de tomate, muzzarella, rodajas de tomate, ajo y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Margherita",
+    "descripcion": "Salsa de tomate, muzzarella, tomate fresco y albahaca.",
+    "activo": true,
+    "disponible": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Fugazzeta",
+    "descripcion": "Muzzarella, cebolla, orégano y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Fugazza",
+    "descripcion": "Cebolla, orégano, aceite de oliva y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 4
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Calabresa",
+    "descripcion": "Salsa de tomate, muzzarella, longaniza calabresa y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 5
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Jamón y Morrones",
+    "descripcion": "Salsa de tomate, muzzarella, jamón, morrones y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 6
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Cuatro Quesos",
+    "descripcion": "Muzzarella, provolone, roquefort y parmesano.",
+    "activo": true,
+    "disponible": true,
+    "orden": 7
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Provolone",
+    "descripcion": "Salsa de tomate, muzzarella, provolone, orégano y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 8
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Roquefort",
+    "descripcion": "Salsa de tomate, muzzarella, queso roquefort y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 9
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Anchoas",
+    "descripcion": "Salsa de tomate, anchoas, ajo, orégano y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 10
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Hawaiana",
+    "descripcion": "Salsa de tomate, muzzarella, jamón, ananá y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 11
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Caprese",
+    "descripcion": "Salsa de tomate, muzzarella, tomate fresco y albahaca.",
+    "activo": true,
+    "disponible": true,
+    "orden": 12
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Diavola",
+    "descripcion": "Salsa de tomate, muzzarella, salame picante y ají.",
+    "activo": true,
+    "disponible": true,
+    "orden": 13
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Especial de la Casa",
+    "descripcion": "Salsa de tomate, muzzarella, jamón, morrones, huevo y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 14
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Carne",
+    "descripcion": "Carne vacuna, cebolla, huevo y condimentos.",
+    "activo": true,
+    "disponible": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Carne Picante",
+    "descripcion": "Carne vacuna, cebolla, huevo, ají y condimentos.",
+    "activo": true,
+    "disponible": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Jamón y Queso",
+    "descripcion": "Jamón cocido y queso muzzarella.",
+    "activo": true,
+    "disponible": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Pollo",
+    "descripcion": "Pollo, cebolla, morrón y condimentos.",
+    "activo": true,
+    "disponible": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Humita",
+    "descripcion": "Choclo, salsa blanca, cebolla y queso.",
+    "activo": true,
+    "disponible": true,
+    "orden": 4
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Verdura",
+    "descripcion": "Acelga, cebolla, salsa blanca y queso.",
+    "activo": true,
+    "disponible": true,
+    "orden": 5
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Cebolla y Queso",
+    "descripcion": "Cebolla salteada, queso muzzarella y orégano.",
+    "activo": true,
+    "disponible": true,
+    "orden": 6
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Roquefort y Nuez",
+    "descripcion": "Queso roquefort, muzzarella y nueces.",
+    "activo": true,
+    "disponible": true,
+    "orden": 7
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Coca-Cola",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Coca-Cola Zero",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Sprite",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Fanta",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Agua mineral",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 4
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Jugo de naranja",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 5
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Jugo de manzana",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 6
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Vino tinto Malbec",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 7
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Vino blanco Chardonnay",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 8
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Vino espumante",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 9
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "POSTRES",
+    "nombre": "Flan casero",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "POSTRES",
+    "nombre": "Tiramisú",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "POSTRES",
+    "nombre": "Helado",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "POSTRES",
+    "nombre": "Brownie con helado",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Muzzarella",
+    "descripcion": "Salsa de tomate, muzzarella y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Napolitana",
+    "descripcion": "Salsa de tomate, muzzarella, rodajas de tomate, ajo y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Margherita",
+    "descripcion": "Salsa de tomate, muzzarella, tomate fresco y albahaca.",
+    "activo": true,
+    "disponible": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Fugazzeta",
+    "descripcion": "Muzzarella, cebolla, orégano y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Fugazza",
+    "descripcion": "Cebolla, orégano, aceite de oliva y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 4
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Calabresa",
+    "descripcion": "Salsa de tomate, muzzarella, longaniza calabresa y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 5
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Jamón y Morrones",
+    "descripcion": "Salsa de tomate, muzzarella, jamón, morrones y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 6
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Cuatro Quesos",
+    "descripcion": "Muzzarella, provolone, roquefort y parmesano.",
+    "activo": true,
+    "disponible": true,
+    "orden": 7
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Provolone",
+    "descripcion": "Salsa de tomate, muzzarella, provolone, orégano y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 8
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Roquefort",
+    "descripcion": "Salsa de tomate, muzzarella, queso roquefort y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 9
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Anchoas",
+    "descripcion": "Salsa de tomate, anchoas, ajo, orégano y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 10
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Hawaiana",
+    "descripcion": "Salsa de tomate, muzzarella, jamón, ananá y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 11
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Caprese",
+    "descripcion": "Salsa de tomate, muzzarella, tomate fresco y albahaca.",
+    "activo": true,
+    "disponible": true,
+    "orden": 12
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Diavola",
+    "descripcion": "Salsa de tomate, muzzarella, salame picante y ají.",
+    "activo": true,
+    "disponible": true,
+    "orden": 13
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Especial de la Casa",
+    "descripcion": "Salsa de tomate, muzzarella, jamón, morrones, huevo y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 14
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Carne",
+    "descripcion": "Carne vacuna, cebolla, huevo y condimentos.",
+    "activo": true,
+    "disponible": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Carne Picante",
+    "descripcion": "Carne vacuna, cebolla, huevo, ají y condimentos.",
+    "activo": true,
+    "disponible": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Jamón y Queso",
+    "descripcion": "Jamón cocido y queso muzzarella.",
+    "activo": true,
+    "disponible": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Pollo",
+    "descripcion": "Pollo, cebolla, morrón y condimentos.",
+    "activo": true,
+    "disponible": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Humita",
+    "descripcion": "Choclo, salsa blanca, cebolla y queso.",
+    "activo": true,
+    "disponible": true,
+    "orden": 4
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Verdura",
+    "descripcion": "Acelga, cebolla, salsa blanca y queso.",
+    "activo": true,
+    "disponible": true,
+    "orden": 5
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Cebolla y Queso",
+    "descripcion": "Cebolla salteada, queso muzzarella y orégano.",
+    "activo": true,
+    "disponible": true,
+    "orden": 6
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Roquefort y Nuez",
+    "descripcion": "Queso roquefort, muzzarella y nueces.",
+    "activo": true,
+    "disponible": true,
+    "orden": 7
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Coca-Cola",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Coca-Cola Zero",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Sprite",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Fanta",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Agua mineral",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 4
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Jugo de naranja",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 5
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Jugo de manzana",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 6
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Vino tinto Malbec",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 7
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Vino blanco Chardonnay",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 8
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Vino espumante",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 9
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "POSTRES",
+    "nombre": "Flan casero",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "POSTRES",
+    "nombre": "Tiramisú",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "POSTRES",
+    "nombre": "Helado",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "POSTRES",
+    "nombre": "Brownie con helado",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Muzzarella",
+    "descripcion": "Salsa de tomate, muzzarella y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Napolitana",
+    "descripcion": "Salsa de tomate, muzzarella, rodajas de tomate, ajo y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Margherita",
+    "descripcion": "Salsa de tomate, muzzarella, tomate fresco y albahaca.",
+    "activo": true,
+    "disponible": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Fugazzeta",
+    "descripcion": "Muzzarella, cebolla, orégano y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Fugazza",
+    "descripcion": "Cebolla, orégano, aceite de oliva y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 4
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Calabresa",
+    "descripcion": "Salsa de tomate, muzzarella, longaniza calabresa y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 5
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Jamón y Morrones",
+    "descripcion": "Salsa de tomate, muzzarella, jamón, morrones y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 6
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Cuatro Quesos",
+    "descripcion": "Muzzarella, provolone, roquefort y parmesano.",
+    "activo": true,
+    "disponible": true,
+    "orden": 7
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Provolone",
+    "descripcion": "Salsa de tomate, muzzarella, provolone, orégano y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 8
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Roquefort",
+    "descripcion": "Salsa de tomate, muzzarella, queso roquefort y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 9
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza de Anchoas",
+    "descripcion": "Salsa de tomate, anchoas, ajo, orégano y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 10
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Hawaiana",
+    "descripcion": "Salsa de tomate, muzzarella, jamón, ananá y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 11
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Caprese",
+    "descripcion": "Salsa de tomate, muzzarella, tomate fresco y albahaca.",
+    "activo": true,
+    "disponible": true,
+    "orden": 12
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Diavola",
+    "descripcion": "Salsa de tomate, muzzarella, salame picante y ají.",
+    "activo": true,
+    "disponible": true,
+    "orden": 13
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "nombre": "Pizza Especial de la Casa",
+    "descripcion": "Salsa de tomate, muzzarella, jamón, morrones, huevo y aceitunas.",
+    "activo": true,
+    "disponible": true,
+    "orden": 14
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Carne",
+    "descripcion": "Carne vacuna, cebolla, huevo y condimentos.",
+    "activo": true,
+    "disponible": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Carne Picante",
+    "descripcion": "Carne vacuna, cebolla, huevo, ají y condimentos.",
+    "activo": true,
+    "disponible": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Jamón y Queso",
+    "descripcion": "Jamón cocido y queso muzzarella.",
+    "activo": true,
+    "disponible": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Pollo",
+    "descripcion": "Pollo, cebolla, morrón y condimentos.",
+    "activo": true,
+    "disponible": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Humita",
+    "descripcion": "Choclo, salsa blanca, cebolla y queso.",
+    "activo": true,
+    "disponible": true,
+    "orden": 4
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Verdura",
+    "descripcion": "Acelga, cebolla, salsa blanca y queso.",
+    "activo": true,
+    "disponible": true,
+    "orden": 5
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Cebolla y Queso",
+    "descripcion": "Cebolla salteada, queso muzzarella y orégano.",
+    "activo": true,
+    "disponible": true,
+    "orden": 6
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "EMPANADAS",
+    "nombre": "Empanada de Roquefort y Nuez",
+    "descripcion": "Queso roquefort, muzzarella y nueces.",
+    "activo": true,
+    "disponible": true,
+    "orden": 7
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Coca-Cola",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Coca-Cola Zero",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Sprite",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Fanta",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 3
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Agua mineral",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 4
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Jugo de naranja",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 5
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Jugo de manzana",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 6
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Vino tinto Malbec",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 7
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Vino blanco Chardonnay",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 8
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "nombre": "Vino espumante",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 9
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "POSTRES",
+    "nombre": "Flan casero",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 0
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "POSTRES",
+    "nombre": "Tiramisú",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 1
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "POSTRES",
+    "nombre": "Helado",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 2
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "POSTRES",
+    "nombre": "Brownie con helado",
+    "descripcion": null,
+    "activo": true,
+    "disponible": true,
+    "orden": 3
+  }
+]

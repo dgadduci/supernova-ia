@@ -1,0 +1,142 @@
+[
+  {
+    "comercio_cuit": "30-71234567-2",
+    "medio_pago_codigo": "EFECTIVO",
+    "activo": true,
+    "titular": null,
+    "alias": null
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "medio_pago_codigo": "TARJETA_DEBITO",
+    "activo": true,
+    "titular": null,
+    "alias": null
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "medio_pago_codigo": "TARJETA_CREDITO",
+    "activo": true,
+    "titular": null,
+    "alias": null
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "medio_pago_codigo": "TRANSFERENCIA",
+    "activo": true,
+    "titular": null,
+    "alias": null
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "medio_pago_codigo": "EFECTIVO",
+    "activo": true,
+    "titular": null,
+    "alias": null
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "medio_pago_codigo": "TARJETA_DEBITO",
+    "activo": true,
+    "titular": null,
+    "alias": null
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "medio_pago_codigo": "TARJETA_CREDITO",
+    "activo": true,
+    "titular": null,
+    "alias": null
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "medio_pago_codigo": "TRANSFERENCIA",
+    "activo": true,
+    "titular": null,
+    "alias": null
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "medio_pago_codigo": "EFECTIVO",
+    "activo": true,
+    "titular": null,
+    "alias": null
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "medio_pago_codigo": "TARJETA_DEBITO",
+    "activo": true,
+    "titular": null,
+    "alias": null
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "medio_pago_codigo": "TARJETA_CREDITO",
+    "activo": true,
+    "titular": null,
+    "alias": null
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "medio_pago_codigo": "TRANSFERENCIA",
+    "activo": true,
+    "titular": null,
+    "alias": null
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "medio_pago_codigo": "EFECTIVO",
+    "activo": true,
+    "titular": null,
+    "alias": null
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "medio_pago_codigo": "TARJETA_DEBITO",
+    "activo": true,
+    "titular": null,
+    "alias": null
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "medio_pago_codigo": "TARJETA_CREDITO",
+    "activo": true,
+    "titular": null,
+    "alias": null
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "medio_pago_codigo": "TRANSFERENCIA",
+    "activo": true,
+    "titular": null,
+    "alias": null
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "medio_pago_codigo": "EFECTIVO",
+    "activo": true,
+    "titular": null,
+    "alias": null
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "medio_pago_codigo": "TARJETA_DEBITO",
+    "activo": true,
+    "titular": null,
+    "alias": null
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "medio_pago_codigo": "TARJETA_CREDITO",
+    "activo": true,
+    "titular": null,
+    "alias": null
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "medio_pago_codigo": "TRANSFERENCIA",
+    "activo": true,
+    "titular": null,
+    "alias": null
+  }
+]

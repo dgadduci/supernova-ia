@@ -1,0 +1,17 @@
+[
+  {
+    "estado": "ACTIVO"
+  },
+  {
+    "estado": "INACTIVO"
+  },
+  {
+    "estado": "PRUEBA"
+  },
+  {
+    "estado": "SUSPENDIDO"
+  },
+  {
+    "estado": "BAJA"
+  }
+]

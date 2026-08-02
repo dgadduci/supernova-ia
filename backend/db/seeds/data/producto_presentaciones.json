@@ -1,0 +1,2162 @@
+[
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Muzzarella",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Muzzarella",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Napolitana",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Napolitana",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Margherita",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Margherita",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Fugazzeta",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Fugazzeta",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Fugazza",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Fugazza",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Calabresa",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Calabresa",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Jamón y Morrones",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Jamón y Morrones",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Cuatro Quesos",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Cuatro Quesos",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Provolone",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Provolone",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Roquefort",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Roquefort",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Anchoas",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Anchoas",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Hawaiana",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Hawaiana",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Caprese",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Caprese",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Diavola",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Diavola",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Especial de la Casa",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Especial de la Casa",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Carne",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Carne Picante",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Jamón y Queso",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Pollo",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Humita",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Verdura",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Cebolla y Queso",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Roquefort y Nuez",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola Zero",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola Zero",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola Zero",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Sprite",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Sprite",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Sprite",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Fanta",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Fanta",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Fanta",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Agua mineral",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Agua mineral",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Agua mineral",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de naranja",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de naranja",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de naranja",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de manzana",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de manzana",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de manzana",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino tinto Malbec",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino tinto Malbec",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino tinto Malbec",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino blanco Chardonnay",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino blanco Chardonnay",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino blanco Chardonnay",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino espumante",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino espumante",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino espumante",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "POSTRES",
+    "producto_nombre": "Flan casero",
+    "presentacion_codigo": "KILO"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "POSTRES",
+    "producto_nombre": "Tiramisú",
+    "presentacion_codigo": "KILO"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "POSTRES",
+    "producto_nombre": "Helado",
+    "presentacion_codigo": "KILO"
+  },
+  {
+    "comercio_cuit": "30-71234567-2",
+    "categoria_descripcion": "POSTRES",
+    "producto_nombre": "Brownie con helado",
+    "presentacion_codigo": "KILO"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Muzzarella",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Muzzarella",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Napolitana",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Napolitana",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Margherita",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Margherita",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Fugazzeta",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Fugazzeta",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Fugazza",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Fugazza",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Calabresa",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Calabresa",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Jamón y Morrones",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Jamón y Morrones",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Cuatro Quesos",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Cuatro Quesos",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Provolone",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Provolone",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Roquefort",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Roquefort",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Anchoas",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Anchoas",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Hawaiana",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Hawaiana",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Caprese",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Caprese",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Diavola",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Diavola",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Especial de la Casa",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Especial de la Casa",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Carne",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Carne Picante",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Jamón y Queso",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Pollo",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Humita",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Verdura",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Cebolla y Queso",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Roquefort y Nuez",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola Zero",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola Zero",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola Zero",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Sprite",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Sprite",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Sprite",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Fanta",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Fanta",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Fanta",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Agua mineral",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Agua mineral",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Agua mineral",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de naranja",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de naranja",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de naranja",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de manzana",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de manzana",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de manzana",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino tinto Malbec",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino tinto Malbec",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino tinto Malbec",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino blanco Chardonnay",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino blanco Chardonnay",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino blanco Chardonnay",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino espumante",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino espumante",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino espumante",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "POSTRES",
+    "producto_nombre": "Flan casero",
+    "presentacion_codigo": "KILO"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "POSTRES",
+    "producto_nombre": "Tiramisú",
+    "presentacion_codigo": "KILO"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "POSTRES",
+    "producto_nombre": "Helado",
+    "presentacion_codigo": "KILO"
+  },
+  {
+    "comercio_cuit": "30-72345678-3",
+    "categoria_descripcion": "POSTRES",
+    "producto_nombre": "Brownie con helado",
+    "presentacion_codigo": "KILO"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Muzzarella",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Muzzarella",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Napolitana",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Napolitana",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Margherita",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Margherita",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Fugazzeta",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Fugazzeta",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Fugazza",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Fugazza",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Calabresa",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Calabresa",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Jamón y Morrones",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Jamón y Morrones",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Cuatro Quesos",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Cuatro Quesos",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Provolone",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Provolone",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Roquefort",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Roquefort",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Anchoas",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Anchoas",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Hawaiana",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Hawaiana",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Caprese",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Caprese",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Diavola",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Diavola",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Especial de la Casa",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Especial de la Casa",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Carne",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Carne Picante",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Jamón y Queso",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Pollo",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Humita",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Verdura",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Cebolla y Queso",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Roquefort y Nuez",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola Zero",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola Zero",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola Zero",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Sprite",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Sprite",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Sprite",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Fanta",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Fanta",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Fanta",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Agua mineral",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Agua mineral",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Agua mineral",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de naranja",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de naranja",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de naranja",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de manzana",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de manzana",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de manzana",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino tinto Malbec",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino tinto Malbec",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino tinto Malbec",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino blanco Chardonnay",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino blanco Chardonnay",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino blanco Chardonnay",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino espumante",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino espumante",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino espumante",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "POSTRES",
+    "producto_nombre": "Flan casero",
+    "presentacion_codigo": "KILO"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "POSTRES",
+    "producto_nombre": "Tiramisú",
+    "presentacion_codigo": "KILO"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "POSTRES",
+    "producto_nombre": "Helado",
+    "presentacion_codigo": "KILO"
+  },
+  {
+    "comercio_cuit": "30-73456789-4",
+    "categoria_descripcion": "POSTRES",
+    "producto_nombre": "Brownie con helado",
+    "presentacion_codigo": "KILO"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Muzzarella",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Muzzarella",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Napolitana",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Napolitana",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Margherita",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Margherita",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Fugazzeta",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Fugazzeta",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Fugazza",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Fugazza",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Calabresa",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Calabresa",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Jamón y Morrones",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Jamón y Morrones",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Cuatro Quesos",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Cuatro Quesos",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Provolone",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Provolone",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Roquefort",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Roquefort",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Anchoas",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Anchoas",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Hawaiana",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Hawaiana",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Caprese",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Caprese",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Diavola",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Diavola",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Especial de la Casa",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Especial de la Casa",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Carne",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Carne Picante",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Jamón y Queso",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Pollo",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Humita",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Verdura",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Cebolla y Queso",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Roquefort y Nuez",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola Zero",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola Zero",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola Zero",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Sprite",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Sprite",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Sprite",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Fanta",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Fanta",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Fanta",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Agua mineral",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Agua mineral",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Agua mineral",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de naranja",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de naranja",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de naranja",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de manzana",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de manzana",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de manzana",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino tinto Malbec",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino tinto Malbec",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino tinto Malbec",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino blanco Chardonnay",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino blanco Chardonnay",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino blanco Chardonnay",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino espumante",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino espumante",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino espumante",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "POSTRES",
+    "producto_nombre": "Flan casero",
+    "presentacion_codigo": "KILO"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "POSTRES",
+    "producto_nombre": "Tiramisú",
+    "presentacion_codigo": "KILO"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "POSTRES",
+    "producto_nombre": "Helado",
+    "presentacion_codigo": "KILO"
+  },
+  {
+    "comercio_cuit": "30-74567890-5",
+    "categoria_descripcion": "POSTRES",
+    "producto_nombre": "Brownie con helado",
+    "presentacion_codigo": "KILO"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Muzzarella",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Muzzarella",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Napolitana",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Napolitana",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Margherita",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Margherita",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Fugazzeta",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Fugazzeta",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Fugazza",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Fugazza",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Calabresa",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Calabresa",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Jamón y Morrones",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Jamón y Morrones",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Cuatro Quesos",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Cuatro Quesos",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Provolone",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Provolone",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Roquefort",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Roquefort",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Anchoas",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza de Anchoas",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Hawaiana",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Hawaiana",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Caprese",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Caprese",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Diavola",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Diavola",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Especial de la Casa",
+    "presentacion_codigo": "GRANDE"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "PIZZAS",
+    "producto_nombre": "Pizza Especial de la Casa",
+    "presentacion_codigo": "CHICA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Carne",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Carne Picante",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Jamón y Queso",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Pollo",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Humita",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Verdura",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Cebolla y Queso",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "EMPANADAS",
+    "producto_nombre": "Empanada de Roquefort y Nuez",
+    "presentacion_codigo": "UNIDAD"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola Zero",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola Zero",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Coca-Cola Zero",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Sprite",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Sprite",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Sprite",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Fanta",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Fanta",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Fanta",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Agua mineral",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Agua mineral",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Agua mineral",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de naranja",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de naranja",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de naranja",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de manzana",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de manzana",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Jugo de manzana",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino tinto Malbec",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino tinto Malbec",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino tinto Malbec",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino blanco Chardonnay",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino blanco Chardonnay",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino blanco Chardonnay",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino espumante",
+    "presentacion_codigo": "LATA"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino espumante",
+    "presentacion_codigo": "LITRO"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "BEBIDAS",
+    "producto_nombre": "Vino espumante",
+    "presentacion_codigo": "DOS_LITROS"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "POSTRES",
+    "producto_nombre": "Flan casero",
+    "presentacion_codigo": "KILO"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "POSTRES",
+    "producto_nombre": "Tiramisú",
+    "presentacion_codigo": "KILO"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "POSTRES",
+    "producto_nombre": "Helado",
+    "presentacion_codigo": "KILO"
+  },
+  {
+    "comercio_cuit": "30-75678901-6",
+    "categoria_descripcion": "POSTRES",
+    "producto_nombre": "Brownie con helado",
+    "presentacion_codigo": "KILO"
+  }
+]
