@@ -28,6 +28,15 @@ class LoadSettingsDefaultsTest(unittest.TestCase):
         with self.assertRaises(Exception):
             settings.llm_model = "other"  # type: ignore[misc]
 
+    def test_embedding_defaults_are_independent_from_llm(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            settings = load_settings()
+        self.assertEqual(settings.embedding_url, "http://localhost:11434/api/embed")
+        self.assertEqual(settings.embedding_model, "all-minilm:latest")
+        self.assertEqual(settings.embedding_timeout_seconds, 30)
+        self.assertEqual(settings.embedding_batch_size, 32)
+        self.assertEqual(settings.embedding_dimension, 384)
+
 
 class LoadSettingsOverridesTest(unittest.TestCase):
     def test_string_overrides(self):
@@ -71,6 +80,54 @@ class LoadSettingsOverridesTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"LLM_LOG_CONTENT": "maybe"}, clear=True):
             with self.assertRaises(ValueError):
                 load_settings()
+
+
+class LoadEmbeddingSettingsTest(unittest.TestCase):
+    def test_embedding_overrides_apply(self):
+        env = {
+            "EMBEDDING_URL": "http://embed-host:9000/api/embed",
+            "EMBEDDING_MODEL": "nomic-embed-text",
+            "EMBEDDING_TIMEOUT_SECONDS": "45",
+            "EMBEDDING_BATCH_SIZE": "16",
+            "EMBEDDING_DIMENSION": "768",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            settings = load_settings()
+        self.assertEqual(settings.embedding_url, "http://embed-host:9000/api/embed")
+        self.assertEqual(settings.embedding_model, "nomic-embed-text")
+        self.assertEqual(settings.embedding_timeout_seconds, 45)
+        self.assertEqual(settings.embedding_batch_size, 16)
+        self.assertEqual(settings.embedding_dimension, 768)
+
+    def test_embedding_settings_are_independent_from_llm_settings(self):
+        env = {
+            "LLM_URL": "http://llm-host:11434/api/generate",
+            "LLM_MODEL": "different-llm-model",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            settings = load_settings()
+        self.assertNotEqual(settings.embedding_url, settings.llm_url)
+        self.assertNotEqual(settings.embedding_model, settings.llm_model)
+        self.assertEqual(
+            settings.embedding_url,
+            "http://localhost:11434/api/embed",
+        )
+        self.assertEqual(settings.embedding_model, "all-minilm:latest")
+
+    def test_embedding_settings_are_frozen(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            settings = load_settings()
+        with self.assertRaises(Exception):
+            settings.embedding_model = "other"  # type: ignore[misc]
+        with self.assertRaises(Exception):
+            settings.embedding_batch_size = 1  # type: ignore[misc]
+
+    def test_embedding_positive_int_overrides_reject_non_positive_values(self):
+        for var in ("EMBEDDING_TIMEOUT_SECONDS", "EMBEDDING_BATCH_SIZE", "EMBEDDING_DIMENSION"):
+            for raw in ("0", "-3", "abc"):
+                with mock.patch.dict(os.environ, {var: raw}, clear=True):
+                    with self.assertRaises(ValueError, msg=f"{var}={raw}"):
+                        load_settings()
 
 
 if __name__ == "__main__":

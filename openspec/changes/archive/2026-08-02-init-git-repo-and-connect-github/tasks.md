@@ -38,7 +38,7 @@
 
 ## 8. Final Verification
 
-- [ ] 8.1 Run `git rev-parse --abbrev-ref --symbolic-full-name @{u}` and confirm it returns `origin/main`
-- [ ] 8.2 Run `git rev-list --left-right --count origin/main...HEAD` and confirm the left column is `0`
-- [ ] 8.3 Run `git status` and confirm a clean working tree (no uncommitted changes)
-- [ ] 8.4 Run `git log --oneline` and report the initial commit hash to the user
+- [x] 8.1 Run `git rev-parse --abbrev-ref --symbolic-full-name @{u}` and confirm it returns `origin/main`
+- [x] 8.2 Run `git rev-list --left-right --count origin/main...HEAD` and confirm the left column is `0`
+- [x] 8.3 Run `git status` and confirm a clean working tree (no uncommitted changes)
+- [x] 8.4 Run `git log --oneline` and report the initial commit hash to the user

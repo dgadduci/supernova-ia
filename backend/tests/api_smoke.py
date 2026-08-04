@@ -2378,6 +2378,7 @@ def test_pscr_real_integration() -> None:
     from backend.models.categorias_productos import CategoriaProducto
     from backend.models.presentaciones import Presentacion
     from backend.models.producto import Producto
+    from backend.models.producto_alias import ProductoAlias
     from backend.models.producto_presentacion import ProductoPresentacion
 
     _engine = _create_engine("sqlite:///:memory:")
@@ -2389,6 +2390,7 @@ def test_pscr_real_integration() -> None:
     Presentacion.__table__.create(_engine)
     Producto.__table__.create(_engine)
     ProductoPresentacion.__table__.create(_engine)
+    ProductoAlias.__table__.create(_engine)
 
     with _Session() as s:
         s.add(CategoriaProducto(id_comercio=1, descripcion="Pizzas", activo=True, orden=0,

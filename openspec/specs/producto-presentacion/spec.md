@@ -7,7 +7,7 @@ Define the `ProductoPresentacion` SQLAlchemy model — a join row between `produ
 ## Requirements
 
 ### Requirement: ProductoPresentacion model definition
-The system SHALL define a SQLAlchemy model named `ProductoPresentacion` that exposes a primary-key integer `id`; an `id_producto` Integer ForeignKey (non-null, indexed) pointing to `productos.id` with `ON DELETE CASCADE`; an `id_presentacion` Integer ForeignKey (non-null, indexed) pointing to `presentaciones.id` with `ON DELETE CASCADE`; a non-null `activo` flag (Boolean, default `True`, server-default `"true"`); a non-null `orden` (Integer, default `0`, server-default `"0"`); lifecycle timestamps `fecha_alta` and `fecha_ultima_modificacion` (both timezone-aware DateTime with `server_default=now()`, the latter additionally `onupdate=now()`); a unique `(id_producto, id_presentacion)` composite constraint named `producto_presentacion_unico`; a non-negative-order check constraint named `orden_no_negativo`; and a `precios` one-to-many relationship to a list of `Precio` instances.
+The system SHALL define a SQLAlchemy model named `ProductoPresentacion` that exposes a primary-key integer `id`; an `id_producto` Integer ForeignKey (non-null, indexed) pointing to `productos.id` with `ON DELETE CASCADE`; an `id_presentacion` Integer ForeignKey (non-null, indexed) pointing to `presentaciones.id` with `ON DELETE CASCADE`; a non-null `activo` flag (Boolean, default `True`, server-default `"true"`); a non-null `orden` (Integer, default `0`, server-default `"0"`); lifecycle timestamps `fecha_alta` and `fecha_ultima_modificacion` (both timezone-aware DateTime with `server_default=now()`, the latter additionally `onupdate=now()`); a unique `(id_producto, id_presentacion)` composite constraint named `producto_presentacion_unico`; a non-negative-order check constraint named `orden_no_negativo`; a `precios` one-to-many relationship to a list of `Precio` instances; and an `embeddings` one-to-many relationship to product-presentation embedding instances. Deleting a product presentation SHALL cascade to its embedding rows.
 
 #### Scenario: ProductoPresentacion exposes the required column set
 - **WHEN** the `ProductoPresentacion` model is imported and its columns are inspected
@@ -35,6 +35,11 @@ The system SHALL define a SQLAlchemy model named `ProductoPresentacion` that exp
 #### Scenario: ProductoPresentacion exposes its precios relationship
 - **WHEN** the `ProductoPresentacion` model is introspected for relationships
 - **THEN** it exposes a `precios` relationship that resolves to a list of `Precio` instances
+
+#### Scenario: ProductoPresentacion exposes its embeddings relationship
+- **WHEN** the `ProductoPresentacion` model is introspected for relationships
+- **THEN** it exposes an `embeddings` relationship that resolves to a list of product-presentation embedding instances
+- **AND** deleting the parent removes associated embedding rows
 
 #### Scenario: ProductoPresentacion table name
 - **WHEN** the `ProductoPresentacion` model is introspected for its table identifier

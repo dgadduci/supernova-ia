@@ -10,9 +10,15 @@ The resolver preserves the already-resolved source ID, the optional
 turns. When both domains are unique, returns `ready` so the existing
 ready-execution path dispatches the modificar handler.
 """
+from typing import cast
+
 from sqlalchemy.orm import Session as DatabaseSession
 
-from backend.diagnostics import NoopDiagnosticSink, ResolverCallCompleted, ResolverCallStarted
+from backend.diagnostics import (
+    NoopDiagnosticSink,
+    ResolverCallCompleted,
+    ResolverCallStarted,
+)
 from backend.diagnostics.sink import DiagnosticSink
 from backend.intents.recognizers.quitar_producto_recognizer import (
     recognize_quitar_producto,
@@ -20,8 +26,12 @@ from backend.intents.recognizers.quitar_producto_recognizer import (
 from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.intents.schemas.requirement_state import RequirementState
 from backend.models.session import Session as ConversationSession
-from backend.recognizers.product_recognizer import detectar_productos
+from backend.recognizers.fuzzy_product_recognizer import FuzzyProductRecognizer
+from backend.recognizers.product_recognizer_contract import ProductRecognizerProtocol
 from backend.services.producto_query_service import ProductoQueryService
+
+_product_recognizer: ProductRecognizerProtocol = FuzzyProductRecognizer()
+detectar_productos = _product_recognizer.recognize
 
 
 def _flatten_pedido_producto_ids(recognized: dict) -> list[int]:
@@ -197,7 +207,7 @@ def _resolve_destination_selection(
     if not catalog:
         return active_intent.model_copy(update={"status": "rejected"})
 
-    recognized = detectar_productos(message, catalog)
+    recognized = cast(dict, detectar_productos(message, catalog))
     recognized_dest_ids = _flatten_producto_presentacion_ids(recognized)
     if not recognized_dest_ids:
         return active_intent

@@ -11,16 +11,22 @@ are never broadened beyond their respective catalogs. The recognizer is
 read-only: it never commits, rolls back, adds, deletes, or generates a
 customer-facing response.
 """
+from typing import cast
+
 from sqlalchemy.orm import Session as DatabaseSession
 
 from backend.models import Session as ConversationSession
+from backend.recognizers.fuzzy_product_recognizer import FuzzyProductRecognizer
 from backend.recognizers.product_recognizer import (
     PALABRAS_CANTIDAD,
     _normalizar_texto,
-    detectar_productos,
 )
+from backend.recognizers.product_recognizer_contract import ProductRecognizerProtocol
 from backend.services.pedido_producto_service import PedidoProductoService
 from backend.services.producto_query_service import ProductoQueryService
+
+_product_recognizer: ProductRecognizerProtocol = FuzzyProductRecognizer()
+detectar_productos = _product_recognizer.recognize
 
 
 def _build_order_line_catalog(pedido_productos) -> list[dict]:
@@ -173,7 +179,9 @@ def recognize_modificar_producto(
         pedido_productos = PedidoProductoService(db).list_by_pedido(pedido_id)
         if pedido_productos:
             source_catalog = _build_order_line_catalog(pedido_productos)
-            source_detected = detectar_productos(source_message, source_catalog)
+            source_detected = cast(
+                dict, detectar_productos(source_message, source_catalog)
+            )
             source_candidate_ids = sorted(set(_flatten_pedido_producto_ids(source_detected)))
             if len(source_candidate_ids) == 1:
                 source_pp_id = source_candidate_ids[0]
@@ -193,7 +201,7 @@ def recognize_modificar_producto(
             if dest_message
             else _strip_modify_verbs(message)
         )
-        dest_detected = detectar_productos(target_message, active_catalog)
+        dest_detected = cast(dict, detectar_productos(target_message, active_catalog))
         destination_candidate_ids = sorted(
             set(_flatten_producto_presentacion_ids(dest_detected))
         )

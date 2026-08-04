@@ -170,3 +170,43 @@ class ModificationFailed(Exception):
     """
 
     pass
+
+
+class ProductoAliasNotFound(Exception):
+    pass
+
+
+class InvalidProductoAlias(Exception):
+    pass
+
+
+class DuplicateProductoAlias(Exception):
+    pass
+
+
+class ProductoAliasPresentationMismatch(Exception):
+    pass
+
+
+class UnsafeAliasSeederMapping(Exception):
+    pass
+
+
+class ProductoPresentacionEmbeddingNotFound(LookupError):
+    pass
+
+
+class InvalidProductoPresentacionEmbedding(ValueError):
+    pass
+
+
+class ProductoPresentacionEmbeddingPersistenceError(Exception):
+    pass
+
+
+class DuplicateProductoPresentacionEmbedding(Exception):
+    pass
+
+
+EmbeddingNotFound = ProductoPresentacionEmbeddingNotFound
+InvalidEmbedding = InvalidProductoPresentacionEmbedding

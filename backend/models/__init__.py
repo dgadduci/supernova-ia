@@ -7,6 +7,8 @@ from backend.models.categorias_productos import CategoriaProducto
 from backend.models.presentaciones import Presentacion
 from backend.models.producto import Producto
 from backend.models.producto_presentacion import ProductoPresentacion
+from backend.models.producto_presentacion_embedding import ProductoPresentacionEmbedding
+from backend.models.producto_alias import ProductoAlias
 from backend.models.precio import Precio
 from backend.models.comercio_metodos_entrega import ComercioMetodoEntrega
 from backend.models.comercio_medios_pago import ComercioMedioPago
@@ -25,6 +27,8 @@ __all__ = [
     "Presentacion",
     "Producto",
     "ProductoPresentacion",
+    "ProductoPresentacionEmbedding",
+    "ProductoAlias",
     "Precio",
     "ComercioMetodoEntrega",
     "ComercioMedioPago",

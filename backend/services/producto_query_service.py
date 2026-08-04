@@ -1,5 +1,3 @@
-from decimal import Decimal
-from typing import Optional
 
 from sqlalchemy.orm import Session
 
@@ -19,12 +17,31 @@ from backend.services.exceptions import (
     PresentacionNotFound,
     ProductoNotFound,
 )
+from backend.services.producto_alias_service import ProductoAliasService
+
+
+def _build_catalog_dict(pp: ProductoPresentacion) -> dict[str, object]:
+    return {
+        "producto_presentacion_id": pp.id,
+        "producto_id": pp.id_producto,
+        "presentacion_id": pp.id_presentacion,
+        "categoria_id": pp.producto.id_categoria_producto,
+        "producto_nombre": pp.producto.nombre,
+        "categoria_nombre": pp.producto.categoria.descripcion,
+        "presentacion_codigo": pp.presentacion.codigo,
+        "presentacion_descripcion": pp.presentacion.descripcion,
+        "producto_activo": bool(pp.producto.activo),
+        "presentacion_activo": bool(pp.presentacion.activo),
+        "activo": bool(pp.activo),
+        "disponible": bool(pp.producto.disponible),
+    }
 
 
 class ProductoQueryService:
     def __init__(self, session: Session) -> None:
         self._session = session
         self._repo = ProductoQueryRepository(session)
+        self._alias_service = ProductoAliasService(session)
 
     def get_detalle(self, producto_id: int) -> Producto:
         producto = self._repo.get_detalle(producto_id)
@@ -37,43 +54,34 @@ class ProductoQueryService:
         producto_presentacion_ids: list[int],
     ) -> list[dict[str, object]]:
         presentations = self._repo.list_presentaciones_by_ids(producto_presentacion_ids)
-        return [
-            {
-                "producto_presentacion_id": pp.id,
-                "producto_id": pp.id_producto,
-                "presentacion_id": pp.id_presentacion,
-                "categoria_id": pp.producto.id_categoria_producto,
-                "producto_nombre": pp.producto.nombre,
-                "categoria_nombre": pp.producto.categoria.descripcion,
-                "presentacion_codigo": pp.presentacion.codigo,
-                "presentacion_descripcion": pp.presentacion.descripcion,
-                "producto_activo": bool(pp.producto.activo),
-                "presentacion_activo": bool(pp.presentacion.activo),
-                "activo": bool(pp.activo),
-                "disponible": bool(pp.producto.disponible),
-            }
-            for pp in presentations
-        ]
+        catalog = [_build_catalog_dict(pp) for pp in presentations]
+        self._attach_aliases(catalog)
+        return catalog
 
     def list_recognizer_catalog(self, comercio_id: int) -> list[dict[str, object]]:
         presentations = self._repo.list_recognizer_catalog(comercio_id) or []
-        return [
-            {
-                "producto_presentacion_id": pp.id,
-                "producto_id": pp.id_producto,
-                "presentacion_id": pp.id_presentacion,
-                "categoria_id": pp.producto.id_categoria_producto,
-                "producto_nombre": pp.producto.nombre,
-                "categoria_nombre": pp.producto.categoria.descripcion,
-                "presentacion_codigo": pp.presentacion.codigo,
-                "presentacion_descripcion": pp.presentacion.descripcion,
-                "producto_activo": bool(pp.producto.activo),
-                "presentacion_activo": bool(pp.presentacion.activo),
-                "activo": bool(pp.activo),
-                "disponible": bool(pp.producto.disponible),
+        catalog = [_build_catalog_dict(pp) for pp in presentations]
+        self._attach_aliases(catalog)
+        return catalog
+
+    def _attach_aliases(self, catalog: list[dict[str, object]]) -> None:
+        if not catalog:
+            return
+        projection = self._alias_service.project_recognition_data(catalog)
+        for row in catalog:
+            pid = row.get("producto_id")
+            ppid = row.get("producto_presentacion_id")
+            if pid is None or ppid is None:
+                continue
+            if not isinstance(pid, int) or not isinstance(ppid, int):
+                continue
+            aliases = projection.get((pid, ppid))
+            if aliases is None:
+                continue
+            row["aliases"] = {
+                "general_aliases": list(aliases.general_aliases),
+                "specific_aliases": list(aliases.specific_aliases),
             }
-            for pp in presentations
-        ]
 
     def list_presentaciones(self, producto_id: int) -> list[ProductoPresentacion]:
         asociaciones = self._repo.list_presentaciones(producto_id)

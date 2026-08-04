@@ -17,6 +17,8 @@ from backend.models.precio import Precio
 from backend.models.presentaciones import Presentacion
 from backend.models.producto import Producto
 from backend.models.producto_presentacion import ProductoPresentacion
+from backend.models.producto_presentacion_embedding import ProductoPresentacionEmbedding
+from backend.models.producto_alias import ProductoAlias
 from backend.models.pedido import Pedido
 from backend.models.cliente import Cliente
 from backend.models.session import Session

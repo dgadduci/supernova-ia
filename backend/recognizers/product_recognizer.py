@@ -9,6 +9,12 @@ This is a port of the legacy fuzzy pipeline
   - the catalog is passed as an argument (no static JSON file),
   - the result is a Python dict (not a JSON string),
   - the field names are the new product-presentations shape.
+
+Subphase 4.2: product aliases are no longer a hardcoded production source.
+The fuzzy pipeline consumes caller-provided alias data through each catalog
+row's optional ``aliases`` field. The legacy ``ALIASES_PALABRAS`` map is
+retained for documentation, the seeder, and pre-migration characterization
+tests, but the runtime normalizer no longer applies it.
 """
 import re
 import unicodedata
@@ -41,6 +47,9 @@ TAMANIOS = {
     "docena", "docenas",
 }
 
+# Retained for documentation and the idempotent seeder. The runtime
+# normalizer no longer applies this map; aliases are read from each
+# catalog row's ``aliases`` field.
 ALIASES_PALABRAS: dict[str, str] = {
     "muza":        "mozzarella",
     "muzza":       "mozzarella",
@@ -57,6 +66,30 @@ ALIASES_PALABRAS: dict[str, str] = {
     "napoli":      "napolitana",
     "calabreza":   "calabresa",
 }
+
+
+def _row_aliases(row: dict) -> list[str]:
+    aliases = row.get("aliases")
+    if not aliases:
+        return []
+    candidates: list[str] = []
+    for key in ("specific_aliases", "general_aliases"):
+        value = aliases.get(key) if isinstance(aliases, dict) else None
+        if value:
+            candidates.extend(str(item) for item in value if item)
+    return candidates
+
+
+def _expand_con_nombres_aliases(nombre: str, aliases: list[str]) -> list[str]:
+    if not aliases:
+        return [nombre]
+    expanded: list[str] = [nombre]
+    for alias in aliases:
+        candidate = f"{nombre} {alias}".strip()
+        if candidate not in expanded:
+            expanded.append(candidate)
+    return expanded
+
 
 _FONETICA = [
     (r"qu", "k"),
@@ -213,13 +246,18 @@ def _preparar_catalogo(productos: list[dict]) -> list[dict]:
     catalogo = []
     for producto in productos:
         nombre_original = producto["producto_nombre"]
-        nombre_normalizado = _limpiar_nombre_producto(nombre_original)
-        nombre_fonetico = _normalizar_fonetico(nombre_original)
+        aliases = _row_aliases(producto)
+        nombres_aliases = _expand_con_nombres_aliases(nombre_original, aliases)
         catalogo.append({
             "id": producto["producto_presentacion_id"],
             "nombre_producto": nombre_original,
-            "nombre_normalizado": nombre_normalizado,
-            "nombre_fonetico": nombre_fonetico,
+            "nombres_aliases": nombres_aliases,
+            "aliases": aliases,
+            "nombre_normalizado": _limpiar_nombre_producto(nombre_original),
+            "nombres_aliases_normalizados": [
+                _limpiar_nombre_producto(nombre) for nombre in nombres_aliases
+            ],
+            "nombre_fonetico": _normalizar_fonetico(nombre_original),
             "producto_completo": producto,
         })
     return catalogo
@@ -396,6 +434,23 @@ def _extraer_candidatos(
                 _nombre_prev, score_prev = matches_por_indice[indice]
                 if score_fon > score_prev:
                     matches_por_indice[indice] = (nombres_catalogo[indice], score_fon)
+        for indice in list(matches_por_indice.keys()):
+            producto_cat = catalogo[indice]
+            for nombre_alias in producto_cat.get(
+                "nombres_aliases_normalizados", [producto_cat["nombre_normalizado"]]
+            ):
+                if nombre_alias == producto_cat["nombre_normalizado"]:
+                    continue
+                score_alias = round(
+                    fuzz.WRatio(fragmento, nombre_alias)
+                )
+                if score_alias < umbral:
+                    continue
+                _nombre_prev, score_prev = matches_por_indice.get(
+                    indice, (None, 0)
+                )
+                if score_alias > score_prev:
+                    matches_por_indice[indice] = (nombre_alias, score_alias)
         for indice, (nombre_match, score_base) in matches_por_indice.items():
             producto_cat = catalogo[indice]
             score_combinado = _calcular_score(fragmento, nombre_match)

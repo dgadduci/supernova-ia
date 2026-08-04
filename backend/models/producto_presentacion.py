@@ -1,9 +1,27 @@
 from datetime import datetime
+from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.models.base import Base
+
+if TYPE_CHECKING:
+    from backend.models.precio import Precio
+    from backend.models.presentaciones import Presentacion
+    from backend.models.producto import Producto
+    from backend.models.producto_alias import ProductoAlias
+    from backend.models.producto_presentacion_embedding import (
+        ProductoPresentacionEmbedding,
+    )
 
 
 class ProductoPresentacion(Base):
@@ -81,4 +99,15 @@ class ProductoPresentacion(Base):
 
     precios: Mapped[list["Precio"]] = relationship(
         back_populates="producto_presentacion",
+    )
+
+    aliases: Mapped[list["ProductoAlias"]] = relationship(
+        back_populates="producto_presentacion",
+        cascade="all, delete-orphan",
+    )
+
+    embeddings: Mapped[list["ProductoPresentacionEmbedding"]] = relationship(
+        back_populates="producto_presentacion",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )

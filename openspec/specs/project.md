@@ -1972,687 +1972,193 @@ Subphase 3.32.7 — Fix product narrowing by `producto_nombre` when the alias li
 - Synced to `openspec/specs/product-recognizer/spec.md:148` before archiving.
 - Archived at `openspec/changes/archive/2026-08-01-add-imperative-verbs-to-stopwords/`.
 
-Implement Subphase 3.33 — Initialize the local Git repository and connect it to the existing GitHub repository `supernova-ia`. [ ]
-
-Goal:
-
-Create a safe local Git repository for the existing NovaOrders/Supernova project, prepare the appropriate repository metadata, make the initial commit, connect the local repository to the GitHub repository that already exists, and push the project safely.
-
-Existing remote repository:
-
-`supernova-ia`
-
-Important:
-
-The GitHub repository was already created manually.
-
-Do not create a new GitHub repository.
-
-Do not rename the existing GitHub repository.
-
-Do not assume the repository owner from the email address.
-
-Use the GitHub account currently authenticated through GitHub CLI and determine the exact remote repository URL for `supernova-ia`.
-
-The GitHub account is associated with:
-
-`dgadduci@gmail.com`
-
-An email address is not necessarily the GitHub username.
-
-Suggested change name:
-
-`initialize-local-git-and-connect-supernova-ia-3-33`
-
-This subphase performs repository setup only.
-
-Do not modify application behavior.
-Do not implement the semantic recognizer.
-Do not implement another business intent.
-Do not deploy the project.
-Do not synchronize or archive automatically.
-
-Mandatory inspection before making changes:
-
-1. Determine the absolute project root.
-2. Verify whether the project is already inside a Git repository:
-   - `git rev-parse --show-toplevel`
-   - `git status`
-3. Detect whether a `.git` directory already exists.
-4. Inspect existing branches.
-5. Inspect existing remotes:
-   - `git remote -v`
-6. Detect whether these files already exist:
-   - `.gitignore`
-   - `.gitattributes`
-   - `.env.example`
-   - `README.md`
-   - license files
-7. Inspect the project structure and identify:
-   - source files;
-   - tests;
-   - Alembic migrations;
-   - OpenSpec files;
-   - virtual environments;
-   - caches;
-   - environment files;
-   - logs;
-   - database dumps;
-   - model files;
-   - generated artifacts.
-8. Run:
-   - `git --version`
-   - `gh --version`
-   - `gh auth status`
-9. Determine the actual authenticated GitHub login.
-10. Locate the existing GitHub repository:
-    - `<authenticated-owner>/supernova-ia`
-11. Verify:
-    - repository visibility;
-    - default branch;
-    - whether the remote repository is empty;
-    - whether it already contains commits or files.
-12. Inspect the local project for likely secrets before staging anything.
-
-Do not initialize Git, configure a remote, commit, pull, merge, rebase, or push until the inspection is complete.
-
-Existing remote safety:
-
-The remote repository may be empty or may contain files created manually by GitHub, such as:
-
-- `README.md`;
-- `.gitignore`;
-- `LICENSE`.
-
-Determine the actual remote state before pushing.
-
-If the remote repository is completely empty:
-
-- initialize the local repository;
-- create the initial local commit;
-- configure `origin`;
-- push `main`.
-
-If the remote repository already has commits:
-
-- do not overwrite it;
-- do not force-push;
-- fetch its history;
-- inspect the remote files and commits;
-- report whether the histories can be combined safely.
-
-If the only remote content is an automatically created README, `.gitignore`, or license:
-
-- preserve that content;
-- integrate the remote history safely;
-- use a normal merge or rebase only if appropriate;
-- do not discard either local or remote files;
-- resolve any conflict explicitly.
-
-If the remote contains unrelated application code or unexpected history:
-
-- stop;
-- report the conflict;
-- request developer confirmation before proceeding.
-
-Never use:
-
-- `git push --force`;
-- `git push --force-with-lease`;
-- destructive reset against the remote;
-- deletion of remote branches;
-- history replacement;
-- silent removal of existing remotes.
-
-Repository URL:
-
-Use the existing repository URL obtained from GitHub CLI.
-
-Preferred HTTPS form:
-
-`https://github.com/<authenticated-owner>/supernova-ia.git`
-
-SSH may be used only if the local GitHub CLI authentication and SSH configuration already support it.
-
-Do not embed credentials or tokens in the remote URL.
-
-Local Git initialization:
-
-If the project is not already a Git repository:
-
-1. Initialize Git in the project root.
-2. Use `main` as the initial branch.
-3. Configure only repository-local Git identity if required.
-4. Do not alter unrelated global Git configuration.
-
-If Git already exists:
-
-- preserve the existing history;
-- preserve the current branch unless there is a clear reason to rename it;
-- report any discrepancy before changing the branch name;
-- do not run `git init` unnecessarily.
-
-Git identity:
-
-Inspect:
-
-- `git config --local user.name`
-- `git config --local user.email`
-- `git config --global user.name`
-- `git config --global user.email`
-
-If an author identity is already configured appropriately, preserve it.
-
-If identity is missing:
-
-- use a repository-local identity;
-- use `dgadduci@gmail.com` only if that is the intended commit email;
-- prefer the authenticated GitHub no-reply address only if it can be verified;
-- do not invent a no-reply address;
-- stop and ask for confirmation if identity cannot be determined safely.
-
-Required `.gitignore`:
-
-Create or update a root `.gitignore` suitable for:
-
-- Python;
-- macOS;
-- VS Code;
-- virtual environments;
-- pytest;
-- Ruff;
-- mypy;
-- coverage;
-- FastAPI development;
-- SQLAlchemy/Alembic;
-- PostgreSQL dumps;
-- local LLM/model files;
-- CLI diagnostics;
-- environment files;
-- secrets.
-
-Include at least:
-
-# Python bytecode and caches
-__pycache__/
-*.py[cod]
-*$py.class
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.pytype/
-.hypothesis/
-.coverage
-.coverage.*
-htmlcov/
-coverage.xml
-
-# Virtual environments
-.venv/
-venv/
-env/
-ENV/
-
-# Packaging and builds
-build/
-dist/
-*.egg-info/
-.eggs/
-pip-wheel-metadata/
-
-# Environment and secrets
-.env
-.env.*
-!.env.example
-*.pem
-*.key
-*.p12
-*.pfx
-*.crt
-secrets/
-credentials/
-
-# IDE and operating system
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
-.AppleDouble
-.LSOverride
-
-# Logs and runtime artifacts
-*.log
-logs/
-tmp/
-temp/
-*.pid
-
-# Databases and dumps
-*.sqlite
-*.sqlite3
-*.db
-*.dump
-*.sql.gz
-backups/
-
-# Local models and embedding artifacts
-models/
-model_cache/
-embeddings_cache/
-*.bin
-*.safetensors
-*.onnx
-*.gguf
-*.pt
-*.pth
-
-# Jupyter
-.ipynb_checkpoints/
-
-# CLI and diagnostic artifacts
-debug/
-diagnostics/
-debug_output/
-*.trace
-
-Do not ignore source-controlled Alembic material:
-
-- `alembic.ini`;
-- migration scripts;
-- `alembic/versions/`;
-- Alembic environment code.
-
-Do not ignore:
-
-- backend source;
-- tests;
-- dependency manifests;
-- OpenSpec specifications;
-- active OpenSpec changes;
-- archived OpenSpec changes that form part of project history;
-- `project.md`;
-- `AGENTS.md`;
-- `.env.example`;
-- documentation.
-
-OpenSpec requirements:
-
-Keep authoritative OpenSpec material under version control, including as applicable:
-
-- `openspec/config.yaml`;
-- `openspec/specs/`;
-- `openspec/changes/`;
-- archived changes;
-- roadmap and project documents.
-
-Ignore only real generated caches or temporary OpenSpec artifacts.
-
-Do not invent broad patterns that accidentally exclude project history.
-
-Environment template:
-
-If the project uses environment variables and no safe `.env.example` exists, create one.
-
-Requirements:
-
-- derive variable names from the actual codebase;
-- include no real credentials;
-- use empty or clearly fake values;
-- add concise comments for required and optional variables.
-
-Potential variables may include only when actually used:
-
-- `DATABASE_URL`
-- `TEST_DATABASE_URL`
-- `LLM_BASE_URL`
-- `LLM_MODEL`
-- `LLM_API_KEY`
-
-Do not copy values from `.env`.
-
-README:
-
-If no useful root README exists, create or update a concise `README.md` containing verified information only:
-
-- project name;
-- purpose;
-- stack;
-- prerequisites;
-- virtual-environment setup;
-- dependency installation;
-- environment setup;
-- PostgreSQL setup;
-- Alembic migrations;
-- test command;
-- FastAPI run command;
-- CLI chat command;
-- `--debug-flow` command;
-- warning not to commit `.env`.
-
-Do not invent commands or dependency files.
-
-Recommended `.gitattributes`:
-
-Create or update:
-
-`.gitattributes`
-
-Suggested content:
-
-* text=auto eol=lf
-*.py text eol=lf
-*.md text eol=lf
-*.yaml text eol=lf
-*.yml text eol=lf
-*.json text eol=lf
-*.toml text eol=lf
-*.ini text eol=lf
-*.sh text eol=lf
-
-Secret inspection:
-
-Before staging:
-
-1. Search candidate files for likely credentials and secret patterns.
-2. Inspect:
-   - `.env` files;
-   - config files;
-   - shell scripts;
-   - test fixtures;
-   - debug output;
-   - OpenSpec artifacts;
-   - logs.
-3. Report suspicious file paths without printing secret values.
-4. Stop if a real secret appears in a file intended for tracking.
-5. Do not rely only on `.gitignore`.
-
-Sensitive values must never appear in the implementation report.
-
-Large-file inspection:
-
-Before staging:
-
-1. List files larger than 5 MB.
-2. Identify:
-   - model weights;
-   - dumps;
-   - database backups;
-   - generated binaries;
-   - local datasets;
-   - diagnostic exports.
-3. Exclude generated or local artifacts.
-4. Do not introduce Git LFS in this subphase.
-5. Stop for confirmation before tracking an unexpected large file.
-
-Staging requirements:
-
-Before committing, inspect:
-
-- `git status --short --ignored`
-- `git check-ignore -v <representative paths>`
-- `git diff --cached --name-status`
-
-Verify explicitly that these are excluded:
-
-- `.env`;
-- `.venv/`;
-- caches;
-- logs;
-- local databases;
-- dumps;
-- model weights;
-- debug output.
-
-Verify explicitly that these are included:
-
-- source code;
-- tests;
-- Alembic migrations;
-- dependency manifests;
-- OpenSpec history;
-- project documentation;
-- `.gitignore`;
-- `.gitattributes`;
-- `.env.example`.
-
-Do not stage files blindly with `git add .` before reviewing the ignore rules and candidate file list.
-
-Existing remote integration:
-
-After inspecting the remote:
-
-1. Configure `origin` only if none exists.
-2. If `origin` already exists:
-   - verify it points to `supernova-ia`;
-   - do not replace it silently.
-3. Fetch:
-   - `git fetch origin`
-4. Inspect:
-   - remote branches;
-   - remote default branch;
-   - remote commit history.
-5. Choose the safe path based on remote state.
-
-Remote empty path:
-
-If no remote commit exists:
-
-- create the local initial commit;
-- push:
-  - `git push -u origin main`
-
-Remote non-empty path:
-
-If the remote has compatible bootstrap history:
-
-- preserve remote commits;
-- integrate safely;
-- use a normal merge strategy;
-- document any conflict resolution;
-- push only after local tests and history inspection.
-
-Do not use unrelated-history merging automatically unless the reason is clear and the remote contains only intended bootstrap files.
-
-If `--allow-unrelated-histories` would be required:
-
-- explain why;
-- inspect both histories;
-- use it only when the remote repository contains intentional bootstrap files and integration is safe;
-- do not use it to combine unrelated applications.
-
-Initial commit:
-
-If the local repository has no commits, use:
-
-`chore: initialize repository`
-
-If remote bootstrap files must first be integrated, choose commit messages that accurately describe the operation.
-
-Do not squash or rewrite the manually created remote history.
-
-Verification before push:
-
-Run the project's existing checks:
-
-- focused tests where appropriate;
-- full suite if practical;
-- `PYTHONPATH=. .venv/bin/python -m compileall backend`;
-- strict OpenSpec validation.
-
-Do not modify unrelated application code to make tests pass.
-
-If tests already fail:
-
-- report them as pre-existing;
-- distinguish them from Git setup;
-- do not delete or weaken tests.
-
-Push verification:
-
-After pushing:
-
-1. Run:
-   - `git remote -v`
-   - `git branch -vv`
-   - `git status`
-   - `git log --oneline --decorate --graph -10`
-2. Verify:
-   - repository root is correct;
-   - branch is `main`;
-   - upstream is `origin/main`;
-   - working tree is clean;
-   - local HEAD exists in the remote history;
-   - remote repository is `supernova-ia`;
-   - repository visibility is unchanged;
-   - no ignored or secret files were pushed.
-3. Verify GitHub repository contents using GitHub CLI.
-4. Compare local and remote commit hashes.
-
-Required checks:
-
-A. `.gitignore` behavior
-
-Verify these are ignored:
-
-- `.env`
-- `.venv/`
-- `__pycache__/`
-- `.pytest_cache/`
-- `.mypy_cache/`
-- `.ruff_cache/`
-- `.DS_Store`
-- logs
-- model weights
-- database dumps
-
-B. Required tracked files
-
-Verify these are not ignored:
-
-- `backend/`
-- tests
-- Alembic migrations
-- `openspec/`
-- `project.md`
-- `.env.example`
-- dependency manifests
-
-C. Secret scan
-
-Search staged files for likely secrets.
-
-Do not print values.
-
-D. Repository connection
-
-Verify:
-
-- one intended `origin`;
-- `origin` points to `supernova-ia`;
-- branch `main`;
-- upstream configured;
-- no force push;
-- local and remote history are consistent.
-
-E. Existing application regressions
-
-Git setup must not alter business behavior.
-
-Run the existing tests without changing production logic.
-
-Recommended GitHub settings:
-
-Report these recommendations after successful push, but do not enable them automatically unless already supported and explicitly requested:
-
-- keep the repository private;
-- enable secret scanning and push protection;
-- protect `main` when collaborative development begins;
-- require pull requests when more contributors are added;
-- store Railway, Twilio, database and LLM credentials in GitHub repository secrets;
-- implement CI in a separate future subphase;
-- create release tags before major recognizer changes.
-
-Recommended baseline tag:
-
-After the repository is connected and verified, recommend creating a baseline tag before starting the semantic recognizer transition:
-
-`pre-semantic-recognizer`
-
-Do not create or push the tag automatically unless explicitly authorized.
-
-This tag will provide a stable restore point for the current fuzzy-recognizer implementation.
-
-Manual acceptance:
-
-1. Run:
-   - `git status`
-   - `git remote -v`
-   - `git branch -vv`
-   - `git log --oneline --decorate --graph -10`
-2. Confirm:
-   - local repository root is correct;
-   - branch is `main`;
-   - `origin` points to the existing `supernova-ia` repository;
-   - working tree is clean;
-   - local branch tracks `origin/main`.
-3. Inspect GitHub and verify:
-   - project source is present;
-   - tests are present;
-   - migrations are present;
-   - OpenSpec history is present;
-   - `.env.example` is present;
-   - `.env` is absent;
-   - `.venv` is absent;
-   - caches, logs, dumps and model files are absent.
-4. Confirm the pre-existing repository history, if any, was preserved.
-
-Constraints:
-
-- Do not create another GitHub repository.
-- Do not rename `supernova-ia`.
-- Do not change repository visibility.
-- Do not force-push.
-- Do not overwrite remote history.
-- Do not delete remote files silently.
-- Do not modify business logic.
-- Do not refactor application code.
-- Do not implement pgvector.
-- Do not implement SentenceTransformer.
-- Do not implement the semantic recognizer.
-- Do not create CI/CD.
-- Do not deploy to Railway.
-- Do not change global Git configuration without explicit approval.
-- Do not commit secrets.
-- Do not synchronize OpenSpec automatically.
-- Do not archive automatically.
-- Leave the change active after apply.
-- Stop after local initialization, safe remote integration, push, verification, task updates and reporting.
-
-Report:
-
-- absolute project root;
-- whether Git already existed locally;
-- authenticated GitHub login;
-- exact `supernova-ia` owner;
-- remote repository state before integration;
-- remote visibility;
-- remote default branch;
-- whether remote bootstrap commits existed;
-- integration strategy used;
-- branch name;
-- sanitized remote URL;
-- commit hashes involved;
-- `.gitignore` categories added;
-- files deliberately excluded;
-- large files found;
-- secret-scan result;
-- tests and validation commands executed;
-- final local and remote status;
-- whether any manual action remains;
-- confirmation that no new GitHub repository was created;
-- confirmation that remote history was preserved;
-- confirmation that the OpenSpec change remains active and unsynchronized.
-
-Do not implement the next subphase.
+#### Subphase 3.33 — initialize-local-git-and-connect-supernova-ia [x] — completed
+
+**Completed:** 2026-08-02
+
+**Delivered:**
+- Initialized a Git repository at `/Users/diegoadducilagreca/Documents/supernova-ia` with `main` as the local branch.
+- Added a root `.gitignore` before staging so the local virtual environment, Python caches, `.env`, macOS metadata, tool state, Node dependencies, build artifacts, and IDE metadata remain untracked.
+- Created the initial commit `d86afaf` (`chore: bootstrap git repository`) without changing application behavior.
+- Reused the existing GitHub repository owned by `dgadduci`; configured `origin` as `https://github.com/dgadduci/supernova-ia.git` for fetch and push.
+- Confirmed the remote was reachable and pushed `main` normally. No new repository, force-push, history replacement, branch deletion, repository rename, or visibility change was performed.
+- Configured local `main` to track `origin/main`.
+
+**Safety and verification:**
+- Git identity pre-flight checks passed before the initial commit.
+- `git check-ignore` confirmed that `.env`, `venv/bin/python`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, and `.DS_Store` are ignored.
+- `git rev-parse --show-toplevel` returns `/Users/diegoadducilagreca/Documents/supernova-ia`.
+- `git symbolic-ref --short HEAD` returns `main`.
+- `git rev-parse --abbrev-ref --symbolic-full-name @{u}` returns `origin/main`.
+- `git rev-list --left-right --count origin/main...HEAD` returns `0 0`, confirming local and remote histories are aligned.
+- The setup's final verification recorded a clean working tree and `d86afaf` at both `HEAD` and `origin/main` before the subsequent OpenSpec sync and archive updates.
+
+**Files and repository metadata:**
+- `.gitignore` — added 16 ignore patterns covering local and generated artifacts.
+- `.git/` — created local repository metadata, the `main` branch, and the `origin` configuration.
+- Existing application source, tests, Alembic files, dependency manifests, and OpenSpec history were included in the initial snapshot without business-logic modifications.
+
+**OpenSpec:**
+- Added and synced the `git-repository-bootstrap` capability to `openspec/specs/git-repository-bootstrap/spec.md` with 6 requirements and 13 scenarios.
+- All 21 implementation tasks and all planning artifacts were completed.
+- Archived the completed change at `openspec/changes/archive/2026-08-02-init-git-repo-and-connect-github/`.
+
+
+## Phase 4 - Recognizer hibryd implementation semantyc and fuzzy
+
+### Subphase 4.1 — Implement Freeze the product recognizer contract and create the baseline evaluation dataset. [x]
+
+Recognizer boundary frozen before any pgvector / semantic work. `backend.recognizers.product_recognizer.detectar_productos` is the algorithm owner and remains a compatible public entry point; consumers reach it through a new `ProductRecognizerProtocol` abstraction backed by `FuzzyProductRecognizer`, which delegates unchanged. A version-controlled baseline dataset anchors fuzzy behavior for current and future recognizer implementations. All 20 implementation tasks and all planning artifacts were completed; the change was synced to main specs and archived at `openspec/changes/archive/2026-08-02-freeze-product-recognizer-contract-baseline-dataset/`.
+
+**Architectural constraints introduced**:
+- Recognizer boundary: `ProductRecognizerProtocol` is the only abstraction consumers depend on; the contract module imports nothing from SQLAlchemy, HTTP, LLM, or repositories.
+- Frozen result contract: exactly four top-level keys in insertion order — `encontrados`, `encontrados_posibles`, `encontrados_no_disponibles`, `no_encontrados` — each a list (never `None`). `encontrados_posibles` is `{"texto_origen": str, "productos": list[dict]}`; `no_encontrados` is `{"texto_origen": str}`. Recognized product entries preserve every source catalog field plus `cantidad: int` and `texto_origen: str`.
+- Frozen catalog projection: `producto_presentacion_id`, `producto_id`, `presentacion_id`, `categoria_id`, `producto_nombre`, `categoria_nombre`, `presentacion_codigo`, `presentacion_descripcion`, `activo`, `disponible`; additional caller-supplied fields are permitted and preserved.
+- Ordering and quantity semantics are stable: descending-confidence order with stable ties; duplicate product-presentation IDs retain only their strongest match; `cantidad` defaults to `1`; items filtered by false product / presentation / activity flags are absent from all collections, while `disponible == False` items surface in `encontrados_no_disponibles`.
+- `FuzzyProductRecognizer.recognize(text, catalog)` delegates directly to `detectar_productos` without copying, reordering, normalizing, or tuning the result — algorithm ownership stays with the existing fuzzy module.
+- Baseline dataset invariant: every case references real fixture IDs from existing test catalogs; refinement cases (`picante`, `grande`) use the same restricted candidate catalogs as the real pending-flow; cases exposing accepted fuzzy limitations are tagged `known_fuzzy_limitation: true` with a non-empty `limitation_note` describing current behavior only.
+- Diagnostics: the recognizer exposes the concrete implementation name only; no semantic / vector / Ollama diagnostics yet.
+
+**Files created**:
+- `backend/recognizers/product_recognizer_contract.py` — `ProductRecognizerProtocol`, `RecognizedProduct`, `RecognizedProductGroup`, `UnmatchedFragment`, `ProductRecognizerResult`
+- `backend/recognizers/fuzzy_product_recognizer.py` — `FuzzyProductRecognizer` delegating to `detectar_productos`
+- `backend/tests/fixtures/product_recognizer_baseline.json` — version-controlled baseline dataset
+- Reusable contract test harness + integration smoke tests for `agregar_producto` unique path and pending product-selection refinement
+
+**Files modified**:
+- Composition boundaries across `backend/` that previously depended on the concrete fuzzy module — practical sites now depend on the protocol where the resolver helper compatibility and restricted catalog boundaries allow it; `quitar_producto`, `modificar_producto` source/destination recognition, product-intent resolution, pending-context dispatch/execution, and FIFO queue promotion remain compatible.
+- Recognizer diagnostics — exposed implementation name only.
+
+**OpenSpec**:
+- New capability `product-recognizer-contract` synced at `openspec/specs/product-recognizer-contract/spec.md` (8 requirements).
+- New capability `product-recognizer-baseline-dataset` synced at `openspec/specs/product-recognizer-baseline-dataset/spec.md` (6 requirements).
+- Existing capability `product-recognizer` extended at `openspec/specs/product-recognizer/spec.md` (2 added requirements covering protocol conformance and consumer-contract preservation).
+
+**Context for future subphases**: the next phase can introduce a `HybridProductRecognizer` that satisfies `ProductRecognizerProtocol`; the contract test harness and baseline dataset are the shared verification surface. Remaining concrete `detectar_productos` consumers can be migrated as adjacent work touches them. Subphase 4.1 preserved observable recognition behavior; pgvector, vector tables, Ollama embeddings, alias migration to PostgreSQL, and resolver / pending-intent redesign remain out of scope until a later subphase.
+
+### Subphase 4.2 — Persist product and product-presentation aliases in PostgreSQL. [x] — completed
+
+Product and product-presentation aliases are now persisted in PostgreSQL and supplied to the pure fuzzy recognizer through caller-built catalog projections. The observable recognizer contract from Subphase 4.1 remains unchanged, and PostgreSQL is the only production authority for product aliases.
+
+**Completed outcomes:**
+- Added the `ProductoAlias` model and reversible Alembic migration `f68b6651e8e2_add_producto_aliases_table.py` for `producto_aliases`, including product-wide aliases (`id_producto_presentacion IS NULL`), exact product-presentation aliases, active state, normalized text, timestamps, foreign keys, lookup indexes, and PostgreSQL partial unique indexes for both alias scopes.
+- Added repository and service boundaries for normalization, empty-value rejection, product/product-presentation ownership validation, scoped duplicate handling, active recognition lookup, stable ID-scoped projection, and batched catalog loading. Services do not manage transactions; callers own commit and rollback.
+- Added `backend.scripts.seed_product_aliases`, backed by an idempotent seeder that resolves exact stable catalog targets without database IDs or partial-name matching, runs in one outer transaction, preserves unrelated aliases, and reports inserted, unchanged, skipped, and failed mappings.
+- Moved real commercial product aliases from the hardcoded recognizer authority into persisted caller-provided alias data. General aliases remain applicable across eligible presentations; presentation-specific aliases are attached only to their exact `producto_presentacion_id`.
+- Preserved `PRESENTACION_ALIASES`, `_extraer_presentacion`, structured presentation matching, resolver narrowing, fuzzy thresholds, scoring, ranking, grouping, quantity handling, availability, unknown handling, and restricted candidate behavior. Values such as `chica`, `grande`, `unidad`, and `1 litro` remain structured presentation data and are not persisted as product aliases.
+- Completed characterization, model/migration, repository/service, seeder, catalog-projection, recognizer, baseline, and integration verification. All implementation tasks and planning artifacts were completed, the specs were synced, and the change was archived at `openspec/changes/archive/2026-08-02-persist-product-aliases-4-2/`.
+
+**Architectural constraints introduced:**
+- SQLAlchemy queries remain in `ProductoAliasRepository` and alias services remain infrastructure-boundaries without `commit()`, `rollback()`, `close()`, or `begin()` calls. The pure recognizer has no database, repository, or service access.
+- Alias projections are commerce-scoped and restricted-catalog-scoped, load in batches, include only active aliases, and cannot broaden the supplied product-presentation catalog or leak aliases to sibling presentations or other commerces.
+- The recognizer contract remains infrastructure-free and accepts optional row-scoped aliases while preserving ordinary dictionaries, additional caller fields, and the frozen result shape.
+- No alias administration API or UI, pgvector, embeddings, Ollama calls, semantic recognition, hybrid recognition, resolver redesign, or pending-queue redesign was introduced.
+
+**Relevant files:**
+- `backend/models/producto_alias.py`, `backend/models/producto.py`, `backend/models/producto_presentacion.py`, and `backend/models/__init__.py`
+- `backend/alembic/versions/f68b6651e8e2_add_producto_aliases_table.py` and `backend/alembic/env.py`
+- `backend/repositories/producto_alias_repository.py`
+- `backend/services/producto_alias_service.py`, `backend/services/producto_alias_seeder.py`, `backend/services/producto_query_service.py`, and `backend/services/exceptions.py`
+- `backend/scripts/seed_product_aliases.py`
+- `backend/recognizers/product_recognizer_contract.py`, `backend/recognizers/fuzzy_product_recognizer.py`, and `backend/recognizers/product_recognizer.py`
+- Focused alias, seeder, catalog-projection, recognizer, and integration tests under `backend/tests/`
+
+**Context for future subphases:** New recognition flows must enrich their catalog projection with active aliases through the existing service/repository boundary and must preserve commerce and restricted-candidate scopes. Future semantic or hybrid recognition work may consume the same `ProductRecognizerProtocol`; it must not reintroduce a second production alias source or move database access into recognizers.
+
+### Subphase 4.3 — Enable pgvector and create product-presentation embedding persistence. [x] — completed
+
+PostgreSQL pgvector extension is enabled and a durable `producto_presentacion_embeddings` table persists one embedding per `(producto_presentacion, modelo)` pair, validated through an idempotent repository/service boundary. The fuzzy recognizer contract from Subphases 4.1 and 4.2 remains unchanged; embedding generation, semantic document construction, similarity search, and reindexing remain out of scope for this subphase.
+
+**Completed outcomes:**
+- Added the pgvector SQLAlchemy dependency (`pgvector`) and a configurable `embedding_dimension` setting using the project's existing configuration pattern.
+- Added Alembic migration `a7c9e1f2b3d4_add_producto_presentacion_embeddings.py` (down_revision `f68b6651e8e2`) that runs `CREATE EXTENSION IF NOT EXISTS vector`, creates the `producto_presentacion_embeddings` table with vector column, foreign key, uniqueness constraint, and indexes, and downgrades by removing only project-owned objects (the shared `vector` extension is preserved on downgrade).
+- Added the `ProductoPresentacionEmbedding` SQLAlchemy model with `id`, `id_producto_presentacion` (FK `ON DELETE CASCADE`), `vector` (`VECTOR(embedding_dimension)`), `modelo`, and timezone-aware lifecycle timestamps; added the `ProductoPresentacion.embeddings` one-to-many relationship with cascade.
+- Added the `ProductoPresentacionEmbeddingRepository` for get-by-id, get-by-presentation-and-model, list-by-presentation, create, and idempotent upsert; the repository does not commit, rollback, or close the session.
+- Added the `ProductoPresentacionEmbeddingService` that validates required identifiers, non-empty `modelo`, and configured vector dimensionality, and exposes the upsert/retrieval/list operations; raises `ProductoPresentacionEmbeddingNotFound`, `InvalidProductoPresentacionEmbedding`, `DuplicateProductoPresentacionEmbedding`, and `ProductoPresentacionEmbeddingPersistenceError` through the standard persistence-error path.
+- Added model metadata tests proving the table, vector column dimension, foreign key cascade, lifecycle timestamps, relationship, and uniqueness constraint, plus PostgreSQL integration tests covering extension creation, table/index constraints, upsert behavior, dimension rejection, foreign-key failure handling, and cascade deletion.
+- Ran the project's lint, typecheck, and focused tests; resolved all failures.
+
+**Architectural constraints introduced:**
+- One embedding row per `(id_producto_presentacion, modelo)`, enforced by the `producto_presentacion_embedding_unico` unique constraint; persistence validates and upserts on this identity.
+- Vector dimensionality is enforced by the `VECTOR(embedding_dimension)` column type and revalidated by the service for every write; dimension changes require an explicit configuration/migration update.
+- Embeddings cascade-delete with their parent `ProductoPresentacion` through the foreign key and the ORM relationship.
+- All SQLAlchemy queries remain inside the repository; the service does not call Ollama, generate embeddings, calculate hashes, or perform similarity search; no commit/rollback/close below the existing transaction boundary.
+- No HNSW, IVFFlat, or other vector-distance indexes were created; index selection is deferred until the vector-search subphase defines distance, volume, and query patterns.
+- No LangChain, LangGraph, SentenceTransformers, or vector-store frameworks were added.
+
+**Relevant files:**
+- `backend/models/producto_presentacion_embedding.py`, `backend/models/producto_presentacion.py`, and `backend/models/__init__.py`
+- `backend/alembic/versions/a7c9e1f2b3d4_add_producto_presentacion_embeddings.py` and `backend/alembic/env.py`
+- `backend/repositories/producto_presentacion_embedding_repository.py`
+- `backend/services/producto_presentacion_embedding_service.py` and `backend/services/exceptions.py`
+- `backend/config/settings.py` (new `embedding_dimension` setting)
+- `backend/tests/test_producto_presentacion_embedding_model.py` and `backend/tests/test_producto_presentacion_embedding_integration.py`
+
+**OpenSpec:**
+- New capability `producto-presentacion-embeddings` synced at `openspec/specs/producto-presentacion-embeddings/spec.md` (3 requirements: embedding persistence, idempotent persistence operations, pgvector extension availability).
+- Existing capability `producto-presentacion` extended at `openspec/specs/producto-presentacion/spec.md` to include the `embeddings` relationship and the cascade-delete scenario on the `ProductoPresentacion` model definition.
+- Archived the completed change at `openspec/changes/archive/2026-08-03-enable-pgvector-product-presentation-embeddings/`. All 12 implementation tasks and all planning artifacts were completed.
+
+**Context for future subphases:** Embedding writes remain caller-owned; the next phase can introduce the embedding provider client and semantic document generation through the existing service boundary without touching the repository or schema. Vector similarity search, indexing strategy, and hybrid recognizer wiring remain explicit follow-ups once provider semantics and query patterns are defined.
+
+### Subphase 4.4 — Add the local Ollama embedding client. [x] — completed
+
+Local Ollama embedding generation now lives behind a typed, provider-neutral boundary that is fully independent from the existing Qwen generation configuration, persistence, and the rest of the backend. All 17 implementation tasks and all planning artifacts were completed; the change was synced to main specs and archived at `openspec/changes/archive/2026-08-03-add-local-ollama-embedding-client/`.
+
+**Completed outcomes:**
+- `backend/llm/embedding_client.py` exports `EmbeddingClientProtocol` (`embed_query`, `embed_documents`), `OllamaEmbeddingClient`, and the exception hierarchy `EmbeddingClientError` → `EmbeddingConnectionError` / `EmbeddingTimeoutError` / `EmbeddingResponseError` / `EmbeddingDimensionError`.
+- `OllamaEmbeddingClient` calls the configured Ollama `/api/embed` endpoint, uses the configured `all-minilm:latest` model and timeout, validates HTTP status / JSON shape / result count / vector presence / finite numeric values / configured vector dimension, preserves input order, and maps transport failures (`requests.exceptions.Timeout` / `ConnectionError`, non-success HTTP, malformed body, wrong count, wrong dimension) to the typed exception hierarchy.
+- `embed_documents` splits inputs into bounded requests of `EMBEDDING_BATCH_SIZE`; `embed_documents([])` returns `[]` without a network request; any empty/whitespace document inside a non-empty batch is rejected with its index; `embed_query("")` and whitespace-only input are rejected before any HTTP activity.
+- `backend/config/settings.py` gained five embedding-only settings — `embedding_url` (default `http://localhost:11434/api/embed`), `embedding_model` (`all-minilm:latest`), `embedding_dimension` (`384`, aligned with the Subphase 4.3 `VECTOR(embedding_dimension)` column), `embedding_timeout_seconds` (`30`), and `embedding_batch_size` (`32`) — all overridable via env vars and independent from `LLM_URL` / `LLM_MODEL`. Positive-integer validators reject non-positive values.
+- `backend/scripts/check_embedding_client.py` provides a manual verification entry point: prints the configured model, returned dimension, and elapsed time; never prints the complete vector unless an explicit debug option is enabled; skips when local Ollama is unreachable without weakening deterministic unit-test coverage.
+- Focused tests in `backend/tests/test_ollama_embedding_client.py` cover single embedding, ordered batch embedding with batching boundary, empty/whitespace input rejection (single + per-index), malformed response, wrong result count, wrong vector dimension, non-finite values, timeout/connection/HTTP error mapping, configuration independence from `LLM_URL`/`LLM_MODEL`, and a real local Ollama smoke test guarded by an availability check.
+
+**Architectural constraints introduced:**
+- Embedding settings are exclusively `EMBEDDING_*`; `LLM_URL` (`/api/generate`) is never reused for embeddings.
+- The client is independent from SQLAlchemy, repositories, products, semantic document building, vector persistence, and recognizers. It holds no DB connection, model, repository, or service references.
+- Error messages and normal logs SHALL NOT expose raw input payloads, complete vectors, credentials, or unrelated configuration.
+- `requests` is the only third-party transport dependency; it was already available transitively in the project venv.
+- No LangChain, LangGraph, SentenceTransformers, or vector-store frameworks were introduced.
+
+**Relevant files:**
+- `backend/llm/embedding_client.py` (exports `EmbeddingClientProtocol`, `OllamaEmbeddingClient`, exception hierarchy, `__all__`)
+- `backend/config/settings.py` (added `embedding_url`, `embedding_model`, `embedding_dimension`, `embedding_timeout_seconds`, `embedding_batch_size` and their `DEFAULT_*` constants)
+- `backend/scripts/check_embedding_client.py` (manual verification CLI)
+- `backend/tests/test_ollama_embedding_client.py` (focused unit + integration tests)
+
+**OpenSpec:**
+- New capability `ollama-embedding-client` synced at `openspec/specs/ollama-embedding-client/spec.md` (7 requirements: independent embedding configuration, reusable embedding client interface, single-query embedding generation, ordered bounded document batching, Ollama response validation, domain-specific failure mapping, safe local verification).
+- Change archived at `openspec/changes/archive/2026-08-03-add-local-ollama-embedding-client/`.
+
+**Context for future subphases:** semantic document construction is now available as a pure, content-addressed component; the next phase can wire it to `EmbeddingClientProtocol` and `ProductoPresentacionEmbeddingService` for embedding writes, similarity search, HNSW/IVFFlat indexing, hybrid recognizer wiring, and reindex endpoints without revisiting the document shape. Future callers build the `ProductEmbeddingCatalogProjection` and alias inputs from existing repositories/services (never pass ORM objects directly), depend on `EmbeddingClientProtocol` (not `OllamaEmbeddingClient`) constructed from `load_settings()`, and inject a stub `requests`-shaped transport for tests. The Subphase 4.3 `embedding_dimension` setting (default `384`) is the single source of truth for vector width; any change requires the corresponding `VECTOR(...)` migration. The builder's `normalize_for_embedding` is byte-equivalent to `backend.recognizers.product_recognizer._normalizar_texto` (asserted by a focused test), so recognizer and builder share one normalization contract.
+
+### Subphase 4.5 — Build deterministic semantic documents and content hashes for product-presentations. [x] — completed
+
+Pure `ProductEmbeddingDocumentBuilder` is now the single authority for turning a `producto_presentacion` and its persisted aliases into deterministic `ProductEmbeddingDocument` records with stable SHA-256 `content_hash` values. No embeddings were generated and no `producto_presentacion_embeddings` rows were written; the Subphases 4.1–4.4 capabilities and the fuzzy recognizer are unchanged. All 44 implementation tasks and all planning artifacts were completed; the change was synced to main specs and archived at `openspec/changes/archive/2026-08-03-build-product-semantic-documents-4-5/`.
+
+**Completed outcomes:**
+- `backend/embeddings/text_normalization.py` exposes `normalize_for_embedding(text: str) -> str`: lowercase → `unicodedata.normalize("NFD", text)` → drop combining marks → keep `[a-z0-9ñ\s]` → collapse whitespace → strip; rejects non-`str` input with a typed `ValueError` so the builder cannot crash on a bad caller. Byte-equivalent to `backend.recognizers.product_recognizer._normalizar_texto` (asserted by `test_text_normalization.py`).
+- `backend/embeddings/product_embedding_document_builder.py` exposes `ProductEmbeddingAliasScope = Literal["product", "product_presentacion"]`, `ProductEmbeddingAliasInput` (id, alias, alias_normalizado, scope, activo, id_producto_presentacion), `ProductEmbeddingCatalogProjection` (producto_id, producto_presentacion_id, producto_nombre, producto_descripcion, categoria_nombre, presentacion_id, presentacion_codigo, presentacion_descripcion), `ProductEmbeddingSourceType = Literal["canonical", "description", "alias", "combined"]`, `ProductEmbeddingDocument` (producto_id, producto_presentacion_id, source_type, source_record_id, source_text, normalized_text, content_hash), `InvalidProductEmbeddingDocument(ValueError)`, and `ProductEmbeddingDocumentBuilder` (parameterless constructor; `build(projection, aliases) -> list[ProductEmbeddingDocument]`).
+- Document generation produces, in fixed order: `canonical` (`"{producto_nombre} {presentation_text}"`, `source_record_id=None`), `description` when `producto_descripcion` is non-empty after stripping (`"{canonical}. {producto_descripcion}."`), `alias` documents filtered to active + applicable scope (product-wide always applicable; presentation-specific only when `id_producto_presentacion` matches) deduped by `alias_normalizado` keeping the lowest `id`, ordered by `(alias_normalizado, id)` ascending, and finally `combined` (`"Categoría: {categoria_nombre}. Producto: {producto_nombre}. Descripción: {producto_descripcion or omitted}. Presentación: {presentation_text}."`, with the `Descripción:` segment omitted entirely when absent).
+- `presentation_text` is `presentacion_descripcion` when non-empty after stripping, otherwise `presentacion_codigo`; both empty raises `InvalidProductEmbeddingDocument` and yields no documents. Two presentations of the same product always produce different `canonical` and `combined` documents whenever their `presentation_text` differs (e.g. `Unidad` vs `1 Litro`).
+- `content_hash` is `hashlib.sha256(f"{producto_presentacion_id}\x1f{source_type}\x1f{source_record_id or ''}\x1f{normalized_text}".encode("utf-8")).hexdigest()` — exactly 64 lowercase hex characters; identical inputs always produce identical hashes; semantic changes to product name, description, category, presentation, or alias text change the relevant hash.
+- Validation (positive `producto_id`/`producto_presentacion_id`, non-empty `producto_nombre`, recognized alias scope, presentation-specific alias ownership) runs up front; the builder raises `InvalidProductEmbeddingDocument` before constructing any document and never silently emits incomplete documents.
+- Focused unit tests in `backend/tests/test_product_embedding_document_builder.py` cover canonical-with-description, canonical-fallback-to-code, description generation/omission, combined with/without description (no `None` placeholder), product-wide alias on every presentation, presentation-specific alias exclusion on siblings, presentation distinction (`Unidad` vs `1 Litro`), deterministic hashing (identity + per-axis sensitivity), duplicate normalized aliases (lowest `id` wins), stable ordering, inactive-alias exclusion, Unicode/accent normalization (`Muzzárella` ↔ `muzza`, whitespace collapse), invalid alias ownership rejection, and invalid alias scope rejection with zero documents produced. A focused byte-equality test in `backend/tests/test_text_normalization.py` locks the normalization contract against `backend.recognizers.product_recognizer._normalizar_texto`.
+
+**Architectural constraints introduced:**
+- `ProductEmbeddingDocumentBuilder` is pure: no imports of SQLAlchemy, repositories, HTTP, Ollama, pgvector, recognizers, `requests`, `fastapi`, `backend.models`, `backend.llm`, or any infrastructure; the constructor takes no arguments and performs no I/O. SQLAlchemy ORM objects SHALL NOT be passed to the builder — callers must build `ProductEmbeddingCatalogProjection` and `ProductEmbeddingAliasInput` from repository/service results.
+- The output order is fixed (`canonical`, `description` if present, `alias` in `(alias_normalizado, id)` ascending order, `combined`); `content_hash` covers the same identity for all source types.
+- `source_text` preserves accents and casing; `normalized_text` is the canonical form used for both duplicate detection and hashing. The hash function uses ASCII `\x1f` (unit-separator) as the inter-field delimiter and serializes `None` `source_record_id` as the empty string.
+- Alias documents are never auto-generated from structured presentation data (`chica`, `grande`, `unidad`, `1 litro`); the builder consumes only caller-supplied alias inputs.
+- Embedding persistence, vector similarity search, indexing, hybrid recognizer wiring, and reindex endpoints remain out of scope; the builder does not call `EmbeddingClientProtocol` or write to `producto_presentacion_embeddings`.
+
+**Relevant files:**
+- `backend/embeddings/__init__.py`, `backend/embeddings/text_normalization.py`, `backend/embeddings/product_embedding_document_builder.py`
+- `backend/tests/test_product_embedding_document_builder.py`, `backend/tests/test_text_normalization.py`
+
+**OpenSpec:**
+- New capability `product-embedding-documents` synced at `openspec/specs/product-embedding-documents/spec.md` (12 requirements: deterministic product-presentation semantic documents, builder input projection, output document contract, canonical document, description document, alias documents, combined document, presentation handling, text normalization, content hash, duplicate handling and ordering, validation and error handling).
+- Subphases 4.1 (`product-recognizer-contract`, `product-recognizer-baseline-dataset`), 4.2 (`product-alias-persistence`), 4.3 (`producto-presentacion-embeddings`), and 4.4 (`ollama-embedding-client`) are unchanged — this subphase adds a new capability and does not modify their requirements.
+- Change archived at `openspec/changes/archive/2026-08-03-build-product-semantic-documents-4-5/`.
+
+**Context for future subphases:** the next phase can wire `ProductEmbeddingDocumentBuilder` to `EmbeddingClientProtocol` (built from `load_settings()`) and `ProductoPresentacionEmbeddingService` to populate `producto_presentacion_embeddings`, using `content_hash` as the staleness signal after catalog changes. The builder is the single source for the `source_text`/`normalized_text` shape that similarity search, hybrid recognizers, and reindex endpoints will consume. Similarity search, HNSW/IVFFlat indexing, hybrid recognizer wiring, and administrative reindex endpoints remain explicit follow-ups. Do not implement Subphase 4.6.

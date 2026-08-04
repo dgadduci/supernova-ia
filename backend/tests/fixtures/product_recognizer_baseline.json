@@ -1,0 +1,240 @@
+{
+  "schema_version": 1,
+  "catalogs": {
+    "empanada_pollo": {
+      "source_fixture": "backend/tests/test_product_recognizer.py:EMPANADA_CATALOG",
+      "scope": "in_memory",
+      "entries": [
+        {
+          "producto_presentacion_id": 1,
+          "producto_id": 1,
+          "presentacion_id": 1,
+          "categoria_id": 1,
+          "categoria_nombre": "Empanadas",
+          "producto_nombre": "Empanada de Pollo",
+          "presentacion_codigo": "unidad",
+          "presentacion_descripcion": "Unidad",
+          "activo": true,
+          "disponible": true
+        }
+      ]
+    },
+    "pizza_mozzarella_presentations": {
+      "source_fixture": "backend/tests/api_smoke.py:test_product_recognizer.cat_mozzarella",
+      "scope": "in_memory",
+      "entries": [
+        {
+          "producto_presentacion_id": 1,
+          "producto_id": 1,
+          "presentacion_id": 1,
+          "categoria_id": 101,
+          "producto_nombre": "Pizza Mozzarella con Albahaca",
+          "categoria_nombre": "Pizzas",
+          "presentacion_codigo": "chica",
+          "presentacion_descripcion": "",
+          "activo": true,
+          "producto_activo": true,
+          "presentacion_activo": true,
+          "disponible": true
+        },
+        {
+          "producto_presentacion_id": 2,
+          "producto_id": 1,
+          "presentacion_id": 2,
+          "categoria_id": 101,
+          "producto_nombre": "Pizza Mozzarella con Albahaca",
+          "categoria_nombre": "Pizzas",
+          "presentacion_codigo": "grande",
+          "presentacion_descripcion": "",
+          "activo": true,
+          "producto_activo": true,
+          "presentacion_activo": true,
+          "disponible": true
+        },
+        {
+          "producto_presentacion_id": 21,
+          "producto_id": 1,
+          "presentacion_id": 21,
+          "categoria_id": 101,
+          "producto_nombre": "Pizza Mozzarella con Albahaca",
+          "categoria_nombre": "Pizzas",
+          "presentacion_codigo": "familiar",
+          "presentacion_descripcion": "",
+          "activo": true,
+          "producto_activo": true,
+          "presentacion_activo": true,
+          "disponible": true
+        }
+      ]
+    },
+    "pizza_mozzarella_short": {
+      "source_fixture": "backend/tests/api_smoke.py:test_product_recognizer.cat_legacy_short",
+      "scope": "in_memory",
+      "entries": [
+        {
+          "producto_presentacion_id": 100,
+          "producto_id": 1,
+          "presentacion_id": 1,
+          "categoria_id": 101,
+          "producto_nombre": "Pizza Mozzarella",
+          "categoria_nombre": "Pizzas",
+          "presentacion_codigo": "chica",
+          "presentacion_descripcion": "",
+          "disponible": true
+        }
+      ]
+    },
+    "empanada_carne_restricted": {
+      "source_fixture": "backend/tests/test_product_selection_context_resolver.py:CARNE_CATALOG",
+      "scope": "pending_product_selection_restricted",
+      "candidate_ids": [11, 12],
+      "entries": [
+        {
+          "producto_presentacion_id": 11,
+          "producto_nombre": "Empanada de Carne",
+          "presentacion_codigo": "PICANTE"
+        },
+        {
+          "producto_presentacion_id": 12,
+          "producto_nombre": "Empanada de Carne",
+          "presentacion_codigo": "TRADICIONAL"
+        }
+      ]
+    },
+    "pizza_grande_restricted": {
+      "source_fixture": "backend/tests/test_product_selection_context_resolver.py:CATALOG_WITH_PRESENTACIONES[:2]",
+      "scope": "pending_product_selection_restricted",
+      "candidate_ids": [1, 2],
+      "entries": [
+        {
+          "producto_presentacion_id": 1,
+          "producto_nombre": "Pizza de Muzzarella Chica",
+          "presentacion_codigo": "CHICA"
+        },
+        {
+          "producto_presentacion_id": 2,
+          "producto_nombre": "Pizza de Muzzarella Grande",
+          "presentacion_codigo": "GRANDE"
+        }
+      ]
+    },
+    "modificar_producto_real_flow_dynamic": {
+      "source_fixture": "backend/tests/test_modificar_producto_real_flow_http.py:_seed_commerce",
+      "scope": "commerce_dynamic_database",
+      "dynamic": true,
+      "entries": []
+    }
+  },
+  "cases": [
+    {
+      "case_id": "exact-empanada-pollo",
+      "text": "empanada de pollo",
+      "catalog_fixture": "empanada_pollo",
+      "catalog_scope": "in_memory",
+      "result_type": "unique",
+      "reason": "exact product name",
+      "expected_producto_presentacion_id": 1,
+      "expected_quantity": 1
+    },
+    {
+      "case_id": "product-plus-presentation",
+      "text": "una pizza muzza grande",
+      "catalog_fixture": "pizza_mozzarella_presentations",
+      "catalog_scope": "in_memory",
+      "result_type": "unique",
+      "reason": "product alias and presentation",
+      "expected_producto_presentacion_id": 2,
+      "expected_quantity": 1
+    },
+    {
+      "case_id": "fuzzy-misspelling-mozzarella",
+      "text": "piza mozarela",
+      "catalog_fixture": "pizza_mozzarella_short",
+      "catalog_scope": "in_memory",
+      "result_type": "unique",
+      "reason": "fuzzy misspelling",
+      "expected_producto_presentacion_id": 100,
+      "expected_quantity": 1
+    },
+    {
+      "case_id": "supported-mozza-alias",
+      "text": "pizza muzza",
+      "catalog_fixture": "pizza_mozzarella_short",
+      "catalog_scope": "in_memory",
+      "result_type": "unique",
+      "reason": "supported product alias",
+      "expected_producto_presentacion_id": 100,
+      "expected_quantity": 1
+    },
+    {
+      "case_id": "ambiguous-empanada-carne",
+      "text": "empanada de carne",
+      "catalog_fixture": "empanada_carne_restricted",
+      "catalog_scope": "pending_product_selection_restricted",
+      "result_type": "ambiguous",
+      "reason": "same product with two restricted presentations",
+      "expected_candidate_ids": [11, 12],
+      "expected_quantity": 1
+    },
+    {
+      "case_id": "unknown-caramelo",
+      "text": "caramelo",
+      "catalog_fixture": "pizza_mozzarella_short",
+      "catalog_scope": "in_memory",
+      "result_type": "unknown",
+      "reason": "unknown product fragment"
+    },
+    {
+      "case_id": "multi-word-jamon-queso-dynamic",
+      "text": "empanada de jamon y queso",
+      "catalog_fixture": "modificar_producto_real_flow_dynamic",
+      "catalog_scope": "commerce_dynamic_database",
+      "result_type": "unique",
+      "reason": "multi-word product from real-flow seed",
+      "expected_producto_presentacion_id_ref": "pp_jq",
+      "expected_quantity": 1
+    },
+    {
+      "case_id": "picante-restricted-refinement",
+      "text": "picante",
+      "catalog_fixture": "empanada_carne_restricted",
+      "catalog_scope": "pending_product_selection_restricted",
+      "result_type": "unknown",
+      "reason": "current fuzzy recognizer leaves presentation-only refinement unmatched",
+      "known_fuzzy_limitation": true,
+      "limitation_note": "The pending product-selection resolver currently applies the presentation alias fallback after fuzzy recognition; this raw recognizer case remains unknown.",
+      "expected_unmatched_fragments": ["picante"]
+    },
+    {
+      "case_id": "grande-restricted-refinement",
+      "text": "grande",
+      "catalog_fixture": "pizza_grande_restricted",
+      "catalog_scope": "pending_product_selection_restricted",
+      "result_type": "unknown",
+      "reason": "current fuzzy recognizer leaves presentation-only refinement unmatched",
+      "known_fuzzy_limitation": true,
+      "limitation_note": "The pending product-selection resolver currently applies the presentation alias fallback after fuzzy recognition; this raw recognizer case remains unknown.",
+      "expected_unmatched_fragments": ["grande"]
+    },
+    {
+      "case_id": "quantity-word",
+      "text": "tres empanadas de pollo",
+      "catalog_fixture": "empanada_pollo",
+      "catalog_scope": "in_memory",
+      "result_type": "unique",
+      "reason": "quantity word is preserved",
+      "expected_producto_presentacion_id": 1,
+      "expected_quantity": 3
+    },
+    {
+      "case_id": "ambiguous-pizza-presentations",
+      "text": "quiero una pizza",
+      "catalog_fixture": "pizza_mozzarella_presentations",
+      "catalog_scope": "in_memory",
+      "result_type": "ambiguous",
+      "reason": "product has multiple available presentations",
+      "expected_candidate_ids": [1, 2, 21],
+      "expected_quantity": 1
+    }
+  ]
+}

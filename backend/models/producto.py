@@ -96,3 +96,8 @@ class Producto(Base):
     presentaciones: Mapped[list["ProductoPresentacion"]] = relationship(
         back_populates="producto",
     )
+
+    aliases: Mapped[list["ProductoAlias"]] = relationship(
+        back_populates="producto",
+        cascade="all, delete-orphan",
+    )

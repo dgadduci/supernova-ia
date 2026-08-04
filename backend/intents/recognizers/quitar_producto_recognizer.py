@@ -9,15 +9,21 @@ from the user message when present.
 The recognizer never queries the global commerce catalog and never
 mutates `session`, the Pedido, or any persisted state.
 """
+from typing import cast
+
 from sqlalchemy.orm import Session as DatabaseSession
 
 from backend.models import Session as ConversationSession
+from backend.recognizers.fuzzy_product_recognizer import FuzzyProductRecognizer
 from backend.recognizers.product_recognizer import (
     PALABRAS_CANTIDAD,
     _normalizar_texto,
-    detectar_productos,
 )
+from backend.recognizers.product_recognizer_contract import ProductRecognizerProtocol
 from backend.services.pedido_producto_service import PedidoProductoService
+
+_product_recognizer: ProductRecognizerProtocol = FuzzyProductRecognizer()
+detectar_productos = _product_recognizer.recognize
 
 
 def _build_order_line_catalog(
@@ -146,7 +152,7 @@ def recognize_quitar_producto(
 
     catalog = _build_order_line_catalog(pedido_productos)
 
-    detected = detectar_productos(message, catalog)
+    detected = cast(dict, detectar_productos(message, catalog))
     encontrados = _attach_pedido_producto_id(detected.get("encontrados") or [], catalog)
     encontrados_posibles = _attach_pedido_producto_id_to_posibles(
         detected.get("encontrados_posibles") or [],

@@ -44,7 +44,8 @@ from backend.models import (
 )
 from backend.models import Session as SessionModel
 from backend.models.session import EstadoSession
-
+from backend.services.producto_query_service import ProductoQueryService
+from backend.tests.test_product_recognizer_baseline import assert_case, load_baseline
 
 TEST_URL = "postgresql+psycopg:///supernova_test"
 
@@ -289,6 +290,29 @@ def _cleanup(base: dict) -> None:
 
 
 class ModificarProductoRealFlowHttpTest(unittest.TestCase):
+    def test_baseline_multi_word_case_uses_real_seed_id(self):
+        dataset = load_baseline()
+        case = next(
+            item
+            for item in dataset["cases"]
+            if item["case_id"] == "multi-word-jamon-queso-dynamic"
+        )
+        suffix = _suffix()
+        base = _seed_commerce(suffix)
+        try:
+            with TestingSessionLocal() as db:
+                catalog = ProductoQueryService(db).list_recognizer_catalog(
+                    base["comercio_id"]
+                )
+            resolved_case = {
+                **case,
+                "expected_producto_presentacion_id": base["pp_jq"],
+            }
+            resolved_case.pop("expected_producto_presentacion_id_ref", None)
+            assert_case(self, resolved_case, catalog)
+        finally:
+            _cleanup(base)
+
     def test_defect_1_full_transfer_on_omitted_quantity(self):
         suffix = _suffix()
         base = _seed_commerce(suffix)

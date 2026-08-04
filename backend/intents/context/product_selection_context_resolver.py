@@ -1,17 +1,25 @@
 from typing import Literal
 
-from backend.diagnostics import NoopDiagnosticSink, ResolverCallCompleted, ResolverCallStarted
+from backend.diagnostics import (
+    NoopDiagnosticSink,
+    ResolverCallCompleted,
+    ResolverCallStarted,
+)
 from backend.diagnostics.sink import DiagnosticSink
 from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.intents.schemas.requirement_state import RequirementState
+from backend.recognizers.fuzzy_product_recognizer import FuzzyProductRecognizer
 from backend.recognizers.product_recognizer import (
     PRESENTACION_ALIASES,
     STOPWORDS,
     TAMANIOS,
     _extraer_presentacion,
     _normalizar_texto,
-    detectar_productos,
 )
+from backend.recognizers.product_recognizer_contract import ProductRecognizerProtocol
+
+_product_recognizer: ProductRecognizerProtocol = FuzzyProductRecognizer()
+detectar_productos = _product_recognizer.recognize
 
 
 def _build_resolved_unique_intent(
@@ -189,11 +197,11 @@ def resolve_product_selection(
             if narrowed is not None:
                 result = narrowed
                 if narrowed.status == "ready":
-                    selected_id = (
+                    resolved_selected_id = (
                         narrowed.resolved_data.get("producto_presentacion_id")
                     )
-                    if isinstance(selected_id, int):
-                        matched_alias_ids = [selected_id]
+                    if isinstance(resolved_selected_id, int):
+                        matched_alias_ids = [resolved_selected_id]
                 else:
                     matched_alias_ids = list(narrowed.candidate_ids)
                 return result
