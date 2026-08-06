@@ -588,7 +588,15 @@ def test_categoria_producto_service_rolls_back_on_create_failure() -> None:
             try:
                 service.create(comercio_id, "Test rollback", None, None)
             except RuntimeError:
-                record("categoria_producto_create_failure_rolls_back", not session.in_transaction())
+                # Subphase 4.8: catalog services MUST NOT call
+                # session.rollback / session.commit / session.close /
+                # session.begin. The router owns the transaction
+                # boundary. The session therefore remains in its
+                # original transaction state.
+                record(
+                    "categoria_producto_create_failure_rolls_back",
+                    session.in_transaction(),
+                )
             else:
                 record("categoria_producto_create_failure_rolls_back", False, "failure was not raised")
     finally:
@@ -608,7 +616,15 @@ def test_presentacion_service_rolls_back_on_create_failure() -> None:
             try:
                 service.create(comercio_id, "rollback", "Rollback", None, None)
             except RuntimeError:
-                record("presentacion_create_failure_rolls_back", not session.in_transaction())
+                # Subphase 4.8: catalog services MUST NOT call
+                # session.rollback / session.commit / session.close /
+                # session.begin. The router owns the transaction
+                # boundary. The session therefore remains in its
+                # original transaction state.
+                record(
+                    "presentacion_create_failure_rolls_back",
+                    session.in_transaction(),
+                )
             else:
                 record("presentacion_create_failure_rolls_back", False, "failure was not raised")
     finally:
@@ -801,7 +817,15 @@ def test_producto_service_rolls_back_on_create_failure() -> None:
             try:
                 service.create(category_id, f"Rollback {_suffix()}", None, None, None, None)
             except RuntimeError:
-                record("producto_create_failure_rolls_back", not session.in_transaction())
+                # Subphase 4.8: catalog services MUST NOT call
+                # session.rollback / session.commit / session.close /
+                # session.begin. The router owns the transaction
+                # boundary. The session therefore remains in its
+                # original transaction state.
+                record(
+                    "producto_create_failure_rolls_back",
+                    session.in_transaction(),
+                )
             else:
                 record("producto_create_failure_rolls_back", False, "failure was not raised")
     finally:
@@ -2023,10 +2047,12 @@ def test_product_selection_context_resolver() -> None:
 
     # query restricted to candidate_ids - verify the catalog contains the expected IDs and fields
     captured_catalog = []
+    captured_intent_metadata = []
     with mock.patch(
         "backend.intents.context.product_selection_context_resolver.detectar_productos",
-        side_effect=lambda message, catalog: (
+        side_effect=lambda message, catalog, *, intent_metadata=None: (
             captured_catalog.extend(catalog)
+            or captured_intent_metadata.append(intent_metadata)
             or {
                 "encontrados": [],
                 "encontrados_posibles": [],
@@ -2088,6 +2114,11 @@ def test_product_selection_context_resolver() -> None:
             for item in captured_catalog
         ),
         f"keys={set(captured_catalog[0].keys()) if captured_catalog else set()}",
+    )
+    record(
+        "pscr_intent_metadata_is_pending_product_selection_restricted",
+        captured_intent_metadata == [{"catalog_scope": "pending_product_selection_restricted"}],
+        f"intent_metadata={captured_intent_metadata}",
     )
 
     # ambiguous result returns unchanged

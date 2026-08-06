@@ -21,12 +21,27 @@ from backend.recognizers.product_recognizer import (
     PALABRAS_CANTIDAD,
     _normalizar_texto,
 )
-from backend.recognizers.product_recognizer_contract import ProductRecognizerProtocol
+from backend.recognizers.product_recognizer_contract import (
+    ProductRecognizerProtocol,
+    RecognizeContext,
+)
 from backend.services.pedido_producto_service import PedidoProductoService
 from backend.services.producto_query_service import ProductoQueryService
 
 _product_recognizer: ProductRecognizerProtocol = FuzzyProductRecognizer()
-detectar_productos = _product_recognizer.recognize
+
+
+def detectar_productos(
+    text: str,
+    catalog: list[dict],
+    *,
+    intent_metadata: RecognizeContext | None = None,
+):
+    return _product_recognizer.recognize(
+        text,
+        catalog,
+        intent_metadata=intent_metadata,
+    )
 
 
 def _build_order_line_catalog(pedido_productos) -> list[dict]:
@@ -98,6 +113,8 @@ def _flatten_pedido_producto_ids(recognized: dict) -> list[int]:
         if pp_id is not None:
             ids.append(int(pp_id))
     for group in recognized.get("encontrados_posibles") or []:
+        if group.get("kind") == "category":
+            continue
         for product in group.get("productos") or []:
             pp_id = product.get("pedido_producto_id")
             if pp_id is not None:
@@ -112,6 +129,8 @@ def _flatten_producto_presentacion_ids(recognized: dict) -> list[int]:
         if pid is not None:
             ids.append(int(pid))
     for group in recognized.get("encontrados_posibles") or []:
+        if group.get("kind") == "category":
+            continue
         for product in group.get("productos") or []:
             pid = product.get("producto_presentacion_id")
             if pid is not None:
@@ -135,8 +154,7 @@ def _split_on_por(message: str) -> tuple[str, str | None]:
 
 
 _MODIFY_VERBS = {
-    "cambia", "cambia", "modifica", "modifica",
-    "sustituye", "reemplaza",
+    "cambia", "modifica", "sustituye", "reemplaza",
     "cambiar", "modificar", "sustituir", "reemplazar",
 }
 

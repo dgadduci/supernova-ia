@@ -31,6 +31,8 @@ def _flatten_candidate_ids(recognized: dict) -> list[int]:
         if pp_id is not None:
             candidates.append(int(pp_id))
     for group in recognized.get("encontrados_posibles") or []:
+        if group.get("kind") == "category":
+            continue
         for product in group.get("productos") or []:
             pp_id = product.get("pedido_producto_id")
             if pp_id is not None:

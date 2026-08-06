@@ -121,7 +121,10 @@ class PersistedAliasMatchTest(unittest.TestCase):
         catalog = [_row(1, "Pizza Especial")]
         result = detectar_productos("pizza muzza", catalog)
         self.assertEqual(result["encontrados"], [])
-        self.assertEqual(result["encontrados_posibles"], [])
+        self.assertEqual(
+            result["encontrados_posibles"],
+            [{"kind": "category", "categoria_nombre": "Pizzas", "texto_origen": "pizza muzza"}],
+        )
         self.assertEqual(
             [entry["texto_origen"] for entry in result["no_encontrados"]],
             ["pizza muzza"],

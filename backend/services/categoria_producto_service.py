@@ -35,18 +35,12 @@ class CategoriaProductoService:
         cleaned_descripcion = descripcion.strip()
         if not cleaned_descripcion:
             raise InvalidCategoriaProducto("descripcion must not be empty")
-        try:
-            row = self._repo.create(
-                comercio_id,
-                cleaned_descripcion,
-                activo,
-                orden,
-            )
-            self._session.commit()
-            return row
-        except Exception:
-            self._session.rollback()
-            raise
+        return self._repo.create(
+            comercio_id,
+            cleaned_descripcion,
+            activo,
+            orden,
+        )
 
     def _require_comercio(self, comercio_id: int) -> None:
         if not self._repo.comercio_exists(comercio_id):

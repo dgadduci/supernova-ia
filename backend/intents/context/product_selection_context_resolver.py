@@ -16,10 +16,25 @@ from backend.recognizers.product_recognizer import (
     _extraer_presentacion,
     _normalizar_texto,
 )
-from backend.recognizers.product_recognizer_contract import ProductRecognizerProtocol
+from backend.recognizers.product_recognizer_contract import (
+    ProductRecognizerProtocol,
+    RecognizeContext,
+)
 
 _product_recognizer: ProductRecognizerProtocol = FuzzyProductRecognizer()
-detectar_productos = _product_recognizer.recognize
+
+
+def detectar_productos(
+    text: str,
+    productos_presentaciones: list[dict],
+    *,
+    intent_metadata: RecognizeContext | None = None,
+):
+    return _product_recognizer.recognize(
+        text,
+        productos_presentaciones,
+        intent_metadata=intent_metadata,
+    )
 
 
 def _build_resolved_unique_intent(
@@ -83,30 +98,69 @@ def _extraneous_words_relate_to_active_intent(
     return all(token in haystack_tokens for token in extraneous)
 
 
+def _descriptor_token(
+    palabras: list[str],
+    productos_presentaciones: list[dict],
+    *,
+    irrelevant: set[str],
+) -> str | None:
+    token_counts: dict[str, int] = {}
+    for pp in productos_presentaciones:
+        row_tokens: set[str] = set()
+        for field in ("producto_nombre", "presentacion_codigo"):
+            value = pp.get(field)
+            if value:
+                row_tokens.update(_normalizar_texto(str(value)).split())
+        for token in row_tokens:
+            token_counts[token] = token_counts.get(token, 0) + 1
+
+    candidates: list[tuple[int, str]] = []
+    for palabra in dict.fromkeys(palabras):
+        if palabra in irrelevant:
+            continue
+        count = token_counts.get(palabra)
+        if count is not None:
+            candidates.append((count, palabra))
+    if not candidates:
+        return None
+    candidates.sort()
+    min_count = candidates[0][0]
+    tied = [c for c in candidates if c[0] == min_count]
+    if len(tied) > 1:
+        return None
+    return tied[0][1]
+
+
 def _narrow_by_presentacion_alias(
     message: str,
     active_intent: ProcessedIntent,
     productos_presentaciones: list[dict],
 ) -> ProcessedIntent | None:
-    """Narrow candidates when the user replies with only a presentacion alias.
+    """Narrow candidates by structured presentation or local descriptor.
 
-    Returns the narrowed intent when the message is a size-only refinement
-    (e.g. "grande", "la grande", "chica"). Returns None when the message
-    contains product nouns unrelated to the active intent, signalling that
-    the caller should fall through to the default "no narrowing" branch.
-
-    Discriminating fragments whose extraneous tokens appear in the active
-    intent's source_text or resolved data (e.g. `carne picante` while
-    active intent source is `una empanada de carne`) are still narrowed,
-    preserving candidate scope and quantity.
+    Structured presentation aliases come from ``_extraer_presentacion``.
+    Descriptor tokens are matched exactly against normalized name and code
+    words in the restricted catalog.
     """
+
     presentacion_alias = _extraer_presentacion(message)
-    if presentacion_alias is None:
-        return None
 
     palabras = _normalizar_texto(message).split()
     irrelevant = STOPWORDS | TAMANIOS | set(PRESENTACION_ALIASES.keys())
     extraneous = [p for p in palabras if p not in irrelevant]
+
+    descriptor_token: str | None = None
+    if presentacion_alias is None:
+        descriptor_token = _descriptor_token(
+            palabras,
+            productos_presentaciones,
+            irrelevant=irrelevant,
+        )
+    if descriptor_token is not None:
+        extraneous = [p for p in extraneous if p != descriptor_token]
+
+    if presentacion_alias is None and descriptor_token is None:
+        return None
     if extraneous and not _extraneous_words_relate_to_active_intent(
         extraneous, active_intent
     ):
@@ -115,12 +169,20 @@ def _narrow_by_presentacion_alias(
     matching_ids: list[int] = []
     for pp in productos_presentaciones:
         codigo = str(pp.get("presentacion_codigo", ""))
-        if _presentacion_matches(codigo, presentacion_alias):
+        if presentacion_alias is not None and _presentacion_matches(
+            codigo, presentacion_alias
+        ):
             matching_ids.append(pp["producto_presentacion_id"])
             continue
         nombre = str(pp.get("producto_nombre", ""))
-        if presentacion_alias in set(_normalizar_texto(nombre).split()):
+        nombre_tokens = set(_normalizar_texto(nombre).split())
+        if presentacion_alias is not None and presentacion_alias in nombre_tokens:
             matching_ids.append(pp["producto_presentacion_id"])
+            continue
+        if descriptor_token is not None:
+            codigo_tokens = set(_normalizar_texto(codigo).split())
+            if descriptor_token in codigo_tokens or descriptor_token in nombre_tokens:
+                matching_ids.append(pp["producto_presentacion_id"])
 
     intersection = [cid for cid in active_intent.candidate_ids if cid in matching_ids]
     if len(intersection) == 1:
@@ -162,7 +224,11 @@ def resolve_product_selection(
         if active_intent.status != "pending_resolution" or not active_intent.candidate_ids:
             return result
 
-        resultado = detectar_productos(message, productos_presentaciones)
+        resultado = detectar_productos(
+            message,
+            productos_presentaciones,
+            intent_metadata={"catalog_scope": "pending_product_selection_restricted"},
+        )
 
         if len(resultado["encontrados"]) == 1:
             selected_id = resultado["encontrados"][0]["producto_presentacion_id"]
@@ -172,10 +238,17 @@ def resolve_product_selection(
             matched_alias_ids = [selected_id]
             return result
 
-        if len(resultado["encontrados"]) == 0 and resultado["encontrados_posibles"]:
+        product_level_groups = [
+            group
+            for group in resultado["encontrados_posibles"]
+            if group.get("kind") != "category"
+        ]
+        if len(resultado["encontrados"]) == 0 and product_level_groups:
             matched_ids: list[int] = []
-            for group in resultado["encontrados_posibles"]:
-                for product in group.get("productos", []):
+            for group in product_level_groups:
+                productos_raw = group.get("productos")
+                productos = productos_raw if isinstance(productos_raw, list) else []
+                for product in productos:
                     matched_ids.append(product["producto_presentacion_id"])
             intersection = [
                 cid for cid in active_intent.candidate_ids if cid in matched_ids
@@ -190,7 +263,7 @@ def resolve_product_selection(
             matched_alias_ids = list(intersection)
             return result
 
-        if len(resultado["encontrados"]) == 0 and not resultado["encontrados_posibles"]:
+        if len(resultado["encontrados"]) == 0 and not product_level_groups:
             narrowed = _narrow_by_presentacion_alias(
                 message, active_intent, productos_presentaciones
             )

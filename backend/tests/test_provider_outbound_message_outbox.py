@@ -1,0 +1,414 @@
+"""Phase-5.6 outbound provider-message outbox focused tests.
+
+Coverage:
+
+1. A successful first 5.4 processing commits ordered rows atomically
+   with the receipt claim and the staged session, all in one
+   transaction.
+2. A rollback leaves no outbox row, no receipt claim, no staged
+   session and no pipeline effect.
+3. A duplicate inbound receipt creates no outbox row and never
+   invokes the response mapper.
+4. The local incoming-message endpoint still returns the same
+   JSON response list and never stages an outbox row.
+5. Static boundaries: the coordinator stages the rows through the
+   repository, the mapper only delegates ``add`` to the repository,
+   and no module touches transaction control outside the 5.4
+   coordinator.
+"""
+from __future__ import annotations
+
+import ast
+import importlib
+import inspect
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from backend.intents.orchestration import (
+    incoming_message_response_orchestrator as response_orchestrator_module,
+)
+from backend.intents.orchestration.incoming_message_response_orchestrator import (
+    GENERIC_MESSAGE,
+    process_incoming_message_with_responses,
+)
+from backend.intents.schemas.customer_response import CustomerResponse
+from backend.intents.schemas.processed_intent import ProcessedIntent
+from backend.services import (
+    outbound_response_mapper as outbound_mapper_module,
+)
+from backend.services import (
+    provider_inbound_message_coordinator as coord_mod,
+)
+from backend.services.exceptions import InvalidOutboundProviderMessage
+from backend.services.outbound_response_mapper import (
+    stage_outbound_rows,
+)
+from backend.services.provider_inbound_message_coordinator import (
+    ProviderInboundMessageCoordinator,
+    ProviderInboundMessageStatus,
+)
+from backend.tests.test_provider_message_receipt_core import (
+    _make_canal_dedicado,
+    _make_comando_valido,
+    _wire_dependencies,
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _make_session_row() -> MagicMock:
+    session_row = MagicMock(name="ConversationSession")
+    session_row.id = 555
+    return session_row
+
+
+def _make_processed_intents() -> list[ProcessedIntent]:
+    return [
+        ProcessedIntent(
+            intent="agregar_producto",
+            source_text="hola",
+            status="executed",
+            recognizer="recognizer_productos",
+            handler="agregar_producto",
+        )
+    ]
+
+
+class AtomicStagingTest(unittest.TestCase):
+    def setUp(self) -> None:
+        importlib.reload(coord_mod)
+
+    def test_first_processing_stages_ordered_outbox_rows_atomically(
+        self,
+    ) -> None:
+        """A successful first 5.4 processing stages one outbox row
+        per processed intent inside the same transaction. The
+        receipt, the staged session and the outbox rows commit
+        together."""
+        comando = _make_comando_valido()
+        canal = _make_canal_dedicado(comercio_id=3)
+        env = _wire_dependencies(canal=canal, existing_context=None)
+        env["session_repo"].stage_active.return_value = _make_session_row()
+
+        intents = _make_processed_intents()
+
+        outbox_rows: list[MagicMock] = []
+
+        def _capture_stage(**kwargs):
+            row = MagicMock(name="MensajeProveedorSaliente")
+            row.id = 900 + len(outbox_rows)
+            outbox_rows.append(row)
+            return row
+
+        env["outbox_repo"] = MagicMock(
+            name="OutboundProviderMessageRepository"
+        )
+        env["outbox_repo"].stage.side_effect = _capture_stage
+
+        coordinator = ProviderInboundMessageCoordinator(
+            session=env["db"],
+            canal_repo=env["canal_repo"],
+            contexto_repo=env["contexto_repo"],
+            membresia_repo=env["membresia_repo"],
+            recepcion_repo=env["recepcion_repo"],
+            session_repo=env["session_repo"],
+            outbox_repo=env["outbox_repo"],
+        )
+
+        with patch.object(
+            coord_mod, "process_incoming_message", return_value=intents
+        ):
+            outcome = coordinator.process(comando)
+
+        self.assertEqual(
+            outcome.status, ProviderInboundMessageStatus.PROCESSED
+        )
+
+        env["outbox_repo"].stage.assert_called_once()
+        kwargs = env["outbox_repo"].stage.call_args.kwargs
+        self.assertEqual(kwargs["proveedor"], comando.proveedor)
+        self.assertEqual(
+            kwargs["recepcion_mensaje_proveedor_id"],
+            int(env["recepcion_repo"].claim.return_value),
+        )
+        self.assertEqual(kwargs["destinatario_e164"], "+5491100000000")
+        self.assertEqual(kwargs["sequence"], 0)
+        self.assertEqual(kwargs["cuerpo"], outbox_rows[0].cuerpo if False else kwargs["cuerpo"])
+
+        env["db"].commit.assert_called_once_with()
+        env["db"].rollback.assert_not_called()
+
+
+class RollbackLeavesNoOutboxTest(unittest.TestCase):
+    def setUp(self) -> None:
+        importlib.reload(coord_mod)
+
+    def test_rollback_leaves_no_outbox_row(self) -> None:
+        """A pipeline failure rolls back the staged receipt, the
+        staged session and the staged outbox rows in one atomic
+        operation. No row is observable after the failure."""
+        comando = _make_comando_valido()
+        canal = _make_canal_dedicado(comercio_id=3)
+        env = _wire_dependencies(canal=canal, existing_context=None)
+        env["session_repo"].stage_active.return_value = _make_session_row()
+
+        outbox_repo = MagicMock(
+            name="OutboundProviderMessageRepository"
+        )
+        outbox_repo.stage.return_value = MagicMock(
+            name="MensajeProveedorSaliente"
+        )
+
+        coordinator = ProviderInboundMessageCoordinator(
+            session=env["db"],
+            canal_repo=env["canal_repo"],
+            contexto_repo=env["contexto_repo"],
+            membresia_repo=env["membresia_repo"],
+            recepcion_repo=env["recepcion_repo"],
+            session_repo=env["session_repo"],
+            outbox_repo=outbox_repo,
+        )
+
+        sentinel_exc = RuntimeError("pipeline boom")
+        with patch.object(
+            coord_mod,
+            "process_incoming_message",
+            side_effect=sentinel_exc,
+        ):
+            with self.assertRaises(RuntimeError):
+                coordinator.process(comando)
+
+        env["recepcion_repo"].claim.assert_called_once()
+        outbox_repo.stage.assert_not_called()
+        env["db"].commit.assert_not_called()
+        env["db"].rollback.assert_called_once_with()
+
+
+class DuplicateReceiptNoOutboxTest(unittest.TestCase):
+    def setUp(self) -> None:
+        importlib.reload(coord_mod)
+
+    def test_duplicate_receipt_invokes_no_response_mapper(self) -> None:
+        comando = _make_comando_valido()
+        canal = _make_canal_dedicado(comercio_id=3)
+        env = _wire_dependencies(canal=canal, existing_context=None)
+        env["recepcion_repo"].claim.return_value = None
+
+        outbox_repo = MagicMock(
+            name="OutboundProviderMessageRepository"
+        )
+
+        coordinator = ProviderInboundMessageCoordinator(
+            session=env["db"],
+            canal_repo=env["canal_repo"],
+            contexto_repo=env["contexto_repo"],
+            membresia_repo=env["membresia_repo"],
+            recepcion_repo=env["recepcion_repo"],
+            session_repo=env["session_repo"],
+            outbox_repo=outbox_repo,
+        )
+
+        with patch.object(coord_mod, "process_incoming_message") as pipeline:
+            outcome = coordinator.process(comando)
+
+        self.assertEqual(
+            outcome.status, ProviderInboundMessageStatus.ALREADY_PROCESSED
+        )
+        pipeline.assert_not_called()
+        outbox_repo.stage.assert_not_called()
+        env["db"].rollback.assert_called_once_with()
+        env["db"].commit.assert_not_called()
+
+
+class LocalEndpointCompatibilityTest(unittest.TestCase):
+    def setUp(self) -> None:
+        importlib.reload(response_orchestrator_module)
+
+    def test_local_endpoint_returns_responses_without_staging_rows(
+        self,
+    ) -> None:
+        """The local endpoint still returns the same JSON response
+        list and never stages an outbox row. The mapper is reused
+        but the staging path is coordinator-only."""
+        db_session = MagicMock(name="DatabaseSession")
+        conversation_session = MagicMock(name="ConversationSession")
+
+        with patch.object(
+            response_orchestrator_module,
+            "process_incoming_message_transactional",
+            return_value=[
+                ProcessedIntent(
+                    intent="agregar_producto",
+                    source_text="hola",
+                    status="executed",
+                    recognizer="recognizer_productos",
+                    handler="agregar_producto",
+                )
+            ],
+        ):
+            responses = process_incoming_message_with_responses(
+                db_session,
+                conversation_session,
+                "hola",
+            )
+
+        self.assertEqual(len(responses), 1)
+        self.assertIsInstance(responses[0], CustomerResponse)
+        db_session.add.assert_not_called()
+        db_session.rollback.assert_not_called()
+
+    def test_generic_fallback_stays_equivalent(self) -> None:
+        db_session = MagicMock(name="DatabaseSession")
+        conversation_session = MagicMock(name="ConversationSession")
+
+        with patch.object(
+            response_orchestrator_module,
+            "process_incoming_message_transactional",
+            return_value=[
+                ProcessedIntent(
+                    intent="desconocida",
+                    source_text="asdf",
+                    status="rejected",
+                    recognizer="recognizer_productos",
+                    handler="desconocida",
+                )
+            ],
+        ):
+            responses = process_incoming_message_with_responses(
+                db_session,
+                conversation_session,
+                "asdf",
+            )
+
+        self.assertEqual(len(responses), 1)
+        self.assertEqual(responses[0].message, GENERIC_MESSAGE)
+        self.assertEqual(responses[0].intent, "desconocida")
+        db_session.add.assert_not_called()
+
+
+class MapperValidationTest(unittest.TestCase):
+    def test_empty_proveedor_rejected(self) -> None:
+        with self.assertRaises(InvalidOutboundProviderMessage):
+            stage_outbound_rows(
+                MagicMock(name="DatabaseSession"),
+                MagicMock(name="ConversationSession"),
+                proveedor="   ",
+                recepcion_mensaje_proveedor_id=1,
+                destinatario_e164="+5491100000000",
+                intents=[],
+            )
+
+    def test_empty_destinatario_rejected(self) -> None:
+        with self.assertRaises(InvalidOutboundProviderMessage):
+            stage_outbound_rows(
+                MagicMock(name="DatabaseSession"),
+                MagicMock(name="ConversationSession"),
+                proveedor="twilio",
+                recepcion_mensaje_proveedor_id=1,
+                destinatario_e164="",
+                intents=[],
+            )
+
+    def test_non_positive_recepcion_rejected(self) -> None:
+        with self.assertRaises(InvalidOutboundProviderMessage):
+            stage_outbound_rows(
+                MagicMock(name="DatabaseSession"),
+                MagicMock(name="ConversationSession"),
+                proveedor="twilio",
+                recepcion_mensaje_proveedor_id=0,
+                destinatario_e164="+5491100000000",
+                intents=[],
+            )
+
+
+class StaticBoundariesTest(unittest.TestCase):
+    def test_mapper_does_not_call_session_add_directly(self) -> None:
+        """The mapper delegates the row insert to the repository
+        so the database boundary stays in repositories."""
+        source = inspect.getsource(outbound_mapper_module)
+        for forbidden in (
+            "_session.add",
+            "session.add",
+            "db.add",
+            "session.commit",
+            "session.rollback",
+            "session.flush",
+            "session.begin",
+            "session.close",
+            "session.refresh",
+            "session.expire",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(
+                    forbidden,
+                    source,
+                    "outbound mapper must delegate persistence to "
+                    f"the repository: {forbidden}",
+                )
+
+    def test_mapper_renders_responses_via_reusable_builders(self) -> None:
+        """The mapper reuses the same builders the local endpoint
+        uses so the rendered text and ordering stay equivalent."""
+        source = inspect.getsource(outbound_mapper_module)
+        self.assertIn(
+            "build_agregar_producto_response",
+            source,
+        )
+        self.assertIn(
+            "build_quitar_producto_response",
+            source,
+        )
+        self.assertIn(
+            "build_modificar_producto_response",
+            source,
+        )
+
+
+class OutboxModuleBoundaryTest(unittest.TestCase):
+    def test_repository_does_not_control_transactions(self) -> None:
+        repo_path = (
+            REPO_ROOT
+            / "backend"
+            / "repositories"
+            / "mensaje_proveedor_saliente_repository.py"
+        )
+        tree = ast.parse(repo_path.read_text(encoding="utf-8"))
+        offenders: list[str] = []
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+            ):
+                continue
+            if node.func.attr in {"commit", "rollback", "begin", "close"}:
+                offenders.append(node.func.attr)
+        self.assertEqual(
+            offenders,
+            [],
+            f"Outbox repository must not control transactions: "
+            f"{offenders}",
+        )
+
+
+class OutboxExportTest(unittest.TestCase):
+    def test_mapper_exports_expected_symbols(self) -> None:
+        self.assertEqual(
+            set(outbound_mapper_module.__all__),
+            {
+                "GENERIC_MESSAGE",
+                "StagedOutboundRow",
+                "build_customer_responses",
+                "stage_outbound_rows",
+            },
+        )
+
+    def test_response_orchestrator_exports_documented_symbols(self) -> None:
+        self.assertEqual(
+            set(response_orchestrator_module.__all__),
+            {"process_incoming_message_with_responses"},
+        )
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

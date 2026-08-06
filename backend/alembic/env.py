@@ -1,28 +1,35 @@
 import os
 from logging.config import fileConfig
 
+from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from alembic import context
-
 from backend.models import Base
+from backend.models.canal_whatsapp import CanalWhatsapp
 from backend.models.categorias_productos import CategoriaProducto
+from backend.models.cliente import Cliente
 from backend.models.comercio import Comercio
+from backend.models.comercio_canal_compartido import ComercioCanalCompartido
 from backend.models.comercio_medios_pago import ComercioMedioPago
 from backend.models.comercio_metodos_entrega import ComercioMetodoEntrega
+from backend.models.contexto_cliente_canal_whatsapp import (
+    ContextoClienteCanalWhatsapp,
+)
 from backend.models.estado_comercio import EstadoComercio
 from backend.models.medios_pago import MediosPago
+from backend.models.mensaje_proveedor_saliente import (
+    MensajeProveedorSaliente,
+)
 from backend.models.metodos_entrega import MetodosEntrega
+from backend.models.pedido import Pedido
+from backend.models.pedido_producto import PedidoProducto
 from backend.models.precio import Precio
 from backend.models.presentaciones import Presentacion
 from backend.models.producto import Producto
+from backend.models.producto_alias import ProductoAlias
 from backend.models.producto_presentacion import ProductoPresentacion
 from backend.models.producto_presentacion_embedding import ProductoPresentacionEmbedding
-from backend.models.producto_alias import ProductoAlias
-from backend.models.pedido import Pedido
-from backend.models.cliente import Cliente
 from backend.models.session import Session
-from backend.models.pedido_producto import PedidoProducto
 
 config = context.config
 

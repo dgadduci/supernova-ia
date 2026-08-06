@@ -13,6 +13,13 @@ The service is the only place that:
 
 The service NEVER calls ``commit``, ``rollback``, ``close``, or ``begin``
 on its session. Transaction ownership belongs to the caller.
+
+For ``delete``, the service captures ``id_producto`` and (when
+present) ``id_producto_presentacion`` from the alias row BEFORE the
+deletion is staged and exposes that captured scope on the
+``AliasDeleteResult`` so the caller can drive post-delete embedding
+synchronization without resolving the deleted alias through
+``id_alias``.
 """
 from __future__ import annotations
 
@@ -30,6 +37,7 @@ from backend.repositories.producto_alias_repository import (
 from backend.services.exceptions import (
     DuplicateProductoAlias,
     InvalidProductoAlias,
+    ProductoAliasNotFound,
     ProductoAliasPresentationMismatch,
 )
 
@@ -51,6 +59,30 @@ class AliasProjection:
     @property
     def all_aliases(self) -> tuple[str, ...]:
         return (*self.general_aliases, *self.specific_aliases)
+
+
+@dataclass(frozen=True)
+class AliasDeleteResult:
+    """Scope captured BEFORE the alias is deleted.
+
+    ``id_producto`` is always populated. ``id_producto_presentacion``
+    is populated only when the deleted alias was presentation-specific
+    (``None`` for product-wide aliases).
+
+    The router / CLI / orchestrator drives post-delete embedding
+    synchronization through this captured scope:
+      * presentation-specific alias ->
+        ``synchronize_producto_presentacion(id_producto_presentacion)``
+      * product-wide alias ->
+        ``synchronize_producto(id_producto)``
+
+    The synchronization service NEVER resolves a deleted alias through
+    ``id_alias``; the captured scope is the precise signal.
+    """
+
+    id_alias: int
+    id_producto: int
+    id_producto_presentacion: int | None
 
 
 class ProductoAliasService:
@@ -201,5 +233,45 @@ class ProductoAliasService:
             )
         return result
 
+    def delete(self, id_alias: int) -> AliasDeleteResult:
+        """Stage the deletion of the alias row and return the captured scope.
 
-__all__ = ["AliasProjection", "ProductoAliasService"]
+        The service reads the alias row FIRST, captures ``id_producto``
+        and (when present) ``id_producto_presentacion``, and only then
+        stages the deletion through the repository. The captured scope
+        is exposed on the ``AliasDeleteResult`` so the caller can drive
+        post-delete embedding synchronization through:
+
+        * ``synchronize_producto_presentacion(captured_id_producto_presentacion)``
+          for presentation-specific aliases, or
+        * ``synchronize_producto(captured_id_producto)`` for
+          product-wide aliases.
+
+        The synchronization service NEVER resolves a deleted alias
+        through ``id_alias``; this method is the only valid entry point
+        for the post-delete path.
+
+        Raises ``ProductoAliasNotFound`` when the alias does not exist.
+        The service NEVER calls ``commit`` / ``rollback`` / ``close`` /
+        ``begin``; transaction ownership belongs to the caller.
+        """
+        alias = self._repo.find_by_id(id_alias)
+        if alias is None:
+            raise ProductoAliasNotFound(
+                f"producto alias {id_alias} not found"
+            )
+        captured_id_producto = int(alias.id_producto)
+        captured_id_producto_presentacion = (
+            int(alias.id_producto_presentacion)
+            if alias.id_producto_presentacion is not None
+            else None
+        )
+        self._repo.delete(alias)
+        return AliasDeleteResult(
+            id_alias=int(alias.id),
+            id_producto=captured_id_producto,
+            id_producto_presentacion=captured_id_producto_presentacion,
+        )
+
+
+__all__ = ["AliasDeleteResult", "AliasProjection", "ProductoAliasService"]

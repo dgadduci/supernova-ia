@@ -30,3 +30,99 @@ The orchestration service SHALL NOT commit, persist pending context, execute han
 #### Scenario: Resolution remains non-persistent
 - **WHEN** the orchestration service resolves a selection
 - **THEN** the database session has no commit or persistence operation caused by the orchestration
+
+### Requirement: Orchestration consults the pending-product-ambiguity resolver as a sibling step
+The orchestration service SHALL invoke `resolve_pending_product_ambiguity` as a sibling step after `resolve_product_selection`. The orchestration service SHALL bind the existing path's result to `fragment_result`. If `fragment_result.status == "ready"`, the orchestration service SHALL return `fragment_result` directly and the new resolver SHALL NOT be consulted. Otherwise (the existing path did not resolve uniquely):
+1. The orchestration service SHALL call `resolve_pending_product_ambiguity` with **`fragment_result`** as the active intent argument (NOT the original `active_intent`).
+2. The orchestration service SHALL pass a catalog projection restricted to `fragment_result.candidate_ids` (a subset of the original `active_intent.candidate_ids` when the existing path narrowed). The orchestration service SHALL NOT widen the catalog beyond `fragment_result.candidate_ids` and SHALL NOT reload the catalog via `list_presentaciones_by_ids` for the new resolver.
+3. Because `resolve_pending_product_ambiguity` is scoped to its passed-in catalog and `active_intent.candidate_ids`, it SHALL NOT be capable of selecting a candidate that the existing narrowing path discarded.
+4. When `resolve_pending_product_ambiguity` returns a `ready` intent, the orchestration service SHALL return that intent instead of `fragment_result`. When `resolve_pending_product_ambiguity` does NOT return a `ready` intent (returns `fragment_result` unchanged or further narrowed), the orchestration service SHALL return `fragment_result` — the existing path's narrowed candidate list is preserved.
+
+#### Scenario: New resolver resolves uniquely after the existing path is ambiguous
+- **WHEN** `resolve_product_selection` returns `fragment_result` with `status != "ready"` because no presentacion alias or fragment matched (e.g. for the message `"la que no es zero"`) and the orchestration service invokes `resolve_pending_product_ambiguity(message, fragment_result, catalog_filtered_to_fragment_result.candidate_ids)` which returns a new intent with `status == "ready"`
+- **THEN** the orchestration service returns the new resolver's `ready` intent without altering its `resolved_data`, `requirements`, or `candidate_ids`
+
+#### Scenario: Existing path wins when it resolves uniquely
+- **WHEN** `resolve_product_selection` returns `fragment_result` with `status == "ready"` (e.g. for the message `"la grande"` or `"picante"`)
+- **THEN** the orchestration service returns `fragment_result` directly and does NOT invoke `resolve_pending_product_ambiguity`
+
+#### Scenario: Both paths ambiguous returns the existing path's narrowed result
+- **WHEN** `resolve_product_selection` returns `fragment_result` with `status != "ready"` (e.g. narrows to a subset of candidates) and `resolve_pending_product_ambiguity` also does NOT return a `ready` intent
+- **THEN** the orchestration service returns `fragment_result`; the new resolver's narrowed result is NOT used to overwrite `fragment_result`
+
+#### Scenario: Candidate discarded by the existing narrowing path cannot be reintroduced by the new resolver
+- **WHEN** `active_intent.candidate_ids == [A, B, C]`, `resolve_product_selection` narrows to `fragment_result` with `fragment_result.candidate_ids == [B, C]` (discarding `A`), and the new resolver is consulted against that narrowed catalog projection
+- **THEN** the new resolver's catalog projection does not include `A`; even if the customer's reply would otherwise uniquely select `A` under Layer 5 / Layer 7 (e.g. the message names a distinguishing token `A` carries), the new resolver CANNOT select `A` and SHALL fall through or return a non-`ready` intent; the orchestration service returns `fragment_result` with `candidate_ids == [B, C]` preserved
+
+### Requirement: Orchestration loads the candidate catalog exactly once and narrows it for the new resolver
+The orchestration service SHALL load the restricted catalog through `ProductoQueryService.list_presentaciones_by_ids(active_intent.candidate_ids)` exactly once per call. The catalog projection passed to `resolve_product_selection` SHALL be the full loaded catalog (rows restricted to `active_intent.candidate_ids`). When the new resolver is consulted, the orchestration service SHALL pass the in-memory catalog filtered to `fragment_result.candidate_ids` (without issuing another `list_presentaciones_by_ids` call). The orchestration service SHALL NOT widen the catalog beyond `fragment_result.candidate_ids` for the new resolver.
+
+#### Scenario: Catalog is loaded once per orchestration call and narrowed before being handed to the new resolver
+- **WHEN** the orchestration service consults `resolve_product_selection` and then `resolve_pending_product_ambiguity`
+- **THEN** `ProductoQueryService.list_presentaciones_by_ids` is called exactly once (for `active_intent.candidate_ids`); the new resolver receives the in-memory catalog filtered to `fragment_result.candidate_ids`; no SQLAlchemy query is issued for the filtered projection
+
+### Requirement: Orchestration does not introduce new side effects
+The orchestration service SHALL NOT introduce new commit, rollback, flush, refresh, expire, or `begin` calls, SHALL NOT mutate the `Session` model, and SHALL NOT log anything as part of the new sibling step.
+
+#### Scenario: New sibling step does not commit
+- **WHEN** the orchestration service consults `resolve_pending_product_ambiguity`
+- **THEN** the database session's `commit` is not called by the orchestration service; the existing pending-context transaction ownership remains in the dispatcher and execution layers
+
+### Requirement: Existing orchestration scenarios remain green
+The existing scenarios (`Orchestration delegates catalog and resolution`, `Orchestration preserves resolver output`, `Layered database access`, `Resolution remains non-persistent`) SHALL continue to pass without modification. The new sibling step SHALL NOT alter the observable behaviour of the orchestration service for any input that the existing path resolves uniquely.
+
+#### Scenario: Existing fragment-resolution input returns the existing intent unchanged
+- **WHEN** the active candidates are `[EmpanadaCarneUnidad, EmpanadaCarnePicanteUnidad]` and the message is `"picante"`
+- **THEN** the orchestration service returns the `ready` intent produced by `resolve_product_selection` (Empanada de Carne Picante Unidad); the new resolver is not consulted and the existing scenario remains green
+
+### Requirement: Restricted selection declares its recognition scope
+
+The pending product-selection resolver SHALL call the shared recognition boundary with keyword-only `intent_metadata={"catalog_scope": "pending_product_selection_restricted"}` when resolving a pending candidate set. This call remains backward-compatible for recognizers and test doubles that implement the shared boundary.
+
+#### Scenario: Restricted scope is forwarded through the resolver boundary
+- **WHEN** the pending product-selection resolver invokes recognition for an active intent with candidate IDs
+- **THEN** the recognizer receives `intent_metadata == {"catalog_scope": "pending_product_selection_restricted"}`
+- **AND** the candidate catalog is not widened
+
+### Requirement: Pending selection recognizes exact restricted descriptor codes without changing fuzzy aliases
+
+When the real recognizer returns zero `encontrados` and no product-level
+`encontrados_posibles`, `resolve_product_selection` SHALL preserve its normal
+structured-presentation path based on `_extraer_presentacion(message)`. If no
+structured alias is extracted, it SHALL additionally allow an exact normalized
+reply word to match a whole word in a row's `producto_nombre` or
+`presentacion_codigo` in the catalog already passed to the resolver.
+
+This resolver-local fallback SHALL NOT add to `PRESENTACION_ALIASES`, alter
+fuzzy recognition, or alter the existing branches that consume recognizer
+results. It SHALL preserve ordered intersection with persisted
+`active_intent.candidate_ids`: one ID resolves via the existing helper,
+multiple IDs remain pending with the narrowed set, and no IDs returns the
+active intent unchanged.
+
+#### Scenario: Exact descriptor code resolves within pending candidates
+
+- **WHEN** active candidate IDs represent `Empanada de Carne` with codes
+  `PICANTE` and `TRADICIONAL`, and the reply is `carne picante`
+- **THEN** the resolver selects only the `PICANTE` row, preserves quantity,
+  completes the product requirement, and returns `ready`
+- **AND** `picante` is not a presentation alias and does not affect fuzzy
+  presentation filtering
+
+#### Scenario: Product-name descriptor remains supported
+
+- **WHEN** active candidates differ by the exact normalized whole word
+  `picante` in `producto_nombre` and both use code `UNIDAD`
+- **THEN** the reply `la picante` uniquely selects the Picante-named row
+
+#### Scenario: Substring does not match descriptor code or name
+
+- **WHEN** a candidate has code or name token `picantes`, but not the exact
+  normalized token `picante`
+- **AND** the reply is `picante`
+- **THEN** that candidate is not selected by the fallback
+
+#### Scenario: Candidate scope remains closed
+
+- **WHEN** a matching name or code exists outside `active_intent.candidate_ids`
+- **THEN** the resolver cannot select it

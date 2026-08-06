@@ -16,7 +16,11 @@ pedido.
 """
 from sqlalchemy.orm import Session as DatabaseSession
 
-from backend.diagnostics import NoopDiagnosticSink, ResolverCallCompleted, ResolverCallStarted
+from backend.diagnostics import (
+    NoopDiagnosticSink,
+    ResolverCallCompleted,
+    ResolverCallStarted,
+)
 from backend.diagnostics.sink import DiagnosticSink
 from backend.intents.recognizers.quitar_producto_recognizer import (
     recognize_quitar_producto,
@@ -33,6 +37,8 @@ def _flatten_pedido_producto_ids(recognized: dict) -> list[int]:
         if pp_id is not None:
             ids.append(int(pp_id))
     for group in recognized.get("encontrados_posibles") or []:
+        if group.get("kind") == "category":
+            continue
         for product in group.get("productos") or []:
             pp_id = product.get("pedido_producto_id")
             if pp_id is not None:
@@ -116,8 +122,8 @@ def resolve_order_line_selection(
             return active_intent
 
         intersection = sorted(
-            set(int(cid) for cid in recognized_ids)
-            & set(int(cid) for cid in active_intent.candidate_ids)
+            {int(cid) for cid in recognized_ids}
+            & {int(cid) for cid in active_intent.candidate_ids}
         )
 
         if not intersection:

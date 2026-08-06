@@ -16,14 +16,24 @@ def resolve_product_intent(raw: dict) -> dict:
         first = encontrados[0]
         resolved_data["producto_presentacion_id"] = first["producto_presentacion_id"]
         resolved_data["cantidad"] = first["cantidad"]
-    elif encontrados_posibles and isinstance(encontrados_posibles[0], dict) and "productos" in encontrados_posibles[0]:
+    elif (
+        encontrados_posibles
+        and isinstance(encontrados_posibles[0], dict)
+        and "productos" in encontrados_posibles[0]
+    ):
         for group in encontrados_posibles:
+            if group.get("kind") == "category":
+                continue
             for candidate in group.get("productos") or []:
                 candidate_ids.append(candidate["producto_presentacion_id"])
                 if "cantidad" in candidate and "cantidad" not in resolved_data:
                     resolved_data["cantidad"] = candidate["cantidad"]
+    elif encontrados_posibles and isinstance(encontrados_posibles[0], dict) and encontrados_posibles[0].get("kind") == "category":
+        pass
     else:
         for candidate in encontrados_posibles:
+            if isinstance(candidate, dict) and candidate.get("kind") == "category":
+                continue
             candidate_ids.append(candidate["producto_presentacion_id"])
             if "cantidad" in candidate and "cantidad" not in resolved_data:
                 resolved_data["cantidad"] = candidate["cantidad"]

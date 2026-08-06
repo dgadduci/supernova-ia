@@ -497,7 +497,9 @@ class ResolveProductSelectionProductoNombreAliasTest(unittest.TestCase):
             result.resolved_data.get("producto_presentacion_id"), 32
         )
 
-    def test_substring_picantes_does_not_match_picante_alias(self):
+    @patch.object(resolver_module, "detectar_productos")
+    def test_substring_picantes_does_not_match_picante_alias(self, detectar):
+        detectar.return_value = _resultado()
         catalog = [
             {
                 "producto_presentacion_id": 41,

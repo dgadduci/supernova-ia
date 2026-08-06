@@ -49,20 +49,14 @@ class ProductoService:
             cleaned_descripcion = None
         if self._repo.get_by_nombre(categoria_producto_id, cleaned_nombre) is not None:
             raise DuplicateProductoNombre(cleaned_nombre)
-        try:
-            row = self._repo.create(
-                categoria_producto_id,
-                cleaned_nombre,
-                cleaned_descripcion,
-                activo,
-                disponible,
-                orden,
-            )
-            self._session.commit()
-            return row
-        except Exception:
-            self._session.rollback()
-            raise
+        return self._repo.create(
+            categoria_producto_id,
+            cleaned_nombre,
+            cleaned_descripcion,
+            activo,
+            disponible,
+            orden,
+        )
 
     def _require_categoria(self, categoria_producto_id: int) -> None:
         if not self._repo.categoria_exists(categoria_producto_id):

@@ -41,6 +41,36 @@ class SessionRepository:
         self._session.flush()
         return row
 
+    def stage_active(
+        self,
+        id_comercio: int,
+        id_cliente: int,
+    ) -> Session:
+        """Return the active session for ``(id_comercio, id_cliente)``,
+        staging a freshly-added row when one does not yet exist.
+
+        This is the caller-owned staging primitive used by the
+        Phase-5.4 provider coordinator. It deliberately does not call
+        ``flush``: the partial unique index that enforces one active
+        session per commerce/client pair is checked at commit time
+        by the surrounding transaction, never by this repository.
+        The coordinator owns the transaction and commits / rolls
+        back exactly once.
+        """
+        existing = self.get_active_by_comercio_cliente(
+            id_comercio, id_cliente
+        )
+        if existing is not None:
+            return existing
+        row = Session(
+            id_comercio=id_comercio,
+            id_cliente=id_cliente,
+            id_pedido=None,
+            estado_session=EstadoSession.ACTIVA,
+        )
+        self._session.add(row)
+        return row
+
     def set_pedido(self, session_row: Session, id_pedido: int | None) -> None:
         session_row.id_pedido = id_pedido
         self._session.flush()
@@ -50,7 +80,6 @@ class SessionRepository:
         self._session.flush()
 
     def set_ultimo_movimiento(self, session_row: Session) -> None:
-        from datetime import datetime
         from sqlalchemy import func
 
         session_row.datetime_ultimo_movimiento = func.now()

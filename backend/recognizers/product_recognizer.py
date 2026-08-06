@@ -57,6 +57,7 @@ ALIASES_PALABRAS: dict[str, str] = {
     "muzarella":   "mozzarella",
     "mozarela":    "mozzarella",
     "mozarella":   "mozzarella",
+    "muzarrella":  "mozzarella",
     "muzzarela":   "mozzarella",
     "muzzarella":  "mozzarella",
     "musarela":    "mozzarella",
@@ -132,7 +133,6 @@ PRESENTACION_ALIASES: dict[str, str] = {
     "fami":        "familiar",
     "individual":  "unidad",
     "unidad":      "unidad",
-    "picante":     "picante",
     "tradicional": "tradicional",
 }
 
@@ -365,6 +365,68 @@ def _filtrar_por_tokens_clave(
     return resultado
 
 
+def _category_singular_variants(name: str) -> set[str]:
+    """Return normalized lookup variants of a category name.
+
+    Strips a trailing ``s`` or ``es`` when the result still has at least
+    3 characters. Includes the original lowercased form so the original
+    plural matches itself (and so input tokens that already are
+    singular can match the original plural).
+    """
+    variants: set[str] = {name}
+    if name.endswith("es") and len(name) > 4:
+        stem = name[:-2]
+        if len(stem) >= 3:
+            variants.add(stem)
+        stem_s = name[:-1]
+        if len(stem_s) >= 3:
+            variants.add(stem_s)
+    elif name.endswith("s") and len(name) > 4:
+        stem = name[:-1]
+        if len(stem) >= 3:
+            variants.add(stem)
+    return variants
+
+
+def _coincidencia_categoria(texto_segmento: str, catalogo: list[dict]) -> str | None:
+    """Return the catalog ``categoria_nombre`` matching a significant user token.
+
+    Builds a per-call index keyed by the lowercased variants of each
+    catalog entry's ``categoria_nombre`` (original, ``s``-stripped,
+    ``es``-stripped) and returns the original ``categoria_nombre`` when
+    a significant user token matches any variant. Excludes stopwords,
+    sizes, quantity words, digits, and tokens shorter than 3 characters.
+    The helper does NOT consult calibration labels and does NOT return
+    the matching catalog entries.
+    """
+    tokens_significativos = [
+        t for t in _normalizar_palabras_pedido(texto_segmento).split()
+        if t not in STOPWORDS
+        and t not in TAMANIOS
+        and not t.isdigit()
+        and len(t) > 2
+    ]
+    if not tokens_significativos:
+        return None
+    indice_categorias: dict[str, str] = {}
+    for producto in catalogo:
+        categoria_nombre = producto.get("categoria_nombre")
+        if not isinstance(categoria_nombre, str) or not categoria_nombre:
+            continue
+        cat_lower = categoria_nombre.lower()
+        for variante in _category_singular_variants(cat_lower):
+            if variante and variante not in indice_categorias:
+                indice_categorias[variante] = categoria_nombre
+    for token in tokens_significativos:
+        token_lower = token.lower()
+        if token_lower in indice_categorias:
+            return indice_categorias[token_lower]
+        for variante in _category_singular_variants(token_lower):
+            if variante in indice_categorias:
+                return indice_categorias[variante]
+    return None
+
+
 def _score_minimo_para(fragmento: str, score_minimo_base: int) -> int:
     largo = len(fragmento.replace(" ", ""))
     if largo <= 4:
@@ -424,7 +486,7 @@ def _extraer_candidatos(
         matches_foneticos = process.extract(
             frag_fonetico, nombres_foneticos, scorer=fuzz.WRatio, limit=limite_por_fragmento
         )
-        matches_por_indice: dict[int, tuple] = {}
+        matches_por_indice: dict[int, tuple[str, float]] = {}
         for nombre_match, score_base, indice in matches:
             matches_por_indice[indice] = (nombre_match, score_base)
         for _nombre_fon_match, score_fon, indice in matches_foneticos:
@@ -446,9 +508,7 @@ def _extraer_candidatos(
                 )
                 if score_alias < umbral:
                     continue
-                _nombre_prev, score_prev = matches_por_indice.get(
-                    indice, (None, 0)
-                )
+                _nombre_prev, score_prev = matches_por_indice[indice]
                 if score_alias > score_prev:
                     matches_por_indice[indice] = (nombre_alias, score_alias)
         for indice, (nombre_match, score_base) in matches_por_indice.items():
@@ -507,10 +567,14 @@ def detectar_productos(
     catalogo = _preparar_catalogo(productos_presentaciones)
     vistos: dict[int, dict] = {}
     no_encontrados: list[str] = []
+    coincidencias_categoria: dict[str, str] = {}
     for segmento in segmentos:
         candidatos = _extraer_candidatos(segmento, catalogo)
         filtrados = _filtrar_por_tokens_clave(candidatos, segmento)
         if not filtrados:
+            categoria = _coincidencia_categoria(segmento, productos_presentaciones)
+            if categoria is not None:
+                coincidencias_categoria[segmento] = categoria
             no_encontrados.append(segmento)
             continue
         presentacion = _extraer_presentacion(segmento)
@@ -572,6 +636,14 @@ def detectar_productos(
             encontrados_posibles.append(
                 {"texto_origen": texto_origen, "productos": productos_grupo}
             )
+    for texto_origen, categoria in coincidencias_categoria.items():
+        encontrados_posibles.append(
+            {
+                "kind": "category",
+                "categoria_nombre": categoria,
+                "texto_origen": texto_origen,
+            }
+        )
     no_encontrados_out = [{"texto_origen": s} for s in no_encontrados]
     return {
         "encontrados": encontrados,

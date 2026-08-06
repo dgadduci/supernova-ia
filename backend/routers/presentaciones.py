@@ -1,8 +1,15 @@
+from typing import Annotated, Any
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from backend.config.settings import load_settings
 from backend.dependencies import get_session
+from backend.llm.embedding_client import OllamaEmbeddingClient
 from backend.schemas.presentacion import PresentacionCreate, PresentacionResponse
+from backend.services.catalog_embedding_synchronization_service import (
+    CatalogEmbeddingSynchronizationService,
+)
 from backend.services.exceptions import (
     ComercioNotFound,
     DuplicatePresentacionCodigo,
@@ -15,8 +22,22 @@ from backend.services.presentacion_service import PresentacionService
 router = APIRouter(tags=["presentaciones"])
 
 
-def _service(session: Session = Depends(get_session)) -> PresentacionService:
+def _service(
+    session: Annotated[Session, Depends(get_session)],
+) -> PresentacionService:
     return PresentacionService(session)
+
+
+def _sync_service(
+    session: Annotated[Session, Depends(get_session)],
+) -> CatalogEmbeddingSynchronizationService:
+    settings = load_settings()
+    embedding_client = OllamaEmbeddingClient(settings)
+    return CatalogEmbeddingSynchronizationService(
+        session=session,
+        embedding_client=embedding_client,
+        settings=settings,
+    )
 
 
 @router.get(
@@ -58,21 +79,34 @@ def get_presentacion(
 def create_presentacion(
     comercio_id: int,
     payload: PresentacionCreate,
+    session: Annotated[Any, Depends(get_session)],
     service: PresentacionService = Depends(_service),
+    sync_service: CatalogEmbeddingSynchronizationService = Depends(_sync_service),
 ) -> PresentacionResponse:
     try:
-        return PresentacionResponse.model_validate(
-            service.create(
-                comercio_id,
-                payload.codigo,
-                payload.descripcion,
-                payload.activo,
-                payload.orden,
-            )
+        row = service.create(
+            comercio_id,
+            payload.codigo,
+            payload.descripcion,
+            payload.activo,
+            payload.orden,
         )
+        session.commit()
     except ComercioNotFound as e:
+        session.rollback()
         raise HTTPException(status_code=404, detail=str(e)) from e
     except InvalidPresentacion as e:
+        session.rollback()
         raise HTTPException(status_code=400, detail=str(e)) from e
     except (DuplicatePresentacionCodigo, DuplicatePresentacionDescripcion) as e:
+        session.rollback()
         raise HTTPException(status_code=409, detail=str(e)) from e
+    except Exception:
+        session.rollback()
+        raise
+    try:
+        sync_service.synchronize_presentacion(int(row.id))
+        session.commit()
+    except Exception:
+        session.rollback()
+    return PresentacionResponse.model_validate(row)

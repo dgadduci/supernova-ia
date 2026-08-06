@@ -2,6 +2,7 @@ from typing import cast
 
 from sqlalchemy.orm import Session as DatabaseSession
 
+from backend.config.settings import load_settings
 from backend.intents.context.context_type_resolver import resolve_context_type
 from backend.intents.context.pending_context_service import set_pending_intent
 from backend.intents.handlers.agregar_producto_handler import execute_agregar_producto
@@ -11,12 +12,27 @@ from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.intents.services.pending_intent_service import enqueue
 from backend.intents.services.pending_intent_service import load as load_pending_state
 from backend.models.session import Session as ConversationSession
-from backend.recognizers.fuzzy_product_recognizer import FuzzyProductRecognizer
-from backend.recognizers.product_recognizer_contract import ProductRecognizerProtocol
+from backend.recognizers.product_recognizer_contract import (
+    ProductRecognizerProtocol,
+    RecognizeContext,
+)
+from backend.services.product_recognition_factory import get_product_recognizer
 from backend.services.producto_query_service import ProductoQueryService
 
-_product_recognizer: ProductRecognizerProtocol = FuzzyProductRecognizer()
-detectar_productos = _product_recognizer.recognize
+_product_recognizer: ProductRecognizerProtocol = get_product_recognizer(load_settings())
+
+
+def detectar_productos(
+    text: str,
+    catalog: list[dict],
+    *,
+    intent_metadata: RecognizeContext | None = None,
+):
+    return _product_recognizer.recognize(
+        text,
+        catalog,
+        intent_metadata=intent_metadata,
+    )
 
 
 def process_initial_agregar_producto(

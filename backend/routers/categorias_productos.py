@@ -1,12 +1,19 @@
+from typing import Annotated, Any
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from backend.config.settings import load_settings
 from backend.dependencies import get_session
+from backend.llm.embedding_client import OllamaEmbeddingClient
 from backend.schemas.categoria_producto import (
     CategoriaProductoCreate,
     CategoriaProductoResponse,
 )
 from backend.services.categoria_producto_service import CategoriaProductoService
+from backend.services.catalog_embedding_synchronization_service import (
+    CatalogEmbeddingSynchronizationService,
+)
 from backend.services.exceptions import (
     CategoriaProductoNotFound,
     ComercioNotFound,
@@ -16,8 +23,22 @@ from backend.services.exceptions import (
 router = APIRouter(tags=["categorias-productos"])
 
 
-def _service(session: Session = Depends(get_session)) -> CategoriaProductoService:
+def _service(
+    session: Annotated[Session, Depends(get_session)],
+) -> CategoriaProductoService:
     return CategoriaProductoService(session)
+
+
+def _sync_service(
+    session: Annotated[Session, Depends(get_session)],
+) -> CatalogEmbeddingSynchronizationService:
+    settings = load_settings()
+    embedding_client = OllamaEmbeddingClient(settings)
+    return CatalogEmbeddingSynchronizationService(
+        session=session,
+        embedding_client=embedding_client,
+        settings=settings,
+    )
 
 
 @router.get(
@@ -61,18 +82,30 @@ def get_categoria_producto(
 def create_categoria_producto(
     comercio_id: int,
     payload: CategoriaProductoCreate,
+    session: Annotated[Any, Depends(get_session)],
     service: CategoriaProductoService = Depends(_service),
+    sync_service: CatalogEmbeddingSynchronizationService = Depends(_sync_service),
 ) -> CategoriaProductoResponse:
     try:
-        return CategoriaProductoResponse.model_validate(
-            service.create(
-                comercio_id,
-                payload.descripcion,
-                payload.activo,
-                payload.orden,
-            )
+        row = service.create(
+            comercio_id,
+            payload.descripcion,
+            payload.activo,
+            payload.orden,
         )
+        session.commit()
     except ComercioNotFound as e:
+        session.rollback()
         raise HTTPException(status_code=404, detail=str(e)) from e
     except InvalidCategoriaProducto as e:
+        session.rollback()
         raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception:
+        session.rollback()
+        raise
+    try:
+        sync_service.synchronize_categoria(int(row.id))
+        session.commit()
+    except Exception:
+        session.rollback()
+    return CategoriaProductoResponse.model_validate(row)

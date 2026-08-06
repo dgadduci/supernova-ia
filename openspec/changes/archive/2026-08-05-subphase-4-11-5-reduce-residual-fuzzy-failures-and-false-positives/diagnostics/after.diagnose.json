@@ -1,0 +1,1198 @@
+{
+  "cases": [
+    {
+      "actual_fuzzy_candidate_ids": [
+        1
+      ],
+      "actual_fuzzy_decision": "unique",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 1,
+      "actual_hybrid_candidate_ids": [
+        1
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 1,
+      "case_id": "exact-empanada-pollo",
+      "category": "canonical",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 1,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 1,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "canonical"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        2
+      ],
+      "actual_fuzzy_decision": "unique",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 2,
+      "actual_hybrid_candidate_ids": [
+        2
+      ],
+      "actual_hybrid_decision": "unknown",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 2,
+      "case_id": "product-plus-presentation",
+      "category": "alias",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 2,
+      "mismatch_category": "real_hybrid_recognizer_failure",
+      "normalized_id_used_by_evaluator": 2,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "alias"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        100
+      ],
+      "actual_fuzzy_decision": "unique",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 100,
+      "actual_hybrid_candidate_ids": [
+        100
+      ],
+      "actual_hybrid_decision": "unknown",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 100,
+      "case_id": "fuzzy-misspelling-mozzarella",
+      "category": "baseline",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 100,
+      "mismatch_category": "real_hybrid_recognizer_failure",
+      "normalized_id_used_by_evaluator": 100,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "baseline"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        100
+      ],
+      "actual_fuzzy_decision": "unique",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 100,
+      "actual_hybrid_candidate_ids": [
+        100
+      ],
+      "actual_hybrid_decision": "unknown",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 100,
+      "case_id": "supported-mozza-alias",
+      "category": "alias",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 100,
+      "mismatch_category": "real_hybrid_recognizer_failure",
+      "normalized_id_used_by_evaluator": 100,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "alias"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        11,
+        12
+      ],
+      "actual_fuzzy_decision": "ambiguous",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 11,
+      "actual_hybrid_candidate_ids": [
+        11,
+        12
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 11,
+      "case_id": "ambiguous-empanada-carne",
+      "category": "restricted",
+      "evidence": "",
+      "expected_decision": "ambiguous",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": null,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": null,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "restricted"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [],
+      "actual_fuzzy_decision": "unknown",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": null,
+      "actual_hybrid_candidate_ids": [],
+      "actual_hybrid_decision": "unknown",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": null,
+      "case_id": "unknown-caramelo",
+      "category": "baseline",
+      "evidence": "",
+      "expected_decision": "unknown",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": null,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": null,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "baseline"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        33
+      ],
+      "actual_fuzzy_decision": "unique",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 33,
+      "actual_hybrid_candidate_ids": [
+        33
+      ],
+      "actual_hybrid_decision": "unknown",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 33,
+      "case_id": "multi-word-jamon-queso-dynamic",
+      "category": "baseline",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 33,
+      "mismatch_category": "real_hybrid_recognizer_failure",
+      "normalized_id_used_by_evaluator": 33,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "baseline"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [],
+      "actual_fuzzy_decision": "unknown",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": null,
+      "actual_hybrid_candidate_ids": [],
+      "actual_hybrid_decision": "unknown",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": null,
+      "case_id": "picante-restricted-refinement",
+      "category": "restricted",
+      "evidence": "",
+      "expected_decision": "unknown",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": null,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": null,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "restricted"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [],
+      "actual_fuzzy_decision": "unknown",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": null,
+      "actual_hybrid_candidate_ids": [],
+      "actual_hybrid_decision": "unknown",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": null,
+      "case_id": "grande-restricted-refinement",
+      "category": "restricted",
+      "evidence": "",
+      "expected_decision": "unknown",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": null,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": null,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "restricted"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        1
+      ],
+      "actual_fuzzy_decision": "unique",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 1,
+      "actual_hybrid_candidate_ids": [
+        1
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 1,
+      "case_id": "quantity-word",
+      "category": "baseline",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 1,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 1,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "baseline"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        1,
+        2,
+        21
+      ],
+      "actual_fuzzy_decision": "ambiguous",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 1,
+      "actual_hybrid_candidate_ids": [
+        1,
+        2,
+        21
+      ],
+      "actual_hybrid_decision": "ambiguous",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 1,
+      "case_id": "ambiguous-pizza-presentations",
+      "category": "baseline",
+      "evidence": "",
+      "expected_decision": "ambiguous",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": null,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": null,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "baseline"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        1,
+        2
+      ],
+      "actual_fuzzy_decision": "ambiguous",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 1,
+      "actual_hybrid_candidate_ids": [
+        1,
+        2
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 1,
+      "case_id": "c1-canonical-pizza-muzzarella",
+      "category": "canonical",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 1,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 1,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "canonical"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        1,
+        2
+      ],
+      "actual_fuzzy_decision": "ambiguous",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 1,
+      "actual_hybrid_candidate_ids": [
+        1,
+        2
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 1,
+      "case_id": "c1-alias-muzza",
+      "category": "alias",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 1,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 1,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "alias"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        1,
+        2
+      ],
+      "actual_fuzzy_decision": "ambiguous",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 1,
+      "actual_hybrid_candidate_ids": [
+        1,
+        2
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 1,
+      "case_id": "c1-fuzzy-misspelling-muzarela",
+      "category": "commerce_isolation",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 1,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 1,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "commerce_isolation"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        39,
+        40,
+        41,
+        42,
+        43
+      ],
+      "actual_fuzzy_decision": "ambiguous",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 39,
+      "actual_hybrid_candidate_ids": [
+        39,
+        40,
+        41
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 39,
+      "case_id": "c1-colloquial-coca",
+      "category": "baseline",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 39,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 39,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "baseline"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        1
+      ],
+      "actual_fuzzy_decision": "unique",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 1,
+      "actual_hybrid_candidate_ids": [
+        1,
+        2
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 1,
+      "case_id": "c1-product-plus-presentation-muzzarella-grande",
+      "category": "baseline",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 1,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 1,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "baseline"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        34
+      ],
+      "actual_fuzzy_decision": "unique",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 34,
+      "actual_hybrid_candidate_ids": [
+        34
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 34,
+      "case_id": "c1-quantity-empanada-pollo",
+      "category": "baseline",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 34,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 34,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "baseline"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "actual_fuzzy_decision": "ambiguous",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 1,
+      "actual_hybrid_candidate_ids": [
+        2,
+        1,
+        4
+      ],
+      "actual_hybrid_decision": "ambiguous",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 2,
+      "case_id": "c1-ambiguous-pizza",
+      "category": "ambiguous",
+      "evidence": "",
+      "expected_decision": "ambiguous",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": null,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": null,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "ambiguous"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [],
+      "actual_fuzzy_decision": "unknown",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": null,
+      "actual_hybrid_candidate_ids": [
+        1,
+        2
+      ],
+      "actual_hybrid_decision": "unknown",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 1,
+      "case_id": "c1-unknown-sushi",
+      "category": "unknown",
+      "evidence": "",
+      "expected_decision": "unknown",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": null,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": null,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "unknown"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        1,
+        2
+      ],
+      "actual_fuzzy_decision": "ambiguous",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 1,
+      "actual_hybrid_candidate_ids": [
+        1,
+        2
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 1,
+      "case_id": "c1-restricted-muzzarella-subset",
+      "category": "restricted",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 1,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 1,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "restricted"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        3,
+        4
+      ],
+      "actual_fuzzy_decision": "ambiguous",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 3,
+      "actual_hybrid_candidate_ids": [
+        3,
+        4
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 3,
+      "case_id": "c1-semantically-similar-napolitana",
+      "category": "baseline",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 3,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 3,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "baseline"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        1,
+        2
+      ],
+      "actual_fuzzy_decision": "ambiguous",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 1,
+      "actual_hybrid_candidate_ids": [
+        1,
+        2
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 1,
+      "case_id": "c1-fuzzy-vector-disagreement-muzzarrella",
+      "category": "commerce_isolation",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 1,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 1,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "commerce_isolation"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        33
+      ],
+      "actual_fuzzy_decision": "unique",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 33,
+      "actual_hybrid_candidate_ids": [
+        33
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 33,
+      "case_id": "c1-canonical-empanada-jq",
+      "category": "canonical",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 33,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 33,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "canonical"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        9,
+        10,
+        7,
+        8
+      ],
+      "actual_fuzzy_decision": "ambiguous",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 9,
+      "actual_hybrid_candidate_ids": [
+        9,
+        10,
+        7
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 9,
+      "case_id": "c1-alias-fugazza",
+      "category": "alias",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 9,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 9,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "alias"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        45,
+        46,
+        47
+      ],
+      "actual_fuzzy_decision": "ambiguous",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 45,
+      "actual_hybrid_candidate_ids": [
+        45,
+        46,
+        47
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 45,
+      "case_id": "c1-canonical-sprite",
+      "category": "commerce_isolation",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 45,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 45,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "commerce_isolation"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        11,
+        12
+      ],
+      "actual_fuzzy_decision": "ambiguous",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 11,
+      "actual_hybrid_candidate_ids": [
+        11,
+        12
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 11,
+      "case_id": "c1-fuzzy-misspelling-calabreza",
+      "category": "baseline",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 11,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 11,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "baseline"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        39,
+        40,
+        41,
+        42,
+        43
+      ],
+      "actual_fuzzy_decision": "ambiguous",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 39,
+      "actual_hybrid_candidate_ids": [
+        39,
+        40,
+        41
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 39,
+      "case_id": "c1-colloquial-coca-cola",
+      "category": "baseline",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 39,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 39,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "baseline"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        5
+      ],
+      "actual_fuzzy_decision": "unique",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 5,
+      "actual_hybrid_candidate_ids": [
+        5,
+        6
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 5,
+      "case_id": "c1-product-plus-presentation-margherita-grande",
+      "category": "baseline",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 5,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 5,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "baseline"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        36
+      ],
+      "actual_fuzzy_decision": "unique",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 36,
+      "actual_hybrid_candidate_ids": [
+        36
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 36,
+      "case_id": "c1-quantity-empanada-verdura",
+      "category": "baseline",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 36,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 36,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "baseline"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [],
+      "actual_fuzzy_decision": "unknown",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": null,
+      "actual_hybrid_candidate_ids": [
+        72,
+        69,
+        71
+      ],
+      "actual_hybrid_decision": "unknown",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 72,
+      "case_id": "c1-ambiguous-postre",
+      "category": "ambiguous",
+      "evidence": "",
+      "expected_decision": "ambiguous",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": null,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": null,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "ambiguous"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [],
+      "actual_fuzzy_decision": "unknown",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": null,
+      "actual_hybrid_candidate_ids": [
+        72,
+        71,
+        70
+      ],
+      "actual_hybrid_decision": "unknown",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 72,
+      "case_id": "c1-unknown-chocolate",
+      "category": "unknown",
+      "evidence": "",
+      "expected_decision": "unknown",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": null,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": null,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "unknown"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        15,
+        16,
+        33,
+        37,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "actual_fuzzy_decision": "ambiguous",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 15,
+      "actual_hybrid_candidate_ids": [
+        15,
+        16,
+        33
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 15,
+      "case_id": "c1-restricted-cuatro-quesos",
+      "category": "restricted",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 15,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 15,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "restricted"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        23,
+        24
+      ],
+      "actual_fuzzy_decision": "ambiguous",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 23,
+      "actual_hybrid_candidate_ids": [
+        23,
+        24
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 23,
+      "case_id": "c1-semantically-similar-hawaiana",
+      "category": "baseline",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 23,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 23,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "baseline"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [],
+      "actual_fuzzy_decision": "unknown",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": null,
+      "actual_hybrid_candidate_ids": [
+        1,
+        2
+      ],
+      "actual_hybrid_decision": "unknown",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 1,
+      "case_id": "c1-fuzzy-vector-disagreement-muzarrella",
+      "category": "commerce_isolation",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 1,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 1,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "commerce_isolation"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        19,
+        20
+      ],
+      "actual_fuzzy_decision": "ambiguous",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 19,
+      "actual_hybrid_candidate_ids": [
+        19,
+        20
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 19,
+      "case_id": "c1-canonical-roquefort",
+      "category": "canonical",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 19,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 19,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "canonical"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        60,
+        61,
+        62
+      ],
+      "actual_fuzzy_decision": "ambiguous",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 60,
+      "actual_hybrid_candidate_ids": [
+        60,
+        61,
+        62
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 60,
+      "case_id": "c1-alias-vino-tinto",
+      "category": "alias",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 60,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 60,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "alias"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        70
+      ],
+      "actual_fuzzy_decision": "unique",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 70,
+      "actual_hybrid_candidate_ids": [
+        70
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 70,
+      "case_id": "c1-fuzzy-misspelling-tiramisu",
+      "category": "baseline",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 70,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 70,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "baseline"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        45,
+        46,
+        47
+      ],
+      "actual_fuzzy_decision": "ambiguous",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 45,
+      "actual_hybrid_candidate_ids": [
+        45,
+        46,
+        47
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 45,
+      "case_id": "c1-colloquial-sprite",
+      "category": "baseline",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 45,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 45,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "baseline"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        12
+      ],
+      "actual_fuzzy_decision": "unique",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 12,
+      "actual_hybrid_candidate_ids": [
+        12,
+        11
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 12,
+      "case_id": "c1-product-plus-presentation-calabresa-chica",
+      "category": "baseline",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 12,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 12,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "baseline"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        31,
+        32
+      ],
+      "actual_fuzzy_decision": "ambiguous",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 31,
+      "actual_hybrid_candidate_ids": [
+        31,
+        32
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 31,
+      "case_id": "c1-quantity-empanada-carne",
+      "category": "baseline",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 31,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 31,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "baseline"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [],
+      "actual_fuzzy_decision": "unknown",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": null,
+      "actual_hybrid_candidate_ids": [
+        2,
+        1,
+        4
+      ],
+      "actual_hybrid_decision": "unknown",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 2,
+      "case_id": "c1-ambiguous-pizza-again",
+      "category": "ambiguous",
+      "evidence": "",
+      "expected_decision": "ambiguous",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": null,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": null,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "ambiguous"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [],
+      "actual_fuzzy_decision": "unknown",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": null,
+      "actual_hybrid_candidate_ids": [
+        71
+      ],
+      "actual_hybrid_decision": "unknown",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 71,
+      "case_id": "c1-unknown-helado-no-disponible",
+      "category": "unknown",
+      "evidence": "",
+      "expected_decision": "unknown",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": null,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": null,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "unknown"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        45
+      ],
+      "actual_fuzzy_decision": "unique",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 45,
+      "actual_hybrid_candidate_ids": [
+        45
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 45,
+      "case_id": "c1-restricted-sprite-lata",
+      "category": "restricted",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 45,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 45,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "restricted"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        4
+      ],
+      "actual_fuzzy_decision": "unique",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 4,
+      "actual_hybrid_candidate_ids": [
+        4,
+        3
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 4,
+      "case_id": "c1-semantically-similar-napolitana-chica",
+      "category": "baseline",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 4,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 4,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "baseline"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        29,
+        30
+      ],
+      "actual_fuzzy_decision": "ambiguous",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 29,
+      "actual_hybrid_candidate_ids": [
+        29,
+        30
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 29,
+      "case_id": "c1-fuzzy-vector-disagreement-especial",
+      "category": "commerce_isolation",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 29,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 29,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "commerce_isolation"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        7,
+        8,
+        9,
+        10
+      ],
+      "actual_fuzzy_decision": "ambiguous",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 7,
+      "actual_hybrid_candidate_ids": [
+        7,
+        8,
+        9
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 7,
+      "case_id": "c1-canonical-fugazzeta",
+      "category": "canonical",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 7,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 7,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "canonical"
+    },
+    {
+      "actual_fuzzy_candidate_ids": [
+        72
+      ],
+      "actual_fuzzy_decision": "unique",
+      "actual_fuzzy_presentacion_id": null,
+      "actual_fuzzy_producto_presentacion_id": 72,
+      "actual_hybrid_candidate_ids": [
+        72
+      ],
+      "actual_hybrid_decision": "unique",
+      "actual_hybrid_presentacion_id": null,
+      "actual_hybrid_producto_presentacion_id": 72,
+      "case_id": "c1-alias-brownie",
+      "category": "alias",
+      "evidence": "",
+      "expected_decision": "unique",
+      "expected_presentacion_id": null,
+      "expected_producto_presentacion_id": 72,
+      "mismatch_category": "correct",
+      "normalized_id_used_by_evaluator": 72,
+      "presentation_resolution_result": "not_applicable",
+      "shape": "alias"
+    }
+  ]
+}

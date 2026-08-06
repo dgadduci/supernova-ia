@@ -27,11 +27,26 @@ from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.intents.schemas.requirement_state import RequirementState
 from backend.models.session import Session as ConversationSession
 from backend.recognizers.fuzzy_product_recognizer import FuzzyProductRecognizer
-from backend.recognizers.product_recognizer_contract import ProductRecognizerProtocol
+from backend.recognizers.product_recognizer_contract import (
+    ProductRecognizerProtocol,
+    RecognizeContext,
+)
 from backend.services.producto_query_service import ProductoQueryService
 
 _product_recognizer: ProductRecognizerProtocol = FuzzyProductRecognizer()
-detectar_productos = _product_recognizer.recognize
+
+
+def detectar_productos(
+    text: str,
+    catalog: list[dict],
+    *,
+    intent_metadata: RecognizeContext | None = None,
+):
+    return _product_recognizer.recognize(
+        text,
+        catalog,
+        intent_metadata=intent_metadata,
+    )
 
 
 def _flatten_pedido_producto_ids(recognized: dict) -> list[int]:
@@ -41,6 +56,8 @@ def _flatten_pedido_producto_ids(recognized: dict) -> list[int]:
         if pp_id is not None:
             ids.append(int(pp_id))
     for group in recognized.get("encontrados_posibles") or []:
+        if group.get("kind") == "category":
+            continue
         for product in group.get("productos") or []:
             pp_id = product.get("pedido_producto_id")
             if pp_id is not None:
@@ -55,6 +72,8 @@ def _flatten_producto_presentacion_ids(recognized: dict) -> list[int]:
         if pid is not None:
             ids.append(int(pid))
     for group in recognized.get("encontrados_posibles") or []:
+        if group.get("kind") == "category":
+            continue
         for product in group.get("productos") or []:
             pid = product.get("producto_presentacion_id")
             if pid is not None:
@@ -153,8 +172,8 @@ def _resolve_source_selection(
         return active_intent
 
     intersection = sorted(
-        set(int(x) for x in recognized_pp_ids)
-        & set(int(x) for x in source_candidate_ids)
+        {int(x) for x in recognized_pp_ids}
+        & {int(x) for x in source_candidate_ids}
     )
     if not intersection:
         return active_intent.model_copy(update={"status": "rejected"})
@@ -213,8 +232,8 @@ def _resolve_destination_selection(
         return active_intent
 
     intersection = sorted(
-        set(int(x) for x in recognized_dest_ids)
-        & set(int(x) for x in destination_candidate_ids)
+        {int(x) for x in recognized_dest_ids}
+        & {int(x) for x in destination_candidate_ids}
     )
     if not intersection:
         return active_intent.model_copy(update={"status": "rejected"})

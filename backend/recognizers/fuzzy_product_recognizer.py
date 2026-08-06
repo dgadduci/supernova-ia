@@ -1,7 +1,10 @@
 from typing import cast
 
 from backend.recognizers import product_recognizer
-from backend.recognizers.product_recognizer_contract import ProductRecognizerResult
+from backend.recognizers.product_recognizer_contract import (
+    ProductRecognizerResult,
+    RecognizeContext,
+)
 
 
 class FuzzyProductRecognizer:
@@ -9,6 +12,8 @@ class FuzzyProductRecognizer:
         self,
         text: str,
         catalog: list[dict],
+        *,
+        intent_metadata: RecognizeContext | None = None,
     ) -> ProductRecognizerResult:
         return cast(
             ProductRecognizerResult,

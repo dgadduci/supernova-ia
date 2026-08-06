@@ -6,7 +6,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
 from backend.config.settings import load_settings
-from backend.models import Precio, ProductoPresentacion, ProductoPresentacionEmbedding
+from backend.models import (
+    EmbeddingStatus,
+    Precio,
+    ProductoPresentacion,
+    ProductoPresentacionEmbedding,
+)
 from backend.services.exceptions import (
     InvalidProductoPresentacionEmbedding,
     ProductoPresentacionNotFound,
@@ -91,9 +96,11 @@ class ProductoPresentacionEmbeddingIntegrationTest(unittest.TestCase):
             indexes,
         )
         self.assertIn("ix_producto_presentacion_embeddings_modelo", indexes)
-        self.assertIn("producto_presentacion_embedding_unico", indexes)
+        self.assertIn("uq_embedding_doc_null_source", indexes)
+        self.assertIn("uq_embedding_doc_alias", indexes)
+        self.assertNotIn("producto_presentacion_embedding_unico", indexes)
 
-    def test_upsert_replaces_vector_without_duplicate(self):
+    def test_legacy_upsert_replaces_vector_without_duplicate(self):
         pp_id = self.fixtures["pp_a_chica_id"]
         first_vector = [0.1] * self.dimension
         second_vector = [0.2] * self.dimension
@@ -169,6 +176,18 @@ class ProductoPresentacionEmbeddingIntegrationTest(unittest.TestCase):
                 )
             )
             self.assertEqual(remaining, 0)
+
+    def test_legacy_upsert_writes_placeholder_documents(self):
+        pp_id = self.fixtures["pp_a_chica_id"]
+        with TestingSessionLocal() as session, session.begin():
+            service = ProductoPresentacionEmbeddingService(session)
+            service.upsert(pp_id, [0.1] * self.dimension, "all-minilm:latest")
+            rows = service.list_by_producto_presentacion(pp_id)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0].source_type, "canonical")
+            self.assertIsNone(rows[0].source_record_id)
+            self.assertEqual(rows[0].embedding_status, EmbeddingStatus.READY.value)
+            self.assertTrue(rows[0].activo)
 
 
 if __name__ == "__main__":

@@ -19,11 +19,26 @@ from backend.recognizers.product_recognizer import (
     PALABRAS_CANTIDAD,
     _normalizar_texto,
 )
-from backend.recognizers.product_recognizer_contract import ProductRecognizerProtocol
+from backend.recognizers.product_recognizer_contract import (
+    ProductRecognizerProtocol,
+    RecognizeContext,
+)
 from backend.services.pedido_producto_service import PedidoProductoService
 
 _product_recognizer: ProductRecognizerProtocol = FuzzyProductRecognizer()
-detectar_productos = _product_recognizer.recognize
+
+
+def detectar_productos(
+    text: str,
+    catalog: list[dict],
+    *,
+    intent_metadata: RecognizeContext | None = None,
+):
+    return _product_recognizer.recognize(
+        text,
+        catalog,
+        intent_metadata=intent_metadata,
+    )
 
 
 def _build_order_line_catalog(
@@ -104,6 +119,9 @@ def _attach_pedido_producto_id_to_posibles(
     by_pp_id = {entry["producto_presentacion_id"]: entry["pedido_producto_id"] for entry in catalog}
     out: list[dict] = []
     for group in encontrados_posibles:
+        if group.get("kind") == "category":
+            out.append(dict(group))
+            continue
         new_products = []
         for product in group.get("productos", []):
             pid = product.get("producto_presentacion_id")
@@ -165,6 +183,8 @@ def recognize_quitar_producto(
         if quantity is not None:
             entry["cantidad"] = quantity
     for group in encontrados_posibles:
+        if group.get("kind") == "category":
+            continue
         for product in group.get("productos", []):
             if quantity is not None:
                 product["cantidad"] = quantity

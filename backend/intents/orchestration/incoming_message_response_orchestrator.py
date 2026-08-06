@@ -14,7 +14,6 @@ from backend.intents.responses.quitar_producto_response import (
     build_quitar_producto_response,
 )
 from backend.intents.schemas.customer_response import CustomerResponse
-from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.models.session import Session as ConversationSession
 
 GENERIC_MESSAGE = "Disculpá, no pude procesar tu mensaje. ¿Podrías reformularlo?"

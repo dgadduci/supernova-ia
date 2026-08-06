@@ -159,5 +159,28 @@ class ProductoAliasRepository:
         )
         return list(self._session.execute(stmt).scalars())
 
+    def find_by_id(self, id_alias: int) -> ProductoAlias | None:
+        """Return the alias row for ``id_alias`` or ``None`` when absent.
+
+        Read-only projection; the caller uses the result to capture the
+        scope BEFORE the deletion is staged so post-delete
+        synchronization can target the affected ``producto_presentacion``
+        rows without re-reading the alias through ``id_alias``.
+        """
+        stmt = select(ProductoAlias).where(ProductoAlias.id == id_alias)
+        return self._session.execute(stmt).scalar_one_or_none()
+
+    def delete(self, alias: ProductoAlias) -> None:
+        """Stage the deletion of ``alias`` without committing.
+
+        The caller (router / CLI / orchestrator) is the sole owner of
+        the surrounding transaction lifecycle. The service captures the
+        scope BEFORE calling this method and exposes it on the return
+        value so the caller can drive post-delete embedding
+        synchronization through the captured scope.
+        """
+        self._session.delete(alias)
+        self._session.flush()
+
 
 __all__ = ["ProductoAliasRepository"]

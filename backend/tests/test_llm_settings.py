@@ -1,8 +1,13 @@
 import os
 import unittest
+from dataclasses import FrozenInstanceError
 from unittest import mock
 
 from backend.config.settings import Settings, load_settings
+from backend.services.exceptions import (
+    InvalidTwilioWebhookAuthToken,
+    InvalidTwilioWebhookBaseUrl,
+)
 
 
 class LoadSettingsDefaultsTest(unittest.TestCase):
@@ -86,7 +91,7 @@ class LoadEmbeddingSettingsTest(unittest.TestCase):
     def test_embedding_overrides_apply(self):
         env = {
             "EMBEDDING_URL": "http://embed-host:9000/api/embed",
-            "EMBEDDING_MODEL": "nomic-embed-text",
+            "EMBEDDING_MODEL": "test-embedding-model",
             "EMBEDDING_TIMEOUT_SECONDS": "45",
             "EMBEDDING_BATCH_SIZE": "16",
             "EMBEDDING_DIMENSION": "768",
@@ -94,7 +99,7 @@ class LoadEmbeddingSettingsTest(unittest.TestCase):
         with mock.patch.dict(os.environ, env, clear=True):
             settings = load_settings()
         self.assertEqual(settings.embedding_url, "http://embed-host:9000/api/embed")
-        self.assertEqual(settings.embedding_model, "nomic-embed-text")
+        self.assertEqual(settings.embedding_model, "test-embedding-model")
         self.assertEqual(settings.embedding_timeout_seconds, 45)
         self.assertEqual(settings.embedding_batch_size, 16)
         self.assertEqual(settings.embedding_dimension, 768)
@@ -128,6 +133,80 @@ class LoadEmbeddingSettingsTest(unittest.TestCase):
                 with mock.patch.dict(os.environ, {var: raw}, clear=True):
                     with self.assertRaises(ValueError, msg=f"{var}={raw}"):
                         load_settings()
+
+
+class LoadTwilioIngressSettingsTest(unittest.TestCase):
+    def test_default_twilio_settings_are_none(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            settings = load_settings()
+        self.assertIsNone(settings.twilio_auth_token)
+        self.assertIsNone(settings.twilio_webhook_base_url)
+
+    def test_twilio_auth_token_override_is_accepted(self):
+        env = {"TWILIO_AUTH_TOKEN": "  test-token  "}
+        with mock.patch.dict(os.environ, env, clear=True):
+            settings = load_settings()
+        self.assertEqual(settings.twilio_auth_token, "test-token")
+
+    def test_twilio_base_url_override_is_accepted(self):
+        env = {"TWILIO_WEBHOOK_BASE_URL": "https://example.test/"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            settings = load_settings()
+        self.assertEqual(
+            settings.twilio_webhook_base_url, "https://example.test/"
+        )
+
+    def test_empty_twilio_auth_token_rejected(self):
+        env = {"TWILIO_AUTH_TOKEN": "   "}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(InvalidTwilioWebhookAuthToken):
+                load_settings()
+
+    def test_non_https_base_url_rejected(self):
+        env = {"TWILIO_WEBHOOK_BASE_URL": "http://example.test"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(InvalidTwilioWebhookBaseUrl):
+                load_settings()
+
+    def test_relative_base_url_rejected(self):
+        env = {"TWILIO_WEBHOOK_BASE_URL": "/no/host"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(InvalidTwilioWebhookBaseUrl):
+                load_settings()
+
+    def test_base_url_with_query_string_rejected(self):
+        env = {
+            "TWILIO_WEBHOOK_BASE_URL": "https://example.test/?hub=1"
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(InvalidTwilioWebhookBaseUrl):
+                load_settings()
+
+    def test_base_url_with_fragment_rejected(self):
+        env = {
+            "TWILIO_WEBHOOK_BASE_URL": "https://example.test/#frag"
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(InvalidTwilioWebhookBaseUrl):
+                load_settings()
+
+    def test_empty_base_url_rejected(self):
+        env = {"TWILIO_WEBHOOK_BASE_URL": "   "}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(InvalidTwilioWebhookBaseUrl):
+                load_settings()
+
+    def test_twilio_settings_are_frozen(self):
+        env = {
+            "TWILIO_AUTH_TOKEN": "test-token",
+            "TWILIO_WEBHOOK_BASE_URL": "https://example.test",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            settings = load_settings()
+        with self.assertRaises(FrozenInstanceError):
+            settings.twilio_auth_token = "other"  # type: ignore[misc]
+        with self.assertRaises(FrozenInstanceError):
+            settings.twilio_webhook_base_url = "other"  # type: ignore[misc]
 
 
 if __name__ == "__main__":

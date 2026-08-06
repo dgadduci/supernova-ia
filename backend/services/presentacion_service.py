@@ -45,19 +45,13 @@ class PresentacionService:
             raise DuplicatePresentacionCodigo(cleaned_codigo)
         if self._repo.get_by_descripcion(comercio_id, cleaned_descripcion) is not None:
             raise DuplicatePresentacionDescripcion(cleaned_descripcion)
-        try:
-            row = self._repo.create(
-                comercio_id,
-                cleaned_codigo,
-                cleaned_descripcion,
-                activo,
-                orden,
-            )
-            self._session.commit()
-            return row
-        except Exception:
-            self._session.rollback()
-            raise
+        return self._repo.create(
+            comercio_id,
+            cleaned_codigo,
+            cleaned_descripcion,
+            activo,
+            orden,
+        )
 
     def _require_comercio(self, comercio_id: int) -> None:
         if not self._repo.comercio_exists(comercio_id):
