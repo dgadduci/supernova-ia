@@ -1,9 +1,12 @@
+# ruff: noqa: F401
+
 import os
 from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from backend.config.database_url import normalize_database_url
 from backend.models import Base
 from backend.models.canal_whatsapp import CanalWhatsapp
 from backend.models.categorias_productos import CategoriaProducto
@@ -37,7 +40,10 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 if os.environ.get("SUPERNOVA_DATABASE_URL"):
-    config.set_main_option("sqlalchemy.url", os.environ["SUPERNOVA_DATABASE_URL"])
+    config.set_main_option(
+        "sqlalchemy.url",
+        normalize_database_url(os.environ["SUPERNOVA_DATABASE_URL"]),
+    )
 
 target_metadata = Base.metadata
 

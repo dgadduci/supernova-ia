@@ -11,6 +11,9 @@ the application and Alembic. In the deployed environment it is mandatory;
 the local fallback in `backend.dependencies` must never become a production
 fallback. The implementation shall prefer Railway's reference-variable
 mechanism over copying a connection string into repository files.
+Bare provider URLs beginning with `postgresql://` or `postgres://` are
+normalized at the shared configuration boundary to `postgresql+psycopg://`,
+the installed SQLAlchemy driver. Explicit SQLAlchemy dialect URLs are preserved.
 
 The existing `/health` endpoint remains a liveness endpoint. If a database
 readiness check is necessary for Railway health verification, it shall be a

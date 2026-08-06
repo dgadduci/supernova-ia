@@ -18,6 +18,9 @@
   generative LLM and embedding endpoints; assess the supplied Ollama
   `qwen-27b-coding:latest` and `all-minilm:latest` candidates through their
   respective existing contracts.
+- [x] 2.4 Normalize Railway's bare PostgreSQL URL at the shared application /
+  Alembic configuration boundary so the installed `psycopg` v3 driver is used;
+  preserve explicit SQLAlchemy dialect URLs.
 
 ## 3. Railway provisioning and controlled verification
 
