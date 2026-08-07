@@ -22,7 +22,7 @@ outbound clients remain direct.
 
 4. Set `TS_HOSTNAME` to a stable operator-recognizable hostname, such as
    `novaorders-railway`. The ephemeral node's Tailscale IP is not stable.
-5. Set `OLLAMA_HTTP_PROXY=http://127.0.0.1:1055` and retain the configured
+5. Set `OLLAMA_PROXY_URL=socks5h://127.0.0.1:1055` and retain the configured
    private Ollama URLs/models:
 
    - `LLM_URL=http://100.113.65.40:11434/api/generate`
@@ -31,13 +31,14 @@ outbound clients remain direct.
    - `EMBEDDING_MODEL=all-minilm:latest`
    - `EMBEDDING_DIMENSION=384`
 
-Do not assign a public domain or exposed port to the Tailscale proxy. Do not
-set `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, or `NO_PROXY` for this service.
+Remove the previous `OLLAMA_HTTP_PROXY` variable. Do not assign a public domain
+or exposed port to the Tailscale proxy. Do not set `HTTP_PROXY`, `HTTPS_PROXY`,
+`ALL_PROXY`, or `NO_PROXY` for this service.
 
 ## Deployment lifecycle
 
-The Docker image starts `tailscaled` in userspace mode and binds its HTTP and
-SOCKS proxy to `127.0.0.1:1055`. It fails before Uvicorn starts unless the
+The Docker image starts `tailscaled` in userspace mode and binds its SOCKS5
+proxy to `127.0.0.1:1055`. It fails before Uvicorn starts unless the
 database, auth key, hostname, and Railway port are present and Tailscale is
 ready within 30 seconds (override only with positive `TS_READY_TIMEOUT_SECONDS`).
 If Tailscale exits after readiness, the entrypoint stops Uvicorn so Railway can

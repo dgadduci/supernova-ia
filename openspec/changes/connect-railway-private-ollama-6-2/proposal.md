@@ -29,7 +29,7 @@ changing product-recognition, order, WhatsApp, or database behaviour.
 - Authenticate the container with a Railway-scoped, reusable, ephemeral
   Tailscale auth key and `tag:railway`; make the local proxy listen only on
   loopback.
-- Add a dedicated, optional Ollama HTTP-proxy setting consumed only by the
+- Add a dedicated, optional Ollama SOCKS5-proxy setting consumed only by the
   existing `QueryLlm` and `OllamaEmbeddingClient` HTTP calls. Do not apply a
   global proxy to Twilio, PostgreSQL, Railway health checks, or unrelated
   outbound traffic.
@@ -62,6 +62,10 @@ changing product-recognition, order, WhatsApp, or database behaviour.
 | Ollama generate/embed call succeeds through proxy | Business-readiness network gate passes for that contract | none |
 | Ollama is unreachable, unauthorized, times out, or returns invalid contract data | Existing client reports its existing safe failure type | no model substitution, direct public URL, or localhost fallback in Railway |
 | Proxy setting absent locally | Existing direct local Ollama behaviour is preserved | direct local path remains allowed only outside the Railway deployment contract |
+
+The initial HTTP-proxy attempt was rejected by the deployed embedding proof:
+Ollama's chunked `/api/embed` response timed out through it while the identical
+local request completed in 60 ms. SOCKS5 is the approved transport correction.
 
 ## Transaction ownership and observability
 

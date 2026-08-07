@@ -3,7 +3,7 @@
 Railway cannot provide the container privileges needed for a kernel TUN
 interface. The production web service will therefore run `tailscaled` in
 userspace-networking mode in the same container as Uvicorn. Tailscale will
-bind its HTTP/SOCKS proxy to `127.0.0.1:1055`; it receives no Railway public
+bind its SOCKS5 proxy to `127.0.0.1:1055`; it receives no Railway public
 domain and no exposed port.
 
 The image will be built from the existing Python runtime dependency set and
@@ -14,7 +14,7 @@ Tailscale process lifecycle:
 1. require `SUPERNOVA_DATABASE_URL`, `TS_AUTHKEY`, and a non-empty
    `TS_HOSTNAME` before doing any work;
 2. launch `tailscaled --tun=userspace-networking` with both local proxy
-   protocols on `127.0.0.1:1055` and ephemeral in-memory state;
+   protocol on `127.0.0.1:1055` and ephemeral in-memory state;
 3. execute `tailscale up` using the Railway secret auth key and hostname;
 4. wait for a bounded ready state and for the loopback proxy to accept local
    connections; do not print credentials or full status output;
@@ -30,10 +30,11 @@ call Ollama.
 
 ## Dedicated Ollama proxy contract
 
-Add `OLLAMA_HTTP_PROXY` to `Settings`, defaulting to `None`. It is an absolute
-`http://` URL when configured; invalid or blank configured values fail
-settings load with a clear, secret-free configuration error. In Railway it is
-set to `http://127.0.0.1:1055`.
+Add `OLLAMA_PROXY_URL` to `Settings`, defaulting to `None`. It is an absolute
+`socks5://` or `socks5h://` URL when configured; invalid or blank configured
+values fail settings load with a clear, secret-free configuration error. In
+Railway it is set to `socks5h://127.0.0.1:1055`. The previous
+`OLLAMA_HTTP_PROXY` configuration is removed.
 
 `QueryLlm` and `OllamaEmbeddingClient` build a per-request requests proxy
 mapping only when this setting is present, for their `http` and `https`
@@ -48,7 +49,7 @@ This containment ensures the Twilio client and all other network clients keep
 their existing direct behavior. `LLM_URL` and `EMBEDDING_URL` retain their
 existing values (`http://100.113.65.40:11434/api/generate` and
 `http://100.113.65.40:11434/api/embed`) and models retain their existing
-names. Tailscale's HTTP proxy routes only those client requests to the private
+names. Tailscale's SOCKS5 proxy routes only those client requests to the private
 tailnet destination.
 
 ## Tailnet boundary
@@ -88,4 +89,4 @@ dimension; it must not print the prompt, response, or vector.
 
 This is the completion gate for 6.2. A successful `tailscale ping` is useful
 diagnostic evidence but is insufficient on its own because it does not prove
-the HTTP proxy path or the Ollama application contract.
+the SOCKS5 proxy path or the Ollama application contract.

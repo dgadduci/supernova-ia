@@ -13,11 +13,11 @@ class RailwayTailscaleEntrypointTest(unittest.TestCase):
         self.assertIn("--tun=userspace-networking", source)
         self.assertIn("--state=mem:", source)
         self.assertIn("--socks5-server=127.0.0.1:1055", source)
-        self.assertIn("--outbound-http-proxy-listen=127.0.0.1:1055", source)
         self.assertIn("json.load(sys.stdin).get", source)
         self.assertNotIn("HTTP_PROXY=", source)
         self.assertNotIn("HTTPS_PROXY=", source)
         self.assertNotIn("ALL_PROXY=", source)
+        self.assertIn("required_var OLLAMA_PROXY_URL", source)
 
     def test_railway_predeploy_does_not_enter_tailscale_lifecycle(self):
         railway_toml = (_ROOT / "railway.toml").read_text()

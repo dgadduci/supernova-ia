@@ -226,7 +226,7 @@ class OllamaEmbeddingClient:
             url=self._settings.embedding_url,
             payload=payload,
             timeout=self._settings.embedding_timeout_seconds,
-            proxy=self._settings.ollama_http_proxy,
+            proxy=self._settings.ollama_proxy_url,
         )
 
     def _raise_for_status(self, response: Any, *, batch_index: int) -> None:

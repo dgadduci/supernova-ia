@@ -29,6 +29,7 @@ pydantic-settings==2.14.2
 pydantic_core==2.46.4
 pgvector==0.5.0
 Pygments==2.20.0
+PySocks==1.7.1
 python-dotenv==1.2.2
 python-multipart==0.0.32
 PyYAML==6.0.3

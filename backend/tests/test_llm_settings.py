@@ -138,27 +138,33 @@ class LoadEmbeddingSettingsTest(unittest.TestCase):
 class LoadOllamaProxySettingsTest(unittest.TestCase):
     def test_proxy_is_none_when_unset(self):
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertIsNone(load_settings().ollama_http_proxy)
+            self.assertIsNone(load_settings().ollama_proxy_url)
 
-    def test_valid_loopback_http_proxy_is_accepted(self):
+    def test_valid_loopback_socks_proxy_is_accepted(self):
         with mock.patch.dict(
             os.environ,
-            {"OLLAMA_HTTP_PROXY": " http://127.0.0.1:1055 "},
+            {"OLLAMA_PROXY_URL": " socks5h://127.0.0.1:1055 "},
             clear=True,
         ):
             self.assertEqual(
-                load_settings().ollama_http_proxy,
-                "http://127.0.0.1:1055",
+                load_settings().ollama_proxy_url,
+                "socks5h://127.0.0.1:1055",
             )
 
     def test_invalid_proxy_is_rejected(self):
-        for value in ("", "   ", "/relative", "https://proxy.test", "http://"):
+        for value in (
+            "",
+            "   ",
+            "/relative",
+            "https://proxy.test",
+            "http://127.0.0.1:1055",
+        ):
             with self.subTest(value=value), mock.patch.dict(
                 os.environ,
-                {"OLLAMA_HTTP_PROXY": value},
+                {"OLLAMA_PROXY_URL": value},
                 clear=True,
             ):
-                with self.assertRaisesRegex(ValueError, "OLLAMA_HTTP_PROXY"):
+                with self.assertRaisesRegex(ValueError, "OLLAMA_PROXY_URL"):
                     load_settings()
 
 

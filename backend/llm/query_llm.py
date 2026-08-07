@@ -79,11 +79,11 @@ class QueryLlm:
                 **(
                     {
                         "proxies": {
-                            "http": self._settings.ollama_http_proxy,
-                            "https": self._settings.ollama_http_proxy,
+                            "http": self._settings.ollama_proxy_url,
+                            "https": self._settings.ollama_proxy_url,
                         }
                     }
-                    if self._settings.ollama_http_proxy is not None
+                    if self._settings.ollama_proxy_url is not None
                     else {}
                 ),
             )

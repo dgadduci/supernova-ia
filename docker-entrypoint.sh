@@ -12,6 +12,7 @@ required_var() {
 required_var SUPERNOVA_DATABASE_URL
 required_var TS_AUTHKEY
 required_var TS_HOSTNAME
+required_var OLLAMA_PROXY_URL
 required_var PORT
 
 socket_path=/tmp/tailscaled.sock
@@ -28,8 +29,7 @@ tailscaled \
     --tun=userspace-networking \
     --state=mem: \
     --socket="$socket_path" \
-    --socks5-server=127.0.0.1:1055 \
-    --outbound-http-proxy-listen=127.0.0.1:1055 &
+    --socks5-server=127.0.0.1:1055 &
 tailscaled_pid=$!
 
 stop_processes() {

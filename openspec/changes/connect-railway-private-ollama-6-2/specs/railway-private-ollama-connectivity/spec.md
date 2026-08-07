@@ -34,18 +34,18 @@ readiness, the application process SHALL terminate too.
 - **AND** the container exits non-zero
 - **AND** it does not fall back to direct/public/localhost Ollama access
 
-### Requirement: Ollama-only HTTP proxy setting
+### Requirement: Ollama-only SOCKS5 proxy setting
 
-The system SHALL expose optional `OLLAMA_HTTP_PROXY`. When unset, existing
+The system SHALL expose optional `OLLAMA_PROXY_URL`. When unset, existing
 LLM and embedding clients SHALL make their current direct calls. When set, it
-MUST be an absolute `http://` URL and SHALL be passed only to the real HTTP
+MUST be an absolute `socks5://` or `socks5h://` URL and SHALL be passed only to the real HTTP
 calls made by `QueryLlm` and `OllamaEmbeddingClient`. It SHALL NOT become a
 process-wide proxy or affect Twilio, PostgreSQL, `/health`, migrations, or
 other clients.
 
-#### Scenario: Railway proxy is used for both existing Ollama clients
+#### Scenario: Railway SOCKS5 proxy is used for both existing Ollama clients
 
-- **WHEN** `OLLAMA_HTTP_PROXY=http://127.0.0.1:1055` is configured
+- **WHEN** `OLLAMA_PROXY_URL=socks5h://127.0.0.1:1055` is configured
 - **AND** either existing client performs its real HTTP request
 - **THEN** the request receives a proxy mapping for that loopback proxy
 - **AND** its configured Ollama URL/model and existing timeout/error behavior
@@ -53,13 +53,13 @@ other clients.
 
 #### Scenario: local development has no proxy
 
-- **WHEN** `OLLAMA_HTTP_PROXY` is absent
+- **WHEN** `OLLAMA_PROXY_URL` is absent
 - **THEN** no proxy mapping is supplied to either client
 - **AND** the existing local defaults remain unchanged
 
 #### Scenario: invalid proxy configuration fails safely
 
-- **WHEN** `OLLAMA_HTTP_PROXY` is blank, relative, or has a non-HTTP scheme
+- **WHEN** `OLLAMA_PROXY_URL` is blank, relative, or has a non-SOCKS5 scheme
 - **THEN** settings loading fails with a clear secret-free configuration error
 - **AND** no HTTP request is attempted
 

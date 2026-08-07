@@ -11,7 +11,7 @@
 
 ## 2. Client-scoped proxy configuration
 
-- [x] 2.1 Add and validate the optional `OLLAMA_HTTP_PROXY` setting with no
+- [x] 2.1 Add and validate the optional `OLLAMA_PROXY_URL` setting with no
   local default proxy.
 - [x] 2.2 Route only real `QueryLlm` and `OllamaEmbeddingClient` HTTP calls
   through that setting; preserve injected-test transports and every existing
