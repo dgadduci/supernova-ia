@@ -26,19 +26,19 @@
   standalone spike.
 - [x] 3.2 Add only a bounded manual helper if required to probe both existing
   client contracts without outputting content or vectors.
-- [ ] 3.3 With the user's Railway/Tailscale access, configure the web service
+- [x] 3.3 With the user's Railway/Tailscale access, configure the web service
   variables privately, deploy, verify `/health`, and confirm the tagged node
   is connected. Never paste or commit an auth key.
-- [ ] 3.4 Run the bounded generate and embed probes from the integrated web
+- [x] 3.4 Run the bounded generate and embed probes from the integrated web
   container; record only safe pass/fail evidence and dimension `384`.
-- [ ] 3.5 After 3.4 succeeds, remove the disposable standalone `tailscale`
+- [x] 3.5 After 3.4 succeeds, remove the disposable standalone `tailscale`
   service and revoke/replace only the spike auth key as appropriate.
 
 ## 4. Focused validation
 
-- [ ] 4.1 Run affected unit tests, Ruff, and `compileall` in the user's local
+- [x] 4.1 Run affected unit tests, Ruff, and `compileall` in the user's local
   terminal and retain the complete output.
-- [ ] 4.2 Run strict OpenSpec validation and `git diff --check` in the user's
+- [x] 4.2 Run strict OpenSpec validation and `git diff --check` in the user's
   local terminal.
-- [ ] 4.3 Review Railway logs/configuration for secret leakage, exposed proxy
+- [x] 4.3 Review Railway logs/configuration for secret leakage, exposed proxy
   ports, accidental global proxy variables, and unintended business changes.
