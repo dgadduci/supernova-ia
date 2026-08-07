@@ -14,6 +14,7 @@ class RailwayTailscaleEntrypointTest(unittest.TestCase):
         self.assertIn("--state=mem:", source)
         self.assertIn("--socks5-server=127.0.0.1:1055", source)
         self.assertIn("json.load(sys.stdin).get", source)
+        self.assertIn('connection.sendall(b"\\x05\\x01\\x00")', source)
         self.assertNotIn("HTTP_PROXY=", source)
         self.assertNotIn("HTTPS_PROXY=", source)
         self.assertNotIn("ALL_PROXY=", source)
