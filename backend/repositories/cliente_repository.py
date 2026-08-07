@@ -36,6 +36,41 @@ class ClienteRepository:
         self._session.flush()
         return row
 
+    def stage_create(
+        self,
+        whatsapp: str,
+        nombre: str | None,
+        domicilio: str | None,
+        activo: bool,
+    ) -> Cliente:
+        """Stage an active ``Cliente`` without flushing.
+
+        The pilot routing CLI owns its single setup transaction.
+        The existing ``create`` method flushes so it can surface a
+        duplicate-key error eagerly; the pilot staging path needs
+        the pending state to remain invisible until the CLI flushes
+        once after staging both the client and the channel and runs
+        the final ``CommerceChannelResolver`` check.
+        """
+        row = Cliente(
+            whatsapp=whatsapp,
+            nombre=nombre,
+            domicilio=domicilio,
+            activo=activo,
+        )
+        self._session.add(row)
+        return row
+
+    def stage_set_activo(self, cliente: Cliente, activo: bool) -> None:
+        """Stage a change to ``cliente.activo`` without flushing.
+
+        Mirrors the no-flush contract of :meth:`stage_create` so the
+        pilot CLI can stage client reactivation alongside a fresh
+        channel row before the single flush that exposes the new
+        routing state to the final resolver check.
+        """
+        cliente.activo = activo
+
     def update(
         self,
         cliente: Cliente,

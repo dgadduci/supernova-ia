@@ -571,8 +571,33 @@ class InvalidTwilioDeliveryCallbackForm(ValueError):
     """Raised when a validly signed Twilio status callback supplies a
     malformed ``MessageSid`` or ``MessageStatus`` value.
 
-    The exception is raised by the Phase-5.6 callback adapter AFTER
-    the Twilio signature has been validated; it is therefore a
+    The exception is raised by the Phase-5.6 callback adapter AFTER the
+    Twilio signature has been validated; it is therefore a
     business-level rejection that the router translates into a safe
     no-op reply (``204``) without mutating an outbound row.
+    """
+
+
+class InvalidWhatsappPilotProvisioningInput(ValueError):
+    """Raised when the controlled-WhatsApp pilot routing CLI receives
+    unusable inputs: a non-positive ``--comercio-id``, an empty
+    ``--cliente-e164``, a sender setting missing from ``Settings`` or
+    a value that fails canonical E.164 normalization.
+
+    The exception is the single boundary for CLI-level input and
+    configuration rejection. The CLI translates it into exit code ``2``
+    with a sanitized ``input_invalid`` status that never leaks the
+    supplied address, sender or any message body.
+    """
+
+
+class WhatsappPilotProvisioningCommerceUnavailable(LookupError):
+    """Raised when the requested pilot commerce is missing or not
+    in the ``ACTIVO`` ``EstadoComercio``.
+
+    The CLI is the sole owner of the routing-provisioning transaction.
+    A missing or inactive commerce is the only validation outcome that
+    is translated into a typed ``commerce_unavailable`` status
+    BEFORE any staging, so the CLI rolls back without staging any
+    client or channel row.
     """
