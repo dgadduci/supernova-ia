@@ -76,6 +76,16 @@ class QueryLlm:
                 self._settings.llm_url,
                 json=payload,
                 timeout=self._settings.llm_timeout,
+                **(
+                    {
+                        "proxies": {
+                            "http": self._settings.ollama_http_proxy,
+                            "https": self._settings.ollama_http_proxy,
+                        }
+                    }
+                    if self._settings.ollama_http_proxy is not None
+                    else {}
+                ),
             )
         except requests.exceptions.Timeout as exc:
             raise QueryLlmTimeoutError(f"LLM request timed out after {self._settings.llm_timeout}s") from exc

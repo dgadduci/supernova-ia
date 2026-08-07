@@ -145,13 +145,23 @@ def _call_transport(
     url: str,
     payload: Mapping[str, Any],
     timeout: int,
+    proxy: str | None,
 ) -> Any:
     import requests
 
     try:
         if transport is not None:
             return transport(url, json=dict(payload), timeout=timeout)
-        return requests.post(url, json=dict(payload), timeout=timeout)
+        return requests.post(
+            url,
+            json=dict(payload),
+            timeout=timeout,
+            **(
+                {"proxies": {"http": proxy, "https": proxy}}
+                if proxy is not None
+                else {}
+            ),
+        )
     except requests.exceptions.Timeout as exc:
         raise EmbeddingTimeoutError(
             f"embedding request timed out after {timeout}s"
@@ -216,6 +226,7 @@ class OllamaEmbeddingClient:
             url=self._settings.embedding_url,
             payload=payload,
             timeout=self._settings.embedding_timeout_seconds,
+            proxy=self._settings.ollama_http_proxy,
         )
 
     def _raise_for_status(self, response: Any, *, batch_index: int) -> None:

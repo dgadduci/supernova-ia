@@ -146,6 +146,23 @@ def _optional_str_env(name: str, default: str | None) -> str | None:
     return raw
 
 
+def _ollama_http_proxy_env(name: str) -> str | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    cleaned = raw.strip()
+    if not cleaned:
+        raise ValueError(f"{name} must be a non-empty absolute http URL when provided")
+    parsed = urlparse(cleaned)
+    if parsed.scheme.lower() != "http" or not parsed.netloc:
+        raise ValueError(f"{name} must be an absolute http URL when provided")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError(
+            f"{name} must be an absolute http URL without credentials, query, or fragment"
+        )
+    return cleaned
+
+
 def _twilio_auth_token_env(name: str) -> str | None:
     raw = _optional_str_env(name, None)
     if raw is None:
@@ -305,6 +322,7 @@ class Settings:
     llm_num_predict: int
     llm_log_content: bool
     llm_log_max_chars: int
+    ollama_http_proxy: str | None = None
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
     embedding_dimension: int = DEFAULT_EMBEDDING_DIMENSION
     embedding_url: str = DEFAULT_EMBEDDING_URL
@@ -354,6 +372,7 @@ def load_settings() -> Settings:
         llm_num_predict=_int_env("LLM_NUM_PREDICT", 1500),
         llm_log_content=_bool_env("LLM_LOG_CONTENT", False),
         llm_log_max_chars=_int_env("LLM_LOG_MAX_CHARS", 1000),
+        ollama_http_proxy=_ollama_http_proxy_env("OLLAMA_HTTP_PROXY"),
         embedding_model=_str_env("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
         embedding_dimension=_positive_int_env(
             "EMBEDDING_DIMENSION",

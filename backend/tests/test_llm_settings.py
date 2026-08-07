@@ -135,6 +135,33 @@ class LoadEmbeddingSettingsTest(unittest.TestCase):
                         load_settings()
 
 
+class LoadOllamaProxySettingsTest(unittest.TestCase):
+    def test_proxy_is_none_when_unset(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(load_settings().ollama_http_proxy)
+
+    def test_valid_loopback_http_proxy_is_accepted(self):
+        with mock.patch.dict(
+            os.environ,
+            {"OLLAMA_HTTP_PROXY": " http://127.0.0.1:1055 "},
+            clear=True,
+        ):
+            self.assertEqual(
+                load_settings().ollama_http_proxy,
+                "http://127.0.0.1:1055",
+            )
+
+    def test_invalid_proxy_is_rejected(self):
+        for value in ("", "   ", "/relative", "https://proxy.test", "http://"):
+            with self.subTest(value=value), mock.patch.dict(
+                os.environ,
+                {"OLLAMA_HTTP_PROXY": value},
+                clear=True,
+            ):
+                with self.assertRaisesRegex(ValueError, "OLLAMA_HTTP_PROXY"):
+                    load_settings()
+
+
 class LoadTwilioIngressSettingsTest(unittest.TestCase):
     def test_default_twilio_settings_are_none(self):
         with mock.patch.dict(os.environ, {}, clear=True):
