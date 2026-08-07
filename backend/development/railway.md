@@ -11,18 +11,34 @@ outbound clients remain direct.
 
 1. Keep `SUPERNOVA_DATABASE_URL` as a Railway reference to PostgreSQL's
    `DATABASE_URL`; never copy its resolved value into the repository or logs.
-2. Create a reusable, ephemeral Tailscale auth key tagged `tag:railway`.
+2. Configure Twilio only with Railway variables and public HTTPS URLs:
+
+   - `TWILIO_AUTH_TOKEN` and `TWILIO_WEBHOOK_BASE_URL` are required before
+     enabling inbound webhook validation.
+   - `TWILIO_WEBHOOK_BASE_URL` identifies the public HTTPS base used to build
+     the inbound webhook URL.
+   - `TWILIO_ACCOUNT_SID`, `TWILIO_OUTBOUND_SENDER_E164`,
+     `TWILIO_CALLBACK_STATUS_URL`, and the existing retry settings are needed
+     only before an explicit outbound-dispatch pass.
+   - Configure Twilio's inbound URL and status-callback URL to the matching
+     existing public routes; never place credentials, signatures, or signed
+     payloads in this runbook, Railway logs, or repository files.
+3. The outbound dispatcher remains the existing bounded manual CLI. Do not add
+   a Railway cron, worker, scheduler, polling loop, or automatic replay path.
+   Invoke it only as an explicit operator action after the required Twilio
+   configuration is in place.
+4. Create a reusable, ephemeral Tailscale auth key tagged `tag:railway`.
    Tag ownership remains limited to a tailnet administrator. Store the key
    only as the Railway secret `TS_AUTHKEY`.
-3. Add a least-privilege ACL grant equivalent to:
+5. Add a least-privilege ACL grant equivalent to:
 
    ```jsonc
    {"src": ["tag:railway"], "dst": ["100.113.65.40"], "ip": ["tcp:11434"]}
    ```
 
-4. Set `TS_HOSTNAME` to a stable operator-recognizable hostname, such as
+6. Set `TS_HOSTNAME` to a stable operator-recognizable hostname, such as
    `novaorders-railway`. The ephemeral node's Tailscale IP is not stable.
-5. Set `OLLAMA_PROXY_URL=socks5h://127.0.0.1:1055` and retain the configured
+7. Set `OLLAMA_PROXY_URL=socks5h://127.0.0.1:1055` and retain the configured
    private Ollama URLs/models:
 
    - `LLM_URL=http://100.113.65.40:11434/api/generate`
@@ -47,6 +63,28 @@ restart or fail the deployment.
 `railway.toml` keeps Alembic as an independent pre-deploy command. `/health`
 remains a liveness endpoint and does not call Ollama.
 
+After a successful release migration, verify the recorded Railway database
+revision from a Railway shell with:
+
+```sh
+python -m alembic current
+```
+
+Do not treat a successful build or `/health` response as proof that the
+release migration reached the expected revision.
+
+## Readiness boundary
+
+Infrastructure readiness requires a successful build/release, the verified
+Alembic revision on Railway PostgreSQL, and public `GET /health` returning
+`200` with `{"status":"ok"}`. `/health` is intentionally only a liveness
+check; it does not establish database, Twilio, or business-message readiness.
+
+Business-message readiness additionally requires the passed integrated
+generate/embed probes, configured Twilio inbound and status-callback URLs, and
+a controlled non-destructive signed webhook verification. Keep the production
+WhatsApp number disabled until every applicable business gate has evidence.
+
 ## Controlled verification
 
 After deployment, verify these without printing credentials, prompts, outputs,
@@ -54,8 +92,15 @@ vectors, database URLs, or raw Tailscale status:
 
 1. Railway logs contain `tailscale_ready proxy=enabled`; they must not contain
    auth keys, node keys, or raw status JSON.
-2. The public `GET /health` returns `200` with `{"status":"ok"}`.
-3. In a Railway shell for the integrated web service, run:
+2. In a Railway shell for the integrated web service, run:
+
+   ```sh
+   python -m alembic current
+   ```
+
+   Record only the resulting revision; do not print the database URL.
+3. The public `GET /health` returns `200` with `{"status":"ok"}`.
+4. In a Railway shell for the integrated web service, run:
 
    ```sh
    PYTHONPATH=. python -m backend.scripts.check_railway_ollama_contracts
@@ -63,9 +108,12 @@ vectors, database URLs, or raw Tailscale status:
 
    It must report both `generate=passed` and `embed=passed`, with dimension
    `384`, while hiding the prompt, response, and vector.
-4. Confirm the ephemeral `tag:railway` node is connected in Tailscale admin.
+5. Confirm the ephemeral `tag:railway` node is connected in Tailscale admin.
    A `tailscale ping` alone is diagnostic evidence, not the application gate.
-5. Only after steps 1–4 pass, remove the standalone disposable `tailscale`
+6. Configure Twilio's public inbound and status-callback URLs, then perform a
+   non-destructive signed webhook verification. Retain only safe success/fail
+   evidence and never log the signature, credentials, or form body.
+7. Only after steps 1–6 pass, remove the standalone disposable `tailscale`
    Railway spike and revoke its temporary auth key.
 
 ## Rollback
