@@ -13,11 +13,12 @@ Tailscale process lifecycle:
 
 1. require `SUPERNOVA_DATABASE_URL`, `TS_AUTHKEY`, and a non-empty
    `TS_HOSTNAME` before doing any work;
-2. launch `tailscaled --tun=userspace-networking` with both local proxy
-   protocol on `127.0.0.1:1055` and ephemeral in-memory state;
+2. launch `tailscaled --tun=userspace-networking` with a local SOCKS5 proxy
+   on `127.0.0.1:1055` and ephemeral in-memory state;
 3. execute `tailscale up` using the Railway secret auth key and hostname;
-4. wait for a bounded ready state and for the loopback proxy to accept local
-   connections; do not print credentials or full status output;
+4. wait for a bounded Tailscale ready state; the configured loopback proxy is
+   verified by the bounded application-contract probes after deployment; do
+   not print credentials or full status output;
 5. start the current Uvicorn command and forward termination signals to both
    managed processes; if Tailscale exits before/while the application is
    running, terminate the application so Railway restarts or fails the

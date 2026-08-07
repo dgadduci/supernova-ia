@@ -51,8 +51,7 @@ while :; do
         echo "startup_error tailscaled_exited_before_ready" >&2
         exit 1
     fi
-    if tailscale --socket="$socket_path" status --json 2>/dev/null | python -c 'import json, sys; raise SystemExit(0 if json.load(sys.stdin).get("BackendState") == "Running" else 1)' \
-        && python -c 'import socket; connection = socket.create_connection(("127.0.0.1", 1055), 1); connection.sendall(b"\x05\x01\x00"); response = connection.recv(2); connection.close(); raise SystemExit(0 if response == b"\x05\x00" else 1)' 2>/dev/null; then
+    if tailscale --socket="$socket_path" status --json 2>/dev/null | python -c 'import json, sys; raise SystemExit(0 if json.load(sys.stdin).get("BackendState") == "Running" else 1)'; then
         break
     fi
     if [ "$(date +%s)" -ge "$deadline" ]; then
