@@ -38,6 +38,74 @@ PIZZA_CATALOG = [
 ]
 
 
+CATEGORIA_PREFIJO_CATALOG = [
+    {
+        "producto_presentacion_id": 100,
+        "producto_id": 10,
+        "presentacion_id": 1,
+        "categoria_id": 1,
+        "categoria_nombre": "Pizzas",
+        "producto_nombre": "Napolitana",
+        "presentacion_codigo": "grande",
+        "presentacion_descripcion": "Pizza grande napolitana",
+        "activo": True,
+        "disponible": True,
+    },
+    {
+        "producto_presentacion_id": 101,
+        "producto_id": 10,
+        "presentacion_id": 2,
+        "categoria_id": 1,
+        "categoria_nombre": "Pizzas",
+        "producto_nombre": "Napolitana",
+        "presentacion_codigo": "chica",
+        "presentacion_descripcion": "Pizza chica napolitana",
+        "activo": True,
+        "disponible": True,
+    },
+    {
+        "producto_presentacion_id": 102,
+        "producto_id": 11,
+        "presentacion_id": 3,
+        "categoria_id": 1,
+        "categoria_nombre": "Pizzas",
+        "producto_nombre": "Mozzarella",
+        "presentacion_codigo": "unidad",
+        "presentacion_descripcion": "Pizza mozzarella",
+        "activo": True,
+        "disponible": True,
+    },
+    {
+        "producto_presentacion_id": 200,
+        "producto_id": 20,
+        "presentacion_id": 4,
+        "categoria_id": 2,
+        "categoria_nombre": "Empanadas",
+        "producto_nombre": "Napolitana",
+        "presentacion_codigo": "unidad",
+        "presentacion_descripcion": "Empanada napolitana",
+        "activo": True,
+        "disponible": True,
+    },
+]
+
+
+CATEGORIA_PREFIJO_PRODUCTO_NOMBRE_PREFIX = [
+    {
+        "producto_presentacion_id": 400,
+        "producto_id": 40,
+        "presentacion_id": 6,
+        "categoria_id": 1,
+        "categoria_nombre": "Pizzas",
+        "producto_nombre": "Pizza Mozzarella",
+        "presentacion_codigo": "unidad",
+        "presentacion_descripcion": "Pizza mozzarella",
+        "activo": True,
+        "disponible": True,
+    }
+]
+
+
 class DetectarProductosStopwordsTest(unittest.TestCase):
     def test_quita_sin_cantidad_resuelve_candidato(self):
         resultado = detectar_productos("quita las empanadas de pollo", EMPANADA_CATALOG)
@@ -248,6 +316,92 @@ class DetectarProductosPresentacionTest(unittest.TestCase):
                      "lata", "familiar", "fami"):
             with self.subTest(term=term):
                 self.assertIn(term, PRESENTACION_ALIASES)
+
+
+class DetectarProductosCategoriaPrefijoTest(unittest.TestCase):
+    def test_categoria_explicita_resuelve_solo_productos_de_la_categoria(self):
+        resultado = detectar_productos(
+            "3 Pizza napolitana", CATEGORIA_PREFIJO_CATALOG
+        )
+
+        ids_encontrados = [
+            p["producto_presentacion_id"]
+            for p in resultado["encontrados"]
+        ]
+        ids_posibles = [
+            p["producto_presentacion_id"]
+            for grupo in resultado["encontrados_posibles"]
+            if grupo.get("kind") is None
+            for p in grupo.get("productos", [])
+        ]
+        self.assertEqual(sorted(ids_encontrados + ids_posibles), [100, 101])
+        cantidades = [
+            p["cantidad"]
+            for p in resultado["encontrados"]
+        ]
+        cantidades += [
+            p["cantidad"]
+            for grupo in resultado["encontrados_posibles"]
+            if grupo.get("kind") is None
+            for p in grupo.get("productos", [])
+        ]
+        self.assertTrue(all(c == 3 for c in cantidades))
+        self.assertEqual(resultado["no_encontrados"], [])
+        categorias = [
+            grupo for grupo in resultado["encontrados_posibles"]
+            if grupo.get("kind") == "category"
+        ]
+        self.assertEqual(categorias, [])
+
+    def test_categoria_sola_sigue_siendo_grupo_category_only(self):
+        resultado = detectar_productos(
+            "3 pizza", CATEGORIA_PREFIJO_CATALOG
+        )
+
+        self.assertEqual(resultado["encontrados"], [])
+        ids_producto = [
+            grupo["producto_presentacion_id"]
+            for grupo in resultado["encontrados_posibles"]
+            for p in grupo.get("productos", [])
+        ]
+        self.assertEqual(ids_producto, [])
+        grupos_category = [
+            grupo for grupo in resultado["encontrados_posibles"]
+            if grupo.get("kind") == "category"
+        ]
+        self.assertEqual(len(grupos_category), 1)
+        self.assertEqual(grupos_category[0]["categoria_nombre"], "Pizzas")
+        self.assertEqual(
+            [n["texto_origen"] for n in resultado["no_encontrados"]],
+            ["3 pizza"],
+        )
+
+    def test_categoria_incompatible_no_promueve_candidato(self):
+        resultado = detectar_productos(
+            "empanada napolitana", CATEGORIA_PREFIJO_CATALOG
+        )
+
+        ids_encontrados = [
+            p["producto_presentacion_id"] for p in resultado["encontrados"]
+        ]
+        self.assertEqual(ids_encontrados, [200])
+        nombres = [p["producto_nombre"] for p in resultado["encontrados"]]
+        self.assertEqual(nombres, ["Napolitana"])
+        self.assertEqual(
+            [p["categoria_nombre"] for p in resultado["encontrados"]],
+            ["Empanadas"],
+        )
+
+    def test_nombre_producto_con_prefijo_categoria_conserva_resultado(self):
+        resultado = detectar_productos(
+            "pizza mozzarella", CATEGORIA_PREFIJO_PRODUCTO_NOMBRE_PREFIX
+        )
+
+        ids = [p["producto_presentacion_id"] for p in resultado["encontrados"]]
+        self.assertEqual(ids, [400])
+        nombres = [p["producto_nombre"] for p in resultado["encontrados"]]
+        self.assertEqual(nombres, ["Pizza Mozzarella"])
+        self.assertEqual(resultado["no_encontrados"], [])
 
 
 if __name__ == "__main__":

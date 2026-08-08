@@ -360,7 +360,20 @@ def _filtrar_por_tokens_clave(
     for candidato in candidatos:
         nombre_norm = _limpiar_nombre_producto(candidato["producto_completo"]["producto_nombre"])
         tokens_nombre = _tokens_significativos(nombre_norm)
-        if all(_token_presente(tp, tokens_nombre) for tp in tokens_pedido):
+        categoria_nombre = candidato["producto_completo"].get("categoria_nombre")
+        categoria_variantes: set[str] = set()
+        if isinstance(categoria_nombre, str) and categoria_nombre:
+            categoria_variantes = _category_singular_variants(categoria_nombre.lower())
+        tokens_a_validar: list[str] = []
+        for tp in tokens_pedido:
+            if tp in categoria_variantes and any(
+                otro not in categoria_variantes
+                for otro in tokens_pedido
+                if otro != tp
+            ):
+                continue
+            tokens_a_validar.append(tp)
+        if all(_token_presente(tp, tokens_nombre) for tp in tokens_a_validar):
             resultado.append(candidato)
     return resultado
 
