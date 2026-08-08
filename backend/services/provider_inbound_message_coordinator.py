@@ -7,11 +7,12 @@ client, active channel and channel-scoped commerce authority,
 conflict-safe claims one provider receipt via PostgreSQL
 ``INSERT ... ON CONFLICT DO NOTHING RETURNING``, stages a compatible
 active conversation session for the supplied commerce/client pair,
-invokes the existing non-transactional message pipeline and commits
-the staged state once. A duplicate committed receipt rolls back the
-still-open coordinator transaction and returns
-``already_processed`` without re-invoking the pipeline or creating a
-new session.
+stages and associates a draft ``borrador`` pedido to the active
+session when it does not already have one, invokes the existing
+non-transactional message pipeline and commits the staged state once.
+A duplicate committed receipt rolls back the still-open coordinator
+transaction and returns ``already_processed`` without re-invoking the
+pipeline, creating a new session or creating a new pedido.
 
 The coordinator does NOT:
 
@@ -57,6 +58,7 @@ from backend.repositories.contexto_cliente_canal_whatsapp_repository import (
 from backend.repositories.mensaje_proveedor_saliente_repository import (
     MensajeProveedorSalienteRepository,
 )
+from backend.repositories.pedido_repository import PedidoRepository
 from backend.repositories.recepcion_mensaje_proveedor_repository import (
     RecepcionMensajeProveedorRepository,
 )
@@ -192,6 +194,7 @@ class ProviderInboundMessageCoordinator:
         ) = None,
         recepcion_repo: RecepcionMensajeProveedorRepository | None = None,
         session_repo: SessionRepository | None = None,
+        pedido_repo: PedidoRepository | None = None,
         outbox_repo: MensajeProveedorSalienteRepository | None = None,
     ) -> None:
         self._session = session
@@ -208,6 +211,7 @@ class ProviderInboundMessageCoordinator:
             recepcion_repo or RecepcionMensajeProveedorRepository(session)
         )
         self._session_repo = session_repo or SessionRepository(session)
+        self._pedido_repo = pedido_repo or PedidoRepository(session)
         self._outbox_repo = (
             outbox_repo or MensajeProveedorSalienteRepository(session)
         )
@@ -299,18 +303,40 @@ class ProviderInboundMessageCoordinator:
             command.comercio_id, command.cliente_id
         )
 
-        # 5. Existing non-transactional message pipeline. Failures
+        # 5. Draft pedido prerequisite. A committed receipt must leave
+        # the active session with a non-null ``id_pedido`` so the
+        # existing ``agregar_producto`` handler can mutate the order.
+        # When the staged/existing active session has no pedido yet,
+        # we stage exactly one ``borrador`` pedido tied to that
+        # session and associate it before running the pipeline.
+        # Already-associated sessions are left untouched. A fresh
+        # session needs a flush to obtain its database ID for the
+        # ``Pedido.id_session`` foreign key; the second flush below
+        # materialises the pedido ID so we can assign it back to the
+        # session in the same transaction. No repository owns
+        # transaction control.
+        if session_row.id_pedido is None:
+            if session_row.id is None:
+                self._session.flush()
+            pedido_row = self._pedido_repo.stage_draft_for_session(
+                int(session_row.id)
+            )
+            self._session.flush()
+            session_row.id_pedido = int(pedido_row.id)
+
+        # 6. Existing non-transactional message pipeline. Failures
         # propagate to the outer ``except`` which rolls back the
         # entire transaction (including the receipt claim).
         intents = process_incoming_message(
             self._session, session_row, command.mensaje
         )
 
-        # 6. Stage durable outbound rows inside the same transaction
-        # so the receipt, session, pipeline effects and the
-        # provider-message outbox are atomic. The mapper is the only
-        # place that renders the customer responses; the coordinator
-        # never inspects the rendered text or the row payloads.
+        # 7. Stage durable outbound rows inside the same transaction
+        # so the receipt, session, pedido, association, pipeline
+        # effects and the provider-message outbox are atomic. The
+        # mapper is the only place that renders the customer
+        # responses; the coordinator never inspects the rendered text
+        # or the row payloads.
         stage_outbound_rows(
             self._session,
             session_row,
@@ -321,7 +347,7 @@ class ProviderInboundMessageCoordinator:
             outbox_repo=self._outbox_repo,
         )
 
-        # 7. Single commit, only after every staging succeeded.
+        # 8. Single commit, only after every staging succeeded.
         self._session.commit()
 
         receipt_row = self._recepcion_repo.find_by_proveedor_y_recepcion(

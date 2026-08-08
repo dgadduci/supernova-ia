@@ -68,6 +68,12 @@ SESSION_REPO_PATH = (
     / "repositories"
     / "session_repository.py"
 )
+PEDIDO_REPO_PATH = (
+    REPO_ROOT
+    / "backend"
+    / "repositories"
+    / "pedido_repository.py"
+)
 
 
 def _make_comando_valido(
@@ -202,7 +208,13 @@ def _wire_dependencies(
         if session_repo_result is None:
             session_repo_result = MagicMock(name="ConversationSession")
             session_repo_result.id = 555
+            session_repo_result.id_pedido = None
         session_repo.stage_active.return_value = session_repo_result
+
+    pedido_row = MagicMock(name="StagedPedido")
+    pedido_row.id = 999
+    pedido_repo = MagicMock(name="PedidoRepository")
+    pedido_repo.stage_draft_for_session.return_value = pedido_row
 
     coordinator = ProviderInboundMessageCoordinator(
         session=db_session,
@@ -211,6 +223,7 @@ def _wire_dependencies(
         membresia_repo=membresia_repo,
         recepcion_repo=recepcion_repo,
         session_repo=session_repo,
+        pedido_repo=pedido_repo,
     )
     return {
         "coordinator": coordinator,
@@ -218,6 +231,8 @@ def _wire_dependencies(
         "recepcion_repo": recepcion_repo,
         "session_repo": session_repo,
         "staged_session": session_repo_result,
+        "pedido_repo": pedido_repo,
+        "staged_pedido": pedido_row,
         "canal_repo": canal_repo,
         "contexto_repo": contexto_repo,
         "membresia_repo": membresia_repo,
@@ -356,13 +371,21 @@ class FirstProcessingHappyPathTest(unittest.TestCase):
         env["session_repo"].stage_active.assert_called_once_with(
             comando.comercio_id, comando.cliente_id
         )
+        env["pedido_repo"].stage_draft_for_session.assert_called_once_with(
+            555
+        )
+        self.assertEqual(env["staged_session"].id_pedido, 999)
         pipeline.assert_called_once_with(
             env["db"], env["staged_session"], comando.mensaje
         )
 
         env["db"].commit.assert_called_once_with()
         env["db"].rollback.assert_not_called()
-        env["db"].flush.assert_not_called()
+        # The coordinator flushes once to obtain the pedido ID so it
+        # can associate the session; ``stage_active`` already returned
+        # a row with an ID, so the session itself does not need a
+        # pre-flush.
+        self.assertEqual(env["db"].flush.call_count, 1)
         env["db"].begin.assert_not_called()
         env["db"].refresh.assert_not_called()
         env["db"].expire.assert_not_called()
@@ -723,10 +746,47 @@ class RollbackAtomicityTest(unittest.TestCase):
 
         self.assertIs(ctx.exception, sentinel_exc)
         env["recepcion_repo"].claim.assert_called_once()
+        env["session_repo"].stage_active.assert_called_once()
+        env["pedido_repo"].stage_draft_for_session.assert_called_once()
         env["db"].commit.assert_not_called()
         env["db"].rollback.assert_called_once_with()
-        env["db"].flush.assert_not_called()
+        # One flush is expected to materialise the pedido ID; the
+        # surrounding transaction must still be rolled back by the
+        # coordinator so no receipt / session / pedido row remains
+        # durable.
+        self.assertEqual(env["db"].flush.call_count, 1)
         env["db"].refresh.assert_not_called()
+
+    def test_pedido_staging_error_rolls_back_full_turn(self) -> None:
+        """A failure raised while staging the pedido (after the
+        receipt claim and the session acquisition) must roll back
+        the entire coordinator transaction. No receipt, session or
+        pedido row remains durable.
+        """
+        comando = _make_comando_valido()
+        canal = _make_canal_dedicado(comercio_id=3)
+        env = _wire_dependencies(
+            canal=canal, existing_context=None
+        )
+
+        sentinel_exc = RuntimeError(
+            "pedido staging primitive raised"
+        )
+        env["pedido_repo"].stage_draft_for_session.side_effect = (
+            sentinel_exc
+        )
+
+        with patch.object(coord_mod, "process_incoming_message") as pipeline:
+            with self.assertRaises(RuntimeError) as ctx:
+                env["coordinator"].process(comando)
+
+        self.assertIs(ctx.exception, sentinel_exc)
+        env["recepcion_repo"].claim.assert_called_once()
+        env["session_repo"].stage_active.assert_called_once()
+        env["pedido_repo"].stage_draft_for_session.assert_called_once()
+        pipeline.assert_not_called()
+        env["db"].commit.assert_not_called()
+        env["db"].rollback.assert_called_once_with()
 
     def test_concurrent_claim_after_rollback_can_succeed(self) -> None:
         """A failed first attempt must not be treated as
@@ -760,6 +820,212 @@ class RollbackAtomicityTest(unittest.TestCase):
         self.assertEqual(env["db"].commit.call_count, 1)
         self.assertEqual(env["db"].rollback.call_count, 1)
         pipeline.assert_called_once()
+
+
+class DraftPedidoStagingTest(unittest.TestCase):
+    """Narrow coverage for the draft-pedido prerequisite.
+
+    The coordinator MUST:
+
+    * Stage one ``borrador`` pedido bound to the active session
+      when the staged/existing session has no ``id_pedido`` yet.
+    * Leave an already-associated session untouched.
+    * Never stage or commit a pedido when the receipt is invalid
+      or duplicate, when the channel / commerce authority refuses,
+      or when a duplicate receipt short-circuits before session
+      acquisition.
+    * Preserve the existing one-commit / one-rollback transaction
+      ownership around the new staging step.
+    """
+
+    def setUp(self) -> None:
+        importlib.reload(coord_mod)
+
+    def test_first_processing_stages_exactly_one_draft_pedido(
+        self,
+    ) -> None:
+        comando = _make_comando_valido()
+        canal = _make_canal_dedicado(comercio_id=3)
+        env = _wire_dependencies(
+            canal=canal, existing_context=None
+        )
+
+        with patch.object(
+            coord_mod, "process_incoming_message", return_value=[]
+        ) as pipeline:
+            outcome = env["coordinator"].process(comando)
+
+        self.assertEqual(
+            outcome.status,
+            ProviderInboundMessageStatus.PROCESSED,
+        )
+        env["pedido_repo"].stage_draft_for_session.assert_called_once_with(
+            int(env["staged_session"].id)
+        )
+        self.assertEqual(
+            env["staged_session"].id_pedido,
+            int(env["staged_pedido"].id),
+        )
+        pipeline.assert_called_once_with(
+            env["db"], env["staged_session"], comando.mensaje
+        )
+        env["db"].commit.assert_called_once_with()
+        env["db"].rollback.assert_not_called()
+
+    def test_existing_associated_session_is_not_repedidoed(self) -> None:
+        """When the staged/existing session already has a non-null
+        ``id_pedido``, the coordinator MUST NOT stage or replace any
+        pedido. The pipeline runs unchanged.
+        """
+        comando = _make_comando_valido()
+        canal = _make_canal_dedicado(comercio_id=3)
+        env = _wire_dependencies(
+            canal=canal, existing_context=None
+        )
+        env["staged_session"].id_pedido = 7777
+
+        with patch.object(
+            coord_mod, "process_incoming_message", return_value=[]
+        ) as pipeline:
+            outcome = env["coordinator"].process(comando)
+
+        self.assertEqual(
+            outcome.status,
+            ProviderInboundMessageStatus.PROCESSED,
+        )
+        env["pedido_repo"].stage_draft_for_session.assert_not_called()
+        self.assertEqual(env["staged_session"].id_pedido, 7777)
+        # No flush needed when nothing changed.
+        env["db"].flush.assert_not_called()
+        pipeline.assert_called_once_with(
+            env["db"], env["staged_session"], comando.mensaje
+        )
+        env["db"].commit.assert_called_once_with()
+        env["db"].rollback.assert_not_called()
+
+    def test_duplicate_receipt_does_not_stage_pedido(self) -> None:
+        comando = _make_comando_valido()
+        canal = _make_canal_dedicado(comercio_id=3)
+        env = _wire_dependencies(
+            canal=canal, existing_context=None
+        )
+        env["recepcion_repo"].claim.return_value = None
+
+        with patch.object(coord_mod, "process_incoming_message") as pipeline:
+            outcome = env["coordinator"].process(comando)
+
+        self.assertEqual(
+            outcome.status,
+            ProviderInboundMessageStatus.ALREADY_PROCESSED,
+        )
+        env["pedido_repo"].stage_draft_for_session.assert_not_called()
+        env["session_repo"].stage_active.assert_not_called()
+        pipeline.assert_not_called()
+        env["db"].commit.assert_not_called()
+        env["db"].rollback.assert_called_once_with()
+        env["db"].flush.assert_not_called()
+
+    def test_invalid_context_does_not_stage_pedido(self) -> None:
+        """An invalid context (revoked shared membership, missing
+        client, etc.) must never reach the pedido staging step.
+        """
+        comando = _make_comando_valido(comercio_id=3)
+        canal = _make_canal_compartido()
+        context = MagicMock(name="ContextoClienteCanalWhatsapp")
+        context.comercio_id_seleccionado = 3
+        context.comercio_id_cambio_pendiente = None
+        context.mensaje_original_pendiente = None
+        env = _wire_dependencies(
+            canal=canal,
+            existing_context=context,
+            membership_present=False,
+        )
+
+        with patch.object(coord_mod, "process_incoming_message") as pipeline:
+            outcome = env["coordinator"].process(comando)
+
+        self.assertEqual(
+            outcome.status,
+            ProviderInboundMessageStatus.INVALID_CONTEXT,
+        )
+        env["pedido_repo"].stage_draft_for_session.assert_not_called()
+        env["session_repo"].stage_active.assert_not_called()
+        pipeline.assert_not_called()
+        env["db"].commit.assert_not_called()
+        env["db"].rollback.assert_not_called()
+        env["db"].flush.assert_not_called()
+
+    def test_staging_order_receipt_then_session_then_pedido_then_pipeline(
+        self,
+    ) -> None:
+        """Verify the call ordering: receipt claim, session stage,
+        pedido stage, pipeline, then a single commit. The pedido
+        staging helper is invoked AFTER the session is staged and
+        BEFORE the pipeline runs.
+        """
+        comando = _make_comando_valido()
+        canal = _make_canal_dedicado(comercio_id=3)
+        env = _wire_dependencies(
+            canal=canal, existing_context=None
+        )
+        order: list[str] = []
+
+        def _record(label, value):
+            order.append(label)
+            return value
+
+        env["recepcion_repo"].claim.side_effect = lambda *a, **k: _record(
+            "claim", 1
+        )
+        env["session_repo"].stage_active.side_effect = (
+            lambda *a, **k: _record("stage_session", env["staged_session"])
+        )
+        env["pedido_repo"].stage_draft_for_session.side_effect = (
+            lambda *a, **k: _record("stage_pedido", env["staged_pedido"])
+        )
+        env["db"].commit.side_effect = lambda: order.append("commit")
+
+        def _pipeline(*args, **kwargs):
+            order.append("pipeline")
+            return []
+
+        with patch.object(
+            coord_mod, "process_incoming_message", side_effect=_pipeline
+        ):
+            env["coordinator"].process(comando)
+
+        self.assertEqual(
+            order,
+            ["claim", "stage_session", "stage_pedido", "pipeline", "commit"],
+        )
+
+    def test_repository_has_no_transaction_control(self) -> None:
+        """The pedido repository's ``stage_draft_for_session`` MUST
+        NOT call ``flush``, ``commit``, ``rollback`` or ``begin``;
+        the coordinator is the only transaction owner.
+        """
+        tree = _parse(PEDIDO_REPO_PATH)
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+            ):
+                continue
+            if node.func.attr not in {
+                "flush",
+                "commit",
+                "rollback",
+                "begin",
+            }:
+                continue
+            enclosing = _enclosing_function(node, tree)
+            self.assertIsNotNone(enclosing)
+            if enclosing is not None:
+                self.assertNotEqual(
+                    enclosing.name,
+                    "stage_draft_for_session",
+                    "stage_draft_for_session MUST NOT flush or commit",
+                )
 
 
 def _parse(path: Path) -> ast.Module:

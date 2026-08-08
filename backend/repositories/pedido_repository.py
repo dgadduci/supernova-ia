@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 
-from backend.models import MediosPago, MetodosEntrega, Pedido
+from backend.models import EstadoPedido, MediosPago, MetodosEntrega, Pedido
 
 
 class PedidoRepository:
@@ -22,3 +22,11 @@ class PedidoRepository:
 
     def flush(self) -> None:
         self._session.flush()
+
+    def stage_draft_for_session(self, id_session: int) -> Pedido:
+        row = Pedido(
+            id_session=id_session,
+            estado_pedido=EstadoPedido.BORRADOR,
+        )
+        self._session.add(row)
+        return row

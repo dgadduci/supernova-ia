@@ -43,7 +43,15 @@ from backend.models import (
     ComercioCanalCompartido,
     ContextoClienteCanalWhatsapp,
     EstadoComercio,
+    EstadoPedido,
+    EstadoSession,
+    MensajeProveedorSaliente,
+    Pedido,
+    PedidoProducto,
     RecepcionMensajeProveedor,
+)
+from backend.models import (
+    Session as SessionModel,
 )
 from backend.repositories.recepcion_mensaje_proveedor_repository import (
     RecepcionMensajeProveedorRepository,
@@ -289,6 +297,134 @@ def _count_recepciones(
         )
     ).all()
     return len(row)
+
+
+def _seed_active_session(
+    comercio_id: int,
+    cliente_id: int,
+    id_pedido: int | None = None,
+) -> int:
+    with TestingSessionLocal() as session, session.begin():
+        row = SessionModel(
+            id_comercio=comercio_id,
+            id_cliente=cliente_id,
+            id_pedido=id_pedido,
+            estado_session=EstadoSession.ACTIVA,
+        )
+        session.add(row)
+        session.flush()
+        return int(row.id)
+
+
+def _seed_draft_pedido(id_session: int) -> int:
+    with TestingSessionLocal() as session, session.begin():
+        row = Pedido(
+            id_session=id_session,
+            estado_pedido=EstadoPedido.BORRADOR,
+        )
+        session.add(row)
+        session.flush()
+        return int(row.id)
+
+
+def _delete_outbox_for_comercio(comercio_id: int) -> None:
+    with TestingSessionLocal() as session, session.begin():
+        session.execute(
+            delete(MensajeProveedorSaliente).where(
+                MensajeProveedorSaliente.recepcion_mensaje_proveedor_id.in_(
+                    select(
+                        RecepcionMensajeProveedor.id
+                    ).where(
+                        RecepcionMensajeProveedor.comercio_id
+                        == comercio_id
+                    )
+                )
+            )
+        )
+
+
+def _delete_pedidos_for_comercio(comercio_id: int) -> None:
+    with TestingSessionLocal() as session, session.begin():
+        session.execute(
+            delete(PedidoProducto).where(
+                PedidoProducto.id_pedido.in_(
+                    select(Pedido.id).where(
+                        Pedido.id_session.in_(
+                            select(SessionModel.id).where(
+                                SessionModel.id_comercio == comercio_id
+                            )
+                        )
+                    )
+                )
+            )
+        )
+        # ``sessions.id_pedido`` is FK RESTRICT, so we must first
+        # NULL out the session FK before deleting the pedido rows.
+        session.execute(
+            text(
+                "UPDATE sessions SET id_pedido = NULL "
+                "WHERE id_comercio = :cid"
+            ),
+            {"cid": comercio_id},
+        )
+        session.execute(
+            delete(Pedido).where(
+                Pedido.id_session.in_(
+                    select(SessionModel.id).where(
+                        SessionModel.id_comercio == comercio_id
+                    )
+                )
+            )
+        )
+
+
+def _delete_sessions_for_comercio(comercio_id: int) -> None:
+    with TestingSessionLocal() as session, session.begin():
+        session.execute(
+            delete(SessionModel).where(
+                SessionModel.id_comercio == comercio_id
+            )
+        )
+
+
+def _cleanup_provider_inbound_artifacts(comercio_id: int) -> None:
+    _delete_outbox_for_comercio(comercio_id)
+    _delete_pedidos_for_comercio(comercio_id)
+    _delete_sessions_for_comercio(comercio_id)
+
+
+def _load_session(cliente_id: int, comercio_id: int) -> SessionModel:
+    with TestingSessionLocal() as session:
+        return session.execute(
+            select(SessionModel).where(
+                SessionModel.id_cliente == cliente_id,
+                SessionModel.id_comercio == comercio_id,
+            )
+        ).scalar_one()
+
+
+def _count_pedidos_for_session(session_id: int) -> int:
+    with TestingSessionLocal() as session:
+        return len(
+            session.execute(
+                select(Pedido).where(Pedido.id_session == session_id)
+            ).all()
+        )
+
+
+def _count_all_pedidos_for_comercio(comercio_id: int) -> int:
+    with TestingSessionLocal() as session:
+        return len(
+            session.execute(
+                select(Pedido).where(
+                    Pedido.id_session.in_(
+                        select(SessionModel.id).where(
+                            SessionModel.id_comercio == comercio_id
+                        )
+                    )
+                )
+            ).all()
+        )
 
 
 class ReceiptClaimIdempotencyTest(unittest.TestCase):
@@ -591,6 +727,315 @@ class SharedChannelMembershipRevokedIntegrationTest(unittest.TestCase):
         self.assertEqual(
             self._count_all_recepciones(),
             recepciones_before,
+        )
+
+
+class DraftPedidoStagingIntegrationTest(unittest.TestCase):
+    """Real PostgreSQL proof that the provider inbound coordinator
+    stages and associates exactly one ``borrador`` pedido to the
+    active conversation session before the existing message pipeline
+    runs.
+
+    Scenarios covered:
+
+    * First valid receipt, no pre-existing session: one draft pedido
+      is persisted and bound to the session.
+    * Existing active session with ``id_pedido is null``: one new
+      draft pedido is created and associated; the previous session
+      row is preserved with the new pedido FK.
+    * Existing active session already associated: no new pedido is
+      created.
+    * Duplicate receipt: no session, no pedido, no pipeline effects
+      remain durable.
+    * Forced post-staging technical failure: receipt, session,
+      pedido and association are rolled back; a later retry is
+      eligible and re-creates the pedido.
+    """
+
+    def setUp(self) -> None:
+        suffix = _suffix()
+        self.comercio_id = _seed_comercio(suffix)
+        self.cliente_id = _seed_cliente(suffix + "C")
+        self.destination = f"+54991{suffix[:8]}"
+        self.canal_id = _seed_dedicated_channel(
+            suffix + "D", self.comercio_id, self.destination
+        )
+        self.proveedor = "twilio"
+        self.identificador = f"SM-{suffix}"
+        # Cleanups run LIFO: pedidos/sessions/outbox must be removed
+        # before the foreign keys to comercio/cliente/canal disappear.
+        self.addCleanup(_delete_comercio, self.comercio_id)
+        self.addCleanup(_delete_cliente, self.cliente_id)
+        self.addCleanup(_delete_canales_by_destination, self.destination)
+        self.addCleanup(_delete_recepciones_by_comercio, self.comercio_id)
+        self.addCleanup(_cleanup_provider_inbound_artifacts, self.comercio_id)
+
+    def _command(
+        self, identificador: str | None = None
+    ) -> ProviderInboundMessageCommand:
+        return ProviderInboundMessageCommand(
+            proveedor=self.proveedor,
+            identificador_recepcion=(
+                identificador if identificador is not None
+                else self.identificador
+            ),
+            canal_id=self.canal_id,
+            cliente_id=self.cliente_id,
+            comercio_id=self.comercio_id,
+            mensaje="hola",
+            destinatario_e164=self.destination,
+        )
+
+    def _open_coordinator(self) -> ProviderInboundMessageCoordinator:
+        return ProviderInboundMessageCoordinator(
+            session=TestingSessionLocal(),
+        )
+
+    def test_first_receipt_creates_one_draft_pedido_and_associates_session(
+        self,
+    ) -> None:
+        coordinator = self._open_coordinator()
+        command = self._command()
+        with patch(
+            "backend.services.provider_inbound_message_coordinator"
+            ".process_incoming_message",
+            return_value=[],
+        ) as pipeline:
+            outcome = coordinator.process(command)
+
+        self.assertEqual(
+            outcome.status,
+            ProviderInboundMessageStatus.PROCESSED,
+        )
+        pipeline.assert_called_once()
+
+        session_row = _load_session(self.cliente_id, self.comercio_id)
+        self.assertIsNotNone(session_row.id_pedido)
+        self.assertEqual(
+            _count_pedidos_for_session(int(session_row.id)),
+            1,
+            "exactly one draft pedido must be staged per first receipt",
+        )
+
+        with TestingSessionLocal() as session:
+            pedido = session.execute(
+                select(Pedido).where(
+                    Pedido.id_session == int(session_row.id)
+                )
+            ).scalar_one()
+            self.assertEqual(pedido.estado_pedido, EstadoPedido.BORRADOR)
+            self.assertEqual(
+                int(pedido.id_session), int(session_row.id)
+            )
+            assert session_row.id_pedido is not None
+            assert pedido.id is not None
+            self.assertEqual(int(pedido.id), int(session_row.id_pedido))
+
+    def test_existing_orderless_session_receives_one_new_pedido(
+        self,
+    ) -> None:
+        """An active session with ``id_pedido is null`` MUST receive
+        exactly one new draft pedido associated to it.
+        """
+        existing_session_id = _seed_active_session(
+            self.comercio_id, self.cliente_id, id_pedido=None
+        )
+        self.assertIsNotNone(existing_session_id)
+
+        coordinator = self._open_coordinator()
+        command = self._command()
+        with patch(
+            "backend.services.provider_inbound_message_coordinator"
+            ".process_incoming_message",
+            return_value=[],
+        ) as pipeline:
+            outcome = coordinator.process(command)
+
+        self.assertEqual(
+            outcome.status,
+            ProviderInboundMessageStatus.PROCESSED,
+        )
+        pipeline.assert_called_once()
+
+        session_row = _load_session(self.cliente_id, self.comercio_id)
+        self.assertEqual(int(session_row.id), existing_session_id)
+        self.assertIsNotNone(session_row.id_pedido)
+        self.assertEqual(
+            _count_pedidos_for_session(existing_session_id),
+            1,
+            "the existing active session must own exactly one pedido",
+        )
+
+        with TestingSessionLocal() as session:
+            pedido = session.execute(
+                select(Pedido).where(
+                    Pedido.id_session == existing_session_id
+                )
+            ).scalar_one()
+            self.assertEqual(pedido.estado_pedido, EstadoPedido.BORRADOR)
+            assert session_row.id_pedido is not None
+            assert pedido.id is not None
+            self.assertEqual(int(pedido.id), int(session_row.id_pedido))
+
+    def test_existing_associated_session_creates_no_new_pedido(
+        self,
+    ) -> None:
+        existing_session_id = _seed_active_session(
+            self.comercio_id, self.cliente_id, id_pedido=None
+        )
+        existing_pedido_id = _seed_draft_pedido(existing_session_id)
+        with TestingSessionLocal() as session, session.begin():
+            sess = session.get(SessionModel, existing_session_id)
+            assert sess is not None
+            sess.id_pedido = existing_pedido_id
+
+        pedidos_before = _count_all_pedidos_for_comercio(self.comercio_id)
+
+        coordinator = self._open_coordinator()
+        command = self._command()
+        with patch(
+            "backend.services.provider_inbound_message_coordinator"
+            ".process_incoming_message",
+            return_value=[],
+        ) as pipeline:
+            outcome = coordinator.process(command)
+
+        self.assertEqual(
+            outcome.status,
+            ProviderInboundMessageStatus.PROCESSED,
+        )
+        pipeline.assert_called_once()
+
+        self.assertEqual(
+            _count_all_pedidos_for_comercio(self.comercio_id),
+            pedidos_before,
+            "already-associated session must not get a new pedido",
+        )
+        session_row = _load_session(self.cliente_id, self.comercio_id)
+        assert session_row.id_pedido is not None
+        self.assertEqual(int(session_row.id_pedido), existing_pedido_id)
+
+    def test_duplicate_receipt_creates_no_session_and_no_pedido(
+        self,
+    ) -> None:
+        """A first receipt commits; a second receipt for the same
+        (proveedor, identificador_recepcion) pair MUST return
+        ``already_processed`` and must not create a new session or a
+        new pedido.
+        """
+        coordinator_a = self._open_coordinator()
+        with patch(
+            "backend.services.provider_inbound_message_coordinator"
+            ".process_incoming_message",
+            return_value=[],
+        ):
+            first = coordinator_a.process(self._command())
+        self.assertEqual(
+            first.status,
+            ProviderInboundMessageStatus.PROCESSED,
+        )
+
+        pedidos_after_first = _count_all_pedidos_for_comercio(
+            self.comercio_id
+        )
+        sessions_after_first = 1
+
+        coordinator_b = self._open_coordinator()
+        with patch(
+            "backend.services.provider_inbound_message_coordinator"
+            ".process_incoming_message",
+        ) as pipeline:
+            second = coordinator_b.process(self._command())
+
+        self.assertEqual(
+            second.status,
+            ProviderInboundMessageStatus.ALREADY_PROCESSED,
+        )
+        pipeline.assert_not_called()
+        self.assertEqual(
+            _count_all_pedidos_for_comercio(self.comercio_id),
+            pedidos_after_first,
+            "duplicate receipt must not create a new pedido",
+        )
+        with TestingSessionLocal() as session:
+            sessions_now = len(
+                session.execute(
+                    select(SessionModel).where(
+                        SessionModel.id_cliente == self.cliente_id,
+                        SessionModel.id_comercio == self.comercio_id,
+                    )
+                ).all()
+            )
+        self.assertEqual(sessions_now, sessions_after_first)
+
+    def test_post_staging_failure_rolls_back_and_allows_retry(
+        self,
+    ) -> None:
+        """A forced pipeline failure AFTER the pedido has been staged
+        must roll back the receipt, session, pedido and association.
+        A subsequent valid retry must succeed and re-create exactly
+        one draft pedido.
+        """
+        coordinator = self._open_coordinator()
+        identifier_first = self.identificador
+
+        with patch(
+            "backend.services.provider_inbound_message_coordinator"
+            ".process_incoming_message",
+            side_effect=RuntimeError("forced post-staging failure"),
+        ):
+            with self.assertRaises(RuntimeError):
+                coordinator.process(self._command(identifier_first))
+
+        self.assertEqual(
+            _count_all_pedidos_for_comercio(self.comercio_id),
+            0,
+            "rolled-back transaction must leave no pedido",
+        )
+        with TestingSessionLocal() as session:
+            sessions_now = len(
+                session.execute(
+                    select(SessionModel).where(
+                        SessionModel.id_comercio == self.comercio_id
+                    )
+                ).all()
+            )
+            self.assertEqual(sessions_now, 0)
+            recepciones_now = len(
+                session.execute(
+                    select(RecepcionMensajeProveedor).where(
+                        RecepcionMensajeProveedor.comercio_id
+                        == self.comercio_id
+                    )
+                ).all()
+            )
+            self.assertEqual(recepciones_now, 0)
+
+        coordinator_retry = self._open_coordinator()
+        with patch(
+            "backend.services.provider_inbound_message_coordinator"
+            ".process_incoming_message",
+            return_value=[],
+        ) as pipeline:
+            retry_outcome = coordinator_retry.process(
+                self._command(identifier_first)
+            )
+
+        self.assertEqual(
+            retry_outcome.status,
+            ProviderInboundMessageStatus.PROCESSED,
+        )
+        pipeline.assert_called_once()
+        self.assertEqual(
+            _count_all_pedidos_for_comercio(self.comercio_id),
+            1,
+            "retry must create exactly one pedido",
+        )
+        session_row = _load_session(self.cliente_id, self.comercio_id)
+        self.assertIsNotNone(session_row.id_pedido)
+        self.assertEqual(
+            _count_pedidos_for_session(int(session_row.id)),
+            1,
         )
 
 
