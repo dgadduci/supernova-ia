@@ -30,6 +30,10 @@ class RailwayTailscaleEntrypointTest(unittest.TestCase):
         self.assertIn("python -m alembic upgrade head", railway_toml)
         self.assertIn('startCommand = "./docker-entrypoint.sh"', railway_toml)
 
+    def test_tailscale_image_pin_aligns_with_experiment(self):
+        dockerfile = (_ROOT / "Dockerfile").read_text()
+        self.assertIn("FROM tailscale/tailscale:v1.102.2 AS tailscale", dockerfile)
+
     def test_transport_diagnostic_reports_received_bytes_without_response_body(self):
         from backend.scripts.check_railway_ollama_contracts import (
             run_transport_diagnostic,

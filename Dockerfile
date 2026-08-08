@@ -1,4 +1,4 @@
-FROM tailscale/tailscale:v1.98.9 AS tailscale
+FROM tailscale/tailscale:v1.102.2 AS tailscale
 
 FROM python:3.13-slim
 

@@ -106,7 +106,7 @@ vectors, database URLs, or raw Tailscale status:
    PYTHONPATH=. python -m backend.scripts.check_railway_ollama_contracts --transport-diagnostic
    ```
 
-   It must report the connection result, HTTP status, elapsed time, received-byte count, and an error category only. A `200` with zero bytes remains a failed diagnostic; do not treat `tailscale ping` or the Ollama access log alone as proof of returned HTTP bytes.
+   It must report the connection result, HTTP status, elapsed time, received-byte count, and an error category only. A `200` with zero bytes remains a failed diagnostic; do not treat `tailscale ping` or the Ollama access log alone as proof of returned HTTP bytes. Only after this diagnostic reports `category=response_bytes_received`, proceed to the next step.
 5. In a Railway shell for the integrated web service, run:
 
    ```sh
