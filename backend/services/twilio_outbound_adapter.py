@@ -167,7 +167,6 @@ def send(
             from_=request.sender_e164,
             body=request.cuerpo,
             status_callback=request.status_callback_url,
-            idempotency_key=request.idempotency_key,
         )
     except _TwilioTransportError as exc:
         return _retryable(exc, OutboundFailureCategory.RETRYABLE_TIMEOUT, "transport_error")

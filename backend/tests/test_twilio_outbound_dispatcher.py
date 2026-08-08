@@ -18,6 +18,7 @@ import importlib
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock
 
 from backend.models.mensaje_proveedor_saliente import (
@@ -39,11 +40,48 @@ from backend.services.outbound_message_dispatcher import (
     OutboundMessageDispatcher,
 )
 from backend.services.twilio_outbound_adapter import (
+    TwilioMessagesClient,
     TwilioSendResult,
     TwilioSendStatus,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+class _StrictTwilioMessagesClient:
+    """Strict Twilio ``9.10.9`` Message-create stand-in.
+
+    The stand-in reproduces the pinned SDK's exact ``create`` keyword
+    signature (``to``, ``from_``, ``body``, ``status_callback``). Any
+    other keyword argument — including the previously-passes
+    ``idempotency_key`` — raises ``TypeError`` at the seam, the same
+    way the real SDK would. Each call records the four supported
+    fields so the focused test can assert the precise payload shape
+    without logging bodies, addresses, SIDs or credentials.
+    """
+
+    __slots__ = ("_sid", "calls")
+
+    def __init__(self, sid: str) -> None:
+        self._sid = sid
+        self.calls: list[dict[str, str]] = []
+
+    def create(
+        self,
+        *,
+        to: str,
+        from_: str,
+        body: str,
+        status_callback: str,
+    ) -> MagicMock:
+        received = {
+            "to": to,
+            "from_": from_,
+            "body": body,
+            "status_callback": status_callback,
+        }
+        self.calls.append(received)
+        return MagicMock(sid=self._sid)
 
 
 def _settings_stub(
@@ -104,12 +142,13 @@ class DispatchAcceptedSendTest(unittest.TestCase):
         outbox_repo.claim_due.return_value = _claimed_row()
         outbox_repo.finalize_accepted.return_value = True
 
-        messages_client = MagicMock(name="TwilioMessagesClient")
-        messages_client.create.return_value = MagicMock(sid="SM-ABC")
+        messages_client = _StrictTwilioMessagesClient(sid="SM-ABC")
 
         dispatcher = OutboundMessageDispatcher(
             session_factory=lambda: db_session,
-            messages_client=messages_client,
+            messages_client=cast(
+                TwilioMessagesClient, messages_client
+            ),
             config=OutboundDispatchConfig(
                 sender_e164="+5491100000000",
                 status_callback_url="https://example.test/cb",
@@ -134,16 +173,36 @@ class DispatchAcceptedSendTest(unittest.TestCase):
             lease_token="lease-token-1",
             identificador_proveedor="SM-ABC",
         )
-        messages_client.create.assert_called_once()
-        kwargs = messages_client.create.call_args.kwargs
-        self.assertEqual(kwargs["to"], "+5491155556666")
-        self.assertEqual(kwargs["from_"], "+5491100000000")
-        self.assertEqual(kwargs["body"], "hola")
-        self.assertEqual(kwargs["status_callback"], "https://example.test/cb")
-        self.assertEqual(kwargs["idempotency_key"], "outbox-11")
+        self.assertEqual(len(messages_client.calls), 1)
+        sent = messages_client.calls[0]
+        self.assertEqual(set(sent.keys()), {"to", "from_", "body", "status_callback"})
+        self.assertEqual(sent["to"], "+5491155556666")
+        self.assertEqual(sent["from_"], "+5491100000000")
+        self.assertEqual(sent["body"], "hola")
+        self.assertEqual(sent["status_callback"], "https://example.test/cb")
+        self.assertNotIn("idempotency_key", sent)
         self.assertGreaterEqual(db_session.commit.call_count, 2)
         self.assertEqual(db_session.close.call_count, 2)
         self.assertEqual(db_session.rollback.call_count, 0)
+
+    def test_strict_seam_rejects_unsupported_keyword(self) -> None:
+        """The strict stand-in is the explicit proof that the
+        production call shape contains only the four supported SDK
+        arguments. Any attempt to forward ``idempotency_key`` — or
+        any other unsupported keyword — is rejected at the seam, the
+        same way the real Twilio ``9.10.9`` SDK rejects it."""
+
+        messages_client = _StrictTwilioMessagesClient(sid="SM-ABC")
+
+        with self.assertRaises(TypeError):
+            messages_client.create(
+                to="+5491155556666",
+                from_="+5491100000000",
+                body="hola",
+                status_callback="https://example.test/cb",
+                idempotency_key="outbox-11",  # type: ignore[call-arg]
+            )
+        self.assertEqual(messages_client.calls, [])
 
     def test_dispatcher_returns_no_due_row_when_claim_misses(self) -> None:
         db_session = MagicMock(name="DatabaseSession")
