@@ -21,6 +21,11 @@ from backend.models.pedido import EstadoPedido, Pedido
 from backend.models.pedido_producto import PedidoProducto
 from backend.models.precio import Precio
 from backend.models.presentaciones import Presentacion
+from backend.models.procesamiento_mensaje_proveedor import (
+    ProcesamientoMensajeProveedor,
+    ProcesamientoMensajeProveedorEstado,
+    ProcesamientoMensajeProveedorFailureCategory,
+)
 from backend.models.producto import Producto
 from backend.models.producto_alias import ProductoAlias
 from backend.models.producto_presentacion import ProductoPresentacion
@@ -57,6 +62,9 @@ __all__ = [
     "PedidoProducto",
     "Precio",
     "Presentacion",
+    "ProcesamientoMensajeProveedor",
+    "ProcesamientoMensajeProveedorEstado",
+    "ProcesamientoMensajeProveedorFailureCategory",
     "Producto",
     "ProductoAlias",
     "ProductoPresentacion",

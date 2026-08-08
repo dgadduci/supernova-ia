@@ -1,10 +1,9 @@
-"""Phase-5.5 Twilio WhatsApp inbound webhook router.
+"""Phase-7.4 Twilio WhatsApp inbound webhook router.
 
 The router is a narrow synchronous ``POST`` endpoint that converts
-one Twilio WhatsApp inbound form request into the existing
-Phase-5.4 routing decision + receipt transaction. It is the ONLY
-HTTP entry point for the new provider ingress and performs six
-distinct responsibilities:
+one Twilio WhatsApp inbound form request into the Phase-7.4
+acceptance transaction. It is the ONLY HTTP entry point for the new
+provider ingress and performs six distinct responsibilities:
 
 1. Read the form fields, the ``X-Twilio-Signature`` header and the
    configured public webhook base URL.
@@ -13,12 +12,15 @@ distinct responsibilities:
 3. Resolve an existing active client from the canonical ``From``
    number and the active dedicated destination channel from the
    canonical ``To`` number using the existing 5.1 boundary.
-4. Build the exact Phase-5.4 ``ProviderInboundMessageCommand`` and
-   invoke the coordinator with the request-owned database session.
+4. Build the exact Phase-7.4 ``ProviderInboundMessageCommand`` and
+   invoke the coordinator's ``accept`` method with the
+   request-owned database session. The coordinator stages exactly
+   one pending deferred work item and commits once; the webhook
+   path MUST NOT call classifier, recognizer, session/pedido
+   staging, intent pipeline, response mapping or outbound staging.
 5. Translate the coordinator outcome into the documented TwiML
-   shapes: acknowledgement for first processing, empty TwiML for
-   duplicate, safe generic control for the remaining business
-   rejections.
+   shapes: empty TwiML for first acceptance or duplicate, safe
+   generic control for the remaining business rejections.
 6. Propagate technical failures as ``5xx`` so Twilio can retry;
    never translate a coordinator exception into a business outcome.
 
@@ -299,7 +301,7 @@ def post_twilio_whatsapp_inbound(
 
     try:
         coordinator = ProviderInboundMessageCoordinator(session)
-        outcome = coordinator.process(
+        outcome = coordinator.accept(
             ProviderInboundMessageCommand(
                 proveedor="twilio",
                 identificador_recepcion=envelope.message_sid,
@@ -322,7 +324,7 @@ def post_twilio_whatsapp_inbound(
         )
         return _xml_response(_safe_control_twiml_response_body(), 200)
 
-    if outcome.status is ProviderInboundMessageStatus.PROCESSED:
+    if outcome.status is ProviderInboundMessageStatus.ACCEPTED:
         logger.info(
             "twilio_webhook_first_processing",
             extra={
@@ -331,7 +333,7 @@ def post_twilio_whatsapp_inbound(
                 "comercio_id": outcome.comercio_id,
                 "cliente_id": outcome.cliente_id,
                 "receipt_id": outcome.receipt_id,
-                "session_id": outcome.session_id,
+                "procesamiento_id": outcome.procesamiento_id,
                 "resolution_source": outcome.resolution_source,
             },
         )

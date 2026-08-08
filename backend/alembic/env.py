@@ -28,6 +28,9 @@ from backend.models.pedido import Pedido
 from backend.models.pedido_producto import PedidoProducto
 from backend.models.precio import Precio
 from backend.models.presentaciones import Presentacion
+from backend.models.procesamiento_mensaje_proveedor import (
+    ProcesamientoMensajeProveedor,
+)
 from backend.models.producto import Producto
 from backend.models.producto_alias import ProductoAlias
 from backend.models.producto_presentacion import ProductoPresentacion

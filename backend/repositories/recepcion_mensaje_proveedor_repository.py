@@ -44,6 +44,13 @@ class RecepcionMensajeProveedorRepository:
         )
         return self._session.execute(stmt).scalar_one_or_none()
 
+    def find_by_id(
+        self, recepcion_id: int
+    ) -> RecepcionMensajeProveedor | None:
+        return self._session.get(
+            RecepcionMensajeProveedor, int(recepcion_id)
+        )
+
     def claim(
         self,
         proveedor: str,

@@ -1,42 +1,34 @@
-"""Phase-5.4 provider-message receipt core tests.
+"""Phase-7.4 provider-message acceptance core tests.
 
-Focused coverage for:
+Focused coverage for the acceptance boundary only:
 
-* first processing (committed receipt + staged session + pipeline);
-* duplicate idempotency (second delivery returns ``already_processed``
-  and never invokes the pipeline a second time);
+* first acceptance (commits receipt + one pending work item);
+* duplicate idempotency (second delivery returns
+  ``already_processed`` and never stages a second work item);
 * concurrent claim semantics (the ``ON CONFLICT DO NOTHING
   RETURNING`` empty-result is treated as ``already_processed`` and
-  never as a business pipeline retry);
+  never as a second acceptance);
 * dedicated and selected-shared authority, including the
   ``comercio_id_cambio_pendiente`` pending-only invariant;
 * rollback atomicity (technical failure rolls back receipt and
-  staged effects without leaking half-committed state);
-* static boundaries (only the coordinator calls
-  ``commit`` / ``rollback``; the coordinator never imports HTTP,
-  provider SDK, TwiML or delivery callback surfaces);
-* preservation of the existing local incoming-message endpoint and
-  transactional processor surface.
+  staged work item without leaking half-committed state);
+* static boundaries (only the coordinator owns ``commit`` /
+  ``rollback``; the coordinator never invokes the pipeline,
+  classifier or recognizer during acceptance).
+
+The acceptance boundary MUST NOT invoke the classifier, recognizer,
+session/pedido staging, message pipeline, response mapping or
+outbound mapper. Deferred processing is exercised in
+``test_run_inbound_processing_cli.py`` and the integration tests.
 """
 from __future__ import annotations
 
 import ast
 import importlib
-import inspect
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from backend.intents.orchestration import (
-    incoming_message_orchestrator as orchestrator_module,
-)
-from backend.intents.orchestration import (
-    transactional_message_processor as processor_module,
-)
-from backend.intents.orchestration.transactional_message_processor import (
-    process_incoming_message_transactional,
-)
-from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.models.canal_whatsapp import CanalWhatsappMode
 from backend.repositories.session_repository import SessionRepository
 from backend.services import provider_inbound_message_coordinator as coord_mod
@@ -67,12 +59,6 @@ SESSION_REPO_PATH = (
     / "backend"
     / "repositories"
     / "session_repository.py"
-)
-PEDIDO_REPO_PATH = (
-    REPO_ROOT
-    / "backend"
-    / "repositories"
-    / "pedido_repository.py"
 )
 
 
@@ -145,9 +131,6 @@ def _wire_dependencies(
     *,
     canal: MagicMock,
     existing_context: MagicMock | None,
-    include_session_repo: bool = True,
-    session_repo_result: MagicMock | None = None,
-    active_membership: MagicMock | None = None,
     membership_present: bool = True,
 ) -> dict[str, MagicMock]:
     cliente = MagicMock(name="Cliente")
@@ -176,45 +159,39 @@ def _wire_dependencies(
     membresia_repo = MagicMock(
         name="ComercioCanalCompartidoRepository"
     )
-    if active_membership is not None:
+    if membership_present:
+        default_membership = MagicMock(
+            name="ActiveComercioCanalCompartido"
+        )
+        default_membership.id = 777
+        default_membership.canal_id = canal.id
+        default_membership.comercio_id = 3
+        default_membership.activo = True
         membresia_repo.find_active_by_canal_and_comercio.return_value = (
-            active_membership
+            default_membership
         )
     else:
-        if membership_present:
-            default_membership = MagicMock(
-                name="ActiveComercioCanalCompartido"
-            )
-            default_membership.id = 777
-            default_membership.canal_id = canal.id
-            default_membership.comercio_id = 3
-            default_membership.activo = True
-            membresia_repo.find_active_by_canal_and_comercio.return_value = (
-                default_membership
-            )
-        else:
-            membresia_repo.find_active_by_canal_and_comercio.return_value = (
-                None
-            )
+        membresia_repo.find_active_by_canal_and_comercio.return_value = (
+            None
+        )
 
     recepcion_repo = MagicMock(
         name="RecepcionMensajeProveedorRepository"
     )
     recepcion_repo.claim.return_value = 1
-    recepcion_repo.find_by_proveedor_y_recepcion.return_value = None
+
+    procesamiento_repo = MagicMock(
+        name="ProcesamientoMensajeProveedorRepository"
+    )
+    staged_work = MagicMock(name="StagedProcesamiento")
+    staged_work.id = 555
+    procesamiento_repo.stage.return_value = staged_work
 
     session_repo = MagicMock(name="SessionRepository")
-    if include_session_repo:
-        if session_repo_result is None:
-            session_repo_result = MagicMock(name="ConversationSession")
-            session_repo_result.id = 555
-            session_repo_result.id_pedido = None
-        session_repo.stage_active.return_value = session_repo_result
 
-    pedido_row = MagicMock(name="StagedPedido")
-    pedido_row.id = 999
     pedido_repo = MagicMock(name="PedidoRepository")
-    pedido_repo.stage_draft_for_session.return_value = pedido_row
+
+    outbox_repo = MagicMock(name="MensajeProveedorSalienteRepository")
 
     coordinator = ProviderInboundMessageCoordinator(
         session=db_session,
@@ -222,20 +199,23 @@ def _wire_dependencies(
         contexto_repo=contexto_repo,
         membresia_repo=membresia_repo,
         recepcion_repo=recepcion_repo,
+        procesamiento_repo=procesamiento_repo,
         session_repo=session_repo,
         pedido_repo=pedido_repo,
+        outbox_repo=outbox_repo,
     )
     return {
         "coordinator": coordinator,
         "db": db_session,
         "recepcion_repo": recepcion_repo,
+        "procesamiento_repo": procesamiento_repo,
         "session_repo": session_repo,
-        "staged_session": session_repo_result,
         "pedido_repo": pedido_repo,
-        "staged_pedido": pedido_row,
+        "outbox_repo": outbox_repo,
         "canal_repo": canal_repo,
         "contexto_repo": contexto_repo,
         "membresia_repo": membresia_repo,
+        "staged_work": staged_work,
     }
 
 
@@ -325,41 +305,30 @@ class CommandValidationTest(unittest.TestCase):
             )
 
 
-class FirstProcessingHappyPathTest(unittest.TestCase):
+class FirstAcceptanceHappyPathTest(unittest.TestCase):
     def setUp(self) -> None:
         importlib.reload(coord_mod)
 
-    def test_dedicated_first_processing_commits_once(self) -> None:
+    def test_dedicated_first_acceptance_commits_once(self) -> None:
         comando = _make_comando_valido()
         canal = _make_canal_dedicado(comercio_id=3)
-        env = _wire_dependencies(
-            canal=canal, existing_context=None
-        )
+        env = _wire_dependencies(canal=canal, existing_context=None)
 
-        sentinel = ProcessedIntent(
-            intent="agregar_producto",
-            source_text="hola",
-            status="executed",
-            recognizer="recognizer_productos",
-            handler="agregar_producto",
-        )
-
-        with patch.object(
-            coord_mod, "process_incoming_message", return_value=[sentinel]
-        ) as pipeline:
-            outcome = env["coordinator"].process(comando)
+        with patch.object(coord_mod, "process_incoming_message") as pipeline:
+            outcome = env["coordinator"].accept(comando)
 
         self.assertEqual(
             outcome.status,
-            ProviderInboundMessageStatus.PROCESSED,
+            ProviderInboundMessageStatus.ACCEPTED,
         )
         self.assertEqual(outcome.resolution_source, "first_processing")
-        self.assertEqual(outcome.processed_intents, (sentinel,))
         self.assertEqual(outcome.proveedor, comando.proveedor)
         self.assertEqual(
             outcome.identificador_recepcion,
             comando.identificador_recepcion,
         )
+        self.assertEqual(outcome.receipt_id, 1)
+        self.assertEqual(outcome.procesamiento_id, 555)
 
         env["recepcion_repo"].claim.assert_called_once_with(
             comando.proveedor,
@@ -368,27 +337,40 @@ class FirstProcessingHappyPathTest(unittest.TestCase):
             comando.cliente_id,
             comando.comercio_id,
         )
-        env["session_repo"].stage_active.assert_called_once_with(
-            comando.comercio_id, comando.cliente_id
+        env["procesamiento_repo"].stage.assert_called_once_with(
+            recepcion_mensaje_proveedor_id=1,
+            mensaje=comando.mensaje,
         )
-        env["pedido_repo"].stage_draft_for_session.assert_called_once_with(
-            555
-        )
-        self.assertEqual(env["staged_session"].id_pedido, 999)
-        pipeline.assert_called_once_with(
-            env["db"], env["staged_session"], comando.mensaje
-        )
+
+        pipeline.assert_not_called()
+        env["session_repo"].stage_active.assert_not_called()
+        env["pedido_repo"].stage_draft_for_session.assert_not_called()
+        env["outbox_repo"].stage.assert_not_called()
 
         env["db"].commit.assert_called_once_with()
         env["db"].rollback.assert_not_called()
-        # The coordinator flushes once to obtain the pedido ID so it
-        # can associate the session; ``stage_active`` already returned
-        # a row with an ID, so the session itself does not need a
-        # pre-flush.
-        self.assertEqual(env["db"].flush.call_count, 1)
         env["db"].begin.assert_not_called()
         env["db"].refresh.assert_not_called()
         env["db"].expire.assert_not_called()
+
+    def test_acceptance_never_invokes_pipeline(self) -> None:
+        """The acceptance boundary MUST NOT import or call the
+        classifier, recognizer, session staging, message pipeline,
+        response mapper or outbound mapper.
+        """
+        comando = _make_comando_valido()
+        canal = _make_canal_dedicado(comercio_id=3)
+        env = _wire_dependencies(canal=canal, existing_context=None)
+
+        with patch.object(
+            coord_mod, "process_incoming_message"
+        ) as pipeline, patch.object(
+            coord_mod, "stage_outbound_rows"
+        ) as outbound_mapper:
+            env["coordinator"].accept(comando)
+
+        pipeline.assert_not_called()
+        outbound_mapper.assert_not_called()
 
 
 class DuplicateReceiptIdempotencyTest(unittest.TestCase):
@@ -400,19 +382,13 @@ class DuplicateReceiptIdempotencyTest(unittest.TestCase):
     ) -> None:
         comando = _make_comando_valido()
         canal = _make_canal_dedicado(comercio_id=3)
-        env = _wire_dependencies(
-            canal=canal, existing_context=None
-        )
-        # Conflict-safe claim returns None: a committed row for
-        # this (proveedor, identificador_recepcion) pair already
-        # exists.
+        env = _wire_dependencies(canal=canal, existing_context=None)
         env["recepcion_repo"].claim.return_value = None
-        env["session_repo"].stage_active.return_value = MagicMock(
-            name="ConversationSession"
-        )
 
-        with patch.object(coord_mod, "process_incoming_message") as pipeline:
-            outcome = env["coordinator"].process(comando)
+        with patch.object(
+            coord_mod, "process_incoming_message"
+        ) as pipeline:
+            outcome = env["coordinator"].accept(comando)
 
         self.assertEqual(
             outcome.status,
@@ -421,10 +397,13 @@ class DuplicateReceiptIdempotencyTest(unittest.TestCase):
         self.assertEqual(
             outcome.resolution_source, "duplicate_receipt"
         )
-        self.assertEqual(outcome.processed_intents, ())
+        self.assertIsNone(outcome.receipt_id)
+        self.assertIsNone(outcome.procesamiento_id)
 
         pipeline.assert_not_called()
+        env["procesamiento_repo"].stage.assert_not_called()
         env["session_repo"].stage_active.assert_not_called()
+        env["outbox_repo"].stage.assert_not_called()
 
         env["db"].rollback.assert_called_once_with()
         env["db"].commit.assert_not_called()
@@ -439,17 +418,12 @@ class ConcurrentClaimPipelineNeverInvokedTest(unittest.TestCase):
     def test_concurrent_loser_never_invokes_pipeline(self) -> None:
         comando = _make_comando_valido()
         canal = _make_canal_dedicado(comercio_id=3)
-        env = _wire_dependencies(
-            canal=canal, existing_context=None
-        )
+        env = _wire_dependencies(canal=canal, existing_context=None)
         env["recepcion_repo"].claim.return_value = None
-        env["session_repo"].stage_active.return_value = MagicMock(
-            name="ConversationSession"
-        )
 
         with patch.object(coord_mod, "process_incoming_message") as pipeline:
-            outcome_a = env["coordinator"].process(comando)
-            outcome_b = env["coordinator"].process(comando)
+            outcome_a = env["coordinator"].accept(comando)
+            outcome_b = env["coordinator"].accept(comando)
 
         self.assertEqual(
             outcome_a.status,
@@ -460,6 +434,7 @@ class ConcurrentClaimPipelineNeverInvokedTest(unittest.TestCase):
             ProviderInboundMessageStatus.ALREADY_PROCESSED,
         )
         pipeline.assert_not_called()
+        env["procesamiento_repo"].stage.assert_not_called()
         env["session_repo"].stage_active.assert_not_called()
         self.assertEqual(env["db"].commit.call_count, 0)
         self.assertEqual(env["db"].rollback.call_count, 2)
@@ -469,7 +444,7 @@ class SharedChannelAuthorityTest(unittest.TestCase):
     def setUp(self) -> None:
         importlib.reload(coord_mod)
 
-    def test_shared_selected_commerce_first_processing(self) -> None:
+    def test_shared_selected_commerce_first_acceptance(self) -> None:
         comando = _make_comando_valido()
         canal = _make_canal_compartido()
         context = MagicMock(name="ContextoClienteCanalWhatsapp")
@@ -481,15 +456,15 @@ class SharedChannelAuthorityTest(unittest.TestCase):
         )
 
         with patch.object(
-            coord_mod, "process_incoming_message", return_value=[]
+            coord_mod, "process_incoming_message"
         ) as pipeline:
-            outcome = env["coordinator"].process(comando)
+            outcome = env["coordinator"].accept(comando)
 
         self.assertEqual(
             outcome.status,
-            ProviderInboundMessageStatus.PROCESSED,
+            ProviderInboundMessageStatus.ACCEPTED,
         )
-        pipeline.assert_called_once()
+        pipeline.assert_not_called()
         env["db"].commit.assert_called_once_with()
         env["db"].rollback.assert_not_called()
 
@@ -501,7 +476,7 @@ class SharedChannelAuthorityTest(unittest.TestCase):
         )
 
         with patch.object(coord_mod, "process_incoming_message") as pipeline:
-            outcome = env["coordinator"].process(comando)
+            outcome = env["coordinator"].accept(comando)
 
         self.assertEqual(
             outcome.status,
@@ -512,6 +487,7 @@ class SharedChannelAuthorityTest(unittest.TestCase):
         )
         pipeline.assert_not_called()
         env["recepcion_repo"].claim.assert_not_called()
+        env["procesamiento_repo"].stage.assert_not_called()
         env["session_repo"].stage_active.assert_not_called()
         env["db"].commit.assert_not_called()
         env["db"].rollback.assert_not_called()
@@ -528,7 +504,7 @@ class SharedChannelAuthorityTest(unittest.TestCase):
         )
 
         with patch.object(coord_mod, "process_incoming_message") as pipeline:
-            outcome = env["coordinator"].process(comando)
+            outcome = env["coordinator"].accept(comando)
 
         self.assertEqual(
             outcome.status,
@@ -539,7 +515,7 @@ class SharedChannelAuthorityTest(unittest.TestCase):
         )
         pipeline.assert_not_called()
         env["recepcion_repo"].claim.assert_not_called()
-        env["session_repo"].stage_active.assert_not_called()
+        env["procesamiento_repo"].stage.assert_not_called()
 
     def test_shared_selected_mismatch_returns_invalid_context(self) -> None:
         comando = _make_comando_valido(comercio_id=3)
@@ -553,7 +529,7 @@ class SharedChannelAuthorityTest(unittest.TestCase):
         )
 
         with patch.object(coord_mod, "process_incoming_message") as pipeline:
-            outcome = env["coordinator"].process(comando)
+            outcome = env["coordinator"].accept(comando)
 
         self.assertEqual(
             outcome.status,
@@ -564,7 +540,7 @@ class SharedChannelAuthorityTest(unittest.TestCase):
         )
         pipeline.assert_not_called()
         env["recepcion_repo"].claim.assert_not_called()
-        env["session_repo"].stage_active.assert_not_called()
+        env["procesamiento_repo"].stage.assert_not_called()
         env["db"].commit.assert_not_called()
 
     def test_shared_selected_with_revoked_membership_returns_invalid_context(
@@ -577,9 +553,7 @@ class SharedChannelAuthorityTest(unittest.TestCase):
         references the commerce, but its
         ``ComercioCanalCompartido`` membership has been revoked (or
         never existed). The coordinator MUST refuse to claim a
-        receipt, stage a session or invoke the pipeline; the only
-        observable outcome is ``invalid_context`` with source
-        ``revoked_shared_membership``.
+        receipt, stage a work item or invoke the pipeline.
         """
         comando = _make_comando_valido(comercio_id=3)
         canal = _make_canal_compartido()
@@ -596,7 +570,7 @@ class SharedChannelAuthorityTest(unittest.TestCase):
         with patch.object(
             coord_mod, "process_incoming_message"
         ) as pipeline:
-            outcome = env["coordinator"].process(comando)
+            outcome = env["coordinator"].accept(comando)
 
         self.assertEqual(
             outcome.status,
@@ -610,6 +584,7 @@ class SharedChannelAuthorityTest(unittest.TestCase):
         )
         pipeline.assert_not_called()
         env["recepcion_repo"].claim.assert_not_called()
+        env["procesamiento_repo"].stage.assert_not_called()
         env["session_repo"].stage_active.assert_not_called()
         env["db"].commit.assert_not_called()
         env["db"].rollback.assert_not_called()
@@ -626,12 +601,10 @@ class DedicatedChannelAuthorityTest(unittest.TestCase):
     ) -> None:
         comando = _make_comando_valido(comercio_id=3)
         canal = _make_canal_dedicado(comercio_id=999)
-        env = _wire_dependencies(
-            canal=canal, existing_context=None
-        )
+        env = _wire_dependencies(canal=canal, existing_context=None)
 
         with patch.object(coord_mod, "process_incoming_message") as pipeline:
-            outcome = env["coordinator"].process(comando)
+            outcome = env["coordinator"].accept(comando)
 
         self.assertEqual(
             outcome.status,
@@ -642,6 +615,7 @@ class DedicatedChannelAuthorityTest(unittest.TestCase):
         )
         pipeline.assert_not_called()
         env["recepcion_repo"].claim.assert_not_called()
+        env["procesamiento_repo"].stage.assert_not_called()
         env["session_repo"].stage_active.assert_not_called()
         env["db"].commit.assert_not_called()
 
@@ -649,12 +623,10 @@ class DedicatedChannelAuthorityTest(unittest.TestCase):
         comando = _make_comando_valido()
         canal = _make_canal_dedicado(comercio_id=3)
         canal.activo = False
-        env = _wire_dependencies(
-            canal=canal, existing_context=None
-        )
+        env = _wire_dependencies(canal=canal, existing_context=None)
 
         with patch.object(coord_mod, "process_incoming_message") as pipeline:
-            outcome = env["coordinator"].process(comando)
+            outcome = env["coordinator"].accept(comando)
 
         self.assertEqual(
             outcome.status,
@@ -670,12 +642,10 @@ class DedicatedChannelAuthorityTest(unittest.TestCase):
     def test_missing_client_returns_invalid_context(self) -> None:
         comando = _make_comando_valido(cliente_id=999)
         canal = _make_canal_dedicado(comercio_id=3)
-        env = _wire_dependencies(
-            canal=canal, existing_context=None
-        )
+        env = _wire_dependencies(canal=canal, existing_context=None)
 
         with patch.object(coord_mod, "process_incoming_message") as pipeline:
-            outcome = env["coordinator"].process(comando)
+            outcome = env["coordinator"].accept(comando)
 
         self.assertEqual(
             outcome.status,
@@ -692,11 +662,8 @@ class DedicatedChannelAuthorityTest(unittest.TestCase):
     def test_inactive_commerce_returns_invalid_context(self) -> None:
         comando = _make_comando_valido()
         canal = _make_canal_dedicado(comercio_id=3)
-        env = _wire_dependencies(
-            canal=canal, existing_context=None
-        )
-        # Cliente lookup still resolves; Comercio / EstadoComercio
-        # return ``None`` so the commerce availability check fails.
+        env = _wire_dependencies(canal=canal, existing_context=None)
+
         def _lookup(cls, ident):
             if cls.__name__ == "Cliente" and ident == 2:
                 cliente = MagicMock()
@@ -708,7 +675,7 @@ class DedicatedChannelAuthorityTest(unittest.TestCase):
         env["db"].get.side_effect = _lookup
 
         with patch.object(coord_mod, "process_incoming_message") as pipeline:
-            outcome = env["coordinator"].process(comando)
+            outcome = env["coordinator"].accept(comando)
 
         self.assertEqual(
             outcome.status,
@@ -726,325 +693,69 @@ class RollbackAtomicityTest(unittest.TestCase):
     def setUp(self) -> None:
         importlib.reload(coord_mod)
 
-    def test_pipeline_runtime_error_rolls_back_full_turn(self) -> None:
-        comando = _make_comando_valido()
-        canal = _make_canal_dedicado(comercio_id=3)
-        env = _wire_dependencies(
-            canal=canal, existing_context=None
-        )
-
-        sentinel_exc = RuntimeError(
-            "promoted agregar_producto handler raised"
-        )
-        with patch.object(
-            coord_mod,
-            "process_incoming_message",
-            side_effect=sentinel_exc,
-        ):
-            with self.assertRaises(RuntimeError) as ctx:
-                env["coordinator"].process(comando)
-
-        self.assertIs(ctx.exception, sentinel_exc)
-        env["recepcion_repo"].claim.assert_called_once()
-        env["session_repo"].stage_active.assert_called_once()
-        env["pedido_repo"].stage_draft_for_session.assert_called_once()
-        env["db"].commit.assert_not_called()
-        env["db"].rollback.assert_called_once_with()
-        # One flush is expected to materialise the pedido ID; the
-        # surrounding transaction must still be rolled back by the
-        # coordinator so no receipt / session / pedido row remains
-        # durable.
-        self.assertEqual(env["db"].flush.call_count, 1)
-        env["db"].refresh.assert_not_called()
-
-    def test_pedido_staging_error_rolls_back_full_turn(self) -> None:
-        """A failure raised while staging the pedido (after the
-        receipt claim and the session acquisition) must roll back
-        the entire coordinator transaction. No receipt, session or
-        pedido row remains durable.
+    def test_repository_stage_error_rolls_back_full_acceptance(
+        self,
+    ) -> None:
+        """A failure raised while staging the work item (after the
+        receipt claim) must roll back the entire coordinator
+        transaction. No receipt or work row remains durable.
         """
         comando = _make_comando_valido()
         canal = _make_canal_dedicado(comercio_id=3)
-        env = _wire_dependencies(
-            canal=canal, existing_context=None
-        )
+        env = _wire_dependencies(canal=canal, existing_context=None)
 
-        sentinel_exc = RuntimeError(
-            "pedido staging primitive raised"
-        )
-        env["pedido_repo"].stage_draft_for_session.side_effect = (
-            sentinel_exc
-        )
+        sentinel_exc = RuntimeError("work staging primitive raised")
+        env["procesamiento_repo"].stage.side_effect = sentinel_exc
 
         with patch.object(coord_mod, "process_incoming_message") as pipeline:
             with self.assertRaises(RuntimeError) as ctx:
-                env["coordinator"].process(comando)
+                env["coordinator"].accept(comando)
 
         self.assertIs(ctx.exception, sentinel_exc)
         env["recepcion_repo"].claim.assert_called_once()
-        env["session_repo"].stage_active.assert_called_once()
-        env["pedido_repo"].stage_draft_for_session.assert_called_once()
+        env["procesamiento_repo"].stage.assert_called_once()
         pipeline.assert_not_called()
+        env["session_repo"].stage_active.assert_not_called()
+        env["outbox_repo"].stage.assert_not_called()
         env["db"].commit.assert_not_called()
         env["db"].rollback.assert_called_once_with()
 
-    def test_concurrent_claim_after_rollback_can_succeed(self) -> None:
+    def test_failed_acceptance_rolls_back_and_allows_retry(
+        self,
+    ) -> None:
         """A failed first attempt must not be treated as
-        ``already_processed`` by a later valid retry."""
+        ``already_processed`` by a later valid retry.
+        """
         comando = _make_comando_valido()
         canal = _make_canal_dedicado(comercio_id=3)
-        env = _wire_dependencies(
-            canal=canal, existing_context=None
+        env = _wire_dependencies(canal=canal, existing_context=None)
+        env["procesamiento_repo"].stage.side_effect = RuntimeError(
+            "boom"
         )
 
         with patch.object(
-            coord_mod,
-            "process_incoming_message",
-            side_effect=RuntimeError("boom"),
-        ):
+            coord_mod, "process_incoming_message"
+        ) as pipeline:
             with self.assertRaises(RuntimeError):
-                env["coordinator"].process(comando)
+                env["coordinator"].accept(comando)
 
         self.assertEqual(env["db"].rollback.call_count, 1)
         self.assertEqual(env["db"].commit.call_count, 0)
 
+        env["procesamiento_repo"].stage.side_effect = None
+
         with patch.object(
-            coord_mod, "process_incoming_message", return_value=[]
+            coord_mod, "process_incoming_message"
         ) as pipeline:
-            outcome = env["coordinator"].process(comando)
+            outcome = env["coordinator"].accept(comando)
 
         self.assertEqual(
             outcome.status,
-            ProviderInboundMessageStatus.PROCESSED,
+            ProviderInboundMessageStatus.ACCEPTED,
         )
         self.assertEqual(env["db"].commit.call_count, 1)
         self.assertEqual(env["db"].rollback.call_count, 1)
-        pipeline.assert_called_once()
-
-
-class DraftPedidoStagingTest(unittest.TestCase):
-    """Narrow coverage for the draft-pedido prerequisite.
-
-    The coordinator MUST:
-
-    * Stage one ``borrador`` pedido bound to the active session
-      when the staged/existing session has no ``id_pedido`` yet.
-    * Leave an already-associated session untouched.
-    * Never stage or commit a pedido when the receipt is invalid
-      or duplicate, when the channel / commerce authority refuses,
-      or when a duplicate receipt short-circuits before session
-      acquisition.
-    * Preserve the existing one-commit / one-rollback transaction
-      ownership around the new staging step.
-    """
-
-    def setUp(self) -> None:
-        importlib.reload(coord_mod)
-
-    def test_first_processing_stages_exactly_one_draft_pedido(
-        self,
-    ) -> None:
-        comando = _make_comando_valido()
-        canal = _make_canal_dedicado(comercio_id=3)
-        env = _wire_dependencies(
-            canal=canal, existing_context=None
-        )
-
-        with patch.object(
-            coord_mod, "process_incoming_message", return_value=[]
-        ) as pipeline:
-            outcome = env["coordinator"].process(comando)
-
-        self.assertEqual(
-            outcome.status,
-            ProviderInboundMessageStatus.PROCESSED,
-        )
-        env["pedido_repo"].stage_draft_for_session.assert_called_once_with(
-            int(env["staged_session"].id)
-        )
-        self.assertEqual(
-            env["staged_session"].id_pedido,
-            int(env["staged_pedido"].id),
-        )
-        pipeline.assert_called_once_with(
-            env["db"], env["staged_session"], comando.mensaje
-        )
-        env["db"].commit.assert_called_once_with()
-        env["db"].rollback.assert_not_called()
-
-    def test_existing_associated_session_is_not_repedidoed(self) -> None:
-        """When the staged/existing session already has a non-null
-        ``id_pedido``, the coordinator MUST NOT stage or replace any
-        pedido. The pipeline runs unchanged.
-        """
-        comando = _make_comando_valido()
-        canal = _make_canal_dedicado(comercio_id=3)
-        env = _wire_dependencies(
-            canal=canal, existing_context=None
-        )
-        env["staged_session"].id_pedido = 7777
-
-        with patch.object(
-            coord_mod, "process_incoming_message", return_value=[]
-        ) as pipeline:
-            outcome = env["coordinator"].process(comando)
-
-        self.assertEqual(
-            outcome.status,
-            ProviderInboundMessageStatus.PROCESSED,
-        )
-        env["pedido_repo"].stage_draft_for_session.assert_not_called()
-        self.assertEqual(env["staged_session"].id_pedido, 7777)
-        # No flush needed when nothing changed.
-        env["db"].flush.assert_not_called()
-        pipeline.assert_called_once_with(
-            env["db"], env["staged_session"], comando.mensaje
-        )
-        env["db"].commit.assert_called_once_with()
-        env["db"].rollback.assert_not_called()
-
-    def test_duplicate_receipt_does_not_stage_pedido(self) -> None:
-        comando = _make_comando_valido()
-        canal = _make_canal_dedicado(comercio_id=3)
-        env = _wire_dependencies(
-            canal=canal, existing_context=None
-        )
-        env["recepcion_repo"].claim.return_value = None
-
-        with patch.object(coord_mod, "process_incoming_message") as pipeline:
-            outcome = env["coordinator"].process(comando)
-
-        self.assertEqual(
-            outcome.status,
-            ProviderInboundMessageStatus.ALREADY_PROCESSED,
-        )
-        env["pedido_repo"].stage_draft_for_session.assert_not_called()
-        env["session_repo"].stage_active.assert_not_called()
         pipeline.assert_not_called()
-        env["db"].commit.assert_not_called()
-        env["db"].rollback.assert_called_once_with()
-        env["db"].flush.assert_not_called()
-
-    def test_invalid_context_does_not_stage_pedido(self) -> None:
-        """An invalid context (revoked shared membership, missing
-        client, etc.) must never reach the pedido staging step.
-        """
-        comando = _make_comando_valido(comercio_id=3)
-        canal = _make_canal_compartido()
-        context = MagicMock(name="ContextoClienteCanalWhatsapp")
-        context.comercio_id_seleccionado = 3
-        context.comercio_id_cambio_pendiente = None
-        context.mensaje_original_pendiente = None
-        env = _wire_dependencies(
-            canal=canal,
-            existing_context=context,
-            membership_present=False,
-        )
-
-        with patch.object(coord_mod, "process_incoming_message") as pipeline:
-            outcome = env["coordinator"].process(comando)
-
-        self.assertEqual(
-            outcome.status,
-            ProviderInboundMessageStatus.INVALID_CONTEXT,
-        )
-        env["pedido_repo"].stage_draft_for_session.assert_not_called()
-        env["session_repo"].stage_active.assert_not_called()
-        pipeline.assert_not_called()
-        env["db"].commit.assert_not_called()
-        env["db"].rollback.assert_not_called()
-        env["db"].flush.assert_not_called()
-
-    def test_staging_order_receipt_then_session_then_pedido_then_pipeline(
-        self,
-    ) -> None:
-        """Verify the call ordering: receipt claim, session stage,
-        pedido stage, pipeline, then a single commit. The pedido
-        staging helper is invoked AFTER the session is staged and
-        BEFORE the pipeline runs.
-        """
-        comando = _make_comando_valido()
-        canal = _make_canal_dedicado(comercio_id=3)
-        env = _wire_dependencies(
-            canal=canal, existing_context=None
-        )
-        order: list[str] = []
-
-        def _record(label, value):
-            order.append(label)
-            return value
-
-        env["recepcion_repo"].claim.side_effect = lambda *a, **k: _record(
-            "claim", 1
-        )
-        env["session_repo"].stage_active.side_effect = (
-            lambda *a, **k: _record("stage_session", env["staged_session"])
-        )
-        env["pedido_repo"].stage_draft_for_session.side_effect = (
-            lambda *a, **k: _record("stage_pedido", env["staged_pedido"])
-        )
-        env["db"].commit.side_effect = lambda: order.append("commit")
-
-        def _pipeline(*args, **kwargs):
-            order.append("pipeline")
-            return []
-
-        with patch.object(
-            coord_mod, "process_incoming_message", side_effect=_pipeline
-        ):
-            env["coordinator"].process(comando)
-
-        self.assertEqual(
-            order,
-            ["claim", "stage_session", "stage_pedido", "pipeline", "commit"],
-        )
-
-    def test_repository_has_no_transaction_control(self) -> None:
-        """The pedido repository's ``stage_draft_for_session`` MUST
-        NOT call ``flush``, ``commit``, ``rollback`` or ``begin``;
-        the coordinator is the only transaction owner.
-        """
-        tree = _parse(PEDIDO_REPO_PATH)
-        for node in ast.walk(tree):
-            if not (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-            ):
-                continue
-            if node.func.attr not in {
-                "flush",
-                "commit",
-                "rollback",
-                "begin",
-            }:
-                continue
-            enclosing = _enclosing_function(node, tree)
-            self.assertIsNotNone(enclosing)
-            if enclosing is not None:
-                self.assertNotEqual(
-                    enclosing.name,
-                    "stage_draft_for_session",
-                    "stage_draft_for_session MUST NOT flush or commit",
-                )
-
-
-def _parse(path: Path) -> ast.Module:
-    with open(path, encoding="utf-8") as fh:
-        return ast.parse(fh.read())
-
-
-def _enclosing_function(
-    node: ast.AST, root: ast.AST
-) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
-    for parent in ast.walk(root):
-        if not isinstance(
-            parent, (ast.FunctionDef, ast.AsyncFunctionDef)
-        ):
-            continue
-        for child in ast.walk(parent):
-            if child is node:
-                return parent
-    return None
 
 
 class StaticBoundariesTest(unittest.TestCase):
@@ -1057,6 +768,15 @@ class StaticBoundariesTest(unittest.TestCase):
     def test_coordinator_is_only_commit_caller(self) -> None:
         tree = _parse(COORD_PATH)
         offenders: list[str] = []
+        allowed = {
+            "accept",
+            "claim_due_processing",
+            "process_lease",
+            "_accept_locked",
+            "_process_locked",
+            "_finalize_failure",
+            "_finalize_terminal",
+        }
         for node in ast.walk(tree):
             if not isinstance(
                 node,
@@ -1070,11 +790,7 @@ class StaticBoundariesTest(unittest.TestCase):
                     and call.func.attr in {"commit", "rollback"}
                 ):
                     continue
-                # ``process`` delegates to ``_process_locked`` with
-                # an ``except`` that owns the rollback call;
-                # ``_process_locked`` owns the commit call. No other
-                # function may invoke them.
-                if node.name not in {"process", "_process_locked"}:
+                if node.name not in allowed:
                     offenders.append(node.name)
         self.assertEqual(
             offenders,
@@ -1140,13 +856,31 @@ class StaticBoundariesTest(unittest.TestCase):
                 "transaction-control call must live in a function",
             )
             self.assertIsNotNone(enclosing)
-            # ``stage_active`` MUST NOT flush or commit.
             if enclosing is not None:
                 self.assertNotEqual(
                     enclosing.name,
                     "stage_active",
                     "stage_active MUST NOT flush or commit",
                 )
+
+
+def _parse(path: Path) -> ast.Module:
+    with open(path, encoding="utf-8") as fh:
+        return ast.parse(fh.read())
+
+
+def _enclosing_function(
+    node: ast.AST, root: ast.AST
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    for parent in ast.walk(root):
+        if not isinstance(
+            parent, (ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            continue
+        for child in ast.walk(parent):
+            if child is node:
+                return parent
+    return None
 
 
 class StageActiveHelperTest(unittest.TestCase):
@@ -1156,9 +890,11 @@ class StageActiveHelperTest(unittest.TestCase):
     """
 
     def test_stage_returns_existing_without_adding(self) -> None:
+        from backend.models.session import EstadoSession
+
         existing = MagicMock(name="ExistingConversationSession")
         existing.id = 11
-        existing.estado_session = "activa"
+        existing.estado_session = EstadoSession.ACTIVA
         existing.context_type = "order_line_selection"
 
         db_session = MagicMock(name="DatabaseSession")
@@ -1209,56 +945,5 @@ class StageActiveHelperTest(unittest.TestCase):
         self.assertIsNone(result.id_pedido)
 
 
-class LocalEndpointPreservationTest(unittest.TestCase):
-    """The existing local incoming-message transactional wrapper and
-    endpoint behavior must remain untouched by Phase 5.4.
-    """
-
-    def test_transactional_wrapper_unchanged(self) -> None:
-        with patch.object(
-            processor_module, "process_incoming_message"
-        ) as inner:
-            inner.return_value = []
-            db = MagicMock(name="DatabaseSession")
-            session = MagicMock(name="ConversationSession")
-            process_incoming_message_transactional(db, session, "hi")
-            db.commit.assert_called_once_with()
-            db.rollback.assert_not_called()
-            inner.assert_called_once_with(db, session, "hi")
-
-    def test_transactional_wrapper_re_uses_orchestrator_primitive(
-        self,
-    ) -> None:
-        source = inspect.getsource(processor_module)
-        self.assertIn(
-            "process_incoming_message",
-            source,
-            "transactional_message_processor must wrap the same primitive",
-        )
-
-    def test_orchestrator_primitive_has_no_transaction_control(self) -> None:
-        source = inspect.getsource(orchestrator_module)
-        for forbidden in (
-            "db.commit",
-            "db.rollback",
-            ".commit()",
-            ".rollback()",
-            ".flush()",
-        ):
-            self.assertNotIn(
-                forbidden,
-                source,
-                f"incoming_message_orchestrator.process_incoming_message "
-                f"must not control the transaction: {forbidden}",
-            )
-
-    def test_module_all_declares_only_the_primitive(self) -> None:
-        importlib.reload(orchestrator_module)
-        self.assertEqual(
-            orchestrator_module.__all__,
-            ["process_incoming_message"],
-        )
-
-
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)

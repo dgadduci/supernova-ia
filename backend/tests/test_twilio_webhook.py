@@ -1,22 +1,28 @@
-"""Focused tests for the Phase-5.5 Twilio inbound webhook route.
+"""Focused tests for the Phase-7.4 Twilio inbound webhook route.
 
 The route is the only HTTP surface for the new provider ingress.
 These tests cover the six documented outcomes using the FastAPI
 ``TestClient`` with dependency overrides:
 
-1. Valid signed dedicated delivery → ``200`` acknowledgement TwiML
-   after the coordinator reports ``processed``.
+1. Valid signed dedicated delivery → ``200`` empty TwiML after the
+   coordinator reports ``accepted`` (receipt + one pending work item
+   committed).
 2. Tampered / missing signature → ``403`` with empty body and zero
    downstream calls.
 3. Pre-core business rejections (unknown client, unknown channel,
    shared channel, unavailable commerce) → ``200`` safe control
    TwiML with no coordinator call.
-4. Duplicate committed receipt → ``200`` empty ``<Response/>``
-   TwiML with no pipeline or session staging.
+4. Duplicate committed receipt → ``200`` empty ``<Response/>`` TwiML
+   with no second work item, no pipeline, no session staging.
 5. ``invalid_context`` from the coordinator → ``200`` safe control
    TwiML with no fallback to a different commerce.
 6. Coordinator technical exception → propagated as ``500``
    (Starlette default), never translated into a business outcome.
+
+The acceptance boundary MUST NOT call the classifier, recognizer,
+session/pedido staging, intent pipeline, response mapping or outbound
+mapper. The tests assert that the coordinator's ``accept`` method
+never invokes ``process_incoming_message``.
 
 The tests inject a real signature computed by the Twilio SDK
 ``RequestValidator`` for the ``valid`` cases and force the SDK
@@ -40,7 +46,7 @@ import backend.routers.twilio_webhook as router_module
 from backend.dependencies import get_session
 from backend.models.canal_whatsapp import CanalWhatsappMode
 from backend.services.provider_inbound_message_coordinator import (
-    ProviderInboundMessageOutcome,
+    ProviderInboundAcceptanceOutcome,
     ProviderInboundMessageStatus,
 )
 
@@ -92,8 +98,8 @@ def _build_outcome(
     cliente_id: int = 2,
     comercio_id: int = 3,
     resolution_source: str = "first_processing",
-) -> ProviderInboundMessageOutcome:
-    return ProviderInboundMessageOutcome(
+) -> ProviderInboundAcceptanceOutcome:
+    return ProviderInboundAcceptanceOutcome(
         status=status,
         canal_id=canal_id,
         cliente_id=cliente_id,
@@ -101,8 +107,7 @@ def _build_outcome(
         proveedor="twilio",
         identificador_recepcion="SM-ABC",
         receipt_id=None,
-        session_id=None,
-        processed_intents=(),
+        procesamiento_id=None,
         resolution_source=resolution_source,
     )
 
@@ -180,15 +185,18 @@ class WebhookHappyPathTest(unittest.TestCase):
         )
 
     def test_first_processing_returns_empty_twiml(self) -> None:
-        """Phase 5.6: a first committed receipt returns empty
-        TwiML — the durable outbox, not TwiML, is the delivery
-        contract. The endpoint MUST NOT embed the business
-        response in the TwiML payload."""
+        """Phase 7.4: a first accepted receipt returns empty TwiML
+        — the durable outbox and the deferred work item, not
+        TwiML, are the delivery / processing contracts. The
+        endpoint MUST NOT embed the business response in the
+        TwiML payload and MUST NOT call the classifier, recognizer
+        or pipeline in the webhook request.
+        """
         cliente_repo = MagicMock(name="ClienteRepository")
         cliente_repo.get_by_whatsapp.return_value = self.cliente
 
         outcome = _build_outcome(
-            status=ProviderInboundMessageStatus.PROCESSED,
+            status=ProviderInboundMessageStatus.ACCEPTED,
             canal_id=int(self.canal.id),
             cliente_id=int(self.cliente.id),
             comercio_id=int(self.canal.id_comercio_exclusivo),
@@ -196,7 +204,7 @@ class WebhookHappyPathTest(unittest.TestCase):
         )
 
         coordinator = MagicMock(name="ProviderInboundMessageCoordinator")
-        coordinator.process.return_value = outcome
+        coordinator.accept.return_value = outcome
 
         with patch.object(
             router_module, "load_settings", return_value=self._settings
@@ -220,8 +228,8 @@ class WebhookHappyPathTest(unittest.TestCase):
         self.assertIn("<Response />", response.text)
         self.assertNotIn("<Message>", response.text)
 
-        coordinator.process.assert_called_once()
-        command = coordinator.process.call_args[0][0]
+        coordinator.accept.assert_called_once()
+        command = coordinator.accept.call_args[0][0]
         self.assertEqual(command.proveedor, "twilio")
         self.assertEqual(command.identificador_recepcion, "SM-ABC")
         self.assertEqual(command.canal_id, int(self.canal.id))
@@ -278,7 +286,7 @@ class WebhookSignatureFailureTest(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.text, "")
         self.cliente_repo.get_by_whatsapp.assert_not_called()
-        self.coordinator.process.assert_not_called()
+        self.coordinator.accept.assert_not_called()
         self._assert_no_transaction_calls()
 
     def test_tampered_body_returns_403(self) -> None:
@@ -304,7 +312,7 @@ class WebhookSignatureFailureTest(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.text, "")
         self.cliente_repo.get_by_whatsapp.assert_not_called()
-        self.coordinator.process.assert_not_called()
+        self.coordinator.accept.assert_not_called()
         self._assert_no_transaction_calls()
 
     def test_missing_configuration_returns_403(self) -> None:
@@ -327,7 +335,7 @@ class WebhookSignatureFailureTest(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.text, "")
         self.cliente_repo.get_by_whatsapp.assert_not_called()
-        self.coordinator.process.assert_not_called()
+        self.coordinator.accept.assert_not_called()
 
 
 class WebhookBusinessRejectionTest(unittest.TestCase):
@@ -433,7 +441,7 @@ class WebhookBusinessRejectionTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("application/xml", response.headers["content-type"])
         self.assertIn("<Message>", response.text)
-        self.coordinator.process.assert_not_called()
+        self.coordinator.accept.assert_not_called()
         self._assert_no_transaction_calls()
 
     def test_inactive_client_returns_safe_control_twiml(self) -> None:
@@ -459,7 +467,7 @@ class WebhookBusinessRejectionTest(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200)
         self.assertIn("<Message>", response.text)
-        self.coordinator.process.assert_not_called()
+        self.coordinator.accept.assert_not_called()
         self._assert_no_transaction_calls()
 
     def test_shared_channel_returns_safe_control_twiml(self) -> None:
@@ -487,7 +495,7 @@ class WebhookBusinessRejectionTest(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200)
         self.assertIn("<Message>", response.text)
-        self.coordinator.process.assert_not_called()
+        self.coordinator.accept.assert_not_called()
         self._assert_no_transaction_calls()
 
     def test_unknown_destination_returns_safe_control_twiml(self) -> None:
@@ -515,7 +523,7 @@ class WebhookBusinessRejectionTest(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200)
         self.assertIn("<Message>", response.text)
-        self.coordinator.process.assert_not_called()
+        self.coordinator.accept.assert_not_called()
         self._assert_no_transaction_calls()
 
     def test_invalid_destination_returns_safe_control_twiml(self) -> None:
@@ -543,7 +551,7 @@ class WebhookBusinessRejectionTest(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200)
         self.assertIn("<Message>", response.text)
-        self.coordinator.process.assert_not_called()
+        self.coordinator.accept.assert_not_called()
         self._assert_no_transaction_calls()
 
 
@@ -570,7 +578,7 @@ class WebhookDuplicateAndInvalidContextTest(unittest.TestCase):
         cliente_repo.get_by_whatsapp.return_value = cliente
 
         coordinator = MagicMock(name="ProviderInboundMessageCoordinator")
-        coordinator.process.return_value = _build_outcome(
+        coordinator.accept.return_value = _build_outcome(
             status=status,
             resolution_source=source,
         )
@@ -631,7 +639,7 @@ class WebhookDuplicateAndInvalidContextTest(unittest.TestCase):
         self.assertIn("application/xml", response.headers["content-type"])
         self.assertIn("<Response />", response.text)
         self.assertNotIn("<Message>", response.text)
-        coordinator.process.assert_called_once()
+        coordinator.accept.assert_called_once()
         self._assert_no_transaction_calls()
 
     def test_invalid_context_returns_safe_control_twiml(self) -> None:
@@ -657,7 +665,7 @@ class WebhookDuplicateAndInvalidContextTest(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200)
         self.assertIn("<Message>", response.text)
-        coordinator.process.assert_called_once()
+        coordinator.accept.assert_called_once()
         self._assert_no_transaction_calls()
 
 
@@ -693,7 +701,7 @@ class WebhookTechnicalFailureTest(unittest.TestCase):
         cliente_repo = MagicMock(name="ClienteRepository")
         cliente_repo.get_by_whatsapp.return_value = cliente
         coordinator = MagicMock(name="ProviderInboundMessageCoordinator")
-        coordinator.process.side_effect = RuntimeError("coordinator boom")
+        coordinator.accept.side_effect = RuntimeError("coordinator boom")
         from backend.services.commerce_channel_resolver import (
             DedicatedResolution,
             ResolutionStatus,
@@ -734,6 +742,115 @@ class WebhookTechnicalFailureTest(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 500)
         self.assertNotIn("coordinator boom", response.text)
+
+
+class WebhookAcceptanceNeverInvokesPipelineTest(unittest.TestCase):
+    """Phase 7.4: the webhook acceptance path MUST NOT call the
+    classifier, recognizer, session/pedido staging, intent pipeline,
+    response mapping or outbound mapper. The bounded CLI is the
+    single caller of the deferred processing path.
+    """
+
+    def setUp(self) -> None:
+        os.environ["TWILIO_AUTH_TOKEN"] = TOKEN
+        os.environ["TWILIO_WEBHOOK_BASE_URL"] = BASE_URL
+        self.db = MagicMock(name="DatabaseSession")
+        self._settings = _settings()
+        self.client = _build_client(db_session=self.db)
+
+        cliente = MagicMock(name="Cliente")
+        cliente.id = 2
+        cliente.whatsapp = "+5491155556666"
+        cliente.activo = True
+
+        canal = MagicMock(name="CanalWhatsapp")
+        canal.id = 1
+        canal.activo = True
+        canal.mode = CanalWhatsappMode.DEDICATED
+        canal.id_comercio_exclusivo = 3
+
+        self.cliente = cliente
+        self.canal = canal
+        self.cliente_repo = MagicMock(name="ClienteRepository")
+        self.cliente_repo.get_by_whatsapp.return_value = cliente
+
+        self.form = {
+            "MessageSid": "SM-ABC",
+            "From": "whatsapp:+5491155556666",
+            "To": "whatsapp:+5491100000000",
+            "Body": "hola",
+        }
+        self.signature = _sign(self.form)
+
+        self.outcome = _build_outcome(
+            status=ProviderInboundMessageStatus.ACCEPTED,
+            canal_id=int(self.canal.id),
+            cliente_id=int(self.cliente.id),
+            comercio_id=int(self.canal.id_comercio_exclusivo),
+            resolution_source="first_processing",
+        )
+        self.coordinator = MagicMock(
+            name="ProviderInboundMessageCoordinator"
+        )
+        self.coordinator.accept.return_value = self.outcome
+
+    def _patch_resolver(self) -> Any:
+        from backend.services.commerce_channel_resolver import (
+            DedicatedResolution,
+            ResolutionStatus,
+        )
+
+        canal = self.canal
+
+        def fake_resolve_dedicated(
+            self: Any,
+            provider: str,
+            destination: str,
+        ) -> DedicatedResolution:
+            return DedicatedResolution(
+                status=ResolutionStatus.RESOLVED,
+                channel_id=int(canal.id),
+                routing_mode=CanalWhatsappMode.DEDICATED,
+                comercio_id=int(canal.id_comercio_exclusivo),
+                resolution_source="destination_number",
+            )
+
+        return patch.object(
+            router_module.CommerceChannelResolver,
+            "resolve_dedicated",
+            new=fake_resolve_dedicated,
+        )
+
+    def test_acceptance_path_never_invokes_pipeline(self) -> None:
+        with patch.object(
+            router_module, "load_settings", return_value=self._settings
+        ), patch.object(
+            router_module,
+            "_validator_factory",
+            return_value=MagicMock(name="Validator"),
+        ), patch(
+            "backend.routers.twilio_webhook.ClienteRepository",
+            return_value=self.cliente_repo,
+        ), self._patch_resolver(), patch(
+            "backend.routers.twilio_webhook.ProviderInboundMessageCoordinator",
+            return_value=self.coordinator,
+        ), patch(
+            "backend.services.provider_inbound_message_coordinator"
+            ".process_incoming_message"
+        ) as pipeline, patch(
+            "backend.services.provider_inbound_message_coordinator"
+            ".stage_outbound_rows"
+        ) as outbound_mapper:
+            response = self.client.post(
+                ROUTE,
+                data=self.form,
+                headers={"X-Twilio-Signature": self.signature},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        pipeline.assert_not_called()
+        outbound_mapper.assert_not_called()
+        self.coordinator.accept.assert_called_once()
 
 
 class WebhookModuleBoundaryTest(unittest.TestCase):
@@ -956,8 +1073,8 @@ class WebhookFullFormSignatureTest(unittest.TestCase):
         self.cliente_repo.get_by_whatsapp.return_value = self.cliente
 
         self.coordinator = MagicMock(name="ProviderInboundMessageCoordinator")
-        self.coordinator.process.return_value = _build_outcome(
-            status=ProviderInboundMessageStatus.PROCESSED,
+        self.coordinator.accept.return_value = _build_outcome(
+            status=ProviderInboundMessageStatus.ACCEPTED,
             canal_id=int(self.canal.id),
             cliente_id=int(self.cliente.id),
             comercio_id=int(self.canal.id_comercio_exclusivo),
@@ -1044,8 +1161,8 @@ class WebhookFullFormSignatureTest(unittest.TestCase):
         self.assertIn("application/xml", response.headers["content-type"])
         self.assertIn("<Response />", response.text)
         self.assertNotIn("<Message>", response.text)
-        self.coordinator.process.assert_called_once()
-        command = self.coordinator.process.call_args[0][0]
+        self.coordinator.accept.assert_called_once()
+        command = self.coordinator.accept.call_args[0][0]
         self.assertEqual(command.proveedor, "twilio")
         self.assertEqual(command.identificador_recepcion, "SM-ABC")
         self.assertEqual(command.mensaje, "hola")
@@ -1086,7 +1203,7 @@ class WebhookFullFormSignatureTest(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.text, "")
         self.cliente_repo.get_by_whatsapp.assert_not_called()
-        self.coordinator.process.assert_not_called()
+        self.coordinator.accept.assert_not_called()
         self._assert_no_transaction_calls()
 
     def test_query_string_is_included_in_validation_url(self) -> None:
@@ -1121,7 +1238,7 @@ class WebhookFullFormSignatureTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("<Response />", response.text)
         self.assertNotIn("<Message>", response.text)
-        self.coordinator.process.assert_called_once()
+        self.coordinator.accept.assert_called_once()
         self._assert_no_transaction_calls()
 
 

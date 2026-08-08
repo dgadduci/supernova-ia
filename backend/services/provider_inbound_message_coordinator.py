@@ -1,18 +1,32 @@
-"""Phase-5.4 provider-neutral inbound-message coordinator.
+"""Phase-7.4 provider-neutral inbound-message boundary.
 
-The coordinator owns the sole provider-message receipt transaction
-boundary. It accepts a validated active routing decision
-(``ProviderInboundMessageCommand``), validates it against the existing
-client, active channel and channel-scoped commerce authority,
-conflict-safe claims one provider receipt via PostgreSQL
-``INSERT ... ON CONFLICT DO NOTHING RETURNING``, stages a compatible
-active conversation session for the supplied commerce/client pair,
-stages and associates a draft ``borrador`` pedido to the active
-session when it does not already have one, invokes the existing
-non-transactional message pipeline and commits the staged state once.
-A duplicate committed receipt rolls back the still-open coordinator
-transaction and returns ``already_processed`` without re-invoking the
-pipeline, creating a new session or creating a new pedido.
+The coordinator is the sole transaction owner for the provider-message
+receipt + deferred work boundary. It performs three narrow
+responsibilities:
+
+1. ``accept`` — webhook acceptance path. Validates the same active
+   client/channel/commerce authority as the previous Phase-5.4
+   coordinator, conflict-safe claims the receipt via PostgreSQL
+   ``INSERT ... ON CONFLICT DO NOTHING RETURNING``, stages exactly one
+   pending deferred work item containing the inbound body, and commits
+   once. A duplicate committed receipt returns ``already_processed``
+   and never re-stages a work item; an invalid context returns
+   ``invalid_context`` and never persists anything. The acceptance
+   path MUST NOT import or invoke the classifier, recognizer, session
+   staging, message pipeline, response mapper or outbound mapper.
+2. ``claim_due_processing`` — operator CLI claim path. Selects one
+   due work row with ``FOR UPDATE SKIP LOCKED``, emits a fresh lease
+   token and commits the claim so the lease is durable before any
+   business work begins.
+3. ``process_lease`` — operator CLI processing path. Loads the leased
+   work item, reuses the existing receipt's authoritative
+   commerce/cliente/channel ids, runs the existing
+   ``process_incoming_message`` pipeline on the stored body, stages
+   outbound rows referencing the existing receipt and commits
+   session/pedido/pipeline/outbox effects together with the terminal
+   work finalization. A technical failure rolls back the business
+   effects and finalizes the work as ``retryable`` or
+   ``failed_terminal`` according to the bounded attempt budget.
 
 The coordinator does NOT:
 
@@ -28,27 +42,30 @@ The coordinator does NOT:
   ``expire`` or ``refresh`` is called from any repository, routing
   service, session staging helper or reusable pipeline primitive
   that participates in the coordinator's transaction.
-
-The existing ``process_incoming_message_transactional`` wrapper
-remains the local-endpoint transaction owner; it now shares the
-same non-transactional ``process_incoming_message`` primitive the
-coordinator uses.
 """
 from __future__ import annotations
 
 import enum
+import logging
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
 
 from sqlalchemy.orm import Session as SqlSession
 
 from backend.intents.orchestration.incoming_message_orchestrator import (
     process_incoming_message,
 )
-from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.models import CanalWhatsappMode
+from backend.models.cliente import Cliente
+from backend.models.procesamiento_mensaje_proveedor import (
+    ProcesamientoMensajeProveedor,
+    ProcesamientoMensajeProveedorFailureCategory,
+)
 from backend.repositories.canal_whatsapp_repository import (
     CanalWhatsappRepository,
 )
+from backend.repositories.cliente_repository import ClienteRepository
 from backend.repositories.comercio_canal_compartido_repository import (
     ComercioCanalCompartidoRepository,
 )
@@ -59,6 +76,9 @@ from backend.repositories.mensaje_proveedor_saliente_repository import (
     MensajeProveedorSalienteRepository,
 )
 from backend.repositories.pedido_repository import PedidoRepository
+from backend.repositories.procesamiento_mensaje_proveedor_repository import (
+    ProcesamientoMensajeProveedorRepository,
+)
 from backend.repositories.recepcion_mensaje_proveedor_repository import (
     RecepcionMensajeProveedorRepository,
 )
@@ -70,18 +90,39 @@ from backend.services.outbound_response_mapper import (
     stage_outbound_rows,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class ProviderInboundMessageStatus(str, enum.Enum):
-    """Typed outcomes returned by ``ProviderInboundMessageCoordinator.process``.
+    """Typed outcomes returned by the acceptance boundary.
 
     Every value maps to a single non-resolved or resolved state. The
     coordinator never raises a business-outcome signal; callers
-    branch on ``outcome.status`` after a single ``process`` call.
+    branch on ``outcome.status`` after a single ``accept`` call.
+    """
+
+    ACCEPTED = "accepted"
+    ALREADY_PROCESSED = "already_processed"
+    INVALID_CONTEXT = "invalid_context"
+
+
+class ProviderInboundProcessingOutcome(str, enum.Enum):
+    """Typed outcomes returned by ``process_lease``.
+
+    Every value maps to a single non-resolved or resolved state. The
+    coordinator never raises a business-outcome signal; callers
+    branch on ``outcome`` after a single ``process_lease`` call.
     """
 
     PROCESSED = "processed"
-    ALREADY_PROCESSED = "already_processed"
-    INVALID_CONTEXT = "invalid_context"
+    RETRY_SCHEDULED = "retry_scheduled"
+    FAILED_TERMINAL = "failed_terminal"
+
+
+DEFAULT_MAX_ATTEMPTS = 3
+DEFAULT_INITIAL_BACKOFF_SECONDS = 30
+DEFAULT_MAX_BACKOFF_SECONDS = 300
+DEFAULT_LEASE_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -152,15 +193,14 @@ class ProviderInboundMessageCommand:
 
 
 @dataclass(frozen=True)
-class ProviderInboundMessageOutcome:
-    """Immutable Phase-5.4 outcome.
+class ProviderInboundAcceptanceOutcome:
+    """Immutable Phase-7.4 acceptance outcome.
 
     ``status`` is the single source of truth for branching. Every
     other field is only meaningful for the matching successful
-    outcome; non-success outcomes leave id-bearing fields as ``None``
-    and ``processed_intents`` as an empty tuple. Raw inbound text is
-    never copied onto the outcome so observability surfaces cannot
-    leak provider payload bytes.
+    outcome; non-success outcomes leave id-bearing fields as
+    ``None``. Raw inbound text is never copied onto the outcome so
+    observability surfaces cannot leak provider payload bytes.
     """
 
     status: ProviderInboundMessageStatus
@@ -170,18 +210,31 @@ class ProviderInboundMessageOutcome:
     proveedor: str
     identificador_recepcion: str
     receipt_id: int | None
-    session_id: int | None
-    processed_intents: tuple[ProcessedIntent, ...]
+    procesamiento_id: int | None
     resolution_source: str
 
 
-class ProviderInboundMessageCoordinator:
-    """Sole Phase-5.4 transaction owner for provider-message processing.
+@dataclass(frozen=True)
+class ProviderInboundProcessingResult:
+    """Immutable Phase-7.4 processing outcome.
 
-    The coordinator is the ONLY component in Phase 5.4 allowed to
-    call ``commit`` or ``rollback`` on the SQLAlchemy session. No
-    repository, routing service, session staging helper or reusable
-    pipeline primitive participates in transaction control.
+    ``outcome`` is the single source of truth for branching. The
+    transient ``mensaje`` body is never copied onto the result so
+    observability surfaces cannot leak provider payload bytes.
+    """
+
+    outcome: ProviderInboundProcessingOutcome
+    procesamiento_id: int | None
+    receipt_id: int | None
+    intentos: int | None
+    categoria: ProcesamientoMensajeProveedorFailureCategory | None
+    codigo: str | None
+    detalle: str | None
+
+
+class ProviderInboundMessageCoordinator:
+    """Sole Phase-7.4 transaction owner for provider-message acceptance
+    and deferred processing.
     """
 
     def __init__(
@@ -193,9 +246,18 @@ class ProviderInboundMessageCoordinator:
             ComercioCanalCompartidoRepository | None
         ) = None,
         recepcion_repo: RecepcionMensajeProveedorRepository | None = None,
+        procesamiento_repo: (
+            ProcesamientoMensajeProveedorRepository | None
+        ) = None,
         session_repo: SessionRepository | None = None,
         pedido_repo: PedidoRepository | None = None,
         outbox_repo: MensajeProveedorSalienteRepository | None = None,
+        *,
+        lease_seconds: int = DEFAULT_LEASE_SECONDS,
+        max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+        initial_backoff_seconds: int = DEFAULT_INITIAL_BACKOFF_SECONDS,
+        max_backoff_seconds: int = DEFAULT_MAX_BACKOFF_SECONDS,
+        now: datetime | None = None,
     ) -> None:
         self._session = session
         self._canal_repo = canal_repo or CanalWhatsappRepository(session)
@@ -210,34 +272,97 @@ class ProviderInboundMessageCoordinator:
         self._recepcion_repo = (
             recepcion_repo or RecepcionMensajeProveedorRepository(session)
         )
+        self._procesamiento_repo = (
+            procesamiento_repo
+            or ProcesamientoMensajeProveedorRepository(session)
+        )
         self._session_repo = session_repo or SessionRepository(session)
         self._pedido_repo = pedido_repo or PedidoRepository(session)
         self._outbox_repo = (
             outbox_repo or MensajeProveedorSalienteRepository(session)
         )
+        self._lease_seconds = int(lease_seconds)
+        self._max_attempts = int(max_attempts)
+        self._initial_backoff_seconds = int(initial_backoff_seconds)
+        self._max_backoff_seconds = int(max_backoff_seconds)
+        self._now = now
 
-    def process(
+    def accept(
         self, command: ProviderInboundMessageCommand
-    ) -> ProviderInboundMessageOutcome:
+    ) -> ProviderInboundAcceptanceOutcome:
+        """Validate the routing decision, claim the receipt and stage
+        exactly one pending work item. Commits once.
+
+        Acceptance owns the unique short transaction that proves the
+        webhook acknowledgement: it never invokes the classifier,
+        recognizer, session/pedido staging, message pipeline, response
+        mapper or outbound mapper. A duplicate committed receipt
+        rolls back the still-open coordinator transaction and returns
+        ``already_processed`` without staging a second work item.
+        """
         try:
-            return self._process_locked(command)
+            return self._accept_locked(command)
         except InvalidProviderInboundMessageCommand:
-            # Contract violation: surface to the caller untouched.
             raise
         except Exception:
-            # Any technical failure rolls back the entire
-            # coordinator transaction and propagates unchanged.
             self._session.rollback()
             raise
 
-    def _process_locked(
+    def claim_due_processing(
+        self, *, now: datetime | None = None
+    ) -> ProcesamientoMensajeProveedor | None:
+        """Claim exactly one due work item and commit the lease.
+
+        The caller is responsible for invoking ``process_lease`` on
+        the leased row before the lease expires; the bounded attempt
+        budget and deterministic backoff guarantee the row can be
+        re-claimed after the lease window without manual repair.
+        """
+        when = now or self._now_or()
+        try:
+            claimed = self._procesamiento_repo.claim_due(
+                now=when, lease_seconds=self._lease_seconds
+            )
+            self._session.commit()
+            return claimed
+        except Exception:
+            self._session.rollback()
+            raise
+
+    def process_lease(
+        self,
+        leased: ProcesamientoMensajeProveedor,
+    ) -> ProviderInboundProcessingResult:
+        """Process one leased work item end-to-end and commit once.
+
+        The function loads the receipt + work item, reuses the
+        authoritative commerce/cliente/channel ids, runs the
+        existing pipeline, stages the outbound rows referencing the
+        existing receipt, and finalizes the work in a single commit.
+        A technical failure rolls the business effects back and
+        finalizes the work as ``retryable`` (when the attempt budget
+        remains) or ``failed_terminal`` (when the budget is
+        exhausted). The transient body is preserved on retry and
+        cleared on terminal exhaustion.
+        """
+        try:
+            return self._process_locked(leased)
+        except Exception:
+            try:
+                self._session.rollback()
+            except Exception:
+                logger.exception(
+                    "twilio_inbound_processor_rollback_failed",
+                    extra={"procesamiento_id": int(leased.id)},
+                )
+            raise
+
+    def _accept_locked(
         self, command: ProviderInboundMessageCommand
-    ) -> ProviderInboundMessageOutcome:
-        # 1. Existing active client.
+    ) -> ProviderInboundAcceptanceOutcome:
         if not self._is_cliente_activo(command.cliente_id):
             return self._invalid(command, "client_lookup")
 
-        # 2. Active channel and channel-scoped authority.
         canal = self._canal_repo.find_by_id(command.canal_id)
         if canal is None or not canal.activo:
             return self._invalid(command, "channel_lookup")
@@ -255,17 +380,9 @@ class ProviderInboundMessageCoordinator:
                 return self._invalid(command, "missing_shared_context")
             selected = existing_context.comercio_id_seleccionado
             if selected is None:
-                # A pending target with no committed selection is
-                # never processing authority.
                 return self._invalid(command, "pending_only_target")
             if int(selected) != command.comercio_id:
                 return self._invalid(command, "selected_authority_mismatch")
-            # The selected commerce MUST also be an active member of
-            # this shared channel right now. A stale context can still
-            # reference a commerce whose membership has been revoked
-            # (or never existed); processing authority requires a
-            # live ``ComercioCanalCompartido`` for the same
-            # ``(canal_id, comercio_id)`` pair.
             membership = (
                 self._membresia_repo.find_active_by_canal_and_comercio(
                     command.canal_id, command.comercio_id
@@ -281,7 +398,6 @@ class ProviderInboundMessageCoordinator:
         if not self._is_comercio_activo(command.comercio_id):
             return self._invalid(command, "unavailable_commerce")
 
-        # 3. Receipt claim (PG ON CONFLICT DO NOTHING RETURNING).
         receipt_id = self._recepcion_repo.claim(
             command.proveedor,
             command.identificador_recepcion,
@@ -290,92 +406,268 @@ class ProviderInboundMessageCoordinator:
             command.comercio_id,
         )
         if receipt_id is None:
-            # A committed receipt for the same pair already exists;
-            # the winner's transaction holds it. Roll back our own
-            # still-open transaction and return ``already_processed``.
             self._session.rollback()
             return self._already_processed(command, "duplicate_receipt")
 
-        # 4. Active conversation session acquisition or staged
-        # creation; staged without flush so the partial unique index
-        # is checked only at the surrounding commit.
-        session_row = self._session_repo.stage_active(
-            command.comercio_id, command.cliente_id
-        )
-
-        # 5. Draft pedido prerequisite. A committed receipt must leave
-        # the active session with a non-null ``id_pedido`` so the
-        # existing ``agregar_producto`` handler can mutate the order.
-        # When the staged/existing active session has no pedido yet,
-        # we stage exactly one ``borrador`` pedido tied to that
-        # session and associate it before running the pipeline.
-        # Already-associated sessions are left untouched. A fresh
-        # session needs a flush to obtain its database ID for the
-        # ``Pedido.id_session`` foreign key; the second flush below
-        # materialises the pedido ID so we can assign it back to the
-        # session in the same transaction. No repository owns
-        # transaction control.
-        if session_row.id_pedido is None:
-            if session_row.id is None:
-                self._session.flush()
-            pedido_row = self._pedido_repo.stage_draft_for_session(
-                int(session_row.id)
-            )
-            self._session.flush()
-            session_row.id_pedido = int(pedido_row.id)
-
-        # 6. Existing non-transactional message pipeline. Failures
-        # propagate to the outer ``except`` which rolls back the
-        # entire transaction (including the receipt claim).
-        intents = process_incoming_message(
-            self._session, session_row, command.mensaje
-        )
-
-        # 7. Stage durable outbound rows inside the same transaction
-        # so the receipt, session, pedido, association, pipeline
-        # effects and the provider-message outbox are atomic. The
-        # mapper is the only place that renders the customer
-        # responses; the coordinator never inspects the rendered text
-        # or the row payloads.
-        stage_outbound_rows(
-            self._session,
-            session_row,
-            proveedor=command.proveedor,
+        work_row = self._procesamiento_repo.stage(
             recepcion_mensaje_proveedor_id=receipt_id,
-            destinatario_e164=command.destinatario_e164,
-            intents=tuple(intents),
-            outbox_repo=self._outbox_repo,
+            mensaje=command.mensaje,
         )
+        self._session.flush()
 
-        # 8. Single commit, only after every staging succeeded.
         self._session.commit()
 
-        receipt_row = self._recepcion_repo.find_by_proveedor_y_recepcion(
-            command.proveedor, command.identificador_recepcion
-        )
-        receipt_id: int | None = (
-            int(receipt_row.id) if receipt_row is not None else None
-        )
-        session_id: int | None = (
-            int(getattr(session_row, "id", 0)) or None
-        )
-
-        return ProviderInboundMessageOutcome(
-            status=ProviderInboundMessageStatus.PROCESSED,
+        return ProviderInboundAcceptanceOutcome(
+            status=ProviderInboundMessageStatus.ACCEPTED,
             canal_id=command.canal_id,
             cliente_id=command.cliente_id,
             comercio_id=command.comercio_id,
             proveedor=command.proveedor,
             identificador_recepcion=command.identificador_recepcion,
             receipt_id=receipt_id,
-            session_id=session_id,
-            processed_intents=tuple(intents),
+            procesamiento_id=int(work_row.id or 0) or None,
             resolution_source="first_processing",
         )
 
-    def _is_cliente_activo(self, cliente_id: int) -> bool:
-        from backend.models import Cliente
+    def _process_locked(
+        self,
+        leased: ProcesamientoMensajeProveedor,
+    ) -> ProviderInboundProcessingResult:
+        lease_token = str(leased.token_lease or "")
+        if not lease_token:
+            raise RuntimeError(
+                "process_lease requires a leased work item"
+            )
+        procesamiento_id = int(leased.id)
+        attempts = int(leased.intentos)
+        body = leased.mensaje
+        if body is None:
+            raise RuntimeError(
+                "process_lease requires a work item with the transient body"
+            )
 
+        receipt = self._recepcion_repo.find_by_id(
+            int(leased.recepcion_mensaje_proveedor_id)
+        )
+        if receipt is None:
+            self._finalize_terminal(
+                leased=leased,
+                categoria=ProcesamientoMensajeProveedorFailureCategory.DATABASE_ERROR,
+                codigo="receipt_missing",
+            )
+            return ProviderInboundProcessingResult(
+                outcome=ProviderInboundProcessingOutcome.FAILED_TERMINAL,
+                procesamiento_id=procesamiento_id,
+                receipt_id=None,
+                intentos=attempts,
+                categoria=ProcesamientoMensajeProveedorFailureCategory.DATABASE_ERROR,
+                codigo="receipt_missing",
+                detalle="receipt_missing",
+            )
+
+        cliente_id = int(receipt.cliente_id)
+        comercio_id = int(receipt.comercio_id)
+        proveedor = str(receipt.proveedor)
+        destinatario_e164 = self._destinatario_from_receipt(receipt)
+
+        try:
+            session_row = self._session_repo.stage_active(
+                comercio_id, cliente_id
+            )
+            if session_row.id_pedido is None:
+                if session_row.id is None:
+                    self._session.flush()
+                pedido_row = self._pedido_repo.stage_draft_for_session(
+                    int(session_row.id)
+                )
+                self._session.flush()
+                session_row.id_pedido = int(pedido_row.id)
+            self._session.flush()
+
+            intents = process_incoming_message(
+                self._session, session_row, body
+            )
+
+            stage_outbound_rows(
+                self._session,
+                session_row,
+                proveedor=proveedor,
+                recepcion_mensaje_proveedor_id=int(receipt.id),
+                destinatario_e164=destinatario_e164,
+                intents=tuple(intents),
+                outbox_repo=self._outbox_repo,
+            )
+            self._session.flush()
+        except Exception as exc:  # noqa: BLE001 - coordinator owns the rollback
+            try:
+                self._session.rollback()
+            except Exception:
+                logger.exception(
+                    "twilio_inbound_processor_business_rollback_failed",
+                    extra={"procesamiento_id": procesamiento_id},
+                )
+            return self._finalize_failure(
+                leased=leased,
+                attempts=attempts,
+                exc=exc,
+            )
+
+        finalized = self._procesamiento_repo.finalize_processed(
+            procesamiento_id=procesamiento_id,
+            lease_token=lease_token,
+            fecha_finalizacion=self._now_or(),
+        )
+        if not finalized:
+            self._session.rollback()
+            return ProviderInboundProcessingResult(
+                outcome=ProviderInboundProcessingOutcome.RETRY_SCHEDULED,
+                procesamiento_id=procesamiento_id,
+                receipt_id=int(receipt.id),
+                intentos=attempts,
+                categoria=None,
+                codigo=None,
+                detalle="lease_lost",
+            )
+        self._session.commit()
+        return ProviderInboundProcessingResult(
+            outcome=ProviderInboundProcessingOutcome.PROCESSED,
+            procesamiento_id=procesamiento_id,
+            receipt_id=int(receipt.id),
+            intentos=attempts,
+            categoria=None,
+            codigo=None,
+            detalle=None,
+        )
+
+    def _finalize_failure(
+        self,
+        *,
+        leased: ProcesamientoMensajeProveedor,
+        attempts: int,
+        exc: BaseException,
+    ) -> ProviderInboundProcessingResult:
+        categoria, codigo = _classify_failure(exc)
+        lease_token = str(leased.token_lease or "")
+        procesamiento_id = int(leased.id)
+        fecha_finalizacion = self._now_or()
+
+        if attempts >= self._max_attempts:
+            finalized = self._procesamiento_repo.finalize_terminal(
+                procesamiento_id=procesamiento_id,
+                lease_token=lease_token,
+                categoria=categoria.value,
+                codigo=codigo,
+                fecha_finalizacion=fecha_finalizacion,
+            )
+            if not finalized:
+                self._session.rollback()
+                return ProviderInboundProcessingResult(
+                    outcome=ProviderInboundProcessingOutcome.RETRY_SCHEDULED,
+                    procesamiento_id=procesamiento_id,
+                    receipt_id=int(
+                        leased.recepcion_mensaje_proveedor_id
+                    ),
+                    intentos=attempts,
+                    categoria=categoria,
+                    codigo=codigo,
+                    detalle="lease_lost",
+                )
+            self._session.commit()
+            return ProviderInboundProcessingResult(
+                outcome=ProviderInboundProcessingOutcome.FAILED_TERMINAL,
+                procesamiento_id=procesamiento_id,
+                receipt_id=int(
+                    leased.recepcion_mensaje_proveedor_id
+                ),
+                intentos=attempts,
+                categoria=categoria,
+                codigo=codigo,
+                detalle="budget_exhausted",
+            )
+
+        proximo_intento_en = _compute_next_attempt_at(
+            now=fecha_finalizacion,
+            attempts=attempts,
+            initial_seconds=self._initial_backoff_seconds,
+            max_seconds=self._max_backoff_seconds,
+        )
+        finalized = self._procesamiento_repo.finalize_retryable(
+            procesamiento_id=procesamiento_id,
+            lease_token=lease_token,
+            categoria=categoria.value,
+            codigo=codigo,
+            proximo_intento_en=proximo_intento_en,
+        )
+        if not finalized:
+            self._session.rollback()
+            return ProviderInboundProcessingResult(
+                outcome=ProviderInboundProcessingOutcome.RETRY_SCHEDULED,
+                procesamiento_id=procesamiento_id,
+                receipt_id=int(
+                    leased.recepcion_mensaje_proveedor_id
+                ),
+                intentos=attempts,
+                categoria=categoria,
+                codigo=codigo,
+                detalle="lease_lost",
+            )
+        self._session.commit()
+        return ProviderInboundProcessingResult(
+            outcome=ProviderInboundProcessingOutcome.RETRY_SCHEDULED,
+            procesamiento_id=procesamiento_id,
+            receipt_id=int(leased.recepcion_mensaje_proveedor_id),
+            intentos=attempts,
+            categoria=categoria,
+            codigo=codigo,
+            detalle=None,
+        )
+
+    def _finalize_terminal(
+        self,
+        *,
+        leased: ProcesamientoMensajeProveedor,
+        categoria: ProcesamientoMensajeProveedorFailureCategory,
+        codigo: str,
+    ) -> bool:
+        finalized = self._procesamiento_repo.finalize_terminal(
+            procesamiento_id=int(leased.id),
+            lease_token=str(leased.token_lease or ""),
+            categoria=categoria.value,
+            codigo=codigo,
+            fecha_finalizacion=self._now_or(),
+        )
+        if finalized:
+            self._session.commit()
+            return True
+        self._session.rollback()
+        return False
+
+    def _destinatario_from_receipt(self, receipt: Any) -> str:
+        cliente = self._session.get(Cliente, int(receipt.cliente_id))
+        if cliente is None:
+            return self._destinatario_fallback(receipt)
+        return self._canonicalize_destinatario(cliente.whatsapp)
+
+    def _destinatario_fallback(self, receipt: Any) -> str:
+        cliente = ClienteRepository(self._session).get_by_id(
+            int(receipt.cliente_id)
+        )
+        if cliente is None:
+            raise RuntimeError(
+                "cliente missing for receipt during inbound processing"
+            )
+        return self._canonicalize_destinatario(cliente.whatsapp)
+
+    @staticmethod
+    def _canonicalize_destinatario(raw: str) -> str:
+        from backend.services.cliente_service import InvalidWhatsApp, normalize_whatsapp
+
+        try:
+            return normalize_whatsapp(str(raw))
+        except InvalidWhatsApp:
+            return str(raw).strip()
+
+    def _is_cliente_activo(self, cliente_id: int) -> bool:
         cliente = self._session.get(Cliente, cliente_id)
         if cliente is None:
             return False
@@ -396,8 +688,8 @@ class ProviderInboundMessageCoordinator:
         self,
         command: ProviderInboundMessageCommand,
         source: str,
-    ) -> ProviderInboundMessageOutcome:
-        return ProviderInboundMessageOutcome(
+    ) -> ProviderInboundAcceptanceOutcome:
+        return ProviderInboundAcceptanceOutcome(
             status=ProviderInboundMessageStatus.INVALID_CONTEXT,
             canal_id=command.canal_id,
             cliente_id=command.cliente_id,
@@ -405,8 +697,7 @@ class ProviderInboundMessageCoordinator:
             proveedor=command.proveedor,
             identificador_recepcion=command.identificador_recepcion,
             receipt_id=None,
-            session_id=None,
-            processed_intents=(),
+            procesamiento_id=None,
             resolution_source=source,
         )
 
@@ -414,8 +705,8 @@ class ProviderInboundMessageCoordinator:
         self,
         command: ProviderInboundMessageCommand,
         source: str,
-    ) -> ProviderInboundMessageOutcome:
-        return ProviderInboundMessageOutcome(
+    ) -> ProviderInboundAcceptanceOutcome:
+        return ProviderInboundAcceptanceOutcome(
             status=ProviderInboundMessageStatus.ALREADY_PROCESSED,
             canal_id=command.canal_id,
             cliente_id=command.cliente_id,
@@ -423,15 +714,69 @@ class ProviderInboundMessageCoordinator:
             proveedor=command.proveedor,
             identificador_recepcion=command.identificador_recepcion,
             receipt_id=None,
-            session_id=None,
-            processed_intents=(),
+            procesamiento_id=None,
             resolution_source=source,
         )
 
+    def _now_or(self) -> datetime:
+        if self._now is not None:
+            return self._now
+        return datetime.now(tz=_utc())
+
+
+def _utc():
+    from datetime import timezone
+
+    return timezone.utc
+
+
+def _classify_failure(
+    exc: BaseException,
+) -> tuple[ProcesamientoMensajeProveedorFailureCategory, str]:
+    """Translate a processing exception into a safe category/code.
+
+    The transient body, raw exception message, provider signature and
+    inbound text NEVER appear in the stored category/code. The
+    classification is intentionally coarse so the row remains safe to
+    log.
+    """
+    name = type(exc).__name__
+    if isinstance(exc, RuntimeError) and name == "RuntimeError":
+        return (
+            ProcesamientoMensajeProveedorFailureCategory.PIPELINE_ERROR,
+            "pipeline_error",
+        )
+    return (
+        ProcesamientoMensajeProveedorFailureCategory.DATABASE_ERROR,
+        "processor_error",
+    )
+
+
+def _compute_next_attempt_at(
+    *,
+    now: datetime,
+    attempts: int,
+    initial_seconds: int,
+    max_seconds: int,
+) -> datetime:
+    safe_initial = max(1, int(initial_seconds))
+    safe_max = max(safe_initial, int(max_seconds))
+    delay = safe_initial * max(1, int(attempts))
+    delay = min(delay, safe_max)
+    from datetime import timedelta
+
+    return now + timedelta(seconds=int(delay))
+
 
 __all__ = [
+    "DEFAULT_INITIAL_BACKOFF_SECONDS",
+    "DEFAULT_LEASE_SECONDS",
+    "DEFAULT_MAX_ATTEMPTS",
+    "DEFAULT_MAX_BACKOFF_SECONDS",
+    "ProviderInboundAcceptanceOutcome",
     "ProviderInboundMessageCommand",
     "ProviderInboundMessageCoordinator",
-    "ProviderInboundMessageOutcome",
     "ProviderInboundMessageStatus",
+    "ProviderInboundProcessingOutcome",
+    "ProviderInboundProcessingResult",
 ]
