@@ -1,15 +1,18 @@
 ## 1. Evidence and approval
 
-- [ ] 1.1 Record the sanitized baseline: passing generate, failing embed,
+- [x] 1.1 Record the sanitized baseline: passing generate, failing embed,
   zero-byte timeout, Ollama 200 access-log timing, direct external embed
   success, and direct-UDP `tailscale ping`.
-- [ ] 1.2 Run the bounded bidirectional diagnostic from the integrated Railway
+- [x] 1.2 Run the bounded bidirectional diagnostic from the integrated Railway
   container and correlate it with a safe Ollama log observation.
-- [ ] 1.3 Inspect deployed Tailscale/Ollama versions, userspace daemon mode,
+- [x] 1.3 Inspect deployed Tailscale/Ollama versions, userspace daemon mode,
   loopback listener, and relevant user-owned host network/service settings.
 - [ ] 1.4 Identify the causal infrastructure mismatch and obtain explicit
   approval for one minimal correction. Do not apply a change while evidence is
   inconclusive.
+- [x] 1.5 Run the approved reversible `tailscaled` version-alignment
+  experiment, verify the deployed version, record its unchanged no-byte
+  timeout, and roll it back. Do not repeat it as a proposed remedy.
 
 ## 2. Minimal infrastructure correction
 

@@ -22,6 +22,16 @@ embedding, model, Twilio, or order behaviour.
 - Railway-to-Ollama `tailscale ping` is direct UDP (approximately 235 ms),
   not DERP. It proves reachability only, not return-body delivery through the
   SOCKS transport.
+- The deployed bounded diagnostic timed out after approximately 30.81 seconds
+  with no HTTP status or received bytes. Concurrent capture on the Ollama
+  host's `tailscale0` interface proves that the host emitted approximately
+  4941 response bytes after its HTTP 200, while Railway never acknowledged
+  the first response byte and eventually reset the connection with `ack 1`.
+- A reversible Railway image-pin experiment upgraded `tailscaled` from
+  `v1.98.9` to `v1.102.2`, verified the latter version in the deployed
+  container, and produced the same timeout after approximately 30.80 seconds.
+  The experiment was rolled back to `v1.98.9`. Version alignment is therefore
+  not a remedy, and no root cause is demonstrated.
 
 ## Scope
 
@@ -55,6 +65,7 @@ embedding, model, Twilio, or order behaviour.
 | Request never reaches Ollama or is denied | forward-path/ACL/service fault | diagnose/correct infra only; keep business gate failed |
 | Generate passes but embed fails | generate is non-authoritative for embedding readiness | do not infer success or alter the embedding client |
 | Any diagnostic is inconclusive | no infrastructure change is authorized | retain current deployment and gather bounded sanitized evidence |
+| Version-alignment experiment returns the same no-byte timeout | image-version mismatch is not the remedy | roll back the image pin; do not repeat the experiment or infer a root cause |
 
 ## Transaction ownership and observability
 
