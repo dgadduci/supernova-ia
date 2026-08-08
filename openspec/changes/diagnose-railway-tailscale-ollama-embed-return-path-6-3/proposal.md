@@ -22,11 +22,6 @@ embedding, model, Twilio, or order behaviour.
 - Railway-to-Ollama `tailscale ping` is direct UDP (approximately 235 ms),
   not DERP. It proves reachability only, not return-body delivery through the
   SOCKS transport.
-- Capture on `tailscale0` shows Ollama sends ~4941 bytes back toward Railway
-  in ~39 ms, but Railway does not ACK the first byte and eventually emits an
-  `RST` with `ack 1`. The failure is therefore localized to the return path
-  from the host Tailscale interface toward Railway, not to Ollama or to the
-  application contract. A root cause is still not demonstrated.
 
 ## Scope
 
@@ -35,12 +30,6 @@ embedding, model, Twilio, or order behaviour.
 - Inspect and, only after evidence identifies the fault, correct the smallest
   Railway/Tailscale/Ollama infrastructure configuration or lifecycle boundary
   needed for proxied response bytes to return.
-- Authorized infrastructure experiment: align the Railway `tailscaled`
-  image pin with the version of the user-owned Tailscale host that
-  currently services Ollama (`tailscale/tailscale:v1.102.2`). This is a
-  reversible version-alignment experiment, not a demonstrated root-cause
-  fix; it must not be interpreted as proof that the prior image caused
-  the return-path failure.
 - Preserve loopback-only proxy exposure, `tag:railway`, least-privilege ACLs,
   direct local development behaviour, and the existing client-scoped proxy.
 - Record sanitized evidence for generate and embed: status/category, elapsed
@@ -66,7 +55,6 @@ embedding, model, Twilio, or order behaviour.
 | Request never reaches Ollama or is denied | forward-path/ACL/service fault | diagnose/correct infra only; keep business gate failed |
 | Generate passes but embed fails | generate is non-authoritative for embedding readiness | do not infer success or alter the embedding client |
 | Any diagnostic is inconclusive | no infrastructure change is authorized | retain current deployment and gather bounded sanitized evidence |
-| A bounded return-path diagnostic is inconclusive while a version mismatch between Railway `tailscaled` and the host Tailscale is suspected | version-alignment experiment authorized | re-pin the image to `tailscale/tailscale:v1.102.2`, re-run the diagnostic, treat pass/fail as experimental evidence only |
 
 ## Transaction ownership and observability
 
@@ -104,10 +92,8 @@ sh -n docker-entrypoint.sh
 ```
 
 Any correction is reversible by Railway deployment rollback and restoring the
-previous user-owned Tailscale/Ollama configuration. The image-pin experiment
-is reverted by re-tagging the Dockerfile back to `tailscale/tailscale:v1.98.9`
-and redeploying; it does not require a database downgrade or an automatic
-ACL/key mutation.
+previous user-owned Tailscale/Ollama configuration. It must not include a
+database downgrade or an automatic ACL/key mutation.
 
 ## Deferred limitations
 
