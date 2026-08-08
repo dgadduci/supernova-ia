@@ -375,7 +375,7 @@ def load_settings() -> Settings:
     )
     return Settings(
         llm_url=_str_env("LLM_URL", "http://localhost:11434/api/generate"),
-        llm_model=_str_env("LLM_MODEL", "qwen-27b-coding:latest"),
+        llm_model=_str_env("LLM_MODEL", "qwen2.5-coder:7b-ctx8192"),
         llm_timeout=_int_env("LLM_TIMEOUT", 180),
         llm_keep_alive=_str_env("LLM_KEEP_ALIVE", "2h"),
         llm_num_ctx=_int_env("LLM_NUM_CTX", 8192),

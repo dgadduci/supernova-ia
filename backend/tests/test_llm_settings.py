@@ -18,7 +18,7 @@ class LoadSettingsDefaultsTest(unittest.TestCase):
             settings,
             Settings(
                 llm_url="http://localhost:11434/api/generate",
-                llm_model="qwen-27b-coding:latest",
+                llm_model="qwen2.5-coder:7b-ctx8192",
                 llm_timeout=180,
                 llm_keep_alive="2h",
                 llm_num_ctx=8192,

@@ -1,11 +1,12 @@
 import json
 import logging
+import os
 import unittest
 from unittest import mock
 
 import requests
 
-from backend.config.settings import Settings
+from backend.config.settings import Settings, load_settings
 from backend.llm.query_llm import (
     QueryLlm,
     QueryLlmConnectionError,
@@ -111,6 +112,57 @@ class QueryLlmPayloadTest(unittest.TestCase):
         first_payload = transport.call_args_list[0].kwargs["json"]
         second_payload = transport.call_args_list[1].kwargs["json"]
         self.assertIsNot(first_payload, second_payload)
+
+
+class QueryLlmDefaultContractTest(unittest.TestCase):
+    """Locked-in defaults for the non-semantic QueryLlm path."""
+
+    def test_load_settings_default_model_and_context(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            settings = load_settings()
+        self.assertEqual(settings.llm_model, "qwen2.5-coder:7b-ctx8192")
+        self.assertEqual(settings.llm_num_ctx, 8192)
+
+    def test_query_llm_payload_emits_default_model_and_context(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            settings = load_settings()
+
+        captured = {}
+
+        def transport(url, **kwargs):
+            captured["url"] = url
+            captured["payload"] = kwargs.get("json")
+            return _FakeResponse(json.dumps({"ok": True}))
+
+        QueryLlm(settings=settings, transport=transport).request("hola")
+
+        payload = captured["payload"]
+        self.assertEqual(payload["model"], "qwen2.5-coder:7b-ctx8192")
+        self.assertEqual(payload["options"]["num_ctx"], 8192)
+        self.assertEqual(payload["stream"], False)
+        self.assertEqual(payload["think"], False)
+        self.assertEqual(payload["format"], "json")
+        self.assertEqual(payload["options"]["temperature"], 0)
+
+    def test_env_overrides_take_precedence_over_default(self):
+        env = {
+            "LLM_MODEL": "custom-7b-override",
+            "LLM_NUM_CTX": "4096",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            settings = load_settings()
+
+        captured = {}
+
+        def transport(url, **kwargs):
+            captured["payload"] = kwargs.get("json")
+            return _FakeResponse(json.dumps({"ok": True}))
+
+        QueryLlm(settings=settings, transport=transport).request("hola")
+
+        payload = captured["payload"]
+        self.assertEqual(payload["model"], "custom-7b-override")
+        self.assertEqual(payload["options"]["num_ctx"], 4096)
 
 
 class QueryLlmParsingTest(unittest.TestCase):

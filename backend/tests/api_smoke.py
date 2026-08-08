@@ -1209,7 +1209,7 @@ def test_llm_settings_and_query_llm() -> None:
     record(
         "llm_settings_defaults",
         defaults.llm_url == "http://localhost:11434/api/generate"
-        and defaults.llm_model == "qwen-27b-coding:latest"
+        and defaults.llm_model == "qwen2.5-coder:7b-ctx8192"
         and defaults.llm_timeout == 180
         and defaults.llm_keep_alive == "2h"
         and defaults.llm_num_ctx == 8192
