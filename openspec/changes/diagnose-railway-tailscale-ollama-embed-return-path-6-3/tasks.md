@@ -7,16 +7,21 @@
   container and correlate it with a safe Ollama log observation.
 - [x] 1.3 Inspect deployed Tailscale/Ollama versions, userspace daemon mode,
   loopback listener, and relevant user-owned host network/service settings.
-- [ ] 1.4 Identify the causal infrastructure mismatch and obtain explicit
+- [x] 1.4 Identify the causal infrastructure mismatch and obtain explicit
   approval for one minimal correction. Do not apply a change while evidence is
   inconclusive.
 - [x] 1.5 Run the approved reversible `tailscaled` version-alignment
   experiment, verify the deployed version, record its unchanged no-byte
   timeout, and roll it back. Do not repeat it as a proposed remedy.
+- [x] 1.6 Inspect the Ollama host OS, active firewall mechanism, Tailscale
+  interface MTU, and any existing MSS-clamping rule without changing network
+  state. Select no adjustment until this evidence is reviewed.
+- [x] 1.7 Propose one host-local, temporary MTU/MSS experiment with an exact
+  rollback, then obtain approval before applying it.
 
 ## 2. Minimal infrastructure correction
 
-- [ ] 2.1 Implement only the approved Railway/Tailscale/Ollama infrastructure
+- [x] 2.1 Implement only the approved Railway/Tailscale/Ollama infrastructure
   correction, preserving loopback-only SOCKS, tagged ephemeral identity,
   least-privilege access, and client-scoped proxy isolation.
 - [x] 2.2 Update only the affected deployment runbook and focused safe
@@ -25,9 +30,9 @@
 
 ## 3. Verification and handoff
 
-- [ ] 3.1 Re-run the bounded proxy diagnostic and retain safe evidence of
+- [x] 3.1 Re-run the bounded proxy diagnostic and retain safe evidence of
   returned bytes and terminal HTTP outcome.
-- [ ] 3.2 Re-run the integrated Railway contract helper; require
+- [x] 3.2 Re-run the integrated Railway contract helper; require
   `generate=passed`, `embed=passed`, and dimension `384`.
 - [ ] 3.3 The user runs focused validation for touched files, Ruff,
   `compileall`, strict OpenSpec validation, and `git diff --check` locally;

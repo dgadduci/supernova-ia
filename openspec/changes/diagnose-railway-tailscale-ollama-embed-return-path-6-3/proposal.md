@@ -32,6 +32,12 @@ embedding, model, Twilio, or order behaviour.
   container, and produced the same timeout after approximately 30.80 seconds.
   The experiment was rolled back to `v1.98.9`. Version alignment is therefore
   not a remedy, and no root cause is demonstrated.
+- The Ollama host's `tailscale0` interface uses MTU 1280 and UFW manages its
+  nftables-backed firewall. A temporary MSS 1160 clamp restricted to new
+  `tailscale0` TCP connections for port 11434 changed the Railway diagnostic
+  to HTTP 200 with 4797 received bytes in approximately 0.74 seconds.
+  The same bounded integrated helper then passed generate and the 384-dimension
+  embed contract. The host now persists that exact, port-scoped clamp in UFW.
 
 ## Scope
 
@@ -66,6 +72,7 @@ embedding, model, Twilio, or order behaviour.
 | Generate passes but embed fails | generate is non-authoritative for embedding readiness | do not infer success or alter the embedding client |
 | Any diagnostic is inconclusive | no infrastructure change is authorized | retain current deployment and gather bounded sanitized evidence |
 | Version-alignment experiment returns the same no-byte timeout | image-version mismatch is not the remedy | roll back the image pin; do not repeat the experiment or infer a root cause |
+| MSS 1160 clamp on `tailscale0`/`tcp:11434` returns bytes and passes the integrated helper | effective return-path segment sizing is the required operational correction | retain only that scoped UFW rule; do not change models, application timeouts, or proxy scope |
 
 ## Transaction ownership and observability
 
@@ -102,9 +109,10 @@ If implementation touches `docker-entrypoint.sh`, the focused static check is:
 sh -n docker-entrypoint.sh
 ```
 
-Any correction is reversible by Railway deployment rollback and restoring the
-previous user-owned Tailscale/Ollama configuration. It must not include a
-database downgrade or an automatic ACL/key mutation.
+The UFW correction is reversible by removing its single `TCPMSS --set-mss
+1160` PREROUTING rule for `tailscale0`/`tcp:11434` from
+`/etc/ufw/before.rules`, then reloading UFW. It must not include a database
+downgrade or an automatic ACL/key mutation.
 
 ## Deferred limitations
 

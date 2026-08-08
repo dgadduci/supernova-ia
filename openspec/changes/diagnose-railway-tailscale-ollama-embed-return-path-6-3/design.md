@@ -33,6 +33,39 @@ proves the response bytes crossed the SOCKS route back to Railway.
    identifies a causal configuration/lifecycle incompatibility. Re-run steps
    1–3 and then the existing integrated contract helper.
 
+## Controlled MTU/MSS investigation
+
+The next authorized diagnostic path is a single, reversible MTU/MSS
+investigation on the user-owned Ollama host. It is justified by the proved
+asymmetry: the host emits an approximately 4941-byte embedding response while
+Railway does not acknowledge its first byte. It is not evidence that MTU or
+MSS is the root cause.
+
+Before any network mutation, inspect and retain only safe metadata for the
+host operating system, active firewall mechanism, Tailscale interface MTU,
+and whether an existing MSS-clamping rule already applies. Choose the smallest
+host-local, temporary adjustment only after that inspection; do not alter
+Railway, tailnet ACLs, model settings, or application code. The adjustment
+must have an exact documented rollback command and a bounded before/after
+transport diagnostic. If the diagnostic remains a zero-byte timeout, restore
+the prior network state immediately and record MTU/MSS as ruled out.
+
+The verified correction is a UFW-managed `mangle` PREROUTING rule, placed
+before UFW's `filter` table in `/etc/ufw/before.rules`:
+
+```text
+*mangle
+:PREROUTING ACCEPT [0:0]
+-A PREROUTING -i tailscale0 -p tcp --dport 11434 --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1160
+COMMIT
+```
+
+It affects only new inbound Tailscale connections to Ollama's port 11434. A
+before/after diagnostic received 4797 bytes with HTTP 200, and the existing
+integrated helper passed generate plus the 384-dimension embed contract. The
+rule is retained as the minimal operational correction; all broader firewall
+rewrites, service restarts, and alternate transport paths remain out of scope.
+
 Diagnostics must be bounded, rate-limited to operator runs, and must not log
 payloads, outputs, vectors, credentials, raw routes, or raw daemon status.
 
@@ -57,6 +90,8 @@ bytes, and preserve the established private-network boundary.
 | Host has 200; Railway has zero bytes | return path or SOCKS relay is broken | diagnose daemon/runtime/network configuration only |
 | Railway receives non-2xx or malformed body | endpoint/contract issue | retain existing client errors; do not change parser/payload in this change |
 | Railway receives valid 384-dimension vector | route passes | run the existing embed contract gate and record safe result |
+| Controlled MTU/MSS experiment has unchanged timeout | MTU/MSS is not the remedy | immediately restore the prior host network state; do not retry variants |
+| MSS 1160 rule returns response bytes and helper passes | effective return-path segment sizing was insufficient | retain exactly the UFW rule above and keep all other transport settings unchanged |
 
 ## Operational gate
 
