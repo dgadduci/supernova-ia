@@ -100,7 +100,14 @@ vectors, database URLs, or raw Tailscale status:
 
    Record only the resulting revision; do not print the database URL.
 3. The public `GET /health` returns `200` with `{"status":"ok"}`.
-4. In a Railway shell for the integrated web service, run:
+4. In a Railway shell for the integrated web service, run the bounded response-byte diagnostic before the contract helper:
+
+   ```sh
+   PYTHONPATH=. python -m backend.scripts.check_railway_ollama_contracts --transport-diagnostic
+   ```
+
+   It must report the connection result, HTTP status, elapsed time, received-byte count, and an error category only. A `200` with zero bytes remains a failed diagnostic; do not treat `tailscale ping` or the Ollama access log alone as proof of returned HTTP bytes.
+5. In a Railway shell for the integrated web service, run:
 
    ```sh
    PYTHONPATH=. python -m backend.scripts.check_railway_ollama_contracts
@@ -108,12 +115,12 @@ vectors, database URLs, or raw Tailscale status:
 
    It must report both `generate=passed` and `embed=passed`, with dimension
    `384`, while hiding the prompt, response, and vector.
-5. Confirm the ephemeral `tag:railway` node is connected in Tailscale admin.
+6. Confirm the ephemeral `tag:railway` node is connected in Tailscale admin.
    A `tailscale ping` alone is diagnostic evidence, not the application gate.
-6. Configure Twilio's public inbound and status-callback URLs, then perform a
+7. Configure Twilio's public inbound and status-callback URLs, then perform a
    non-destructive signed webhook verification. Retain only safe success/fail
    evidence and never log the signature, credentials, or form body.
-7. Only after steps 1–6 pass, remove the standalone disposable `tailscale`
+8. Only after steps 1–7 pass, remove the standalone disposable `tailscale`
    Railway spike and revoke its temporary auth key.
 
 ## Rollback
