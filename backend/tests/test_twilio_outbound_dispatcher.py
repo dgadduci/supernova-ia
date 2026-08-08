@@ -209,8 +209,8 @@ class DispatchAcceptedSendTest(unittest.TestCase):
         self.assertEqual(len(messages_client.calls), 1)
         sent = messages_client.calls[0]
         self.assertEqual(set(sent.keys()), {"to", "from_", "body", "status_callback"})
-        self.assertEqual(sent["to"], "+5491155556666")
-        self.assertEqual(sent["from_"], "+5491100000000")
+        self.assertEqual(sent["to"], "whatsapp:+5491155556666")
+        self.assertEqual(sent["from_"], "whatsapp:+5491100000000")
         self.assertEqual(sent["body"], "hola")
         self.assertEqual(sent["status_callback"], "https://example.test/cb")
         self.assertNotIn("idempotency_key", sent)

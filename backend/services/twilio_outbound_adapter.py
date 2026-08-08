@@ -129,6 +129,25 @@ class TwilioMessagesClient(Protocol):
 
 _RETRYABLE_HTTP_STATUSES_5XX: frozenset[int] = frozenset({408, 425, *range(500, 600)})
 
+_WHATSAPP_CHANNEL_PREFIX: str = "whatsapp:"
+
+
+def _as_whatsapp_address(canonical_e164: str) -> str:
+    """Render canonical ``+E.164`` as a Twilio WhatsApp channel address.
+
+    The adapter is the only place in the project that knows the
+    Twilio WhatsApp wire representation is ``whatsapp:+E.164``. Stored
+    rows, the configured sender, routing values and inbound
+    normalization remain canonical bare E.164; this helper applies
+    the prefix immediately before the SDK call.
+
+    The helper does not normalize an already-prefixed value — that
+    would mix provider transport representation into an internal
+    canonical contract and hide a caller/configuration defect.
+    Existing validation remains the authority for canonical shape.
+    """
+    return f"{_WHATSAPP_CHANNEL_PREFIX}{canonical_e164}"
+
 
 def build_send_request(
     payload: OutboundDispatchPayload,
@@ -165,8 +184,8 @@ def send(
     """
     try:
         message = client.create(
-            to=request.destinatario_e164,
-            from_=request.sender_e164,
+            to=_as_whatsapp_address(request.destinatario_e164),
+            from_=_as_whatsapp_address(request.sender_e164),
             body=request.cuerpo,
             status_callback=request.status_callback_url,
         )
