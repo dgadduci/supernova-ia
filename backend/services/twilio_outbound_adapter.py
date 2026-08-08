@@ -33,6 +33,8 @@ import enum
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from twilio.base.exceptions import TwilioRestException
+
 
 class OutboundFailureCategory(str, enum.Enum):
     """Safe provider-failure classification.
@@ -125,7 +127,7 @@ class TwilioMessagesClient(Protocol):
     def create(self, **kwargs: Any) -> Any: ...
 
 
-_RETRYABLE_HTTP_CODES: frozenset[int] = frozenset({408, 425, 429, 500, 502, 503, 504})
+_RETRYABLE_HTTP_STATUSES_5XX: frozenset[int] = frozenset({408, 425, *range(500, 600)})
 
 
 def build_send_request(
@@ -170,15 +172,8 @@ def send(
         )
     except _TwilioTransportError as exc:
         return _retryable(exc, OutboundFailureCategory.RETRYABLE_TIMEOUT, "transport_error")
-    except _TwilioAPIError as exc:
-        code = int(getattr(exc, "code", 0) or 0)
-        if code in _RETRYABLE_HTTP_CODES:
-            if code == 429:
-                categoria = OutboundFailureCategory.RETRYABLE_429
-            else:
-                categoria = OutboundFailureCategory.RETRYABLE_5XX
-            return _retryable(exc, categoria, str(code))
-        return _terminal(exc, OutboundFailureCategory.TERMINAL_4XX, str(code))
+    except TwilioRestException as exc:
+        return _classify_rest_exception(exc)
 
     sid = getattr(message, "sid", None)
     return TwilioSendResult(
@@ -210,6 +205,73 @@ def classify_failure(
     }:
         return _retryable(exc, categoria, codigo)
     return _terminal(exc, categoria, codigo)
+
+
+def _classify_rest_exception(exc: TwilioRestException) -> TwilioSendResult:
+    """Translate the pinned SDK's ``TwilioRestException`` into a typed result.
+
+    Retry classification uses the exception's HTTP ``status``. The
+    Twilio provider ``code`` (when numeric) is carried only as the
+    sanitized ``codigo`` field — it is observability data, never the
+    retry policy driver. ``msg``, ``uri``, ``details`` and the raw
+    ``str(exc)`` are never included in any result or log.
+
+    If the HTTP ``status`` cannot be coerced to an integer, the
+    exception is re-raised unchanged so an unexpected SDK state stays
+    a technical failure rather than being silently misclassified.
+    """
+    status = _coerce_http_status(getattr(exc, "status", None))
+    if status == 429:
+        return _retryable(
+            exc, OutboundFailureCategory.RETRYABLE_429, _safe_codigo(exc, status)
+        )
+    if status in _RETRYABLE_HTTP_STATUSES_5XX:
+        return _retryable(
+            exc, OutboundFailureCategory.RETRYABLE_5XX, _safe_codigo(exc, status)
+        )
+    if status is not None:
+        return _terminal(
+            exc, OutboundFailureCategory.TERMINAL_4XX, _safe_codigo(exc, status)
+        )
+    raise exc
+
+
+def _coerce_http_status(value: Any) -> int | None:
+    """Defensively coerce ``TwilioRestException.status`` to ``int``.
+
+    The pinned ``twilio==9.10.9`` SDK declares ``status`` as a required
+    ``int`` in ``TwilioRestException.__init__``. This helper protects
+    the adapter against a future SDK change without silently
+    misclassifying unknown states — unparseable values become
+    ``None`` so the caller can re-raise the original exception.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return int(value)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_codigo(exc: TwilioRestException, status: int) -> str:
+    """Pick a non-sensitive observability code for the result.
+
+    The numeric Twilio provider error code (e.g. ``20003``) is
+    preferred when present — it is the only Twilio-specific
+    identifier the result exposes. When the provider omits ``code``
+    we fall back to the HTTP status, which is also safe and never
+    includes exception text.
+    """
+    raw_code = getattr(exc, "code", None)
+    if isinstance(raw_code, bool):
+        raw_code = None
+    if isinstance(raw_code, int) and raw_code > 0:
+        return str(int(raw_code))
+    return str(int(status))
 
 
 def _retryable(
@@ -252,14 +314,6 @@ def _safe_detail(exc: BaseException) -> str:
 
 class _TwilioTransportError(Exception):
     """Marker raised by the seam for transport-level errors."""
-
-
-class _TwilioAPIError(Exception):
-    """Marker raised by the seam for Twilio API errors."""
-
-    def __init__(self, code: int) -> None:
-        super().__init__(f"twilio_api_error:{code}")
-        self.code = int(code)
 
 
 __all__ = [

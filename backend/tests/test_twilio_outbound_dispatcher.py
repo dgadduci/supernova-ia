@@ -9,6 +9,9 @@ Coverage:
 3. A row with an existing SID is not resent awaiting its callback.
 4. Static boundaries: the dispatcher never imports FastAPI, the
    Twilio SDK, the coordinator or the response orchestrator.
+5. The real ``twilio.base.exceptions.TwilioRestException`` from the
+   pinned SDK 9.10.9 is classified by its HTTP ``status``, not its
+   provider ``code``. Unknown exceptions escape unchanged.
 """
 from __future__ import annotations
 
@@ -20,6 +23,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock
+
+from twilio.base.exceptions import TwilioRestException
 
 from backend.models.mensaje_proveedor_saliente import (
     MensajeProveedorSaliente,
@@ -40,9 +45,14 @@ from backend.services.outbound_message_dispatcher import (
     OutboundMessageDispatcher,
 )
 from backend.services.twilio_outbound_adapter import (
+    OutboundDispatchPayload,
     TwilioMessagesClient,
+    TwilioSendRequest,
     TwilioSendResult,
     TwilioSendStatus,
+)
+from backend.services.twilio_outbound_adapter import (
+    send as twilio_send,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -130,6 +140,29 @@ def _claimed_row(
         fecha_creacion=datetime.now(tz=timezone.utc),
     )
     return row
+
+
+def _synthetic_rest_exception(
+    *,
+    status: int,
+    provider_code: int | None = 20003,
+) -> TwilioRestException:
+    """Construct a pinned SDK ``TwilioRestException`` with synthetic
+    safe data only.
+
+    The URI is a fixed test marker that mirrors the shape of the
+    production path without leaking a real account context. ``msg``
+    carries an obvious canary so tests can assert the raw text is
+    never persisted. ``details`` is omitted. Provider ``code`` is
+    optional so tests can prove HTTP ``status`` — not ``code`` —
+    drives retry policy.
+    """
+    return TwilioRestException(
+        status=int(status),
+        uri="/2010-04-01/Accounts/test/Messages.json",
+        msg=f"synthetic-{status}-message",
+        code=provider_code,
+    )
 
 
 class DispatchAcceptedSendTest(unittest.TestCase):
@@ -288,8 +321,9 @@ class DispatchRetryClassificationTest(unittest.TestCase):
         outbox_repo.finalize_terminal.return_value = True
 
         messages_client = MagicMock(name="TwilioMessagesClient")
-        messages_client.create.side_effect = (
-            adapter_module._TwilioAPIError(403)
+        messages_client.create.side_effect = _synthetic_rest_exception(
+            status=403,
+            provider_code=20003,
         )
 
         dispatcher = OutboundMessageDispatcher(
@@ -316,6 +350,13 @@ class DispatchRetryClassificationTest(unittest.TestCase):
             result.categoria, OutboundFailureCategory.TERMINAL_4XX
         )
         outbox_repo.finalize_terminal.assert_called_once()
+        kwargs = outbox_repo.finalize_terminal.call_args.kwargs
+        self.assertEqual(kwargs["codigo"], "20003")
+        self.assertNotIn(
+            "synthetic-403-message",
+            str(kwargs.get("codigo", "")),
+            "raw exception text must never reach persistence",
+        )
 
     def test_retry_budget_exhaustion_is_terminal(self) -> None:
         db_session = MagicMock(name="DatabaseSession")
@@ -389,6 +430,310 @@ class DispatchRetryClassificationTest(unittest.TestCase):
             kwargs["proximo_intento_en"],
             now + timedelta(seconds=60),
         )
+
+
+class RealRestExceptionClassificationTest(unittest.TestCase):
+    """Pinned SDK ``TwilioRestException`` contract.
+
+    All tests construct synthetic safe data — no real network, no
+    real account, no addresses, no bodies. They prove:
+
+    1. HTTP 429 → bounded retry with the provider code carried only
+       as observability.
+    2. HTTP 5xx (incl. 408 / 425) → bounded retry.
+    3. Other HTTP 4xx → immediate terminal finalization; raw
+       exception text is dropped.
+    4. The Twilio provider ``code`` does not control retry policy.
+    5. ``TypeError`` and exceptions outside the supported categories
+       propagate as technical failures.
+    """
+
+    def setUp(self) -> None:
+        importlib.reload(dispatcher_module)
+
+    @staticmethod
+    def _build_dispatcher(
+        *,
+        messages_client: MagicMock,
+        outbox_repo: MagicMock,
+        db_session: MagicMock,
+        now: datetime,
+    ) -> OutboundMessageDispatcher:
+        return OutboundMessageDispatcher(
+            session_factory=lambda: db_session,
+            messages_client=cast(TwilioMessagesClient, messages_client),
+            config=OutboundDispatchConfig(
+                sender_e164="+5491100000000",
+                status_callback_url="https://example.test/cb",
+                lease_seconds=30,
+                initial_backoff_seconds=30,
+                max_backoff_seconds=300,
+                max_attempts=5,
+            ),
+            outbox_repo_factory=lambda _session: outbox_repo,
+            settings=_settings_stub(),
+            now=now,
+        )
+
+    def test_http_429_is_bounded_retry_with_provider_code(self) -> None:
+        db_session = MagicMock(name="DatabaseSession")
+        outbox_repo = MagicMock(name="OutboundProviderMessageRepository")
+        claimed = _claimed_row(attempts=1)
+        outbox_repo.claim_due.return_value = claimed
+        outbox_repo.finalize_retryable.return_value = True
+
+        messages_client = MagicMock(name="TwilioMessagesClient")
+        messages_client.create.side_effect = _synthetic_rest_exception(
+            status=429,
+            provider_code=20003,
+        )
+
+        now = datetime(2026, 8, 6, 12, 0, 0, tzinfo=timezone.utc)
+        dispatcher = self._build_dispatcher(
+            messages_client=messages_client,
+            outbox_repo=outbox_repo,
+            db_session=db_session,
+            now=now,
+        )
+
+        result = dispatcher.dispatch()
+
+        self.assertEqual(
+            result.outcome, OutboundDispatchOutcome.RETRY_SCHEDULED
+        )
+        self.assertEqual(
+            result.categoria, OutboundFailureCategory.RETRYABLE_429
+        )
+        outbox_repo.finalize_retryable.assert_called_once()
+        kwargs = outbox_repo.finalize_retryable.call_args.kwargs
+        self.assertEqual(kwargs["codigo"], "20003")
+        self.assertEqual(
+            kwargs["proximo_intento_en"], now + timedelta(seconds=30)
+        )
+        self.assertNotIn(
+            "synthetic-429-message", str(kwargs.get("codigo", ""))
+        )
+
+    def test_http_5xx_is_bounded_retry(self) -> None:
+        db_session = MagicMock(name="DatabaseSession")
+        outbox_repo = MagicMock(name="OutboundProviderMessageRepository")
+        claimed = _claimed_row(attempts=1)
+        outbox_repo.claim_due.return_value = claimed
+        outbox_repo.finalize_retryable.return_value = True
+
+        messages_client = MagicMock(name="TwilioMessagesClient")
+        messages_client.create.side_effect = _synthetic_rest_exception(
+            status=500,
+            provider_code=20500,
+        )
+
+        now = datetime(2026, 8, 6, 12, 0, 0, tzinfo=timezone.utc)
+        dispatcher = self._build_dispatcher(
+            messages_client=messages_client,
+            outbox_repo=outbox_repo,
+            db_session=db_session,
+            now=now,
+        )
+
+        result = dispatcher.dispatch()
+
+        self.assertEqual(
+            result.outcome, OutboundDispatchOutcome.RETRY_SCHEDULED
+        )
+        self.assertEqual(
+            result.categoria, OutboundFailureCategory.RETRYABLE_5XX
+        )
+        kwargs = outbox_repo.finalize_retryable.call_args.kwargs
+        self.assertEqual(kwargs["codigo"], "20500")
+        self.assertEqual(
+            kwargs["proximo_intento_en"], now + timedelta(seconds=30)
+        )
+
+    def test_http_408_and_425_are_retryable_5xx(self) -> None:
+        for status in (408, 425, 502, 503, 504):
+            with self.subTest(status=status):
+                db_session = MagicMock(name="DatabaseSession")
+                outbox_repo = MagicMock(name="OutboundProviderMessageRepository")
+                outbox_repo.claim_due.return_value = _claimed_row(attempts=1)
+                outbox_repo.finalize_retryable.return_value = True
+
+                messages_client = MagicMock(name="TwilioMessagesClient")
+                messages_client.create.side_effect = (
+                    _synthetic_rest_exception(
+                        status=status, provider_code=20003
+                    )
+                )
+
+                now = datetime(2026, 8, 6, 12, 0, 0, tzinfo=timezone.utc)
+                dispatcher = self._build_dispatcher(
+                    messages_client=messages_client,
+                    outbox_repo=outbox_repo,
+                    db_session=db_session,
+                    now=now,
+                )
+
+                result = dispatcher.dispatch()
+
+                self.assertEqual(
+                    result.outcome,
+                    OutboundDispatchOutcome.RETRY_SCHEDULED,
+                )
+                self.assertEqual(
+                    result.categoria,
+                    OutboundFailureCategory.RETRYABLE_5XX,
+                )
+
+    def test_http_501_is_retryable_5xx(self) -> None:
+        """HTTP 501 was previously omitted from the retryable set.
+
+        Any HTTP status in the 500-599 range is retryable-5xx. This
+        representative case proves the widened classifier still maps
+        to ``RETRY_SCHEDULED`` and ``RETRYABLE_5XX`` for a status the
+        earlier explicit short list would have misclassified.
+        """
+        db_session = MagicMock(name="DatabaseSession")
+        outbox_repo = MagicMock(name="OutboundProviderMessageRepository")
+        outbox_repo.claim_due.return_value = _claimed_row(attempts=1)
+        outbox_repo.finalize_retryable.return_value = True
+
+        messages_client = MagicMock(name="TwilioMessagesClient")
+        messages_client.create.side_effect = _synthetic_rest_exception(
+            status=501,
+            provider_code=20501,
+        )
+
+        now = datetime(2026, 8, 6, 12, 0, 0, tzinfo=timezone.utc)
+        dispatcher = self._build_dispatcher(
+            messages_client=messages_client,
+            outbox_repo=outbox_repo,
+            db_session=db_session,
+            now=now,
+        )
+
+        result = dispatcher.dispatch()
+
+        self.assertEqual(
+            result.outcome, OutboundDispatchOutcome.RETRY_SCHEDULED
+        )
+        self.assertEqual(
+            result.categoria, OutboundFailureCategory.RETRYABLE_5XX
+        )
+        kwargs = outbox_repo.finalize_retryable.call_args.kwargs
+        self.assertEqual(kwargs["codigo"], "20501")
+        self.assertEqual(
+            kwargs["proximo_intento_en"], now + timedelta(seconds=30)
+        )
+
+    def test_other_4xx_is_terminal_and_drops_exception_message(self) -> None:
+        for status in (400, 401, 403, 404, 422):
+            with self.subTest(status=status):
+                db_session = MagicMock(name="DatabaseSession")
+                outbox_repo = MagicMock(name="OutboundProviderMessageRepository")
+                outbox_repo.claim_due.return_value = _claimed_row(attempts=1)
+                outbox_repo.finalize_terminal.return_value = True
+
+                messages_client = MagicMock(name="TwilioMessagesClient")
+                messages_client.create.side_effect = (
+                    _synthetic_rest_exception(
+                        status=status, provider_code=20003
+                    )
+                )
+
+                dispatcher = self._build_dispatcher(
+                    messages_client=messages_client,
+                    outbox_repo=outbox_repo,
+                    db_session=db_session,
+                    now=datetime(2026, 8, 6, 12, 0, 0, tzinfo=timezone.utc),
+                )
+
+                result = dispatcher.dispatch()
+
+                self.assertEqual(
+                    result.outcome,
+                    OutboundDispatchOutcome.FAILED_TERMINAL,
+                )
+                self.assertEqual(
+                    result.categoria,
+                    OutboundFailureCategory.TERMINAL_4XX,
+                )
+                kwargs = outbox_repo.finalize_terminal.call_args.kwargs
+                detalle = str(kwargs.get("codigo", ""))
+                self.assertNotIn(
+                    f"synthetic-{status}-message",
+                    detalle,
+                    "raw exception msg must never reach persistence",
+                )
+                self.assertNotIn(
+                    "/2010-04-01/Accounts/test/Messages.json",
+                    detalle,
+                    "raw exception URI must never reach persistence",
+                )
+
+    def test_provider_code_does_not_drive_retry_policy(self) -> None:
+        """Same Twilio provider ``code`` with different HTTP statuses
+        must map to different categories. The provider code is
+        observability only — HTTP ``status`` decides retry policy."""
+        cases = [
+            (429, OutboundFailureCategory.RETRYABLE_429),
+            (503, OutboundFailureCategory.RETRYABLE_5XX),
+            (403, OutboundFailureCategory.TERMINAL_4XX),
+        ]
+        for status, expected in cases:
+            with self.subTest(status=status):
+                db_session = MagicMock(name="DatabaseSession")
+                outbox_repo = MagicMock(name="OutboundProviderMessageRepository")
+                outbox_repo.claim_due.return_value = _claimed_row(attempts=1)
+                outbox_repo.finalize_retryable.return_value = True
+                outbox_repo.finalize_terminal.return_value = True
+
+                messages_client = MagicMock(name="TwilioMessagesClient")
+                messages_client.create.side_effect = (
+                    _synthetic_rest_exception(
+                        status=status, provider_code=20003
+                    )
+                )
+
+                dispatcher = self._build_dispatcher(
+                    messages_client=messages_client,
+                    outbox_repo=outbox_repo,
+                    db_session=db_session,
+                    now=datetime(2026, 8, 6, 12, 0, 0, tzinfo=timezone.utc),
+                )
+
+                result = dispatcher.dispatch()
+
+                self.assertEqual(result.categoria, expected)
+                if expected is OutboundFailureCategory.TERMINAL_4XX:
+                    outbox_repo.finalize_terminal.assert_called_once()
+                    outbox_repo.finalize_retryable.assert_not_called()
+                else:
+                    outbox_repo.finalize_retryable.assert_called_once()
+                    outbox_repo.finalize_terminal.assert_not_called()
+
+    def test_typeerror_escapes_as_technical_failure(self) -> None:
+        """A ``TypeError`` from the seam is outside the explicit
+        supported categories — it must propagate unchanged rather
+        than be silently classified as a provider outcome."""
+        messages_client = MagicMock(name="TwilioMessagesClient")
+        messages_client.create.side_effect = TypeError(
+            "unexpected kwarg"
+        )
+
+        payload = OutboundDispatchPayload(
+            destinatario_e164="+5491155556666",
+            cuerpo="hola",
+            idempotency_key="outbox-11",
+        )
+        request = TwilioSendRequest(
+            destinatario_e164=payload.destinatario_e164,
+            sender_e164="+5491100000000",
+            cuerpo=payload.cuerpo,
+            status_callback_url="https://example.test/cb",
+            idempotency_key=payload.idempotency_key,
+        )
+
+        with self.assertRaises(TypeError):
+            twilio_send(cast(TwilioMessagesClient, messages_client), request)
 
 
 class LateFinalizationProtectionTest(unittest.TestCase):
