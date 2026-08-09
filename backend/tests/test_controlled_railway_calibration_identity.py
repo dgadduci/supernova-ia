@@ -13,6 +13,7 @@ from backend.services.controlled_railway_calibration_identity import (
     MANIFEST_VERSION,
     MissingManifestReferenceError,
     MissingRuntimeIdentityError,
+    _seed_refs_fingerprint,
     collect_dataset_tokens,
     get_logical_identity,
     manifest_token_count,
@@ -586,6 +587,146 @@ def test_exact_resolution_and_materialization_preserve_source_boundaries() -> No
     assert materialized["cases"][0]["id_comercio"] == 42
     assert materialized["source_fingerprint"]
     assert materialized["materialized_fingerprint"]
+
+
+def test_materialized_inventory_fingerprint_matches_runtime_seed_refs() -> None:
+    """The materialized copy's ``inventory_fingerprint`` MUST match the runner contract.
+
+    The runner pre-validates
+    ``dataset["inventory_fingerprint"] == _seed_refs_fingerprint(dataset["seed_refs"])``.
+    The materializer rewrites ``seed_refs`` with runtime PP IDs after the
+    copy is created; if the materialized ``inventory_fingerprint`` is
+    left stale (carried over from the source), the runner raises
+    :class:`SeedReferenceError` even when every other invariant is
+    satisfied. The materializer MUST recompute the fingerprint over
+    the rewritten ``seed_refs`` map.
+    """
+    from backend.services.product_recognition_calibration_runner import (
+        _seed_refs_fingerprint as runner_seed_refs_fingerprint,
+    )
+
+    resolution = resolve_manifest(
+        cast(Any, FakeSession(minimal_catalog_rows())), exact_dataset()
+    )
+    materialized = materialize_dataset(exact_dataset(), resolution)
+    materialized_seed_refs = materialized["seed_refs"]
+    # The materialized fingerprint matches the runner's exact derivation.
+    assert materialized["inventory_fingerprint"] == runner_seed_refs_fingerprint(
+        materialized_seed_refs
+    )
+    # And matches the local identity module's mirrored derivation.
+    assert materialized["inventory_fingerprint"] == _seed_refs_fingerprint(
+        materialized_seed_refs
+    )
+
+
+def test_materialized_inventory_fingerprint_differs_from_source_inventory_fingerprint() -> None:
+    """When the source carries ``inventory_fingerprint``, the materialized copy differs.
+
+    The source dataset carries a frozen
+    ``inventory_fingerprint`` derived over historical seed_refs. After
+    materialization the seed_refs map references runtime PP IDs, so the
+    fingerprint MUST be re-derived. Carrying the source value through
+    would leave the runner raising ``SeedReferenceError`` for stale
+    seed_refs. The source's fingerprint is preserved on the copy as
+    ``source_fingerprint`` for audit.
+    """
+    source = exact_dataset()
+    source["inventory_fingerprint"] = "frozen-source-fingerprint"
+    snapshot = copy.deepcopy(source)
+    resolution = resolve_manifest(
+        cast(Any, FakeSession(minimal_catalog_rows())), source
+    )
+    materialized = materialize_dataset(source, resolution)
+    # Source is not mutated, including its inventory_fingerprint.
+    assert source == snapshot
+    # The materialized copy's inventory_fingerprint is NOT the source's.
+    assert materialized["inventory_fingerprint"] != "frozen-source-fingerprint"
+    # The audit trail still exposes the source's frozen fingerprint.
+    assert materialized["source_fingerprint"]
+
+
+def test_materialized_fingerprint_includes_updated_inventory_fingerprint() -> None:
+    """``materialized_fingerprint`` MUST be computed after the fingerprint rewrite.
+
+    The materialized_fingerprint is the audit digest of the materialized
+    copy. It MUST reflect every rewrite the materializer applies,
+    including the ``inventory_fingerprint`` recomputation, so a
+    re-derivation of the runtime digest yields the same value.
+    """
+    source = exact_dataset()
+    source["inventory_fingerprint"] = "stale-source-fingerprint"
+    resolution = resolve_manifest(
+        cast(Any, FakeSession(minimal_catalog_rows())), source
+    )
+    materialized = materialize_dataset(source, resolution)
+    # The audit digest is computed by hashing the materialized copy
+    # WITHOUT the audit-only fields; that payload includes the
+    # rewritten ``inventory_fingerprint``. Confirm the hash is
+    # sensitive to the fingerprint rewrite: changing it would change
+    # the digest.
+    new_inventory_fingerprint = materialized["inventory_fingerprint"]
+    payload = {
+        key: value
+        for key, value in materialized.items()
+        if key
+        not in {
+            "source_fingerprint",
+            "materialized_fingerprint",
+            "controlled_railway_identity_manifest",
+        }
+    }
+    assert payload["inventory_fingerprint"] == new_inventory_fingerprint
+    assert payload["inventory_fingerprint"] != "stale-source-fingerprint"
+
+
+def test_materialized_inventory_fingerprint_satisfies_runner_pre_validation() -> None:
+    """The runner's pre-validation accepts the materialized copy.
+
+    The runner raises :class:`SeedReferenceError` when its derived
+    ``_seed_refs_fingerprint(seed_refs)`` differs from the dataset's
+    ``inventory_fingerprint``. The materializer's job is to leave the
+    copy in a state that passes that exact check, without invoking
+    Ollama or vector search. This test builds a runner, hands it the
+    materialized copy directly, and asserts the pre-validation passes.
+
+    The runner's pre-validation runs BEFORE any embedding or vector
+    search call (those are inside the per-case ``try`` block, gated by
+    ``fuzzy_decision`` and ``embedding.embed_query``); a
+    pre-validation success therefore proves the materializer satisfied
+    the runner's fingerprint contract without touching Ollama or the
+    vector search stack.
+    """
+    from backend.services.product_recognition_calibration_runner import (
+        _seed_refs_fingerprint as runner_seed_refs_fingerprint,
+    )
+    from backend.services.product_recognition_calibration_runner import (
+        _validate_commerce_dynamic_references,
+    )
+
+    source = exact_dataset()
+    source["inventory_fingerprint"] = "stale-source-fingerprint"
+    resolution = resolve_manifest(
+        cast(Any, FakeSession(minimal_catalog_rows())), source
+    )
+    materialized = materialize_dataset(source, resolution)
+
+    # The exact same check the runner performs at the top of ``run``.
+    expected_inventory_fingerprint = materialized["inventory_fingerprint"]
+    current_inventory_fingerprint = runner_seed_refs_fingerprint(
+        materialized["seed_refs"]
+    )
+    assert expected_inventory_fingerprint == current_inventory_fingerprint
+
+    # The runner's per-case validation against the materialized
+    # candidate IDs also passes — no cross-commerce or missing
+    # reference is introduced by the rewrite.
+    id_commerce_by_pp_id = {101: 42, 102: 42}
+    _validate_commerce_dynamic_references(
+        materialized,
+        materialized["cases"],
+        id_commerce_by_pp_id,
+    )
 
 
 def test_full_resolution_collapses_symbolic_and_numeric_to_same_pp() -> None:

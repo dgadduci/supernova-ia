@@ -31,6 +31,9 @@ from backend.services.product_recognition_calibration_commerce_catalog import (
     CommerceCatalog,
     fingerprint_commerce_catalog,
 )
+from backend.services.product_recognition_calibration_policy import (
+    dataset_fingerprint,
+)
 
 ManifestToken = str | int
 
@@ -653,6 +656,11 @@ def materialize_dataset(
       ``_ref`` field;
     * rewrites the top-level ``seed_refs`` map so every key references
       the runtime PP ID for the resolved identity;
+    * rewrites ``inventory_fingerprint`` to the runner-compatible
+      derivation over the runtime ``seed_refs`` map (the frozen
+      source value would otherwise leave the runner pre-validation
+      raising ``SeedReferenceError`` for stale ``seed_refs`` even
+      though the copy is otherwise consistent);
     * rewrites ``commerce_catalog_fingerprint`` so its sole key is the
       runtime ``id_comercio`` and its value is the recomputed runtime
       fingerprint;
@@ -666,11 +674,12 @@ def materialize_dataset(
     fingerprint is recorded on the return value as
     ``source_fingerprint`` so the audit trail can distinguish the
     frozen source from the runtime copy.
-    """
-    from backend.services.product_recognition_calibration_policy import (
-        dataset_fingerprint,
-    )
 
+    ``materialized_fingerprint`` is computed strictly after every
+    rewrite above, including the ``inventory_fingerprint`` update, so
+    the runtime fingerprint digest reflects the complete materialized
+    state.
+    """
     if not isinstance(dataset, dict):
         raise ControlledRailwayIdentityError("dataset must be a dict")
 
@@ -717,6 +726,17 @@ def materialize_dataset(
 
     materialized["seed_refs"] = materialized_seed_refs
 
+    # Recompute ``inventory_fingerprint`` after rewriting ``seed_refs``
+    # with runtime PP IDs. The runner validates this exact field via
+    # ``_seed_refs_fingerprint(dataset["seed_refs"])``; if we left the
+    # frozen source value untouched, the runner would raise
+    # ``SeedReferenceError`` for stale ``seed_refs`` even though every
+    # other invariant is satisfied. The derivation mirrors the runner's
+    # helper exactly so the materialized copy is accepted unchanged.
+    materialized["inventory_fingerprint"] = _seed_refs_fingerprint(
+        materialized_seed_refs
+    )
+
     fingerprint_block: dict[str, str] = {
         str(runtime_id_comercio): resolution.catalog_fingerprint
     }
@@ -759,6 +779,29 @@ def hash_materialized_dataset(materialized: dict[str, Any]) -> str:
         }
     }
     return _hashlib.sha256(canonical_json(payload)).hexdigest()
+
+
+def _seed_refs_fingerprint(seed_refs: dict[str, Any]) -> str:
+    """Return the fingerprint the runner expects for ``seed_refs``.
+
+    The derivation mirrors
+    :func:`backend.services.product_recognition_calibration_runner._seed_refs_fingerprint`
+    exactly: SHA-256 over the canonical JSON of the sorted
+    ``seed_refs`` mapping. The runner validates
+    ``dataset["inventory_fingerprint"]`` against this derivation in
+    its pre-validation step. The materializer MUST overwrite the
+    source ``inventory_fingerprint`` with this value after rewriting
+    ``seed_refs`` to runtime PP IDs; otherwise the runner raises
+    :class:`SeedReferenceError` for stale ``seed_refs`` even though
+    every other invariant on the materialized copy is satisfied.
+
+    The local re-implementation keeps the contract explicit and
+    documents the dependency on the runner's algorithm. Any future
+    change to the runner's fingerprint derivation MUST be mirrored
+    here in the same change so the materialized copy remains accepted
+    by the runner unchanged.
+    """
+    return dataset_fingerprint({"seed_refs": dict(sorted(seed_refs.items()))})
 
 
 # The module exports the manifest version and the resolver entry point
