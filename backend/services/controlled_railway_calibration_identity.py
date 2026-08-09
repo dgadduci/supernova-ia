@@ -20,16 +20,10 @@ from typing import Any, Final
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.models import (
-    CategoriaProducto,
-    Comercio,
-    Presentacion,
-    Producto,
-    ProductoPresentacion,
-)
+from backend.models import Comercio
 from backend.services.product_recognition_calibration_commerce_catalog import (
-    CommerceCatalog,
     fingerprint_commerce_catalog,
+    load_commerce_catalog_from_database,
 )
 from backend.services.product_recognition_calibration_policy import (
     dataset_fingerprint,
@@ -413,12 +407,12 @@ def resolve_manifest(
 
     The function performs the minimum read-only work needed to prove
     the manifest is valid for the current database: it queries the
-    ``comercios`` table once for the declared slug, queries the
-    catalog once for every distinct (category_slug, product_nombre,
-    presentation_codigo) tuple, and computes the runtime fingerprint
-    via :func:`fingerprint_commerce_catalog`. The session is never
-    written, committed, rolled back, flushed or closed by this
-    function.
+    ``comercios`` table once for the declared slug, loads the
+    canonical commerce catalog once via
+    :func:`load_commerce_catalog_from_database`, and computes the
+    runtime fingerprint via :func:`fingerprint_commerce_catalog` over
+    that same catalog. The session is never written, committed, rolled
+    back, flushed or closed by this function.
 
     The function fails closed (raising a typed error) before any
     embedding or vector call when:
@@ -429,9 +423,9 @@ def resolve_manifest(
       database;
     * any logical identity has zero or more than one active row in
       the fixture commerce;
-    * any logical identity resolves to a row whose ``id_comercio``
-      differs from the declared fixture commerce;
-    * any logical identity resolves to an inactive row;
+    * any logical identity resolves to an inactive row (the catalog
+      itself was loaded for the fixture commerce, so a cross-commerce
+      leak is impossible by construction);
     * two distinct tokens collapse to the same runtime PP (which
       would break the source dataset's allowed_candidate_ids
       uniqueness invariant).
@@ -469,67 +463,44 @@ def resolve_manifest(
             token=min(missing_in_manifest, key=lambda value: (str(type(value)), value))
         )
 
-    # 3. Read the catalog for the runtime commerce (one query).
-    catalog_rows = list(
-        session.execute(
-            select(
-                ProductoPresentacion.id,
-                CategoriaProducto.descripcion,
-                Producto.nombre,
-                Presentacion.codigo,
-                ProductoPresentacion.activo,
-                Producto.activo,
-                Presentacion.activo,
-                Producto.disponible,
-            )
-            .join(Producto, Producto.id == ProductoPresentacion.id_producto)
-            .join(Presentacion, Presentacion.id == ProductoPresentacion.id_presentacion)
-            .join(CategoriaProducto, CategoriaProducto.id == Producto.id_categoria_producto)
-            .where(CategoriaProducto.id_comercio == runtime_id_comercio)
-        ).all()
-    )
+    # 3. Load the canonical commerce catalog for the runtime commerce via
+    # the same loader the runner uses. The loader builds entries with the
+    # documented runtime field set — ``producto_presentacion_id``,
+    # ``producto_id``, ``presentacion_id``, ``categoria_id``, the
+    # display names and the activity flags — by joining the four fixture
+    # tables. Using the canonical loader means the resolution's
+    # ``catalog_fingerprint`` is byte-for-byte identical to the runner's
+    # derivation, which is what the runner's staleness check demands
+    # (see ``ProductRecognitionCalibrationRunner._resolve_commerce_catalog``).
+    # No synthetic entries are built and no ID is substituted from another
+    # entity: ``producto_id``, ``presentacion_id`` and ``categoria_id``
+    # remain the database's own physical IDs.
+    catalog = load_commerce_catalog_from_database(session, runtime_id_comercio)
 
-    # Build (id_comercio, lowercased categoria_descripcion, lowercased product_nombre,
-    # lowercased presentation_codigo) -> list of (pp_id, activo, producto_activo,
-    # presentacion_activo, disponible) groupings.
-    by_identity: dict[tuple[str, str, str], list[tuple[int, bool, bool, bool, bool]]] = {}
-    for (
-        pp_id,
-        categoria_descripcion,
-        product_nombre,
-        presentation_codigo,
-        pp_activo,
-        producto_activo,
-        presentacion_activo,
-        disponible,
-    ) in catalog_rows:
+    # 4. Group the canonical entries by their business identity so each
+    # declared manifest token can be matched against the exact fixture
+    # product. The grouping keys mirror the logical identity tuple
+    # ``(category_slug, product_nombre, presentation_codigo)``; the
+    # canonical entries expose those names via ``categoria_nombre``,
+    # ``producto_nombre`` and ``presentacion_codigo`` respectively.
+    by_identity: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for entry in catalog.entries:
         key = (
-            str(categoria_descripcion).strip().casefold(),
-            str(product_nombre).strip().casefold(),
-            str(presentation_codigo).strip().casefold(),
+            str(entry["categoria_nombre"]).strip().casefold(),
+            str(entry["producto_nombre"]).strip().casefold(),
+            str(entry["presentacion_codigo"]).strip().casefold(),
         )
-        by_identity.setdefault(key, []).append(
-            (
-                int(pp_id),
-                bool(pp_activo),
-                bool(producto_activo),
-                bool(presentacion_activo),
-                bool(disponible),
-            )
-        )
+        by_identity.setdefault(key, []).append(entry)
 
-    # 4. Resolve each token, validating uniqueness / activity / commerce.
+    # 5. Resolve each token, validating uniqueness / activity / commerce.
+    # The catalog was loaded for ``runtime_id_comercio`` so the
+    # cross-commerce check is implicit at this layer: the loader's
+    # ``WHERE CategoriaProducto.id_comercio == id_comercio`` guarantees
+    # every entry belongs to the fixture commerce. The explicit checks
+    # below still cover missing / ambiguous / inactive / cross-token
+    # collisions so a manifest bug fails closed before any
+    # embedding/vector call.
     resolved: dict[ManifestToken, ResolvedIdentity] = {}
-    # Group tokens by their logical identity so two tokens that describe
-    # the same fixture product (a symbolic ref and its integer seed_refs
-    # companion) collapse to a single PP resolution. The grouping is
-    # what the manifest token→logical_identity dictionary already
-    # provides: keystones with the same ``(slug, cat, prod, pres)`` tuple
-    # represent the same fixture product. We rebuild the same mapping
-    # from the resolved tokens so we can catch *cross-token* collisions
-    # where two different logical identities accidentally point to the
-    # same PP ID — that would be a manifest bug that would corrupt the
-    # allowed_candidate_ids uniqueness invariant.
     pp_id_to_logical_keys: dict[int, set[tuple[str, str, str, str]]] = {}
     for token in sorted(dataset_tokens, key=lambda value: (str(type(value)), str(value))):
         logical = get_logical_identity(token)
@@ -538,28 +509,29 @@ def resolve_manifest(
             logical.product_nombre.strip().casefold(),
             logical.presentation_codigo.strip().casefold(),
         )
-        rows = by_identity.get(key, [])
-        if not rows:
+        candidates = by_identity.get(key, [])
+        if not candidates:
             raise MissingRuntimeIdentityError(token=token, logical=logical)
-        if len(rows) > 1:
+        if len(candidates) > 1:
             raise AmbiguousRuntimeIdentityError(
                 token=token,
                 logical=logical,
-                count=len(rows),
+                count=len(candidates),
             )
-        pp_id, pp_activo, producto_activo, presentacion_activo, _disponible = rows[0]
-        if not pp_activo:
+        entry = candidates[0]
+        if not entry["activo"]:
             raise InactiveRuntimeIdentityError(
                 token=token, logical=logical, reason="producto_presentacion.activo=false"
             )
-        if not producto_activo:
+        if not entry["producto_activo"]:
             raise InactiveRuntimeIdentityError(
                 token=token, logical=logical, reason="producto.activo=false"
             )
-        if not presentacion_activo:
+        if not entry["presentacion_activo"]:
             raise InactiveRuntimeIdentityError(
                 token=token, logical=logical, reason="presentacion.activo=false"
             )
+        pp_id = int(entry["producto_presentacion_id"])
         resolved[token] = ResolvedIdentity(
             token=token,
             logical=logical,
@@ -590,43 +562,15 @@ def resolve_manifest(
             ),
         )
 
-    # 5. Compute the runtime catalog fingerprint using the same shape
-    # the runner expects. The fingerprint is computed by delegating to
-    # :func:`fingerprint_commerce_catalog`, which is the canonical,
-    # already-tested derivation shared by the existing runner.
-    runtime_entries: list[dict[str, Any]] = []
-    for (
-        pp_id,
-        categoria_descripcion,
-        product_nombre,
-        presentation_codigo,
-        pp_activo,
-        producto_activo,
-        presentacion_activo,
-        disponible,
-    ) in catalog_rows:
-        runtime_entries.append(
-            {
-                "producto_presentacion_id": int(pp_id),
-                "producto_id": int(pp_id),
-                "presentacion_id": int(pp_id),
-                "categoria_id": int(pp_id),
-                "categoria_nombre": str(categoria_descripcion),
-                "producto_nombre": str(product_nombre),
-                "presentacion_codigo": str(presentation_codigo),
-                "presentacion_descripcion": str(presentation_codigo),
-                "activo": bool(pp_activo),
-                "producto_activo": bool(producto_activo),
-                "presentacion_activo": bool(presentacion_activo),
-                "disponible": bool(disponible),
-            }
-        )
-    runtime_entries.sort(key=lambda entry: entry["producto_presentacion_id"])
-    runtime_catalog = CommerceCatalog(
-        id_comercio=runtime_id_comercio,
-        entries=tuple(runtime_entries),
-    )
-    fingerprint = fingerprint_commerce_catalog(runtime_catalog)
+    # 6. Compute the runtime catalog fingerprint over the same canonical
+    # catalog the runner loads. The runner's staleness check compares
+    # this fingerprint to
+    # ``dataset["commerce_catalog_fingerprint"][str(id_comercio)]``; the
+    # materializer stores it under the same key, so byte-for-byte
+    # agreement here is what lets the runner accept the materialized
+    # dataset unchanged. The fingerprint is the loader's own derivation
+    # — no synthetic entries, no ID substitution.
+    fingerprint = fingerprint_commerce_catalog(catalog)
 
     return ManifestResolution(
         manifest_version=MANIFEST_VERSION,

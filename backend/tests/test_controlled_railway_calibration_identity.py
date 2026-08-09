@@ -32,9 +32,113 @@ class FakeResult:
         return list(self.rows)
 
 
+class _MockCategoriaProducto:
+    """Stand-in for ``CategoriaProducto`` carrying only the loader-visible fields."""
+
+    def __init__(self, *, id: int, descripcion: str) -> None:
+        self.id = id
+        self.descripcion = descripcion
+
+
+class _MockProducto:
+    """Stand-in for ``Producto`` carrying only the loader-visible fields."""
+
+    def __init__(
+        self,
+        *,
+        id: int,
+        nombre: str,
+        activo: bool,
+        disponible: bool,
+        categoria: _MockCategoriaProducto,
+    ) -> None:
+        self.id = id
+        self.nombre = nombre
+        self.activo = activo
+        self.disponible = disponible
+        self.categoria = categoria
+
+
+class _MockPresentacion:
+    """Stand-in for ``Presentacion`` carrying only the loader-visible fields."""
+
+    def __init__(
+        self,
+        *,
+        id: int,
+        codigo: str,
+        descripcion: str,
+        activo: bool,
+    ) -> None:
+        self.id = id
+        self.codigo = codigo
+        self.descripcion = descripcion
+        self.activo = activo
+
+
+class _MockProductoPresentacion:
+    """Stand-in for ``ProductoPresentacion`` with the relations the loader walks."""
+
+    def __init__(
+        self,
+        *,
+        id: int,
+        activo: bool,
+        producto: _MockProducto,
+        presentacion: _MockPresentacion,
+    ) -> None:
+        self.id = id
+        self.activo = activo
+        self.producto = producto
+        self.presentacion = presentacion
+
+
 class FakeSession:
-    def __init__(self, rows: list[tuple[Any, ...]]) -> None:
-        self.rows = rows
+    """SQLAlchemy-like session that services the resolver's read-only contract.
+
+    Two construction modes are supported:
+
+    * **legacy (default)** — pass a list of catalog rows; the first
+      ``execute`` call answers the comercio lookup with the canonical
+      fixture commerce id (``42``) and every subsequent call answers
+      the catalog loader. This matches the flow
+      :func:`resolve_manifest` exercises (comercio lookup, then catalog
+      load).
+    * **scripted** — pass ``scripted_results=[[...], [...], ...]``;
+      each ``execute`` call pops the next pre-baked result list. This
+      mode lets tests drive :func:`load_commerce_catalog_from_database`
+      (or the runner's :func:`_resolve_commerce_catalog`) directly
+      without paying the comercio-lookup tax.
+
+    In both modes the catalog rows are translated into the multi-model
+    tuple stream whose relations mirror the real ``ProductoPresentacion``
+    → ``Producto``, ``Presentacion`` and ``CategoriaProducto`` graph so
+    :func:`load_commerce_catalog_from_database` can build the canonical
+    runtime entries. The ``producto_id``, ``presentacion_id`` and
+    ``categoria_id`` of each row are deliberately distinct from the
+    ``producto_presentacion_id`` (offset by large multiples) so any
+    accidental re-collapse of the IDs would surface as a different
+    fingerprint, never as a silent match.
+    """
+
+    _PRODUCTO_ID_OFFSET = 1_000_000
+    _PRESENTACION_ID_OFFSET = 2_000_000
+    _CATEGORIA_ID_OFFSET = 3_000_000
+
+    def __init__(
+        self,
+        rows: list[tuple[Any, ...]] | None = None,
+        *,
+        scripted_results: list[list[Any]] | None = None,
+    ) -> None:
+        if scripted_results is not None:
+            self._scripted: list[list[Any]] | None = [
+                list(rows_) for rows_ in scripted_results
+            ]
+            self.rows: list[tuple[Any, ...]] = []
+        else:
+            self._scripted = None
+            self.rows = list(rows or [])
         self.calls = 0
         self.commits = 0
         self.rollbacks = 0
@@ -44,24 +148,61 @@ class FakeSession:
 
     def execute(self, statement: Any) -> FakeResult:
         self.calls += 1
+        if self._scripted is not None:
+            return FakeResult(self._scripted.pop(0))
         if self.calls == 1:
             return FakeResult([(42,)])
-        return FakeResult(self.rows)
+        return FakeResult(self._build_catalog_models())
 
-    def commit(self) -> None:
-        self.commits += 1
+    def _build_catalog_models(self) -> list[tuple[Any, ...]]:
+        return _catalog_model_rows(self.rows)
 
-    def rollback(self) -> None:
-        self.rollbacks += 1
 
-    def begin(self) -> None:
-        self.begins += 1
+def _catalog_model_rows(rows: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
+    """Translate flat 8-column catalog rows into the multi-model tuple stream.
 
-    def flush(self) -> None:
-        self.flushes += 1
-
-    def close(self) -> None:
-        self.closes += 1
+    The translation mirrors :meth:`FakeSession._build_catalog_models` so
+    tests that drive :func:`load_commerce_catalog_from_database` or the
+    runner's :func:`_resolve_commerce_catalog` directly can pre-bake
+    the catalog result without going through the comercio-lookup slot.
+    """
+    result: list[tuple[Any, ...]] = []
+    for row in rows:
+        (
+            pp_id,
+            categoria_descripcion,
+            product_nombre,
+            presentation_codigo,
+            pp_activo,
+            producto_activo,
+            presentacion_activo,
+            disponible,
+        ) = row
+        categoria = _MockCategoriaProducto(
+            id=int(pp_id) + FakeSession._CATEGORIA_ID_OFFSET,
+            descripcion=str(categoria_descripcion),
+        )
+        producto = _MockProducto(
+            id=int(pp_id) + FakeSession._PRODUCTO_ID_OFFSET,
+            nombre=str(product_nombre),
+            activo=bool(producto_activo),
+            disponible=bool(disponible),
+            categoria=categoria,
+        )
+        presentacion = _MockPresentacion(
+            id=int(pp_id) + FakeSession._PRESENTACION_ID_OFFSET,
+            codigo=str(presentation_codigo),
+            descripcion=str(presentation_codigo),
+            activo=bool(presentacion_activo),
+        )
+        pp = _MockProductoPresentacion(
+            id=int(pp_id),
+            activo=bool(pp_activo),
+            producto=producto,
+            presentacion=presentacion,
+        )
+        result.append((pp, None, None, None))
+    return result
 
 
 def dataset() -> dict[str, Any]:
@@ -757,6 +898,160 @@ def test_manifest_metadata_is_explicit() -> None:
     )
     assert resolution.manifest_version == MANIFEST_VERSION
     assert resolution.commerce_slug == FIXTURE_COMMERCE_SLUG
+
+
+# ---------------------------------------------------------------------------
+# Catalog fingerprint contract (canonical loader contract)
+# ---------------------------------------------------------------------------
+
+
+def test_catalog_fingerprint_matches_canonical_loader() -> None:
+    """``resolution.catalog_fingerprint`` equals ``fingerprint_commerce_catalog`` on the canonical catalog.
+
+    The resolver MUST derive the fingerprint from the same catalog the
+    runner loads through :func:`load_commerce_catalog_from_database`.
+    Building a synthetic catalog with substituted IDs (the previous bug)
+    made the two fingerprints diverge, raising ``StaleCommerceCatalogError``
+    in the runner. This test builds the runner's catalog independently
+    via the loader and asserts byte-for-byte equality.
+    """
+    from backend.services.product_recognition_calibration_commerce_catalog import (
+        fingerprint_commerce_catalog,
+        load_commerce_catalog_from_database,
+    )
+
+    # Build the catalog the runner would observe via the canonical loader.
+    # Scripted mode skips the comercio-lookup slot the resolver uses so
+    # the loader receives the catalog rows on its first ``execute``.
+    runner_session = FakeSession(
+        scripted_results=[_catalog_model_rows(full_fixture_catalog_rows())]
+    )
+    runner_catalog = load_commerce_catalog_from_database(cast(Any, runner_session), 42)
+    runner_fingerprint = fingerprint_commerce_catalog(runner_catalog)
+
+    # Resolve through the manifest using a fresh session that mirrors the
+    # same catalog rows. Tokens 1 and 3 of ``exact_dataset`` both resolve
+    # against ``full_fixture_catalog_rows`` so resolution completes.
+    resolution = resolve_manifest(
+        cast(Any, FakeSession(full_fixture_catalog_rows())),
+        exact_dataset(),
+    )
+    assert resolution.catalog_fingerprint == runner_fingerprint
+
+
+def test_catalog_fingerprint_uses_distinct_physical_ids() -> None:
+    """The fingerprint reflects distinct ``producto_id`` / ``presentacion_id`` / ``categoria_id``.
+
+    Under the previous bug the resolver set every physical id to the
+    ``producto_presentacion_id``, so the fingerprint collapsed three
+    independent dimensions into one. With the canonical loader each id
+    keeps its own database value: any change to ``producto_id``,
+    ``presentacion_id`` or ``categoria_id`` MUST change the fingerprint,
+    proving the resolver no longer depends on the broken substitution.
+    """
+    from backend.services.product_recognition_calibration_commerce_catalog import (
+        CommerceCatalog,
+        fingerprint_commerce_catalog,
+        load_commerce_catalog_from_database,
+    )
+
+    # Build the canonical catalog and confirm every physical id is
+    # distinct from the PP id (the FakeSession assigns them via large
+    # offsets so a regression to the synthetic catalog would surface as
+    # equality rather than the expected inequality).
+    session = FakeSession(
+        scripted_results=[_catalog_model_rows(full_fixture_catalog_rows())]
+    )
+    catalog = load_commerce_catalog_from_database(cast(Any, session), 42)
+    for entry in catalog.entries:
+        assert entry["producto_id"] != entry["producto_presentacion_id"]
+        assert entry["presentacion_id"] != entry["producto_presentacion_id"]
+        assert entry["categoria_id"] != entry["producto_presentacion_id"]
+        # And the three sub-ids are mutually distinct (no two were ever
+        # the same value derived from the PP id).
+        assert entry["producto_id"] != entry["presentacion_id"]
+        assert entry["producto_id"] != entry["categoria_id"]
+        assert entry["presentacion_id"] != entry["categoria_id"]
+
+    # A hypothetical catalog where every id collapses to the PP id
+    # reproduces the prior bug; the fingerprints must disagree.
+    collapsed_entries = tuple(
+        {
+            **entry,
+            "producto_id": entry["producto_presentacion_id"],
+            "presentacion_id": entry["producto_presentacion_id"],
+            "categoria_id": entry["producto_presentacion_id"],
+        }
+        for entry in catalog.entries
+    )
+    collapsed_catalog = CommerceCatalog(
+        id_comercio=42,
+        entries=collapsed_entries,
+    )
+    canonical_fingerprint = fingerprint_commerce_catalog(catalog)
+    collapsed_fingerprint = fingerprint_commerce_catalog(collapsed_catalog)
+    assert canonical_fingerprint != collapsed_fingerprint
+
+
+def test_catalog_fingerprint_passes_runner_staleness_check() -> None:
+    """The materialized fingerprint satisfies the runner's staleness check.
+
+    The runner's ``_resolve_commerce_catalog`` raises
+    :class:`StaleCommerceCatalogError` when the fresh DB fingerprint
+    disagrees with ``dataset["commerce_catalog_fingerprint"]
+    [str(id_comercio)]``. The resolver MUST produce the same fingerprint
+    the runner computes so the runner accepts the materialized copy
+    unchanged. This test wires the runner up against the materialized
+    dataset — no Ollama, no vector search — and asserts the staleness
+    check passes.
+    """
+    from backend.services.product_recognition_calibration_commerce_catalog import (
+        fingerprint_commerce_catalog,
+        load_commerce_catalog_from_database,
+    )
+    from backend.services.product_recognition_calibration_runner import (
+        ProductRecognitionCalibrationRunner,
+    )
+
+    # Resolve through the manifest and materialize the dataset.
+    resolution = resolve_manifest(
+        cast(Any, FakeSession(full_fixture_catalog_rows())),
+        exact_dataset(),
+    )
+    materialized = materialize_dataset(exact_dataset(), resolution)
+
+    # The materialized fingerprint equals the resolution fingerprint and
+    # the canonical loader's derivation over the same catalog rows.
+    fingerprint_block = materialized.get("commerce_catalog_fingerprint", {})
+    assert fingerprint_block.get(str(42)) == resolution.catalog_fingerprint
+
+    canonical_session = FakeSession(
+        scripted_results=[_catalog_model_rows(full_fixture_catalog_rows())]
+    )
+    canonical_catalog = load_commerce_catalog_from_database(
+        cast(Any, canonical_session), 42
+    )
+    assert resolution.catalog_fingerprint == fingerprint_commerce_catalog(
+        canonical_catalog
+    )
+
+    # The runner's staleness check accepts the materialized copy. The
+    # runner only needs the session for ``_resolve_commerce_catalog``;
+    # the other constructor collaborators are not touched by this code
+    # path so None is acceptable here.
+    runner_session = FakeSession(
+        scripted_results=[_catalog_model_rows(full_fixture_catalog_rows())]
+    )
+    runner = ProductRecognitionCalibrationRunner(
+        recognizer=cast(Any, None),
+        embedding_client=cast(Any, None),
+        vector_search_factory=cast(Any, None),
+        session=cast(Any, runner_session),
+    )
+    runner_catalog = runner._resolve_commerce_catalog(materialized, 42)
+    assert (
+        fingerprint_commerce_catalog(runner_catalog) == resolution.catalog_fingerprint
+    )
 
 
 # ---------------------------------------------------------------------------
