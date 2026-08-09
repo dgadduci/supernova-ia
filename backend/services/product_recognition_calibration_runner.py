@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from sqlalchemy import select
@@ -48,6 +49,31 @@ class VectorSearch(Protocol):
         top_k: int,
         candidate_producto_presentacion_ids: Sequence[int] | None = None,
     ) -> list[ProductPresentationVectorMatch]: ...
+
+
+@dataclass
+class StageLatency:
+    durations_ms: list[float] = field(default_factory=list)
+    success_count: int = 0
+    failure_count: int = 0
+
+    def record(self, duration_ms: float, *, succeeded: bool) -> None:
+        if math.isfinite(duration_ms):
+            self.durations_ms.append(max(0.0, duration_ms))
+        if succeeded:
+            self.success_count += 1
+        else:
+            self.failure_count += 1
+
+    def aggregate(self) -> dict[str, int | float | None]:
+        return {
+            "count": self.success_count + self.failure_count,
+            "success_count": self.success_count,
+            "failure_count": self.failure_count,
+            "p50_ms": nearest_rank(self.durations_ms, 0.5),
+            "p95_ms": nearest_rank(self.durations_ms, 0.95),
+            "max_ms": max(self.durations_ms) if self.durations_ms else None,
+        }
 
 
 @dataclass(frozen=True)
@@ -790,11 +816,17 @@ class ProductRecognitionCalibrationRunner:
         ]
         policies = list(policies or generate_policy_grid())
         observations: dict[str, CaseObservation] = {}
+        stage_latencies = {
+            name: StageLatency()
+            for name in ("fuzzy", "embedding", "vector_search", "evaluation")
+        }
         for source_case in selected:
             case = {**source_case, "catalog": self._case_catalog(dataset, source_case)}
             started = self._clock()
             failures: list[str] = []
             fuzzy_decision = ""
+            stage_started = self._clock()
+            fuzzy_succeeded = True
             try:
                 fuzzy_result = self._recognizer.recognize(case["input_text"], case["catalog"])
                 fuzzy_ids, fuzzy_scores = _fuzzy_ids(fuzzy_result)
@@ -802,26 +834,51 @@ class ProductRecognitionCalibrationRunner:
             except (RuntimeError, ValueError, TypeError, KeyError, AttributeError):
                 fuzzy_ids, fuzzy_scores = (), ()
                 failures.append("fuzzy_failure")
+                fuzzy_succeeded = False
+            stage_latencies["fuzzy"].record(
+                (self._clock() - stage_started) * 1000.0,
+                succeeded=fuzzy_succeeded,
+            )
             vector_ids: tuple[int, ...] = ()
             vector_scores: tuple[float, ...] = ()
             if not failures:
                 if self._flag_fuzzy_boundary_violation(case, fuzzy_ids):
                     failures.append("candidate_boundary_violation")
+                stage_started = self._clock()
                 try:
                     embedding = self._embedding_client.embed_query(case["input_text"])
-                    matches = self._vector_search_factory().search_similar(
-                        id_comercio=case["id_comercio"],
-                        query_embedding=embedding,
-                        top_k=max(policy.vector_top_k for policy in policies),
-                        candidate_producto_presentacion_ids=case["allowed_candidate_ids"],
-                    )
-                    allowed = set(case["allowed_candidate_ids"])
-                    if any(match.id_producto_presentacion not in allowed for match in matches):
-                        failures.append("candidate_boundary_violation")
-                    vector_ids = tuple(match.id_producto_presentacion for match in matches if match.id_producto_presentacion in allowed)
-                    vector_scores = tuple(float(match.score) for match in matches if match.id_producto_presentacion in allowed)
                 except (RuntimeError, ValueError, TypeError, KeyError, AttributeError):
-                    failures.append("vector_failure")
+                    failures.append("embedding_failure")
+                    stage_latencies["embedding"].record(
+                        (self._clock() - stage_started) * 1000.0,
+                        succeeded=False,
+                    )
+                else:
+                    stage_latencies["embedding"].record(
+                        (self._clock() - stage_started) * 1000.0,
+                        succeeded=True,
+                    )
+                    stage_started = self._clock()
+                    vector_succeeded = True
+                    try:
+                        matches = self._vector_search_factory().search_similar(
+                            id_comercio=case["id_comercio"],
+                            query_embedding=embedding,
+                            top_k=max(policy.vector_top_k for policy in policies),
+                            candidate_producto_presentacion_ids=case["allowed_candidate_ids"],
+                        )
+                        allowed = set(case["allowed_candidate_ids"])
+                        if any(match.id_producto_presentacion not in allowed for match in matches):
+                            failures.append("candidate_boundary_violation")
+                        vector_ids = tuple(match.id_producto_presentacion for match in matches if match.id_producto_presentacion in allowed)
+                        vector_scores = tuple(float(match.score) for match in matches if match.id_producto_presentacion in allowed)
+                    except (RuntimeError, ValueError, TypeError, KeyError, AttributeError):
+                        failures.append("vector_failure")
+                        vector_succeeded = False
+                    stage_latencies["vector_search"].record(
+                        (self._clock() - stage_started) * 1000.0,
+                        succeeded=vector_succeeded,
+                    )
             observations[case["case_id"]] = CaseObservation(
                 case_id=case["case_id"],
                 fuzzy_ids=fuzzy_ids,
@@ -834,6 +891,7 @@ class ProductRecognitionCalibrationRunner:
             )
         if not any(not item.failure_categories and item.vector_ids for item in observations.values()):
             raise RuntimeError("no evaluable hybrid cases")
+        evaluation_started = self._clock()
         fuzzy_predictions: dict[str, StrategyPrediction] = {}
         policy_reports: list[dict[str, Any]] = []
         cases_with_catalog = {
@@ -938,6 +996,10 @@ class ProductRecognitionCalibrationRunner:
                 "mismatch_category": result["mismatch_category"],
                 "evidence": "",
             })
+        stage_latencies["evaluation"].record(
+            (self._clock() - evaluation_started) * 1000.0,
+            succeeded=True,
+        )
         failed_case_ids = [case["case_id"] for case in selected if observations[case["case_id"]].failure_categories]
         report = {
             "dataset_version": dataset["schema_version"],
@@ -957,6 +1019,10 @@ class ProductRecognitionCalibrationRunner:
             "failed_case_ids": failed_case_ids,
             "latency_p50": hybrid_metrics["latency_p50"],
             "latency_p95": hybrid_metrics["latency_p95"],
+            "latency_breakdown": {
+                name: latency.aggregate()
+                for name, latency in stage_latencies.items()
+            },
             "eligibility": _eligibility(fuzzy_metrics, hybrid_metrics, eligibility_input),
             "commerce_catalog_cache_size": len(self._commerce_catalog_cache),
         }

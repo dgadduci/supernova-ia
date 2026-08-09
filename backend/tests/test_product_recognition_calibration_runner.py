@@ -19,7 +19,7 @@ class FakeRecognizer:
         self.results = results
         self.calls = []
 
-    def recognize(self, text, catalog):
+    def recognize(self, text, catalog, *, intent_metadata=None):
         self.calls.append(text)
         return self.results[text]
 
@@ -72,6 +72,133 @@ def minimal_case(case_id, text, expected, allowed, category="baseline"):
 
 def fixture_dataset(cases):
     return {"schema_version": 1, "catalogs": {"fixture": {"entries": []}}, "cases": cases}
+
+
+class StepClock:
+    def __init__(self, step=0.001):
+        self.value = -step
+        self.step = step
+
+    def __call__(self):
+        self.value += self.step
+        return self.value
+
+
+def test_runner_reports_safe_stage_latency_aggregates_with_controlled_clock():
+    case = minimal_case("one", "one", "unique", [1])
+    recognizer = FakeRecognizer({
+        "one": {
+            "encontrados": [{"producto_presentacion_id": 1}],
+            "encontrados_posibles": [],
+        }
+    })
+    vector = FakeVector({
+        "one": [ProductPresentationVectorMatch(1, 0.99, "canonical")]
+    })
+    runner = ProductRecognitionCalibrationRunner(
+        recognizer=recognizer,
+        embedding_client=FakeEmbedding(),
+        vector_search_factory=lambda: vector,
+        clock=StepClock(),
+    )
+
+    report = runner.run(
+        fixture_dataset([case]),
+        policies=[HybridDecisionPolicy(0.5, 0.5, 0.7, 0.4, 0.05, 3)],
+    )
+
+    expected_keys = {
+        "count",
+        "success_count",
+        "failure_count",
+        "p50_ms",
+        "p95_ms",
+        "max_ms",
+    }
+    assert set(report["latency_breakdown"]) == {
+        "fuzzy",
+        "embedding",
+        "vector_search",
+        "evaluation",
+    }
+    for stage in report["latency_breakdown"].values():
+        assert set(stage) == expected_keys
+        assert stage == {
+            "count": 1,
+            "success_count": 1,
+            "failure_count": 0,
+            "p50_ms": pytest.approx(1.0),
+            "p95_ms": pytest.approx(1.0),
+            "max_ms": pytest.approx(1.0),
+        }
+    assert report["latency_p50"] == pytest.approx(7.0)
+    assert report["latency_p95"] == pytest.approx(7.0)
+    assert report["selected_policy"] == {
+        "fuzzy_weight": 0.5,
+        "vector_weight": 0.5,
+        "unique_threshold": 0.7,
+        "ambiguous_threshold": 0.4,
+        "minimum_score_gap": 0.05,
+        "vector_top_k": 3,
+    }
+    assert report["case_results"][0]["actual_hybrid_candidate_ids"] == [1]
+    assert report["eligibility"] == {
+        "status": "pending",
+        "reasons": [
+            "missing_primary_metric",
+            "missing_required_improvement",
+            "missing_false_positive_tolerance",
+            "missing_latency_budget",
+        ],
+    }
+
+
+def test_runner_counts_embedding_and_vector_failures_without_details():
+    cases = [
+        minimal_case("embedding", "embedding-secret", "unknown", [1]),
+        minimal_case("vector", "vector-secret", "unknown", [2]),
+        minimal_case("ok", "ok", "unique", [3]),
+    ]
+    recognizer = FakeRecognizer({
+        text: {"encontrados": [], "encontrados_posibles": []}
+        for text in ("embedding-secret", "vector-secret")
+    } | {
+        "ok": {
+            "encontrados": [{"producto_presentacion_id": 3}],
+            "encontrados_posibles": [],
+        }
+    })
+    embedding = FakeEmbedding(failures={"embedding-secret"})
+    vector = FakeVector(
+        {"ok": [ProductPresentationVectorMatch(3, 0.99, "canonical")]},
+        failures={"vector-secret"},
+    )
+    runner = ProductRecognitionCalibrationRunner(
+        recognizer=recognizer,
+        embedding_client=embedding,
+        vector_search_factory=lambda: vector,
+        clock=StepClock(),
+    )
+
+    report = runner.run(
+        fixture_dataset(cases),
+        policies=[HybridDecisionPolicy(0.5, 0.5, 0.7, 0.4, 0.05, 3)],
+    )
+
+    breakdown = report["latency_breakdown"]
+    assert breakdown["embedding"]["count"] == 3
+    assert breakdown["embedding"]["success_count"] == 2
+    assert breakdown["embedding"]["failure_count"] == 1
+    assert breakdown["vector_search"]["count"] == 2
+    assert breakdown["vector_search"]["success_count"] == 1
+    assert breakdown["vector_search"]["failure_count"] == 1
+    assert report["failed_case_ids"] == ["embedding", "vector"]
+    assert report["infrastructure_failures"] == 2
+    serialized_breakdown = json.dumps(breakdown)
+    assert "embedding-secret" not in serialized_breakdown
+    assert "vector-secret" not in serialized_breakdown
+    assert "case_id" not in serialized_breakdown
+    assert "input_text" not in serialized_breakdown
 
 
 def test_runner_calls_each_infrastructure_once_and_preserves_boundaries():
