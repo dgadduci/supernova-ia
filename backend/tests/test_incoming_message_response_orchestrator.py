@@ -637,5 +637,263 @@ class ProcessIncomingMessageWithResponsesBoundariesTest(unittest.TestCase):
                 self.assertNotIn(forbidden, source)
 
 
+class ProcessIncomingMessageWithResponsesCoalescingTest(unittest.TestCase):
+    """Local response path applies the shared coalescing helper."""
+
+    @patch.object(response_module, "build_agregar_producto_response")
+    @patch.object(response_module, "process_incoming_message_transactional")
+    def test_two_consecutive_executed_same_id_yields_one_terminal(
+        self, inner, builder
+    ):
+        first = ProcessedIntent(
+            intent="agregar_producto",
+            source_text="una empanada",
+            status="executed",
+            handler="agregar_producto",
+            recognizer="recognizer_productos",
+            resolved_data={"producto_presentacion_id": 1, "cantidad": 1},
+        )
+        terminal = ProcessedIntent(
+            intent="agregar_producto",
+            source_text="tres empanadas",
+            status="executed",
+            handler="agregar_producto",
+            recognizer="recognizer_productos",
+            resolved_data={
+                "producto_presentacion_id": 1,
+                "cantidad_final": 3,
+            },
+        )
+        inner.return_value = [first, terminal]
+
+        terminal_response = CustomerResponse(
+            message="Listo, se agregaron 3 Empanada de Carne unidad.",
+            intent="agregar_producto",
+            status="executed",
+        )
+        builder.return_value = terminal_response
+
+        db = _db()
+        session = _session()
+
+        result = process_incoming_message_with_responses(
+            db, session, "tres empanadas"
+        )
+
+        self.assertEqual(len(result), 1)
+        self.assertIs(result[0], terminal_response)
+        builder.assert_called_once_with(db, session, terminal)
+
+    @patch.object(response_module, "build_agregar_producto_response")
+    @patch.object(response_module, "process_incoming_message_transactional")
+    def test_three_consecutive_executed_same_id_yields_one_terminal(
+        self, inner, builder
+    ):
+        first = ProcessedIntent(
+            intent="agregar_producto",
+            source_text="x",
+            status="executed",
+            handler="agregar_producto",
+            recognizer="recognizer_productos",
+            resolved_data={"producto_presentacion_id": 7, "cantidad": 1},
+        )
+        middle = ProcessedIntent(
+            intent="agregar_producto",
+            source_text="x",
+            status="executed",
+            handler="agregar_producto",
+            recognizer="recognizer_productos",
+            resolved_data={"producto_presentacion_id": 7, "cantidad": 2},
+        )
+        terminal = ProcessedIntent(
+            intent="agregar_producto",
+            source_text="x",
+            status="executed",
+            handler="agregar_producto",
+            recognizer="recognizer_productos",
+            resolved_data={
+                "producto_presentacion_id": 7,
+                "cantidad_final": 5,
+            },
+        )
+        inner.return_value = [first, middle, terminal]
+
+        terminal_response = CustomerResponse(
+            message="TERMINAL",
+            intent="agregar_producto",
+            status="executed",
+        )
+        builder.return_value = terminal_response
+
+        db = _db()
+        session = _session()
+
+        result = process_incoming_message_with_responses(
+            db, session, "x"
+        )
+
+        self.assertEqual(len(result), 1)
+        self.assertIs(result[0], terminal_response)
+        builder.assert_called_once_with(db, session, terminal)
+
+    @patch.object(response_module, "build_agregar_producto_response")
+    @patch.object(response_module, "process_incoming_message_transactional")
+    def test_different_presentation_ids_are_not_coalesced(
+        self, inner, builder
+    ):
+        first = ProcessedIntent(
+            intent="agregar_producto",
+            source_text="x",
+            status="executed",
+            handler="agregar_producto",
+            recognizer="recognizer_productos",
+            resolved_data={"producto_presentacion_id": 1, "cantidad": 1},
+        )
+        second = ProcessedIntent(
+            intent="agregar_producto",
+            source_text="y",
+            status="executed",
+            handler="agregar_producto",
+            recognizer="recognizer_productos",
+            resolved_data={"producto_presentacion_id": 2, "cantidad": 1},
+        )
+        inner.return_value = [first, second]
+
+        builder.side_effect = [
+            CustomerResponse(
+                message="FIRST",
+                intent="agregar_producto",
+                status="executed",
+            ),
+            CustomerResponse(
+                message="SECOND",
+                intent="agregar_producto",
+                status="executed",
+            ),
+        ]
+
+        db = _db()
+        session = _session()
+
+        result = process_incoming_message_with_responses(
+            db, session, "x"
+        )
+
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0].message, "FIRST")
+        self.assertEqual(result[1].message, "SECOND")
+        self.assertEqual(builder.call_count, 2)
+        builder.assert_any_call(db, session, first)
+        builder.assert_any_call(db, session, second)
+
+    @patch.object(response_module, "build_agregar_producto_response")
+    @patch.object(response_module, "process_incoming_message_transactional")
+    def test_pending_after_executed_same_id_is_not_coalesced(
+        self, inner, builder
+    ):
+        executed = ProcessedIntent(
+            intent="agregar_producto",
+            source_text="x",
+            status="executed",
+            handler="agregar_producto",
+            recognizer="recognizer_productos",
+            resolved_data={"producto_presentacion_id": 1, "cantidad": 1},
+        )
+        pending = ProcessedIntent(
+            intent="agregar_producto",
+            source_text="y",
+            status="pending_resolution",
+            handler="agregar_producto",
+            recognizer="recognizer_productos",
+            resolved_data={},
+            candidate_ids=[1],
+        )
+        inner.return_value = [executed, pending]
+
+        builder.side_effect = [
+            CustomerResponse(
+                message="OK",
+                intent="agregar_producto",
+                status="executed",
+            ),
+            CustomerResponse(
+                message="CLARIFICATION",
+                intent="agregar_producto",
+                status="pending_resolution",
+            ),
+        ]
+
+        db = _db()
+        session = _session()
+
+        result = process_incoming_message_with_responses(
+            db, session, "x"
+        )
+
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0].message, "OK")
+        self.assertEqual(result[1].message, "CLARIFICATION")
+        self.assertEqual(builder.call_count, 2)
+
+    @patch.object(response_module, "build_agregar_producto_response")
+    @patch.object(response_module, "process_incoming_message_transactional")
+    def test_intent_change_between_same_id_is_not_coalesced(
+        self, inner, builder
+    ):
+        first = ProcessedIntent(
+            intent="agregar_producto",
+            source_text="x",
+            status="executed",
+            handler="agregar_producto",
+            recognizer="recognizer_productos",
+            resolved_data={"producto_presentacion_id": 1, "cantidad": 1},
+        )
+        quitar = ProcessedIntent(
+            intent="quitar_producto",
+            source_text="y",
+            status="executed",
+            handler="quitar_producto",
+            recognizer="recognizer_productos",
+            resolved_data={"producto_presentacion_id": 1, "cantidad": 1},
+        )
+        later = ProcessedIntent(
+            intent="agregar_producto",
+            source_text="z",
+            status="executed",
+            handler="agregar_producto",
+            recognizer="recognizer_productos",
+            resolved_data={"producto_presentacion_id": 1, "cantidad": 3},
+        )
+        inner.return_value = [first, quitar, later]
+
+        builder.side_effect = [
+            CustomerResponse(
+                message="ADD",
+                intent="agregar_producto",
+                status="executed",
+            ),
+            CustomerResponse(
+                message="ADD2",
+                intent="agregar_producto",
+                status="executed",
+            ),
+        ]
+
+        db = _db()
+        session = _session()
+
+        result = process_incoming_message_with_responses(
+            db, session, "x"
+        )
+
+        self.assertEqual(len(result), 3)
+        self.assertEqual(result[0].message, "ADD")
+        self.assertEqual(result[1].intent, "quitar_producto")
+        self.assertEqual(result[2].message, "ADD2")
+        self.assertEqual(builder.call_count, 2)
+        builder.assert_any_call(db, session, first)
+        builder.assert_any_call(db, session, later)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

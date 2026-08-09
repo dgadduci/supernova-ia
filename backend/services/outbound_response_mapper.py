@@ -36,6 +36,9 @@ from backend.diagnostics.sink import DiagnosticSink
 from backend.intents.responses.agregar_producto_response import (
     build_agregar_producto_response,
 )
+from backend.intents.responses.consecutive_add_product_coalescer import (
+    coalesce_consecutive_add_product_intents,
+)
 from backend.intents.responses.modificar_producto_response import (
     build_modificar_producto_response,
 )
@@ -87,8 +90,9 @@ def build_customer_responses(
     but is unused at this layer.
     """
     del sink
+    rendered_intents = coalesce_consecutive_add_product_intents(intents)
     responses: list[CustomerResponse] = []
-    for intent in intents:
+    for intent in rendered_intents:
         if intent.intent == "agregar_producto":
             responses.append(
                 build_agregar_producto_response(db, session, intent)

@@ -7,6 +7,9 @@ from backend.intents.orchestration.transactional_message_processor import (
 from backend.intents.responses.agregar_producto_response import (
     build_agregar_producto_response,
 )
+from backend.intents.responses.consecutive_add_product_coalescer import (
+    coalesce_consecutive_add_product_intents,
+)
 from backend.intents.responses.modificar_producto_response import (
     build_modificar_producto_response,
 )
@@ -33,8 +36,10 @@ def process_incoming_message_with_responses(
             db, session, message, sink=sink
         )
 
+    rendered_intents = coalesce_consecutive_add_product_intents(processed)
+
     responses: list[CustomerResponse] = []
-    for intent in processed:
+    for intent in rendered_intents:
         if intent.intent == "agregar_producto":
             responses.append(build_agregar_producto_response(db, session, intent))
         elif intent.intent == "quitar_producto":

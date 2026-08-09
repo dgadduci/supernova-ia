@@ -23,7 +23,7 @@ import importlib
 import inspect
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from backend.intents.orchestration import (
     incoming_message_response_orchestrator as response_orchestrator_module,
@@ -42,6 +42,7 @@ from backend.services import (
 )
 from backend.services.exceptions import InvalidOutboundProviderMessage
 from backend.services.outbound_response_mapper import (
+    build_customer_responses,
     stage_outbound_rows,
 )
 from backend.services.provider_inbound_message_coordinator import (
@@ -407,6 +408,268 @@ class OutboxExportTest(unittest.TestCase):
         self.assertEqual(
             set(response_orchestrator_module.__all__),
             {"process_incoming_message_with_responses"},
+        )
+
+
+class OutboxCoalescingTest(unittest.TestCase):
+    """Provider outbox staging applies the shared coalescing helper."""
+
+    @patch.object(outbound_mapper_module, "build_agregar_producto_response")
+    def test_two_consecutive_same_id_yields_one_response(
+        self, builder
+    ) -> None:
+        first = ProcessedIntent(
+            intent="agregar_producto",
+            source_text="una empanada",
+            status="executed",
+            handler="agregar_producto",
+            recognizer="recognizer_productos",
+            resolved_data={"producto_presentacion_id": 1, "cantidad": 1},
+        )
+        terminal = ProcessedIntent(
+            intent="agregar_producto",
+            source_text="tres empanadas",
+            status="executed",
+            handler="agregar_producto",
+            recognizer="recognizer_productos",
+            resolved_data={
+                "producto_presentacion_id": 1,
+                "cantidad_final": 3,
+            },
+        )
+
+        terminal_response = CustomerResponse(
+            message="Listo, se agregaron 3 Empanada unidad.",
+            intent="agregar_producto",
+            status="executed",
+        )
+        builder.return_value = terminal_response
+
+        responses = build_customer_responses(
+            MagicMock(name="DatabaseSession"),
+            MagicMock(name="ConversationSession"),
+            [first, terminal],
+        )
+
+        self.assertEqual(len(responses), 1)
+        self.assertIs(responses[0], terminal_response)
+        builder.assert_called_once()
+        builder.assert_called_with(ANY, ANY, terminal)
+
+    @patch.object(outbound_mapper_module, "build_agregar_producto_response")
+    def test_different_presentation_ids_are_not_coalesced(
+        self, builder
+    ) -> None:
+        first = ProcessedIntent(
+            intent="agregar_producto",
+            source_text="x",
+            status="executed",
+            handler="agregar_producto",
+            recognizer="recognizer_productos",
+            resolved_data={"producto_presentacion_id": 1, "cantidad": 1},
+        )
+        second = ProcessedIntent(
+            intent="agregar_producto",
+            source_text="y",
+            status="executed",
+            handler="agregar_producto",
+            recognizer="recognizer_productos",
+            resolved_data={"producto_presentacion_id": 2, "cantidad": 1},
+        )
+        builder.side_effect = [
+            CustomerResponse(
+                message="A",
+                intent="agregar_producto",
+                status="executed",
+            ),
+            CustomerResponse(
+                message="B",
+                intent="agregar_producto",
+                status="executed",
+            ),
+        ]
+
+        responses = build_customer_responses(
+            MagicMock(name="DatabaseSession"),
+            MagicMock(name="ConversationSession"),
+            [first, second],
+        )
+
+        self.assertEqual(len(responses), 2)
+        self.assertEqual(responses[0].message, "A")
+        self.assertEqual(responses[1].message, "B")
+        self.assertEqual(builder.call_count, 2)
+
+    @patch.object(outbound_mapper_module, "build_agregar_producto_response")
+    def test_pending_after_executed_same_id_is_not_coalesced(
+        self, builder
+    ) -> None:
+        executed = ProcessedIntent(
+            intent="agregar_producto",
+            source_text="x",
+            status="executed",
+            handler="agregar_producto",
+            recognizer="recognizer_productos",
+            resolved_data={"producto_presentacion_id": 1, "cantidad": 1},
+        )
+        pending = ProcessedIntent(
+            intent="agregar_producto",
+            source_text="y",
+            status="pending_resolution",
+            handler="agregar_producto",
+            recognizer="recognizer_productos",
+            resolved_data={},
+            candidate_ids=[1],
+        )
+        builder.side_effect = [
+            CustomerResponse(
+                message="OK",
+                intent="agregar_producto",
+                status="executed",
+            ),
+            CustomerResponse(
+                message="CLARIFICATION",
+                intent="agregar_producto",
+                status="pending_resolution",
+            ),
+        ]
+
+        responses = build_customer_responses(
+            MagicMock(name="DatabaseSession"),
+            MagicMock(name="ConversationSession"),
+            [executed, pending],
+        )
+
+        self.assertEqual(len(responses), 2)
+        self.assertEqual(responses[0].message, "OK")
+        self.assertEqual(responses[1].message, "CLARIFICATION")
+        self.assertEqual(builder.call_count, 2)
+
+    @patch.object(outbound_mapper_module, "build_agregar_producto_response")
+    def test_stage_outbound_rows_stages_only_terminal_for_eligible_group(
+        self, builder
+    ) -> None:
+        first = ProcessedIntent(
+            intent="agregar_producto",
+            source_text="x",
+            status="executed",
+            handler="agregar_producto",
+            recognizer="recognizer_productos",
+            resolved_data={"producto_presentacion_id": 1, "cantidad": 1},
+        )
+        terminal = ProcessedIntent(
+            intent="agregar_producto",
+            source_text="y",
+            status="executed",
+            handler="agregar_producto",
+            recognizer="recognizer_productos",
+            resolved_data={
+                "producto_presentacion_id": 1,
+                "cantidad_final": 4,
+            },
+        )
+
+        terminal_response = CustomerResponse(
+            message="TERMINAL",
+            intent="agregar_producto",
+            status="executed",
+        )
+        builder.return_value = terminal_response
+
+        rows: list[MagicMock] = []
+
+        def _capture_stage(**kwargs):
+            row = MagicMock(name="MensajeProveedorSaliente")
+            row.id = 100 + len(rows)
+            rows.append(row)
+            return row
+
+        outbox_repo = MagicMock(name="MensajeProveedorSalienteRepository")
+        outbox_repo.stage.side_effect = _capture_stage
+
+        staged = stage_outbound_rows(
+            MagicMock(name="DatabaseSession"),
+            MagicMock(name="ConversationSession"),
+            proveedor="twilio",
+            recepcion_mensaje_proveedor_id=11,
+            destinatario_e164="+5491100000000",
+            intents=[first, terminal],
+            outbox_repo=outbox_repo,
+        )
+
+        self.assertEqual(len(staged), 1)
+        self.assertEqual(staged[0].sequence, 0)
+        self.assertIs(staged[0].customer_response, terminal_response)
+        outbox_repo.stage.assert_called_once()
+        self.assertEqual(outbox_repo.stage.call_args.kwargs["sequence"], 0)
+        self.assertEqual(
+            outbox_repo.stage.call_args.kwargs["cuerpo"], "TERMINAL"
+        )
+        builder.assert_called_once()
+
+    @patch.object(outbound_mapper_module, "build_agregar_producto_response")
+    def test_stage_outbound_rows_stages_two_rows_for_two_presentations(
+        self, builder
+    ) -> None:
+        first = ProcessedIntent(
+            intent="agregar_producto",
+            source_text="x",
+            status="executed",
+            handler="agregar_producto",
+            recognizer="recognizer_productos",
+            resolved_data={"producto_presentacion_id": 1, "cantidad": 1},
+        )
+        second = ProcessedIntent(
+            intent="agregar_producto",
+            source_text="y",
+            status="executed",
+            handler="agregar_producto",
+            recognizer="recognizer_productos",
+            resolved_data={"producto_presentacion_id": 2, "cantidad": 1},
+        )
+        builder.side_effect = [
+            CustomerResponse(
+                message="A",
+                intent="agregar_producto",
+                status="executed",
+            ),
+            CustomerResponse(
+                message="B",
+                intent="agregar_producto",
+                status="executed",
+            ),
+        ]
+
+        outbox_repo = MagicMock(name="MensajeProveedorSalienteRepository")
+        outbox_repo.stage.return_value = MagicMock(
+            name="MensajeProveedorSaliente"
+        )
+
+        staged = stage_outbound_rows(
+            MagicMock(name="DatabaseSession"),
+            MagicMock(name="ConversationSession"),
+            proveedor="twilio",
+            recepcion_mensaje_proveedor_id=11,
+            destinatario_e164="+5491100000000",
+            intents=[first, second],
+            outbox_repo=outbox_repo,
+        )
+
+        self.assertEqual(len(staged), 2)
+        self.assertEqual(builder.call_count, 2)
+        outbox_repo.stage.assert_any_call(
+            proveedor="twilio",
+            recepcion_mensaje_proveedor_id=11,
+            destinatario_e164="+5491100000000",
+            cuerpo="A",
+            sequence=0,
+        )
+        outbox_repo.stage.assert_any_call(
+            proveedor="twilio",
+            recepcion_mensaje_proveedor_id=11,
+            destinatario_e164="+5491100000000",
+            cuerpo="B",
+            sequence=1,
         )
 
 
