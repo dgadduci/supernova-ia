@@ -30,6 +30,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--diagnose", action="store_true", help="Emit a per-case diagnostic evidence file in addition to the JSON report.")
     parser.add_argument("--diagnose-output", help="Path for the diagnostic evidence file. Defaults to <output>.diagnose.json when omitted.")
+    parser.add_argument(
+        "--controlled-railway-manifest",
+        action="store_true",
+        help=(
+            "Explicitly select the controlled Railway fixture manifest to "
+            "translate the frozen dataset's historical numeric IDs into the "
+            "runtime commerce and producto_presentacion PKs of the "
+            "controlled Railway fixture. Without this flag the CLI preserves "
+            "the existing in-memory path; the flag is the only way to "
+            "activate the adapter."
+        ),
+    )
     return parser
 
 
@@ -48,6 +60,19 @@ def main(argv: list[str] | None = None) -> int:
     session = None
     try:
         session = _SessionLocal()
+        if args.controlled_railway_manifest:
+            from backend.services.controlled_railway_calibration_identity import (
+                ControlledRailwayIdentityError,
+                materialize_dataset,
+                resolve_manifest,
+            )
+
+            try:
+                resolution = resolve_manifest(session, dataset)
+            except ControlledRailwayIdentityError as error:
+                print(f"controlled railway identity error: {error}", file=sys.stderr)
+                return 1
+            dataset = materialize_dataset(dataset, resolution)
         settings = load_settings()
         embedding_client = OllamaEmbeddingClient(settings=settings)
         runner = ProductRecognitionCalibrationRunner(
@@ -57,6 +82,16 @@ def main(argv: list[str] | None = None) -> int:
             session=session,
         )
         report = runner.run(dataset, commerce_id=args.commerce_id, limit=args.limit)
+        if args.controlled_railway_manifest:
+            manifest_block = dataset.get("controlled_railway_identity_manifest")
+            if isinstance(manifest_block, dict):
+                report["controlled_railway_identity_manifest"] = manifest_block
+            source_fingerprint = dataset.get("source_fingerprint")
+            if isinstance(source_fingerprint, str):
+                report["dataset_source_fingerprint"] = source_fingerprint
+            materialized_fingerprint = dataset.get("materialized_fingerprint")
+            if isinstance(materialized_fingerprint, str):
+                report["dataset_materialized_fingerprint"] = materialized_fingerprint
         diagnostic_records = report.pop("_diagnostic_records", [])
         write_report_atomic(report, args.output)
         if args.diagnose:
