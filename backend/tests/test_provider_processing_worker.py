@@ -498,6 +498,7 @@ class WorkerConfigValidationTest(unittest.TestCase):
             stop_predicate=lambda: (
                 inbound_calls["n"] >= 1 and outbound_calls["n"] >= 1
             ),
+            readiness_probe=worker_cli._always_ready_probe,
         )
 
         self.assertEqual(cycles, 1)
@@ -1006,6 +1007,956 @@ class WorkerEntrypointFlagParsingTest(unittest.TestCase):
         # The *) branch exits before the trailing printf runs, so
         # stdout is empty: the worker was NOT silently enabled.
         self.assertEqual(stdout.strip(), "")
+
+
+def _not_ready_result(
+    *,
+    generate_category: str = "QueryLlmConnectionError",
+    embed_category: str = "skipped_due_to_generate_failure",
+    embed_dimension: int | None = None,
+    generate_duration_seconds: float = 0.5,
+    embed_duration_seconds: float = 0.0,
+) -> Any:
+    from backend.scripts.check_railway_ollama_contracts import (
+        OllamaReadinessResult,
+    )
+
+    return OllamaReadinessResult(
+        ready=False,
+        generate_category=generate_category,
+        embed_category=embed_category,
+        embed_dimension=embed_dimension,
+        generate_duration_seconds=generate_duration_seconds,
+        embed_duration_seconds=embed_duration_seconds,
+    )
+
+
+def _ready_result(
+    *,
+    embed_dimension: int | None = 4,
+    generate_duration_seconds: float = 0.25,
+    embed_duration_seconds: float = 0.15,
+) -> Any:
+    from backend.scripts.check_railway_ollama_contracts import (
+        OllamaReadinessResult,
+    )
+
+    return OllamaReadinessResult(
+        ready=True,
+        generate_category="passed",
+        embed_category="passed",
+        embed_dimension=embed_dimension,
+        generate_duration_seconds=generate_duration_seconds,
+        embed_duration_seconds=embed_duration_seconds,
+    )
+
+
+class WorkerReadinessGateTest(unittest.TestCase):
+    """The worker SHALL not invoke inbound until a controlled
+    fixed-input probe proves both configured Ollama generate and
+    embedding surfaces usable. While not ready, the bounded
+    outbound pass MUST still run and the cycle summary MUST
+    surface a safe not-ready category. After the first success the
+    readiness flag is cached for the worker process."""
+
+    def test_first_probe_failure_skips_inbound_and_runs_outbound(
+        self,
+    ) -> None:
+        inbound_calls: list[int] = []
+        outbound_calls: list[int] = []
+        summaries: list[dict[str, Any]] = []
+
+        def _inbound(bound: int) -> int:
+            inbound_calls.append(bound)
+            return 0
+
+        def _outbound(bound: int) -> int:
+            outbound_calls.append(bound)
+            return 0
+
+        cycle_count = run_forever(
+            settings=_settings(inbound_bound=1, outbound_bound=16),
+            inbound_runner=_inbound,
+            outbound_runner=_outbound,
+            sleeper=lambda _seconds: None,
+            sleep_decision=lambda _settings, _cycle: False,
+            cycle_summary_writer=lambda summary: summaries.append(summary),
+            stop_predicate=lambda: len(outbound_calls) >= 1,
+            readiness_probe=lambda: _not_ready_result(),
+        )
+
+        self.assertEqual(cycle_count, 1)
+        self.assertEqual(inbound_calls, [])
+        self.assertEqual(outbound_calls, [16])
+        self.assertEqual(len(summaries), 1)
+        summary = summaries[0]
+        self.assertFalse(summary["ollama_ready"])
+        self.assertIsNone(summary["inbound_exit_code"])
+        self.assertEqual(summary["outbound_exit_code"], 0)
+        self.assertEqual(
+            summary["not_ready_category"], "QueryLlmConnectionError"
+        )
+        self.assertIn("probe_duration_seconds", summary)
+
+    def test_consecutive_probe_failures_keep_inbound_skipped(
+        self,
+    ) -> None:
+        inbound_calls: list[int] = []
+        outbound_calls: list[int] = []
+
+        def _inbound(bound: int) -> int:
+            inbound_calls.append(bound)
+            return 0
+
+        def _outbound(bound: int) -> int:
+            outbound_calls.append(bound)
+            return 0
+
+        cycle_count = run_forever(
+            settings=_settings(inbound_bound=2, outbound_bound=8),
+            inbound_runner=_inbound,
+            outbound_runner=_outbound,
+            sleeper=lambda _seconds: None,
+            sleep_decision=lambda _settings, _cycle: False,
+            cycle_summary_writer=lambda _summary: None,
+            stop_predicate=lambda: len(outbound_calls) >= 3,
+            readiness_probe=lambda: _not_ready_result(),
+        )
+
+        self.assertEqual(cycle_count, 3)
+        self.assertEqual(inbound_calls, [])
+        self.assertEqual(outbound_calls, [8, 8, 8])
+
+    def test_recovery_runs_inbound_before_outbound_next_cycle(
+        self,
+    ) -> None:
+        inbound_calls: list[int] = []
+        outbound_calls: list[int] = []
+        probe_calls: list[int] = []
+        call_order: list[str] = []
+
+        def _probe():
+            probe_calls.append(1)
+            call_order.append("probe")
+            if len(probe_calls) < 3:
+                return _not_ready_result()
+            return _ready_result()
+
+        def _inbound(bound: int) -> int:
+            inbound_calls.append(bound)
+            call_order.append(f"inbound:{bound}")
+            return 0
+
+        def _outbound(bound: int) -> int:
+            outbound_calls.append(bound)
+            call_order.append(f"outbound:{bound}")
+            return 0
+
+        cycle_count = run_forever(
+            settings=_settings(inbound_bound=2, outbound_bound=8),
+            inbound_runner=_inbound,
+            outbound_runner=_outbound,
+            sleeper=lambda _seconds: None,
+            sleep_decision=lambda _settings, _cycle: False,
+            cycle_summary_writer=lambda _summary: None,
+            stop_predicate=lambda: len(inbound_calls) >= 1,
+            readiness_probe=_probe,
+        )
+
+        self.assertEqual(cycle_count, 3)
+        self.assertEqual(inbound_calls, [2])
+        self.assertEqual(outbound_calls, [8, 8, 8])
+        self.assertEqual(
+            call_order,
+            [
+                "probe",
+                "outbound:8",
+                "probe",
+                "outbound:8",
+                "probe",
+                "inbound:2",
+                "outbound:8",
+            ],
+        )
+
+    def test_cached_ready_skips_probe_on_subsequent_cycles(self) -> None:
+        probe_calls: list[int] = []
+        inbound_calls: list[int] = []
+        outbound_calls: list[int] = []
+
+        def _probe():
+            probe_calls.append(1)
+            return _ready_result()
+
+        def _inbound(bound: int) -> int:
+            inbound_calls.append(bound)
+            return 0
+
+        def _outbound(bound: int) -> int:
+            outbound_calls.append(bound)
+            return 0
+
+        cycle_count = run_forever(
+            settings=_settings(),
+            inbound_runner=_inbound,
+            outbound_runner=_outbound,
+            sleeper=lambda _seconds: None,
+            sleep_decision=lambda _settings, _cycle: False,
+            cycle_summary_writer=lambda _summary: None,
+            stop_predicate=lambda: len(outbound_calls) >= 4,
+            readiness_probe=_probe,
+        )
+
+        self.assertEqual(cycle_count, 4)
+        self.assertEqual(probe_calls, [1])
+        self.assertEqual(inbound_calls, [1, 1, 1, 1])
+        self.assertEqual(outbound_calls, [16, 16, 16, 16])
+
+    def test_not_ready_summary_records_embed_category_when_generate_passes(
+        self,
+    ) -> None:
+        summaries: list[dict[str, Any]] = []
+
+        def _probe():
+            return _not_ready_result(
+                generate_category="passed",
+                generate_duration_seconds=0.5,
+                embed_category="EmbeddingConnectionError",
+                embed_duration_seconds=0.7,
+            )
+
+        run_forever(
+            settings=_settings(),
+            inbound_runner=lambda _bound: 0,
+            outbound_runner=lambda _bound: 0,
+            sleeper=lambda _seconds: None,
+            sleep_decision=lambda _settings, _cycle: False,
+            cycle_summary_writer=lambda s: summaries.append(s),
+            stop_predicate=lambda: len(summaries) >= 1,
+            readiness_probe=_probe,
+        )
+
+        self.assertEqual(len(summaries), 1)
+        summary = summaries[0]
+        self.assertFalse(summary["ollama_ready"])
+        self.assertEqual(
+            summary["not_ready_category"], "EmbeddingConnectionError"
+        )
+        self.assertAlmostEqual(summary["probe_duration_seconds"], 1.2)
+
+    def test_unexpected_probe_exception_yields_not_ready(self) -> None:
+        """A buggy probe that escapes an exception must NOT crash
+        the worker: the cycle is recorded as not-ready and the
+        loop continues."""
+        inbound_calls: list[int] = []
+        outbound_calls: list[int] = []
+        summaries: list[dict[str, Any]] = []
+
+        def _probe():
+            raise RuntimeError("forced probe failure")
+
+        def _inbound(bound: int) -> int:
+            inbound_calls.append(bound)
+            return 0
+
+        def _outbound(bound: int) -> int:
+            outbound_calls.append(bound)
+            return 0
+
+        cycle_count = run_forever(
+            settings=_settings(),
+            inbound_runner=_inbound,
+            outbound_runner=_outbound,
+            sleeper=lambda _seconds: None,
+            sleep_decision=lambda _settings, _cycle: False,
+            cycle_summary_writer=lambda s: summaries.append(s),
+            stop_predicate=lambda: len(outbound_calls) >= 2,
+            readiness_probe=_probe,
+        )
+
+        self.assertEqual(cycle_count, 2)
+        self.assertEqual(inbound_calls, [])
+        self.assertEqual(outbound_calls, [16, 16])
+        for summary in summaries:
+            self.assertFalse(summary["ollama_ready"])
+            self.assertEqual(
+                summary["not_ready_category"], "probe_unexpected_error"
+            )
+
+    def test_ollama_ready_transition_logs_safe_metadata(self) -> None:
+        """When the probe first succeeds, the worker emits one
+        safe ``provider_processing_worker_ollama_ready`` log
+        record carrying only cycle_index and probe_duration."""
+        logger = logging.getLogger(
+            "backend.cli.run_provider_processing_worker"
+        )
+        probe_calls: list[int] = []
+        with self.assertLogs(logger, level=logging.INFO) as log_ctx:
+            run_forever(
+                settings=_settings(),
+                inbound_runner=lambda _bound: 0,
+                outbound_runner=lambda _bound: 0,
+                sleeper=lambda _seconds: None,
+                sleep_decision=lambda _settings, _cycle: False,
+                cycle_summary_writer=lambda _summary: None,
+                stop_predicate=lambda: len(probe_calls) >= 1,
+                readiness_probe=lambda: (
+                    probe_calls.append(1)
+                    or _ready_result(
+                        generate_duration_seconds=0.3,
+                        embed_duration_seconds=0.2,
+                    )
+                ),
+            )
+
+        ready_records = [
+            record
+            for record in log_ctx.records
+            if record.getMessage()
+            == "provider_processing_worker_ollama_ready"
+        ]
+        self.assertEqual(len(ready_records), 1)
+        ready = ready_records[0]
+        self.assertEqual(
+            getattr(ready, "cycle_index", None), 1
+        )
+        probe_duration = getattr(ready, "probe_duration_seconds", None)
+        self.assertIsNotNone(probe_duration)
+        self.assertAlmostEqual(float(probe_duration), 0.5)  # type: ignore[arg-type]
+        self.assertFalse(getattr(ready, "exc_info", False))
+
+    def test_unexpected_probe_exception_does_not_leak_payload(
+        self,
+    ) -> None:
+        """The defensive guard MUST NOT log ``str(exc)`` or any
+        sensitive payload carried by the probe exception."""
+        sentinels = (
+            "secret-auth-token-value",
+            "AC000000000000000000000000000000",
+            "+5491100000000",
+            "https://provider.example",
+            "X-Twilio-Signature",
+            "Bearer ",
+            "leak:",
+            "inbound body",
+            "outbound body",
+            "prompt",
+            "embed probe secret",
+        )
+        secret_message = (
+            "leak: secret-auth-token-value / "
+            "AC000000000000000000000000000000 / +5491100000000 / "
+            "https://provider.example/cb?token=Bearer xyz / "
+            "X-Twilio-Signature=abc / inbound body / outbound body / "
+            "prompt / embed probe secret"
+        )
+
+        def _probe():
+            raise RuntimeError(secret_message)
+
+        logger = logging.getLogger(
+            "backend.cli.run_provider_processing_worker"
+        )
+        probe_calls: list[int] = []
+        with self.assertLogs(logger, level=logging.ERROR) as log_ctx:
+            run_forever(
+                settings=_settings(),
+                inbound_runner=lambda _bound: 0,
+                outbound_runner=lambda _bound: 0,
+                sleeper=lambda _seconds: None,
+                sleep_decision=lambda _settings, _cycle: False,
+                cycle_summary_writer=lambda _summary: None,
+                stop_predicate=lambda: len(probe_calls) >= 1,
+                readiness_probe=lambda: (
+                    probe_calls.append(1) or _probe()
+                ),
+            )
+
+        self.assertEqual(len(log_ctx.records), 1)
+        record = log_ctx.records[0]
+        self.assertEqual(
+            record.getMessage(),
+            "provider_processing_worker_unexpected_failure",
+        )
+        self.assertFalse(record.exc_info)
+        self.assertEqual(getattr(record, "reason", None), "RuntimeError")
+        for token in sentinels:
+            self.assertNotIn(token, record.getMessage())
+        for attr, value in record.__dict__.items():
+            if isinstance(value, str):
+                for token in sentinels:
+                    self.assertNotIn(
+                        token,
+                        value,
+                        (
+                            f"sentinel {token!r} leaked in record "
+                            f"attribute {attr!r}"
+                        ),
+                    )
+
+    def test_not_ready_cycle_summary_excludes_sensitive_payloads(
+        self,
+    ) -> None:
+        """A not-ready cycle summary MUST NOT contain probe text,
+        probe response, vectors, URL/proxy or any operator/
+        provider/customer content."""
+        sentinels = (
+            "secret-auth-token-value",
+            "AC000000000000000000000000000000",
+            "+5491100000000",
+            "https://provider.example",
+            "X-Twilio-Signature",
+            "Bearer ",
+            "leak:",
+            "inbound body",
+            "outbound body",
+            "prompt",
+            "embed probe secret",
+        )
+
+        probe_calls: list[int] = []
+
+        def _probe():
+            probe_calls.append(1)
+            return _not_ready_result(
+                generate_category="QueryLlmHttpError",
+                embed_category="skipped_due_to_generate_failure",
+            )
+
+        with _capture_stdout() as stdout:
+            run_forever(
+                settings=_settings(),
+                inbound_runner=lambda _bound: 0,
+                outbound_runner=lambda _bound: 0,
+                sleeper=lambda _seconds: None,
+                sleep_decision=lambda _settings, _cycle: False,
+                cycle_summary_writer=worker_cli._default_cycle_summary_writer,
+                stop_predicate=lambda: len(probe_calls) >= 1,
+                readiness_probe=_probe,
+            )
+
+        rendered = stdout.getvalue()
+        self.assertIn("ollama_ready=False", rendered)
+        self.assertIn(
+            "not_ready_category=QueryLlmHttpError", rendered
+        )
+        self.assertIn("inbound_exit_code=None", rendered)
+        for token in sentinels:
+            self.assertNotIn(token, rendered)
+
+    def test_run_cycle_with_ollama_ready_false_skips_inbound(
+        self,
+    ) -> None:
+        inbound_calls: list[int] = []
+        outbound_calls: list[int] = []
+
+        def _inbound(bound: int) -> int:
+            inbound_calls.append(bound)
+            return 0
+
+        def _outbound(bound: int) -> int:
+            outbound_calls.append(bound)
+            return 0
+
+        summaries: list[dict[str, Any]] = []
+
+        def _writer(summary: dict[str, Any]) -> None:
+            summaries.append(summary)
+
+        summary = run_cycle(
+            settings=_settings(inbound_bound=3, outbound_bound=42),
+            cycle_index=7,
+            inbound_runner=_inbound,
+            outbound_runner=_outbound,
+            sleep_decision=lambda _settings, _cycle: False,
+            cycle_summary_writer=_writer,
+            ollama_ready=False,
+            not_ready_category="EmbeddingTimeoutError",
+            probe_duration_seconds=1.25,
+        )
+
+        self.assertEqual(inbound_calls, [])
+        self.assertEqual(outbound_calls, [42])
+        self.assertEqual(summary["ollama_ready"], False)
+        self.assertIsNone(summary["inbound_exit_code"])
+        self.assertEqual(summary["outbound_exit_code"], 0)
+        self.assertEqual(
+            summary["not_ready_category"], "EmbeddingTimeoutError"
+        )
+        self.assertEqual(summary["probe_duration_seconds"], 1.25)
+        self.assertEqual(summary["cycle_index"], 7)
+
+    def test_run_cycle_default_ollama_ready_true_keeps_inbound(
+        self,
+    ) -> None:
+        """When ``ollama_ready`` is omitted, ``run_cycle`` keeps
+        the legacy inbound-then-outbound behavior so existing
+        callers and tests remain green."""
+        call_order: list[str] = []
+
+        def _inbound(bound: int) -> int:
+            call_order.append(f"inbound:{bound}")
+            return 0
+
+        def _outbound(bound: int) -> int:
+            call_order.append(f"outbound:{bound}")
+            return 0
+
+        summary = run_cycle(
+            settings=_settings(inbound_bound=1, outbound_bound=16),
+            cycle_index=2,
+            inbound_runner=_inbound,
+            outbound_runner=_outbound,
+            sleep_decision=lambda _settings, _cycle: False,
+            cycle_summary_writer=lambda _summary: None,
+        )
+
+        self.assertEqual(call_order, ["inbound:1", "outbound:16"])
+        self.assertTrue(summary["ollama_ready"])
+        self.assertEqual(summary["inbound_exit_code"], 0)
+        self.assertNotIn("not_ready_category", summary)
+        self.assertNotIn("probe_duration_seconds", summary)
+
+    def test_main_with_real_default_probe_uses_settings_bound(
+        self,
+    ) -> None:
+        """The default readiness probe factory binds the probe to
+        the same ``Settings`` instance used by ``main()`` so the
+        probe respects the worker's configured LLM and embedding
+        endpoints."""
+
+        observed: dict[str, Any] = {}
+
+        class _ProbeStub:
+            def __init__(self, settings: Settings) -> None:
+                observed["settings_id"] = id(settings)
+                observed["llm_url"] = settings.llm_url
+                observed["embedding_url"] = settings.embedding_url
+
+            def __call__(self) -> Any:
+                return worker_cli._always_ready_probe()
+
+        captured_settings: dict[str, Settings] = {}
+
+        def _loader() -> Settings:
+            settings = _settings()
+            captured_settings["value"] = settings
+            return settings
+
+        main(
+            settings_loader=_loader,
+            inbound_runner=lambda _bound: 0,
+            outbound_runner=lambda _bound: 0,
+            sleeper=lambda _seconds: None,
+            sleep_decision=lambda _settings, _cycle: False,
+            stop_predicate=lambda: True,
+            readiness_probe=_ProbeStub(
+                captured_settings.get("value", _settings())
+            ),
+        )
+
+        self.assertEqual(
+            observed["settings_id"], id(captured_settings["value"])
+        )
+
+
+class WorkerReadinessSeamContractTest(unittest.TestCase):
+    """The readiness seam is reusable and side-effect-free. It
+    opens no DB session, sends no provider message, mutates no
+    business state."""
+
+    def _settings(self) -> Settings:
+        return Settings(
+            llm_url="http://llm.test/api/generate",
+            llm_model="test-llm",
+            llm_timeout=30,
+            llm_keep_alive="1h",
+            llm_num_ctx=2048,
+            llm_num_predict=256,
+            llm_log_content=False,
+            llm_log_max_chars=50,
+            embedding_url="http://embed.test/api/embed",
+            embedding_model="test-embed",
+            embedding_timeout_seconds=15,
+            embedding_batch_size=2,
+            embedding_dimension=4,
+        )
+
+    def test_seam_returns_ready_when_both_probes_pass(self) -> None:
+        from backend.scripts.check_railway_ollama_contracts import (
+            check_ollama_readiness,
+        )
+
+        settings = self._settings()
+        with mock.patch(
+            "backend.scripts.check_railway_ollama_contracts.QueryLlm"
+        ) as query_cls, mock.patch(
+            "backend.scripts.check_railway_ollama_contracts.OllamaEmbeddingClient"
+        ) as embed_cls:
+            query_instance = query_cls.return_value
+            query_instance.request.return_value = {"ok": True}
+            embed_instance = embed_cls.return_value
+            embed_instance.embed_query.return_value = [0.1, 0.2, 0.3, 0.4]
+
+            result = check_ollama_readiness(settings=settings)
+
+        self.assertTrue(result.ready)
+        self.assertEqual(result.generate_category, "passed")
+        self.assertEqual(result.embed_category, "passed")
+        self.assertEqual(result.embed_dimension, 4)
+        self.assertGreaterEqual(result.generate_duration_seconds, 0.0)
+        self.assertGreaterEqual(result.embed_duration_seconds, 0.0)
+
+        query_instance.request.assert_called_once()
+        embed_instance.embed_query.assert_called_once()
+
+    def test_seam_short_circuits_embed_when_generate_fails(self) -> None:
+        from backend.llm.query_llm import (
+            QueryLlmConnectionError,
+        )
+        from backend.scripts.check_railway_ollama_contracts import (
+            check_ollama_readiness,
+        )
+
+        settings = self._settings()
+        with mock.patch(
+            "backend.scripts.check_railway_ollama_contracts.QueryLlm"
+        ) as query_cls, mock.patch(
+            "backend.scripts.check_railway_ollama_contracts.OllamaEmbeddingClient"
+        ) as embed_cls:
+            query_instance = query_cls.return_value
+            query_instance.request.side_effect = QueryLlmConnectionError(
+                "refused"
+            )
+            result = check_ollama_readiness(settings=settings)
+
+        self.assertFalse(result.ready)
+        self.assertEqual(
+            result.generate_category, "QueryLlmConnectionError"
+        )
+        self.assertEqual(
+            result.embed_category, "skipped_due_to_generate_failure"
+        )
+        self.assertIsNone(result.embed_dimension)
+        embed_cls.assert_not_called()
+
+    def test_seam_records_embed_failure_category(self) -> None:
+        from backend.llm.embedding_client import (
+            EmbeddingConnectionError,
+        )
+        from backend.scripts.check_railway_ollama_contracts import (
+            check_ollama_readiness,
+        )
+
+        settings = self._settings()
+        with mock.patch(
+            "backend.scripts.check_railway_ollama_contracts.QueryLlm"
+        ) as query_cls, mock.patch(
+            "backend.scripts.check_railway_ollama_contracts.OllamaEmbeddingClient"
+        ) as embed_cls:
+            query_instance = query_cls.return_value
+            query_instance.request.return_value = {"ok": True}
+            embed_instance = embed_cls.return_value
+            embed_instance.embed_query.side_effect = (
+                EmbeddingConnectionError("refused")
+            )
+            result = check_ollama_readiness(settings=settings)
+
+        self.assertFalse(result.ready)
+        self.assertEqual(result.generate_category, "passed")
+        self.assertEqual(
+            result.embed_category, "EmbeddingConnectionError"
+        )
+        self.assertIsNone(result.embed_dimension)
+
+    def test_seam_swallows_unexpected_generate_exception(self) -> None:
+        from backend.scripts.check_railway_ollama_contracts import (
+            check_ollama_readiness,
+        )
+
+        settings = self._settings()
+        with mock.patch(
+            "backend.scripts.check_railway_ollama_contracts.QueryLlm"
+        ) as query_cls, mock.patch(
+            "backend.scripts.check_railway_ollama_contracts.OllamaEmbeddingClient"
+        ) as embed_cls:
+            query_instance = query_cls.return_value
+            query_instance.request.side_effect = ValueError(
+                "leak: secret-auth-token-value / prompt"
+            )
+            result = check_ollama_readiness(settings=settings)
+
+        self.assertFalse(result.ready)
+        self.assertEqual(
+            result.generate_category, "generate_unexpected_error"
+        )
+        self.assertEqual(
+            result.embed_category, "skipped_due_to_generate_failure"
+        )
+        self.assertNotIn("secret-auth-token-value", result.generate_category)
+        self.assertNotIn("prompt", result.generate_category)
+        embed_cls.assert_not_called()
+
+    def test_seam_swallows_unexpected_embed_exception(self) -> None:
+        from backend.scripts.check_railway_ollama_contracts import (
+            check_ollama_readiness,
+        )
+
+        settings = self._settings()
+        with mock.patch(
+            "backend.scripts.check_railway_ollama_contracts.QueryLlm"
+        ) as query_cls, mock.patch(
+            "backend.scripts.check_railway_ollama_contracts.OllamaEmbeddingClient"
+        ) as embed_cls:
+            query_instance = query_cls.return_value
+            query_instance.request.return_value = {"ok": True}
+            embed_instance = embed_cls.return_value
+            embed_instance.embed_query.side_effect = OSError(
+                "leak: secret-auth-token-value"
+            )
+            result = check_ollama_readiness(settings=settings)
+
+        self.assertFalse(result.ready)
+        self.assertEqual(result.generate_category, "passed")
+        self.assertEqual(
+            result.embed_category, "embed_unexpected_error"
+        )
+        self.assertIsNone(result.embed_dimension)
+        self.assertNotIn("secret-auth-token-value", result.embed_category)
+
+    def test_seam_does_not_open_db_or_invoke_twilio(self) -> None:
+        """The seam ``check_ollama_readiness`` MUST NOT touch the
+        database or Twilio modules. The seam only references the
+        typed LLM clients (``QueryLlm``, ``OllamaEmbeddingClient``)
+        and the loaded ``Settings``; it never imports any database,
+        ORM, Twilio or HTTP-direct module."""
+        import inspect
+
+        from backend.scripts.check_railway_ollama_contracts import (
+            check_ollama_readiness,
+        )
+
+        source = inspect.getsource(check_ollama_readiness)
+        forbidden_tokens = (
+            "_SessionLocal",
+            "Session(",
+            "begin()",
+            "commit()",
+            "rollback()",
+            "flush(",
+            "Twilio",
+            "twilio",
+            "requests.post",
+            "requests.get",
+            "socks5h",
+            "HTTP_PROXY",
+            "ALL_PROXY",
+            "HTTPS_PROXY",
+            "ProviderInboundMessageCoordinator",
+            "CanalWhatsappService",
+            "OutboundDispatcher",
+        )
+        for token in forbidden_tokens:
+            self.assertNotIn(
+                token,
+                source,
+                f"seam must not reference {token!r}",
+            )
+
+    def test_seam_module_imports_only_typed_llm_dependencies(self) -> None:
+        """The seam module imports only the LLM clients, ``Settings``
+        and stdlib/argparse/dataclasses for the CLI surface. The
+        ``check_ollama_readiness`` symbol itself MUST come from
+        the module without any DB / ORM / Twilio side-effect."""
+        from backend.scripts import check_railway_ollama_contracts as seam
+
+        self.assertTrue(callable(seam.check_ollama_readiness))
+        self.assertTrue(callable(seam.OllamaReadinessResult))
+
+    def test_seam_uses_fixed_inputs_that_are_never_logged(
+        self,
+    ) -> None:
+        """The fixed probe inputs are NEVER surfaced in the
+        :class:`OllamaReadinessResult` or in the seam's local
+        state."""
+        from backend.scripts.check_railway_ollama_contracts import (
+            _OLLAMA_READINESS_PROBE_EMBED_INPUT,
+            _OLLAMA_READINESS_PROBE_GENERATE_PROMPT,
+            check_ollama_readiness,
+        )
+
+        settings = self._settings()
+        with mock.patch(
+            "backend.scripts.check_railway_ollama_contracts.QueryLlm"
+        ) as query_cls, mock.patch(
+            "backend.scripts.check_railway_ollama_contracts.OllamaEmbeddingClient"
+        ) as embed_cls:
+            query_instance = query_cls.return_value
+            query_instance.request.return_value = {"ok": True}
+            embed_instance = embed_cls.return_value
+            embed_instance.embed_query.return_value = [0.1, 0.2, 0.3, 0.4]
+            result = check_ollama_readiness(settings=settings)
+
+        query_args, _ = query_instance.request.call_args
+        self.assertEqual(query_args[0], _OLLAMA_READINESS_PROBE_GENERATE_PROMPT)
+        embed_args, _ = embed_instance.embed_query.call_args
+        self.assertEqual(embed_args[0], _OLLAMA_READINESS_PROBE_EMBED_INPUT)
+
+        dumped = repr(result)
+        self.assertNotIn(_OLLAMA_READINESS_PROBE_GENERATE_PROMPT, dumped)
+        self.assertNotIn(_OLLAMA_READINESS_PROBE_EMBED_INPUT, dumped)
+        for field in (
+            "generate_category",
+            "embed_category",
+            "embed_dimension",
+            "generate_duration_seconds",
+            "embed_duration_seconds",
+        ):
+            self.assertNotIn(
+                _OLLAMA_READINESS_PROBE_GENERATE_PROMPT,
+                repr(getattr(result, field)),
+            )
+            self.assertNotIn(
+                _OLLAMA_READINESS_PROBE_EMBED_INPUT,
+                repr(getattr(result, field)),
+            )
+
+    def test_seam_dimension_pass_uses_client_validated_length(
+        self,
+    ) -> None:
+        from backend.scripts.check_railway_ollama_contracts import (
+            check_ollama_readiness,
+        )
+
+        settings = self._settings()
+        with mock.patch(
+            "backend.scripts.check_railway_ollama_contracts.QueryLlm"
+        ) as query_cls, mock.patch(
+            "backend.scripts.check_railway_ollama_contracts.OllamaEmbeddingClient"
+        ) as embed_cls:
+            query_cls.return_value.request.return_value = {"ok": True}
+            embed_instance = embed_cls.return_value
+            embed_instance.embed_query.return_value = [0.0, 0.0, 0.0, 0.0]
+            result = check_ollama_readiness(settings=settings)
+
+        self.assertTrue(result.ready)
+        self.assertEqual(result.embed_dimension, settings.embedding_dimension)
+
+
+class WorkerReadinessDiagnosticCliRegressionTest(unittest.TestCase):
+    """The existing diagnostic CLI contract MUST be preserved."""
+
+    def test_diagnostic_cli_emits_generate_passed_when_both_pass(
+        self,
+    ) -> None:
+        import contextlib
+        import io
+
+        from backend.scripts import check_railway_ollama_contracts as seam
+
+        settings = self._settings_for_diagnostic()
+        with mock.patch.object(seam, "QueryLlm") as query_cls, mock.patch.object(
+            seam, "OllamaEmbeddingClient"
+        ) as embed_cls, mock.patch.object(
+            seam, "load_settings", return_value=settings
+        ):
+            query_cls.return_value.request.return_value = {"ok": True}
+            embed_cls.return_value.embed_query.return_value = [0.0] * 4
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+                stderr
+            ):
+                result = seam.main(argv=[])
+
+        self.assertEqual(result, 0)
+        rendered_stdout = stdout.getvalue()
+        rendered_stderr = stderr.getvalue()
+        self.assertIn("generate=passed", rendered_stdout)
+        self.assertIn("model=test-llm", rendered_stdout)
+        self.assertIn("embed=passed", rendered_stdout)
+        self.assertIn("dimension=4", rendered_stdout)
+        self.assertNotIn("generate=failed", rendered_stderr)
+        self.assertNotIn("embed=failed", rendered_stderr)
+
+    def test_diagnostic_cli_returns_one_when_generate_fails(
+        self,
+    ) -> None:
+        import contextlib
+        import io
+
+        from backend.llm.query_llm import QueryLlmConnectionError
+        from backend.scripts import check_railway_ollama_contracts as seam
+
+        settings = self._settings_for_diagnostic()
+        with mock.patch.object(seam, "QueryLlm") as query_cls, mock.patch.object(
+            seam, "OllamaEmbeddingClient"
+        ) as embed_cls, mock.patch.object(
+            seam, "load_settings", return_value=settings
+        ):
+            query_cls.return_value.request.side_effect = (
+                QueryLlmConnectionError("refused")
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+                stderr
+            ):
+                result = seam.main(argv=[])
+
+        self.assertEqual(result, 1)
+        self.assertNotIn("generate=passed", stdout.getvalue())
+        self.assertIn("generate=failed", stderr.getvalue())
+        self.assertIn("category=QueryLlmConnectionError", stderr.getvalue())
+        embed_cls.assert_not_called()
+
+    def test_diagnostic_cli_returns_one_when_embed_fails(self) -> None:
+        import contextlib
+        import io
+
+        from backend.llm.embedding_client import EmbeddingConnectionError
+        from backend.scripts import check_railway_ollama_contracts as seam
+
+        settings = self._settings_for_diagnostic()
+        with mock.patch.object(seam, "QueryLlm") as query_cls, mock.patch.object(
+            seam, "OllamaEmbeddingClient"
+        ) as embed_cls, mock.patch.object(
+            seam, "load_settings", return_value=settings
+        ):
+            query_cls.return_value.request.return_value = {"ok": True}
+            embed_cls.return_value.embed_query.side_effect = (
+                EmbeddingConnectionError("refused")
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+                stderr
+            ):
+                result = seam.main(argv=[])
+
+        self.assertEqual(result, 1)
+        self.assertIn("generate=passed", stdout.getvalue())
+        self.assertIn("embed=failed", stderr.getvalue())
+        self.assertIn(
+            "category=EmbeddingConnectionError", stderr.getvalue()
+        )
+
+    def _settings_for_diagnostic(self) -> Settings:
+        return Settings(
+            llm_url="http://llm.test/api/generate",
+            llm_model="test-llm",
+            llm_timeout=30,
+            llm_keep_alive="1h",
+            llm_num_ctx=2048,
+            llm_num_predict=256,
+            llm_log_content=False,
+            llm_log_max_chars=50,
+            embedding_url="http://embed.test/api/embed",
+            embedding_model="test-embed",
+            embedding_timeout_seconds=15,
+            embedding_batch_size=2,
+            embedding_dimension=4,
+        )
 
 
 if __name__ == "__main__":
