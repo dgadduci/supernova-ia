@@ -157,10 +157,18 @@ def _match_choice(
     """Return `(match, reason)` for a single normalized user choice.
 
     Compares the normalized user text against the normalized `codigo` and
-    `descripcion` of each candidate. Returns `(None, "missing")` when no
-    choice was supplied, `(None, "ambiguous")` when more than one candidate
-    matches, `(None, "not_active")` when no candidate matches, or
-    `(candidate, "unique")` when exactly one candidate matches.
+    `descripcion` of each candidate. Exact normalized code/description
+    equality is authoritative. When no exact match exists, falls back to
+    description-token containment: a candidate description qualifies only
+    when every whitespace-delimited token of its normalized description
+    appears as a whole token in the normalized customer text. Candidate
+    `codigo` tokens, substrings, edit distance, synonyms, LLM, and any
+    candidate outside the repository-supplied set are never considered.
+
+    Returns `(None, "missing")` when no choice was supplied,
+    `(None, "ambiguous")` when more than one candidate qualifies at any
+    stage, `(None, "not_active")` when none qualifies, or
+    `(candidate, "unique")` when exactly one candidate qualifies.
     """
     normalized = _normalize_choice(raw_text)
     if not normalized:
@@ -178,6 +186,24 @@ def _match_choice(
     if len(matches) == 1:
         return matches[0], "unique"
     if len(matches) > 1:
+        return None, "ambiguous"
+
+    input_tokens = set(normalized.split())
+    fallback_matches: list[Any] = []
+    for candidate in candidates:
+        descripcion = getattr(candidate, "descripcion", None)
+        if not isinstance(descripcion, str):
+            continue
+        normalized_desc = _normalize_choice(descripcion)
+        if not normalized_desc:
+            continue
+        desc_tokens = set(normalized_desc.split())
+        if not desc_tokens or not desc_tokens.issubset(input_tokens):
+            continue
+        fallback_matches.append(candidate)
+    if len(fallback_matches) == 1:
+        return fallback_matches[0], "unique"
+    if len(fallback_matches) > 1:
         return None, "ambiguous"
     return None, "not_active"
 

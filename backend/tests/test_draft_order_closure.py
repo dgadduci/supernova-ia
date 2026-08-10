@@ -552,6 +552,442 @@ class DraftOrderClosureSetPaymentTest(unittest.TestCase):
             _cleanup(ids)
 
 
+def _rename_seeded_payment_description(
+    *,
+    medio_pago_id: int,
+    descripcion: str,
+) -> None:
+    with TestingSessionLocal() as db, db.begin():
+        medio = db.get(MediosPago, medio_pago_id)
+        assert medio is not None
+        medio.descripcion = descripcion
+
+
+def _rename_seeded_delivery_description(
+    *,
+    metodo_entrega_id: int,
+    descripcion: str,
+) -> None:
+    with TestingSessionLocal() as db, db.begin():
+        metodo = db.get(MetodosEntrega, metodo_entrega_id)
+        assert metodo is not None
+        metodo.descripcion = descripcion
+
+
+def _seed_extra_payment(
+    *,
+    comercio_id: int,
+    codigo: str,
+    descripcion: str,
+    activo: bool = True,
+    activo_en_comercio: bool = True,
+) -> int:
+    with TestingSessionLocal() as db, db.begin():
+        medio = MediosPago(
+            codigo=codigo,
+            descripcion=descripcion,
+            activo=activo,
+        )
+        db.add(medio)
+        db.flush()
+        if activo_en_comercio:
+            db.add(
+                ComercioMedioPago(
+                    id_comercio=comercio_id,
+                    id_medio_pago=medio.id,
+                    activo=True,
+                )
+            )
+            db.flush()
+        return medio.id
+
+
+def _delete_extra_payment(medio_pago_id: int) -> None:
+    with TestingSessionLocal() as db, db.begin():
+        db.execute(
+            delete(ComercioMedioPago).where(
+                ComercioMedioPago.id_medio_pago == medio_pago_id
+            )
+        )
+        db.execute(delete(MediosPago).where(MediosPago.id == medio_pago_id))
+
+
+def _seed_extra_delivery(
+    *,
+    comercio_id: int,
+    codigo: str,
+    descripcion: str,
+    activo: bool = True,
+    activo_en_comercio: bool = True,
+) -> int:
+    with TestingSessionLocal() as db, db.begin():
+        metodo = MetodosEntrega(
+            codigo=codigo,
+            descripcion=descripcion,
+            orden=1,
+            activo=activo,
+        )
+        db.add(metodo)
+        db.flush()
+        if activo_en_comercio:
+            db.add(
+                ComercioMetodoEntrega(
+                    id_comercio=comercio_id,
+                    id_metodo_entrega=metodo.id,
+                    activo=True,
+                    orden=1,
+                )
+            )
+            db.flush()
+        return metodo.id
+
+
+def _delete_extra_delivery(metodo_entrega_id: int) -> None:
+    with TestingSessionLocal() as db, db.begin():
+        db.execute(
+            delete(ComercioMetodoEntrega).where(
+                ComercioMetodoEntrega.id_metodo_entrega
+                == metodo_entrega_id
+            )
+        )
+        db.execute(
+            delete(MetodosEntrega).where(
+                MetodosEntrega.id == metodo_entrega_id
+            )
+        )
+
+
+class DraftOrderClosureNaturalChoiceTest(unittest.TestCase):
+    def test_natural_payment_phrase_matches_unique_active_description(
+        self,
+    ) -> None:
+        ids = _seed_base()
+        try:
+            _rename_seeded_payment_description(
+                medio_pago_id=ids["medio_pago_id"],
+                descripcion="Efectivo (prueba cierre)",
+            )
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                intent = process_initial_set_metodo_de_pago(
+                    db,
+                    session_row,
+                    "Pago en Efectivo (prueba cierre)",
+                )
+                self.assertEqual(intent.status, "executed")
+                self.assertEqual(
+                    intent.resolved_data.get("id_medio_pago"),
+                    ids["medio_pago_id"],
+                )
+                self.assertEqual(
+                    intent.resolved_data.get("descripcion"),
+                    "Efectivo (prueba cierre)",
+                )
+                db.commit()
+            with TestingSessionLocal() as db:
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                self.assertEqual(
+                    pedido.id_medio_pago, ids["medio_pago_id"]
+                )
+        finally:
+            _cleanup(ids)
+
+    def test_natural_delivery_phrase_matches_unique_active_description(
+        self,
+    ) -> None:
+        ids = _seed_base()
+        try:
+            _rename_seeded_delivery_description(
+                metodo_entrega_id=ids["metodo_entrega_id"],
+                descripcion="Retiro local (prueba cierre)",
+            )
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                intent = process_initial_set_metodo_de_entrega(
+                    db,
+                    session_row,
+                    "Entrega en Retiro local (prueba cierre)",
+                )
+                self.assertEqual(intent.status, "executed")
+                self.assertEqual(
+                    intent.resolved_data.get("id_metodo_entrega"),
+                    ids["metodo_entrega_id"],
+                )
+                db.commit()
+            with TestingSessionLocal() as db:
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                self.assertEqual(
+                    pedido.id_metodo_entrega, ids["metodo_entrega_id"]
+                )
+        finally:
+            _cleanup(ids)
+
+    def test_exact_code_and_description_still_match_with_fallback(
+        self,
+    ) -> None:
+        ids = _seed_base()
+        suffix = ids["medio_pago_codigo"].rsplit("-", 1)[-1]
+        extra_id: int | None = None
+        try:
+            _rename_seeded_payment_description(
+                medio_pago_id=ids["medio_pago_id"],
+                descripcion=f"Efectivo {suffix}",
+            )
+            extra_id = _seed_extra_payment(
+                comercio_id=ids["comercio_id"],
+                codigo=f"EFDESC-{suffix}",
+                descripcion=f"Efectivo prueba {suffix}",
+            )
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                intent = process_initial_set_metodo_de_pago(
+                    db, session_row, ids["medio_pago_codigo"]
+                )
+                self.assertEqual(intent.status, "executed")
+                self.assertEqual(
+                    intent.resolved_data.get("id_medio_pago"),
+                    ids["medio_pago_id"],
+                )
+                db.commit()
+            with TestingSessionLocal() as db:
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                self.assertEqual(
+                    pedido.id_medio_pago, ids["medio_pago_id"]
+                )
+        finally:
+            if extra_id is not None:
+                _delete_extra_payment(extra_id)
+            _cleanup(ids)
+
+    def test_two_descriptions_with_overlapping_tokens_are_ambiguous(
+        self,
+    ) -> None:
+        ids = _seed_base()
+        suffix = ids["medio_pago_codigo"].rsplit("-", 1)[-1]
+        extra_id: int | None = None
+        try:
+            _rename_seeded_payment_description(
+                medio_pago_id=ids["medio_pago_id"],
+                descripcion=f"Efectivo {suffix}",
+            )
+            extra_id = _seed_extra_payment(
+                comercio_id=ids["comercio_id"],
+                codigo=f"EFCON-{suffix}",
+                descripcion=f"Efectivo con descuento {suffix}",
+            )
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                intent = process_initial_set_metodo_de_pago(
+                    db,
+                    session_row,
+                    f"Pago en Efectivo {suffix} con descuento",
+                )
+                self.assertEqual(intent.status, "rejected")
+                self.assertEqual(
+                    intent.resolved_data.get("reason"), "ambiguous"
+                )
+                self.assertIsNone(
+                    intent.resolved_data.get("id_medio_pago")
+                )
+                db.commit()
+            with TestingSessionLocal() as db:
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                self.assertIsNone(pedido.id_medio_pago)
+        finally:
+            if extra_id is not None:
+                _delete_extra_payment(extra_id)
+            _cleanup(ids)
+
+    def test_partial_token_does_not_qualify_through_fallback(self) -> None:
+        ids = _seed_base()
+        try:
+            _rename_seeded_payment_description(
+                medio_pago_id=ids["medio_pago_id"],
+                descripcion="Efectivo (prueba cierre)",
+            )
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                intent = process_initial_set_metodo_de_pago(
+                    db, session_row, "efect prueb"
+                )
+                self.assertEqual(intent.status, "rejected")
+                self.assertEqual(
+                    intent.resolved_data.get("reason"), "not_active"
+                )
+                self.assertIsNone(
+                    intent.resolved_data.get("id_medio_pago")
+                )
+                db.commit()
+            with TestingSessionLocal() as db:
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                self.assertIsNone(pedido.id_medio_pago)
+        finally:
+            _cleanup(ids)
+
+    def test_commerce_foreign_description_never_qualifies(self) -> None:
+        ids = _seed_base()
+        try:
+            with TestingSessionLocal() as db, db.begin():
+                foreign = db.get(
+                    MediosPago, ids["foreign_medio_pago_id"]
+                )
+                assert foreign is not None
+                foreign.descripcion = "Efectivo (prueba cierre)"
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                intent = process_initial_set_metodo_de_pago(
+                    db,
+                    session_row,
+                    "Pago en Efectivo (prueba cierre)",
+                )
+                self.assertEqual(intent.status, "rejected")
+                self.assertEqual(
+                    intent.resolved_data.get("reason"), "not_active"
+                )
+                self.assertIsNone(
+                    intent.resolved_data.get("id_medio_pago")
+                )
+                db.commit()
+            with TestingSessionLocal() as db:
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                self.assertIsNone(pedido.id_medio_pago)
+        finally:
+            _cleanup(ids)
+
+    def test_globally_inactive_commerce_linked_payment_never_qualifies(
+        self,
+    ) -> None:
+        ids = _seed_base()
+        try:
+            _rename_seeded_payment_description(
+                medio_pago_id=ids["medio_pago_id"],
+                descripcion="Efectivo (prueba cierre)",
+            )
+            with TestingSessionLocal() as db, db.begin():
+                medio = db.get(MediosPago, ids["medio_pago_id"])
+                assert medio is not None
+                medio.activo = False
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                intent = process_initial_set_metodo_de_pago(
+                    db,
+                    session_row,
+                    "Pago en Efectivo (prueba cierre)",
+                )
+                self.assertEqual(intent.status, "rejected")
+                self.assertEqual(
+                    intent.resolved_data.get("reason"), "not_active"
+                )
+                db.commit()
+            with TestingSessionLocal() as db:
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                self.assertIsNone(pedido.id_medio_pago)
+        finally:
+            _cleanup(ids)
+
+    def test_existing_payment_preserved_when_natural_phrase_is_ambiguous(
+        self,
+    ) -> None:
+        ids = _seed_base()
+        suffix = ids["medio_pago_codigo"].rsplit("-", 1)[-1]
+        extra_id: int | None = None
+        try:
+            _rename_seeded_payment_description(
+                medio_pago_id=ids["medio_pago_id"],
+                descripcion=f"Efectivo {suffix}",
+            )
+            extra_id = _seed_extra_payment(
+                comercio_id=ids["comercio_id"],
+                codigo=f"EFCON-{suffix}",
+                descripcion=f"Efectivo con descuento {suffix}",
+            )
+            with TestingSessionLocal() as db:
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                pedido.id_medio_pago = ids["medio_pago_id"]
+                db.commit()
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                intent = process_initial_set_metodo_de_pago(
+                    db,
+                    session_row,
+                    f"Pago en Efectivo {suffix} con descuento",
+                )
+                self.assertEqual(intent.status, "rejected")
+                self.assertEqual(
+                    intent.resolved_data.get("reason"), "ambiguous"
+                )
+                db.commit()
+            with TestingSessionLocal() as db:
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                self.assertEqual(
+                    pedido.id_medio_pago, ids["medio_pago_id"]
+                )
+        finally:
+            if extra_id is not None:
+                _delete_extra_payment(extra_id)
+            _cleanup(ids)
+
+    def test_existing_payment_and_delivery_preserved_when_no_fallback_match(
+        self,
+    ) -> None:
+        ids = _seed_base()
+        try:
+            _rename_seeded_payment_description(
+                medio_pago_id=ids["medio_pago_id"],
+                descripcion="Efectivo (prueba cierre)",
+            )
+            _rename_seeded_delivery_description(
+                metodo_entrega_id=ids["metodo_entrega_id"],
+                descripcion="Retiro local (prueba cierre)",
+            )
+            with TestingSessionLocal() as db:
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                pedido.id_medio_pago = ids["medio_pago_id"]
+                pedido.id_metodo_entrega = ids["metodo_entrega_id"]
+                db.commit()
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                intent = process_initial_set_metodo_de_pago(
+                    db, session_row, "no se parece a nada"
+                )
+                self.assertEqual(intent.status, "rejected")
+                self.assertEqual(
+                    intent.resolved_data.get("reason"), "not_active"
+                )
+                db.commit()
+            with TestingSessionLocal() as db:
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                self.assertEqual(
+                    pedido.id_medio_pago, ids["medio_pago_id"]
+                )
+                self.assertEqual(
+                    pedido.id_metodo_entrega,
+                    ids["metodo_entrega_id"],
+                )
+        finally:
+            _cleanup(ids)
+
+
 class DraftOrderClosureSetDeliveryTest(unittest.TestCase):
     def test_unique_active_choice_persists_delivery(self) -> None:
         ids = _seed_base()
