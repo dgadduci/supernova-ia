@@ -185,14 +185,13 @@ def _match_products(
 ) -> list[Any]:
     """Return the deterministic candidate product list.
 
-    A product is a candidate iff it can be identified *completely*
-    from the normalized classified source text. Identification is
-    strict and total:
+    A product is identified *completely* from the normalized classified
+    source text through one of two independent, total channels:
 
-    * The product's normalized name tokens must ALL be present in
-      the normalized source text (whitespace-separated, lowercased,
-      accent-stripped, punctuation-collapsed).
-    * OR at least one of its presentations identifies the product:
+    * its complete normalized name is contained in the normalized
+      source text (whole-token, lowercased, accent-stripped,
+      punctuation-collapsed, whitespace-separated); or
+    * at least one of its presentations identifies the product:
       every token of the normalized presentation code OR every
       token of the normalized presentation description is present
       in the normalized source text.
@@ -200,8 +199,17 @@ def _match_products(
     No partial match, no token intersection, no fuzzy/hybrid
     recognizer, no edit-distance, no aliases and no synonyms are
     consulted. A single generic token (e.g. ``de``) or an isolated
-    presentation token (e.g. ``grande`` from a multi-token
-    description like ``Pizza Grande``) cannot select a product.
+    presentation token (e.g. ``lata``) cannot select a product by
+    itself.
+
+    The match resolution applies a strict priority: the **complete
+    product name** is authoritative. When at least one product is
+    identified by name, presentation matches from other products are
+    excluded from the returned candidates. Presentation matching is
+    consulted only when no product name matches, so a message such as
+    ``Cuánto sale la cerveza rubia en lata?`` resolves to the unique
+    name match ``Cerveza rubia`` and ignores the spurious
+    ``lata`` matches from other beverages.
 
     The caller resolves the final outcome:
 
@@ -214,7 +222,8 @@ def _match_products(
         return []
     source_tokens = set(normalized_source.split())
 
-    candidates: list[Any] = []
+    name_candidates: list[Any] = []
+    presentation_candidates: list[Any] = []
     for product in products:
         normalized_product_name = _normalize(product.nombre)
         product_name_tokens = (
@@ -223,11 +232,14 @@ def _match_products(
             else set()
         )
         if product_name_tokens and product_name_tokens.issubset(source_tokens):
-            candidates.append(product)
+            name_candidates.append(product)
             continue
         if _has_identifying_presentation(product, source_tokens):
-            candidates.append(product)
-    return candidates
+            presentation_candidates.append(product)
+
+    if name_candidates:
+        return name_candidates
+    return presentation_candidates
 
 
 def _has_identifying_presentation(product: Any, source_tokens: set[str]) -> bool:

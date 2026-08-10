@@ -558,6 +558,81 @@ class ProcessInitialConsultarProductoTest(unittest.TestCase):
         self.assertIn("Pizza Especial", nombres)
 
     @patch.object(info_module, "ProductoQueryService")
+    def test_complete_name_wins_over_shared_presentation_token(
+        self, svc_cls
+    ) -> None:
+        """Production regression: shared ``lata`` presentation must not
+        add candidates from other beverages when ``Cerveza rubia``
+        already identifies a product by complete name."""
+        cat_bebidas = _categoria("Bebidas")
+        cat_cervezas = _categoria("Cervezas")
+        pres_lata = _presentacion("LT", "Lata")
+        pres_botella = _presentacion("BT", "Botella")
+        cerveza_rubia = _producto(
+            id_=1,
+            nombre="Cerveza rubia",
+            categoria=cat_cervezas,
+            presentaciones=[
+                _producto_presentacion(id_=11, presentacion=pres_lata),
+                _producto_presentacion(id_=12, presentacion=pres_botella),
+            ],
+        )
+        cerveza_negra = _producto(
+            id_=2,
+            nombre="Cerveza negra",
+            categoria=cat_cervezas,
+            presentaciones=[
+                _producto_presentacion(id_=21, presentacion=pres_botella),
+            ],
+        )
+        gaseosa_cola = _producto(
+            id_=3,
+            nombre="Gaseosa Cola",
+            categoria=cat_bebidas,
+            presentaciones=[
+                _producto_presentacion(id_=31, presentacion=pres_lata),
+                _producto_presentacion(id_=32, presentacion=pres_botella),
+            ],
+        )
+        jugo_naranja = _producto(
+            id_=4,
+            nombre="Jugo de naranja",
+            categoria=cat_bebidas,
+            presentaciones=[
+                _producto_presentacion(id_=41, presentacion=pres_lata),
+            ],
+        )
+        svc_cls.return_value.list_vendibles.return_value = [
+            cerveza_rubia,
+            cerveza_negra,
+            gaseosa_cola,
+            jugo_naranja,
+        ]
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(
+                IntentName.CONSULTAR_PRODUCTO,
+                "Cuánto sale la cerveza rubia en lata?",
+            ),
+        )
+
+        self.assertEqual(processed.intent, "consultar_producto")
+        self.assertEqual(processed.status, "executed")
+        self.assertNotEqual(processed.resolved_data.get("reason"), "ambiguous")
+        self.assertEqual(
+            processed.resolved_data["producto_nombre"], "Cerveza rubia"
+        )
+        self.assertEqual(
+            processed.resolved_data["producto_id"], cerveza_rubia.id
+        )
+        self.assertEqual(
+            [p["presentacion_codigo"] for p in processed.resolved_data["presentaciones"]],
+            ["LT", "BT"],
+        )
+
+    @patch.object(info_module, "ProductoQueryService")
     def test_does_not_mutate_pending_or_session(self, svc_cls) -> None:
         self._setup(svc_cls)
         session = _session(id_comercio=7)
