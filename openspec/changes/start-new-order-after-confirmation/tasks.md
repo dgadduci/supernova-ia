@@ -16,4 +16,4 @@
 
 - [x] 3.1 User runs the focused pytest, Ruff, compileall, and strict OpenSpec validation commands from the proposal locally.
 - [x] 3.2 Review the complete validation output and implementation scope.
-- [ ] 3.3 Obtain separate authorization before deploy, sync, or archive.
+- [x] 3.3 Obtain separate authorization before deploy, sync, or archive.
