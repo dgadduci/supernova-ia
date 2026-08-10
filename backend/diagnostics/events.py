@@ -28,6 +28,8 @@ class ClassifierCallStarted:
     classifier_method: str = "query"
     prompt_name: object = None
     model: object = None
+    prompt_template_version: str = ""
+    prompt_fingerprint: str = ""
     phase: str = field(default="classifier", init=False)
     sequence: int = 0
 
@@ -48,6 +50,11 @@ class ClassifierCallCompleted:
     raw_response_metadata: object = None
     parse_errors: list[object] = field(default_factory=list)
     fallback_state: object = None
+    classified_intents: list[object] = field(default_factory=list)
+    validation_category: str = ""
+    prompt_template_version: str = ""
+    prompt_fingerprint: str = ""
+    effective_model: object = None
     phase: str = field(default="classifier", init=False)
     sequence: int = 0
 
@@ -148,10 +155,10 @@ DiagnosticEvent = (
 
 
 __all__ = [
-    "ClassifierCallStarted",
     "ClassifierCallCompleted",
+    "ClassifierCallStarted",
     "DiagnosticEvent",
     "PendingStateSnapshot",
-    "ResolverCallStarted",
     "ResolverCallCompleted",
+    "ResolverCallStarted",
 ]

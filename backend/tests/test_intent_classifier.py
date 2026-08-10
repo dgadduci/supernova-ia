@@ -9,7 +9,6 @@ from backend.llm import intent_classifier as intent_classifier_module
 from backend.llm.intent_classifier import IntentClassifier
 from backend.llm.query_llm import (
     QueryLlmConnectionError,
-    QueryLlmError,
     QueryLlmHttpError,
     QueryLlmResponseError,
     QueryLlmTimeoutError,
@@ -273,6 +272,35 @@ class IntentClassifierBoundariesTest(unittest.TestCase):
     def test_classifier_is_importable_from_modern_llm_package(self):
         from backend.llm.intent_classifier import IntentClassifier as Cls
         self.assertIs(Cls, IntentClassifier)
+
+
+class IntentClassifierDebugLogPrivacyTest(unittest.TestCase):
+    def test_debug_log_does_not_leak_customer_message_or_llm_response(self):
+        message_sentinel = "CUSTOMER-MESSAGE-SENTINEL-abcdef-1234567890"
+        response_sentinel = "LLM-RESPONSE-MESSAGE-SENTINEL-fedcba-0987654321"
+        stub = _StubQueryLlm(
+            payload={
+                "intents": [{"intent": "saludo", "mensaje": response_sentinel}],
+                "mensaje": response_sentinel,
+            }
+        )
+        classifier = IntentClassifier(query_llm=stub)
+
+        with self.assertLogs("backend.llm.intent_classifier", level="DEBUG") as captured:
+            classifier.query(message_sentinel)
+
+        self.assertTrue(captured.records, "expected at least one DEBUG log record")
+        joined = "\n".join(record.getMessage() for record in captured.records)
+        self.assertNotIn(message_sentinel, joined)
+        self.assertNotIn(response_sentinel, joined)
+        for record in captured.records:
+            for field_name in dir(record):
+                if field_name.startswith("_"):
+                    continue
+                value = getattr(record, field_name, None)
+                if isinstance(value, str):
+                    self.assertNotIn(message_sentinel, value)
+                    self.assertNotIn(response_sentinel, value)
 
 
 if __name__ == "__main__":

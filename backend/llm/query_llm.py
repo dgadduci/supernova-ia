@@ -1,11 +1,11 @@
 import json
 import logging
-from typing import Any, Callable, Mapping
+from collections.abc import Callable, Mapping
+from typing import Any
 
 import requests
 
 from backend.config.settings import Settings, load_settings
-
 
 logger = logging.getLogger(__name__)
 
@@ -60,14 +60,6 @@ class QueryLlm:
             },
         }
 
-    def _truncate(self, value: str | None) -> str:
-        if value is None:
-            return ""
-        limit = self._settings.llm_log_max_chars
-        if limit <= 0 or len(value) <= limit:
-            return value
-        return value[:limit] + "…"
-
     def _post(self, payload: Mapping[str, Any]) -> Any:
         try:
             if self._transport is not None:
@@ -112,13 +104,11 @@ class QueryLlm:
             raise ValueError("prompt must be a non-empty string")
         payload = self._build_payload(prompt)
         logger.info(
-            "llm request start url=%s model=%s timeout=%s",
-            self._settings.llm_url,
+            "llm request start model=%s timeout=%s prompt_length=%s",
             self._settings.llm_model,
             self._settings.llm_timeout,
+            len(prompt),
         )
-        if self._settings.llm_log_content:
-            logger.debug("llm prompt: %s", self._truncate(prompt))
         started = self._clock()
         status_code: int | None = None
         body = ""
@@ -154,20 +144,19 @@ class QueryLlm:
             raise QueryLlmError(str(exc)) from exc
         elapsed = self._clock() - started
         logger.info(
-            "llm request success duration=%s status=%s",
+            "llm request success duration=%s status=%s response_length=%s",
             elapsed,
             status_code,
+            len(body),
         )
-        if self._settings.llm_log_content:
-            logger.debug("llm response: %s", self._truncate(body))
         return result
 
 
 __all__ = [
     "QueryLlm",
-    "QueryLlmError",
-    "QueryLlmTimeoutError",
     "QueryLlmConnectionError",
+    "QueryLlmError",
     "QueryLlmHttpError",
     "QueryLlmResponseError",
+    "QueryLlmTimeoutError",
 ]

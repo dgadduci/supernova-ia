@@ -262,6 +262,9 @@ class QueryLlmInputValidationTest(unittest.TestCase):
 
 
 class QueryLlmLoggingTest(unittest.TestCase):
+    PROMPT_SENTINEL = "PROMPT-SENTINEL-XYZZY-42"
+    RESPONSE_SENTINEL = "RESPONSE-SENTINEL-QWERTY-99"
+
     def _make_client(self, **setting_overrides):
         settings = _settings(**setting_overrides)
         return QueryLlm(settings=settings, transport=mock.Mock(return_value=_FakeResponse(json.dumps({"ok": True}))))
@@ -276,27 +279,79 @@ class QueryLlmLoggingTest(unittest.TestCase):
         self.assertIn("llm request success", joined)
         self.assertNotIn("super-secret-prompt", joined)
 
-    def test_debug_content_logs_only_when_enabled(self):
-        client = self._make_client(llm_log_content=True)
+    def test_debug_logs_never_contain_prompt_or_response_content(self):
+        response_body = json.dumps({"ok": self.RESPONSE_SENTINEL})
+
+        client = QueryLlm(
+            settings=_settings(llm_log_content=True),
+            transport=mock.Mock(return_value=_FakeResponse(response_body)),
+        )
         with self.assertLogs("backend.llm.query_llm", level="DEBUG") as captured:
-            client.request("super-secret-prompt")
+            client.request(self.PROMPT_SENTINEL)
         joined = "\n".join(captured.output)
-        self.assertIn("super-secret-prompt", joined)
+        self.assertNotIn(self.PROMPT_SENTINEL, joined)
+        self.assertNotIn(self.RESPONSE_SENTINEL, joined)
 
-        client_disabled = self._make_client(llm_log_content=False)
+        client_disabled = QueryLlm(
+            settings=_settings(llm_log_content=False),
+            transport=mock.Mock(return_value=_FakeResponse(response_body)),
+        )
         with self.assertLogs("backend.llm.query_llm", level="DEBUG") as captured_disabled:
-            client_disabled.request("super-secret-prompt")
+            client_disabled.request(self.PROMPT_SENTINEL)
         joined_disabled = "\n".join(captured_disabled.output)
-        self.assertNotIn("super-secret-prompt", joined_disabled)
+        self.assertNotIn(self.PROMPT_SENTINEL, joined_disabled)
+        self.assertNotIn(self.RESPONSE_SENTINEL, joined_disabled)
 
-    def test_content_logs_are_truncated(self):
+    def test_long_prompt_does_not_leak_through_any_log(self):
         long_prompt = "x" * 500
         client = self._make_client(llm_log_content=True, llm_log_max_chars=10)
         with self.assertLogs("backend.llm.query_llm", level="DEBUG") as captured:
             client.request(long_prompt)
         joined = "\n".join(captured.output)
-        self.assertIn("…", joined)
         self.assertNotIn("x" * 100, joined)
+        self.assertNotIn("…", joined)
+
+    def test_debug_logs_do_not_leak_url_proxy_or_credentials(self):
+        client = self._make_client(
+            llm_url="http://secret-host.invalid/api/generate",
+            ollama_proxy_url="socks5h://user:pass@127.0.0.1:9050",
+            llm_log_content=True,
+        )
+        with self.assertLogs("backend.llm.query_llm", level="DEBUG") as captured:
+            client.request("hola")
+        joined = "\n".join(captured.output)
+        for forbidden in (
+            "secret-host.invalid",
+            "socks5h",
+            "127.0.0.1",
+            "user:pass",
+            "9050",
+            "/api/generate",
+        ):
+            self.assertNotIn(forbidden, joined)
+
+    def test_safe_metadata_remains_logged_when_log_content_enabled(self):
+        client = self._make_client(llm_log_content=True)
+        with self.assertLogs("backend.llm.query_llm", level="DEBUG") as captured:
+            client.request("hola")
+        joined = "\n".join(captured.output)
+        self.assertIn("test-model", joined)
+        self.assertIn("duration=", joined)
+        self.assertIn("status=", joined)
+        self.assertIn("response_length=", joined)
+
+    def test_failure_logs_carry_duration_without_exception_message(self):
+        def _boom(url, json=None, timeout=None):
+            raise requests.exceptions.ConnectionError("secret-detail-leaked")
+
+        client = QueryLlm(settings=_settings(llm_log_content=True), transport=_boom)
+        with self.assertLogs("backend.llm.query_llm", level="DEBUG") as captured:
+            with self.assertRaises(QueryLlmConnectionError):
+                client.request("hola")
+        joined = "\n".join(captured.output)
+        self.assertIn("llm request failure", joined)
+        self.assertIn("duration=", joined)
+        self.assertNotIn("secret-detail-leaked", joined)
 
     def test_module_does_not_configure_global_logging(self):
         root_handlers_before = list(logging.getLogger().handlers)

@@ -1,4 +1,3 @@
-import json
 import unittest
 import unittest.mock
 from dataclasses import dataclass
@@ -270,9 +269,9 @@ class TestXDebugFlowHeaderActivatesSink(unittest.TestCase):
         import backend.routers.incoming_messages as router_module
         from backend.dependencies import get_session
         from backend.diagnostics import (
-            CollectingDiagnosticSink,
             ClassifierCallCompleted,
             ClassifierCallStarted,
+            CollectingDiagnosticSink,
             DiagnosticSink,
             NoopDiagnosticSink,
         )
@@ -336,8 +335,8 @@ class TestXDebugFlowRedactsSecrets(unittest.TestCase):
         import backend.routers.incoming_messages as router_module
         from backend.dependencies import get_session
         from backend.diagnostics import (
-            CollectingDiagnosticSink,
             ClassifierCallStarted,
+            CollectingDiagnosticSink,
             DiagnosticSink,
             NoopDiagnosticSink,
         )
@@ -432,8 +431,8 @@ class TestIncomingMessageDefaultResponseUnchanged(unittest.TestCase):
 
 class TestIntentClassifierNoDuplicateCalls(unittest.TestCase):
     def test_no_duplicate_classification_with_collecting_sink(self):
-        from backend.llm.intent_classifier import IntentClassifier
         from backend.diagnostics import CollectingDiagnosticSink
+        from backend.llm.intent_classifier import IntentClassifier
 
         class _StubQueryLlm:
             def __init__(self, payload: dict) -> None:

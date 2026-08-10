@@ -6,6 +6,11 @@ from backend.diagnostics import (
     ClassifierCallStarted,
     NoopDiagnosticSink,
 )
+from backend.diagnostics.prompt_template import (
+    PROMPT_TEMPLATE_VERSION,
+    build_intent_prompt,
+    template_fingerprint,
+)
 from backend.diagnostics.sink import DiagnosticSink
 from backend.intents.schemas.intent_classification import IntentClassificationResult
 from backend.llm.query_llm import QueryLlm
@@ -18,86 +23,29 @@ class _QueryLlmLike(Protocol):
 logger = logging.getLogger(__name__)
 
 
-_INTENT_CATALOG = """
-* Si el cliente saluda = `saludo`
-* Si el cliente agradece = `agradecimiento`
-* Si el cliente se despide o da por terminada la conversación = `despedida`
-* Si responde afirmativamente a una pregunta previa = `respuesta_afirmativa`
-* Si responde negativamente a una pregunta previa = `respuesta_negativa`
-* Si quiere ver la carta o menú = `ver_menu`
-* Si consulta por un producto, precio, tamaño, variante, ingredientes o disponibilidad = `consultar_producto`
-* Si consulta por los medios de pago aceptados = `ver_metodos_de_pago`
-* Si consulta por las formas de entrega disponibles = `ver_metodos_de_entrega`
-* Si consulta el domicilio o ubicación del comercio = `consultar_domicilio_comercio`
-* Si consulta los días u horarios de atención = `consultar_horarios_comercio`
-* Si quiere comenzar un pedido pero todavía no indica productos = `iniciar_pedido`
-* Si quiere agregar uno o más productos al pedido = `agregar_producto`
-* Si quiere quitar uno o más productos del pedido = `quitar_producto`
-* Si quiere sustituir o modificar un producto por otro producto distinto, se debe generar un único intent `modificar_producto` con el mensaje original completo del cliente. NO se debe descomponer en `quitar_producto` + `agregar_producto`; el orquestador `modificar_producto` se encarga de la sustitución atómica en una sola operación.
-* Si quiere eliminar todos los productos del pedido actual = `vaciar_pedido`
-* Si quiere agregar, modificar o eliminar una aclaración sobre un producto = `set_observacion_producto`
-* Si quiere agregar, modificar o eliminar una aclaración general del pedido = `set_observacion_pedido`
-* Si quiere consultar los productos cargados, cantidades, subtotal o resumen del pedido actual = `consultar_resumen_pedido`
-* Si establece o cambia la forma de entrega, como delivery, retiro en local o consumo en salón = `set_metodo_de_entrega`
-* Si establece o cambia el domicilio de entrega = `set_direccion_entrega`
-* Si establece, cambia o elimina la fecha u hora programada del pedido = `set_fecha_hora_entrega`
-* Si establece o cambia el medio de pago = `set_metodo_de_pago`
-* Si quiere confirmar y enviar definitivamente el pedido = `confirmar_pedido`
-* Si consulta el estado de un pedido ya confirmado = `consultar_estado_pedido`
-* Si quiere cancelar un pedido ya confirmado = `cancelar_pedido`
-* Si el mensaje no puede interpretarse con suficiente seguridad = `desconocida`
+_UNKNOWN_MODEL = "<unknown>"
 
-* Las intents deben conservar el orden en que deben ejecutarse.
 
-Ejemplo:
+def _resolve_effective_model(
+    query_llm: _QueryLlmLike,
+    override: object | None,
+) -> str:
+    """Return the effective model identifier for a classification attempt.
 
-Mensaje:
-
-`Cambiame la pizza de mozzarella por una napolitana`
-
-Salida:
-
-```json
-{
-  "intents": [
-    {
-      "intent": "modificar_producto",
-      "mensaje": "Cambiame la pizza de mozzarella por una napolitana"
-    }
-  ],
-  "mensaje": "Cambiame la pizza de mozzarella por una napolitana"
-}
-```
-
-"""
-
-_OUTPUT_STRUCT = """
-Devolvé únicamente JSON válido.
-No expliques nada.
-No uses Markdown.
-ejemplo:
-{
-    "intents": [
-        {
-            "intent": "agregar_producto",
-            "mensaje": "una empanada de carne"
-        },
-        {
-            "intent": "agregar_producto",
-            "mensaje": "dos pizzas de mozzarella"
-        },
-        {
-            "intent": "set_metodo_de_entrega",
-            "mensaje": "me la envies a tilcara 2020."
-        },
-        {
-            "intent": "set_metodo_de_pago",
-            "mensaje": "Pago en efectivo"
-        }
-    ],
-    "mensaje": "quiero una empanada de carne y dos pizzas de mozzarella y que me la envies a tilcara 2020. Pago en efectivo"
-}
-"""
+    Prefers the live ``Settings.llm_model`` exposed by ``QueryLlm`` so the
+    runtime diagnostic reflects the model actually used by the transport.
+    Falls back to a caller-supplied override for tests that inject a stub
+    ``query_llm`` without settings, and finally to ``"<unknown>"`` when no
+    information is available.
+    """
+    settings = getattr(query_llm, "_settings", None)
+    if settings is not None:
+        configured = getattr(settings, "llm_model", None)
+        if configured:
+            return str(configured)
+    if override:
+        return str(override)
+    return _UNKNOWN_MODEL
 
 
 class IntentClassifier:
@@ -111,24 +59,7 @@ class IntentClassifier:
         self._sink: DiagnosticSink = sink if sink is not None else NoopDiagnosticSink()
 
     def _build_prompt(self, message: str) -> str:
-        return f"""
-Catálogo de posibles intents:
-{_INTENT_CATALOG}
-
-message
-{message}
-
-Instrucciones
-Debes devolver del Catalogo de intents, los intent que mejor se adapten al mensaje, siguiendo la estructura json que te envio de ejemplo
-Tambien debes devolver el message recibido
-Si el mensaje incluye varios intents, envialos como en el ejemplo del json
-Cuando detectes que se pide reemplazar un producto por otro, genera un único intent `modificar_producto` con el mensaje original completo. NO descomponas en `quitar_producto` + `agregar_producto`; el orquestador `modificar_producto` realiza la sustitución atómica en una sola operación.
-Cuando se trate de productos, separalos por producto y cantidad (si se especifica) en distintos intents
-
-Regla de no modificacion del mensaje
-El texto del mensaje recibido no debe ser alterado. Podes usar todo o partes, pero no modificarlo
-{_OUTPUT_STRUCT}
-"""
+        return build_intent_prompt(message)
 
     def query(
         self,
@@ -150,9 +81,10 @@ El texto del mensaje recibido no debe ser alterado. Podes usar todo o partes, pe
             raise ValueError("El mensaje no puede estar vacío")
 
         logger.info("intent_classification start message_chars=%s", len(cleaned))
+        rendered_prompt = self._build_prompt(cleaned)
+        fingerprint = template_fingerprint()
+        effective_model = _resolve_effective_model(self._query_llm, model)
         start_event = ClassifierCallStarted(
-            raw_message=message,
-            normalized_message=cleaned,
             active_context_type=active_context_type,
             has_active_pending_intent=active_pending_intent is not None,
             active_pending_intent=active_pending_intent,
@@ -160,15 +92,19 @@ El texto del mensaje recibido no debe ser alterado. Podes usar todo o partes, pe
             classifier_class=type(self).__name__,
             classifier_method="query",
             prompt_name=prompt_name,
-            model=model,
+            model=effective_model,
+            prompt_template_version=PROMPT_TEMPLATE_VERSION,
+            prompt_fingerprint=fingerprint,
         )
         self._sink.on_classifier_started(start_event)
         parse_errors: list[object] = []
         fallback_state: object = None
         result_payload: object = None
+        classified_intents: list[object] = []
+        validation_category: str = "transport_error"
         try:
             try:
-                payload = self._query_llm.request(self._build_prompt(cleaned))
+                payload = self._query_llm.request(rendered_prompt)
             except Exception as exc:
                 parse_errors.append(type(exc).__name__)
                 logger.info(
@@ -180,20 +116,36 @@ El texto del mensaje recibido no debe ser alterado. Podes usar todo o partes, pe
                 result = IntentClassificationResult.model_validate(payload)
             except Exception as exc:
                 parse_errors.append(type(exc).__name__)
+                validation_category = "schema_error"
                 logger.info(
                     "intent_classification failure error_type=%s", type(exc).__name__
                 )
                 raise
 
             result_payload = result
+            classified_intents = [
+                str(classified.intent.value) for classified in result.intents
+            ]
+            intent_count = len(result.intents)
+            validation_category = "ok"
             logger.info(
-                "intent_classification success intents_count=%s", len(result.intents)
+                "intent_classification success intents_count=%s", intent_count
             )
-            logger.debug("intent_classification result: %s", result.model_dump())
+            logger.debug(
+                "intent_classification classified_intents=%s "
+                "intent_count=%s validation_category=%s "
+                "prompt_template_version=%s prompt_fingerprint=%s "
+                "effective_model=%s",
+                classified_intents,
+                intent_count,
+                validation_category,
+                PROMPT_TEMPLATE_VERSION,
+                fingerprint,
+                effective_model,
+            )
             return result
         finally:
             completed_event = ClassifierCallCompleted(
-                result=result_payload,
                 intent_count=(
                     len(cast(Any, result_payload).intents)  # type: ignore[union-attr]
                     if result_payload is not None
@@ -201,6 +153,11 @@ El texto del mensaje recibido no debe ser alterado. Podes usar todo o partes, pe
                 ),
                 parse_errors=parse_errors,
                 fallback_state=fallback_state,
+                classified_intents=classified_intents,
+                validation_category=validation_category,
+                prompt_template_version=PROMPT_TEMPLATE_VERSION,
+                prompt_fingerprint=fingerprint,
+                effective_model=effective_model,
             )
             self._sink.on_classifier_completed(completed_event)
 
