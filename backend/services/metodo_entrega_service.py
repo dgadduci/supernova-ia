@@ -17,6 +17,9 @@ class MetodoEntregaService:
     def list_all(self) -> list[MetodosEntrega]:
         return self._repo.list_all()
 
+    def list_active_for_comercio(self, comercio_id: int) -> list[MetodosEntrega]:
+        return self._repo.list_active_for_comercio(comercio_id)
+
     def get_by_id(self, metodo_entrega_id: int) -> MetodosEntrega:
         row = self._repo.get_by_id(metodo_entrega_id)
         if row is None:

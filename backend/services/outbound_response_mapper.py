@@ -35,6 +35,9 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session as DatabaseSession
 
 from backend.diagnostics.sink import DiagnosticSink
+from backend.intents.orchestration.informational_commerce_queries import (
+    is_informational_commerce_intent,
+)
 from backend.intents.responses.agregar_producto_response import (
     build_agregar_producto_response,
 )
@@ -46,6 +49,9 @@ from backend.intents.responses.draft_order_closure import (
     build_consultar_resumen_pedido_response,
     build_set_metodo_de_entrega_response,
     build_set_metodo_de_pago_response,
+)
+from backend.intents.responses.informational_commerce_queries import (
+    build_informational_commerce_response,
 )
 from backend.intents.responses.modificar_producto_response import (
     build_modificar_producto_response,
@@ -139,6 +145,10 @@ def build_customer_responses(
         elif intent.intent == "iniciar_pedido":
             responses.append(
                 build_iniciar_pedido_response(db, session, intent)
+            )
+        elif is_informational_commerce_intent(intent.intent):
+            responses.append(
+                build_informational_commerce_response(db, session, intent)
             )
         elif is_social_conversation_intent(intent.intent):
             responses.append(

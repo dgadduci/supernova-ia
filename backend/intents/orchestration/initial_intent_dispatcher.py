@@ -11,6 +11,10 @@ from backend.intents.orchestration.draft_order_closure import (
     process_initial_set_metodo_de_entrega,
     process_initial_set_metodo_de_pago,
 )
+from backend.intents.orchestration.informational_commerce_queries import (
+    is_informational_commerce_intent,
+    process_initial_informational_commerce_query,
+)
 from backend.intents.orchestration.modificar_producto_initial import (
     process_initial_modificar_producto,
 )
@@ -168,6 +172,14 @@ def dispatch_initial_message(
             processed.append(new_intent)
             if new_intent.status == "executed":
                 session_replaced = True
+            continue
+
+        if is_informational_commerce_intent(classified_intent.value):
+            processed.append(
+                process_initial_informational_commerce_query(
+                    db, session, classified
+                )
+            )
             continue
 
         if is_social_conversation_intent(classified_intent.value):

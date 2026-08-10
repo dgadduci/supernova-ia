@@ -205,10 +205,10 @@ class BuildCustomerResponsesOrderingTest(unittest.TestCase):
         )
         middle = _processed("saludo")
         last = ProcessedIntent(
-            intent="ver_menu",
+            intent="consultar_estado_pedido",
             source_text="y",
             status="rejected",
-            handler="ver_menu",
+            handler="consultar_estado_pedido",
             recognizer="intent_classifier",
         )
 
@@ -218,7 +218,7 @@ class BuildCustomerResponsesOrderingTest(unittest.TestCase):
         self.assertEqual(responses[0].intent, "agregar_producto")
         self.assertEqual(responses[1].intent, "saludo")
         self.assertEqual(responses[1].status, "executed")
-        self.assertEqual(responses[2].intent, "ver_menu")
+        self.assertEqual(responses[2].intent, "consultar_estado_pedido")
         self.assertEqual(responses[2].message, GENERIC_MESSAGE)
         self.assertEqual(responses[2].status, "rejected")
 
@@ -230,10 +230,10 @@ class BuildCustomerResponsesGenericFallbackTest(unittest.TestCase):
             _session(),
             [
                 ProcessedIntent(
-                    intent="ver_menu",
-                    source_text="que tenés?",
+                    intent="consultar_estado_pedido",
+                    source_text="estado de mi pedido",
                     status="rejected",
-                    handler="ver_menu",
+                    handler="consultar_estado_pedido",
                     recognizer="intent_classifier",
                 ),
             ],
@@ -241,7 +241,7 @@ class BuildCustomerResponsesGenericFallbackTest(unittest.TestCase):
 
         self.assertEqual(len(responses), 1)
         self.assertEqual(responses[0].message, GENERIC_MESSAGE)
-        self.assertEqual(responses[0].intent, "ver_menu")
+        self.assertEqual(responses[0].intent, "consultar_estado_pedido")
         self.assertEqual(responses[0].status, "rejected")
 
     def test_generic_message_is_single_fixed_string(self) -> None:

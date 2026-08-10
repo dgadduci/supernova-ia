@@ -13,6 +13,9 @@ class MediosPagoService:
     def list_all(self) -> list[MediosPago]:
         return self._repo.list_all()
 
+    def list_active_for_comercio(self, comercio_id: int) -> list[MediosPago]:
+        return self._repo.list_active_for_comercio(comercio_id)
+
     def get_by_id(self, medio_pago_id: int) -> MediosPago:
         row = self._repo.get_by_id(medio_pago_id)
         if row is None:
