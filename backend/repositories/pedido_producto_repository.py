@@ -97,6 +97,23 @@ class PedidoProductoRepository:
         self._session.delete(item)
         self._session.flush()
 
+    def delete_all_by_pedido(self, pedido_id: int) -> list[PedidoProducto]:
+        """Stage deletion of every ``PedidoProducto`` row for the given pedido.
+
+        Returns the deleted rows so the caller can report the count. The
+        repository never commits, rolls back, refreshes, or begins a
+        transaction; it only stages ``delete`` plus ``flush`` so the caller's
+        outer transaction owns the atomicity guarantee. The caller MUST
+        re-validate the pedido state and ownership before invoking this
+        helper.
+        """
+        rows = self.list_by_pedido(pedido_id)
+        for row in rows:
+            self._session.delete(row)
+        if rows:
+            self._session.flush()
+        return list(rows)
+
     def decrement(self, pedido_producto_id: int, cantidad: int) -> PedidoProducto:
         item = self._session.get(PedidoProducto, pedido_producto_id)
         if item is None:

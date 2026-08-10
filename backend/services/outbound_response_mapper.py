@@ -9,7 +9,8 @@ performs three narrow responsibilities:
    ``agregar`` / ``quitar`` / ``modificar`` builders, the four
    guided-closure builders (``consultar_resumen_pedido``,
    ``set_metodo_de_pago``, ``set_metodo_de_entrega``,
-   ``confirmar_pedido``), and the generic fallback message.
+   ``confirmar_pedido``), the ``iniciar_pedido`` builder, the
+   ``vaciar_pedido`` builder, and the generic fallback message.
 2. ``stage_outbound_rows`` — renders the same responses and stages
    one durable outbox row per response inside the caller's
    transaction.
@@ -65,6 +66,9 @@ from backend.intents.responses.quitar_producto_response import (
 from backend.intents.responses.social_conversation_response import (
     build_social_conversation_response,
     is_social_conversation_intent,
+)
+from backend.intents.responses.vaciar_pedido_response import (
+    build_vaciar_pedido_response,
 )
 from backend.intents.schemas.customer_response import CustomerResponse
 from backend.intents.schemas.processed_intent import ProcessedIntent
@@ -145,6 +149,10 @@ def build_customer_responses(
         elif intent.intent == "iniciar_pedido":
             responses.append(
                 build_iniciar_pedido_response(db, session, intent)
+            )
+        elif intent.intent == "vaciar_pedido":
+            responses.append(
+                build_vaciar_pedido_response(db, session, intent)
             )
         elif is_informational_commerce_intent(intent.intent):
             responses.append(

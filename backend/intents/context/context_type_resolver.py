@@ -29,6 +29,14 @@ def resolve_context_type(
             return None
         if intent.intent == "modificar_producto":
             return ContextType.PRODUCT_MODIFICATION
+        if intent.intent == "vaciar_pedido":
+            has_pending_confirmation = any(
+                req.name == "confirmacion" and req.status == "pending"
+                for req in intent.requirements
+            )
+            if not has_pending_confirmation:
+                return None
+            return ContextType.ORDER_CLEAR_CONFIRMATION
         if not intent.candidate_ids:
             return None
         if intent.intent == "quitar_producto":
