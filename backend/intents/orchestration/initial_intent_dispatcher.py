@@ -24,6 +24,9 @@ from backend.intents.orchestration.new_order_after_confirmation import (
 from backend.intents.orchestration.quitar_producto_initial import (
     process_initial_quitar_producto,
 )
+from backend.intents.orchestration.vaciar_pedido_initial import (
+    process_initial_vaciar_pedido,
+)
 from backend.intents.responses.social_conversation_response import (
     SOCIAL_CONVERSATION_HANDLER,
     is_social_conversation_intent,
@@ -158,6 +161,14 @@ def dispatch_initial_message(
         if classified_intent == IntentName.CONFIRMAR_PEDIDO:
             processed.append(
                 process_initial_confirmar_pedido(
+                    db, session, classified.mensaje
+                )
+            )
+            continue
+
+        if classified_intent == IntentName.VACIAR_PEDIDO:
+            processed.append(
+                process_initial_vaciar_pedido(
                     db, session, classified.mensaje
                 )
             )

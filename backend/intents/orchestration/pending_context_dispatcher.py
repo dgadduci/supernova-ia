@@ -2,6 +2,9 @@ from sqlalchemy.orm import Session as DatabaseSession
 
 from backend.diagnostics import NoopDiagnosticSink, PendingStateSnapshot
 from backend.diagnostics.sink import DiagnosticSink
+from backend.intents.context.order_clear_confirmation_resolver import (
+    resolve_order_clear_confirmation,
+)
 from backend.intents.context.order_line_selection_resolver import (
     resolve_order_line_selection,
 )
@@ -105,6 +108,17 @@ def dispatch_pending_context(
 
     if session.context_type == ContextType.PRODUCT_MODIFICATION.value:
         result = resolve_product_modification(
+            db, session, message, active, sink=diagnostic_sink
+        )
+        set_active(session, result)
+        post_state = load_pending_state(session)
+        _emit_pending_snapshot(diagnostic_sink, session, post_state, "after_resolver")
+        if result.status == "ready":
+            return execute_ready_pending_context(db, session)
+        return [result]
+
+    if session.context_type == ContextType.ORDER_CLEAR_CONFIRMATION.value:
+        result = resolve_order_clear_confirmation(
             db, session, message, active, sink=diagnostic_sink
         )
         set_active(session, result)

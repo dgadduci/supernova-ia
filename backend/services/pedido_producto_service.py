@@ -172,6 +172,35 @@ class PedidoProductoService:
             self._session.rollback()
             raise
 
+    def clear_pedido_lines(self, pedido_id: int) -> int:
+        """Atomically delete every ``PedidoProducto`` row for the given pedido.
+
+        This is the transaction-neutral all-lines clear operation for
+        ``vaciar_pedido``. The method validates the pedido state, then
+        delegates to ``PedidoProductoRepository.delete_all_by_pedido`` which
+        stages every deletion in the caller's transaction. The service
+        NEVER calls ``commit``, ``rollback``, ``flush``, ``refresh``,
+        ``begin``, ``expire``, or ``close``; the outer transactional
+        processor owns the full-turn atomicity guarantee.
+
+        Raises:
+            PedidoNotFound: when no pedido exists with the given id.
+            PedidoProductoNotEditable: when the pedido is not in
+                ``borrador`` state.
+
+        Returns:
+            The number of ``PedidoProducto`` rows staged for deletion.
+        """
+        pedido = self._repo.pedido(pedido_id)
+        if pedido is None:
+            raise PedidoNotFound(pedido_id)
+        if pedido.estado_pedido != EstadoPedido.BORRADOR:
+            raise PedidoProductoNotEditable(
+                pedido_id, pedido.estado_pedido.value
+            )
+        deleted = self._repo.delete_all_by_pedido(pedido_id)
+        return len(deleted)
+
     @staticmethod
     def _resolve_cantidad_a_modificar(
         explicit_cantidad: int | None,
