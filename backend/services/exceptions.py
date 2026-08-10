@@ -567,6 +567,20 @@ class InvalidTwilioOutboundDispatchConfig(ValueError):
     """
 
 
+class InvalidProviderProcessingWorkerConfig(ValueError):
+    """Raised when the automatic provider-processing worker settings are
+    unusable: an enabled worker with a non-positive poll interval, a
+    non-positive inbound bound, a non-positive outbound bound, or a
+    missing / invalid existing outbound dispatch configuration.
+
+    The check is performed during the worker startup validation step
+    that the Railway entrypoint invokes before ``uvicorn`` accepts
+    traffic. A failure here surfaces as a typed exit code so the
+    operator gets a single actionable error instead of a silent
+    disablement or a runtime failure inside the first cycle.
+    """
+
+
 class InvalidTwilioDeliveryCallbackForm(ValueError):
     """Raised when a validly signed Twilio status callback supplies a
     malformed ``MessageSid`` or ``MessageStatus`` value.

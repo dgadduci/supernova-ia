@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 
 from backend.services.exceptions import (
     InvalidHybridAuthoritativePolicyPath,
+    InvalidProviderProcessingWorkerConfig,
     InvalidShadowHybridMinScoreGap,
     InvalidShadowVectorTopK,
     InvalidTwilioOutboundDispatchConfig,
@@ -320,6 +321,21 @@ DEFAULT_TWILIO_OUTBOUND_LEASE_SECONDS = 30
 DEFAULT_TWILIO_OUTBOUND_INITIAL_BACKOFF_SECONDS = 30
 DEFAULT_TWILIO_OUTBOUND_MAX_BACKOFF_SECONDS = 300
 DEFAULT_TWILIO_OUTBOUND_MAX_ATTEMPTS = 5
+DEFAULT_PROVIDER_PROCESSING_WORKER_ENABLED = False
+DEFAULT_PROVIDER_PROCESSING_WORKER_POLL_INTERVAL_SECONDS = 5
+DEFAULT_PROVIDER_PROCESSING_WORKER_INBOUND_MAX_ITEMS_PER_PASS = 1
+DEFAULT_PROVIDER_PROCESSING_WORKER_OUTBOUND_MAX_ATTEMPTS_PER_PASS = 16
+
+
+def _provider_processing_worker_positive_int_env(
+    name: str, default: int
+) -> int:
+    value = _int_env(name, default)
+    if value <= 0:
+        raise InvalidProviderProcessingWorkerConfig(
+            f"{name} must be greater than zero (got {value})"
+        )
+    return value
 
 
 @dataclass(frozen=True)
@@ -365,6 +381,18 @@ class Settings:
     )
     twilio_outbound_max_attempts: int = (
         DEFAULT_TWILIO_OUTBOUND_MAX_ATTEMPTS
+    )
+    provider_processing_worker_enabled: bool = (
+        DEFAULT_PROVIDER_PROCESSING_WORKER_ENABLED
+    )
+    provider_processing_worker_poll_interval_seconds: int = (
+        DEFAULT_PROVIDER_PROCESSING_WORKER_POLL_INTERVAL_SECONDS
+    )
+    provider_processing_worker_inbound_max_items_per_pass: int = (
+        DEFAULT_PROVIDER_PROCESSING_WORKER_INBOUND_MAX_ITEMS_PER_PASS
+    )
+    provider_processing_worker_outbound_max_attempts_per_pass: int = (
+        DEFAULT_PROVIDER_PROCESSING_WORKER_OUTBOUND_MAX_ATTEMPTS_PER_PASS
     )
 
 
@@ -444,6 +472,28 @@ def load_settings() -> Settings:
             "TWILIO_OUTBOUND_MAX_ATTEMPTS",
             DEFAULT_TWILIO_OUTBOUND_MAX_ATTEMPTS,
         ),
+        provider_processing_worker_enabled=_bool_env(
+            "PROVIDER_PROCESSING_WORKER_ENABLED",
+            DEFAULT_PROVIDER_PROCESSING_WORKER_ENABLED,
+        ),
+        provider_processing_worker_poll_interval_seconds=(
+            _provider_processing_worker_positive_int_env(
+                "PROVIDER_PROCESSING_WORKER_POLL_INTERVAL_SECONDS",
+                DEFAULT_PROVIDER_PROCESSING_WORKER_POLL_INTERVAL_SECONDS,
+            )
+        ),
+        provider_processing_worker_inbound_max_items_per_pass=(
+            _provider_processing_worker_positive_int_env(
+                "PROVIDER_PROCESSING_WORKER_INBOUND_MAX_ITEMS_PER_PASS",
+                DEFAULT_PROVIDER_PROCESSING_WORKER_INBOUND_MAX_ITEMS_PER_PASS,
+            )
+        ),
+        provider_processing_worker_outbound_max_attempts_per_pass=(
+            _provider_processing_worker_positive_int_env(
+                "PROVIDER_PROCESSING_WORKER_OUTBOUND_MAX_ATTEMPTS_PER_PASS",
+                DEFAULT_PROVIDER_PROCESSING_WORKER_OUTBOUND_MAX_ATTEMPTS_PER_PASS,
+            )
+        ),
     )
 
 
@@ -455,6 +505,10 @@ __all__ = [
     "DEFAULT_EMBEDDING_URL",
     "DEFAULT_HYBRID_AUTHORITATIVE_POLICY_PATH",
     "DEFAULT_PRODUCT_RECOGNIZER_MODE",
+    "DEFAULT_PROVIDER_PROCESSING_WORKER_ENABLED",
+    "DEFAULT_PROVIDER_PROCESSING_WORKER_INBOUND_MAX_ITEMS_PER_PASS",
+    "DEFAULT_PROVIDER_PROCESSING_WORKER_OUTBOUND_MAX_ATTEMPTS_PER_PASS",
+    "DEFAULT_PROVIDER_PROCESSING_WORKER_POLL_INTERVAL_SECONDS",
     "DEFAULT_SHADOW_HYBRID_MIN_SCORE_GAP",
     "DEFAULT_SHADOW_VECTOR_TOP_K",
     "DEFAULT_TWILIO_CALLBACK_STATUS_URL",
