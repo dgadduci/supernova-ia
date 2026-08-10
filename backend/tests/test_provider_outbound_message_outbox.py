@@ -259,7 +259,10 @@ class LocalEndpointCompatibilityTest(unittest.TestCase):
         db_session.add.assert_not_called()
         db_session.rollback.assert_not_called()
 
-    def test_generic_fallback_stays_equivalent(self) -> None:
+    def test_social_intent_returns_deterministic_response(self) -> None:
+        """The local path delegates to the shared mapper, so the
+        approved social intents surface the deterministic Spanish
+        response and never fall back to ``GENERIC_MESSAGE``."""
         db_session = MagicMock(name="DatabaseSession")
         conversation_session = MagicMock(name="ConversationSession")
 
@@ -270,9 +273,9 @@ class LocalEndpointCompatibilityTest(unittest.TestCase):
                 ProcessedIntent(
                     intent="desconocida",
                     source_text="asdf",
-                    status="rejected",
-                    recognizer="recognizer_productos",
-                    handler="desconocida",
+                    status="executed",
+                    recognizer="intent_classifier",
+                    handler="social_conversation_response",
                 )
             ],
         ):
@@ -283,8 +286,10 @@ class LocalEndpointCompatibilityTest(unittest.TestCase):
             )
 
         self.assertEqual(len(responses), 1)
-        self.assertEqual(responses[0].message, GENERIC_MESSAGE)
         self.assertEqual(responses[0].intent, "desconocida")
+        self.assertEqual(responses[0].status, "executed")
+        self.assertNotEqual(responses[0].message, GENERIC_MESSAGE)
+        self.assertIn("Disculpá", responses[0].message)
         db_session.add.assert_not_called()
 
 

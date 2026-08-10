@@ -4,31 +4,14 @@ from backend.diagnostics.sink import DiagnosticSink
 from backend.intents.orchestration.transactional_message_processor import (
     process_incoming_message_transactional,
 )
-from backend.intents.responses.agregar_producto_response import (
-    build_agregar_producto_response,
-)
-from backend.intents.responses.consecutive_add_product_coalescer import (
-    coalesce_consecutive_add_product_intents,
-)
-from backend.intents.responses.draft_order_closure import (
-    build_confirmar_pedido_response,
-    build_consultar_resumen_pedido_response,
-    build_set_metodo_de_entrega_response,
-    build_set_metodo_de_pago_response,
-)
-from backend.intents.responses.modificar_producto_response import (
-    build_modificar_producto_response,
-)
-from backend.intents.responses.new_order_after_confirmation import (
-    build_iniciar_pedido_response,
-)
-from backend.intents.responses.quitar_producto_response import (
-    build_quitar_producto_response,
-)
 from backend.intents.schemas.customer_response import CustomerResponse
 from backend.models.session import Session as ConversationSession
+from backend.services.outbound_response_mapper import (
+    GENERIC_MESSAGE,  # noqa: F401  -- re-exported for legacy imports
+    build_customer_responses,
+)
 
-GENERIC_MESSAGE = "Disculpá, no pude procesar tu mensaje. ¿Podrías reformularlo?"
+__all__ = ["process_incoming_message_with_responses"]
 
 
 def process_incoming_message_with_responses(
@@ -45,41 +28,4 @@ def process_incoming_message_with_responses(
             db, session, message, sink=sink
         )
 
-    rendered_intents = coalesce_consecutive_add_product_intents(processed)
-
-    responses: list[CustomerResponse] = []
-    for intent in rendered_intents:
-        if intent.intent == "agregar_producto":
-            responses.append(build_agregar_producto_response(db, session, intent))
-        elif intent.intent == "quitar_producto":
-            responses.append(build_quitar_producto_response(db, session, intent))
-        elif intent.intent == "modificar_producto":
-            responses.append(build_modificar_producto_response(db, session, intent))
-        elif intent.intent == "consultar_resumen_pedido":
-            responses.append(
-                build_consultar_resumen_pedido_response(db, session, intent)
-            )
-        elif intent.intent == "set_metodo_de_pago":
-            responses.append(
-                build_set_metodo_de_pago_response(db, session, intent)
-            )
-        elif intent.intent == "set_metodo_de_entrega":
-            responses.append(
-                build_set_metodo_de_entrega_response(db, session, intent)
-            )
-        elif intent.intent == "confirmar_pedido":
-            responses.append(build_confirmar_pedido_response(db, session, intent))
-        elif intent.intent == "iniciar_pedido":
-            responses.append(build_iniciar_pedido_response(db, session, intent))
-        else:
-            responses.append(
-                CustomerResponse(
-                    message=GENERIC_MESSAGE,
-                    intent=intent.intent,
-                    status=intent.status,
-                )
-            )
-    return responses
-
-
-__all__ = ["process_incoming_message_with_responses"]
+    return build_customer_responses(db, session, processed, sink=sink)

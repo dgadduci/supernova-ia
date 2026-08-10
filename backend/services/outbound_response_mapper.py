@@ -56,6 +56,10 @@ from backend.intents.responses.new_order_after_confirmation import (
 from backend.intents.responses.quitar_producto_response import (
     build_quitar_producto_response,
 )
+from backend.intents.responses.social_conversation_response import (
+    build_social_conversation_response,
+    is_social_conversation_intent,
+)
 from backend.intents.schemas.customer_response import CustomerResponse
 from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.models.session import Session as ConversationSession
@@ -135,6 +139,10 @@ def build_customer_responses(
         elif intent.intent == "iniciar_pedido":
             responses.append(
                 build_iniciar_pedido_response(db, session, intent)
+            )
+        elif is_social_conversation_intent(intent.intent):
+            responses.append(
+                build_social_conversation_response(intent)
             )
         else:
             responses.append(

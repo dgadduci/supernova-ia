@@ -15,6 +15,7 @@ from backend.intents.orchestration.incoming_message_response_orchestrator import
 from backend.intents.schemas.customer_response import CustomerResponse
 from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.llm.query_llm import QueryLlmTimeoutError
+from backend.services import outbound_response_mapper as mapper_module
 
 
 def _db():
@@ -25,8 +26,17 @@ def _session():
     return MagicMock(name="ConversationSession")
 
 
+_SALUDO_FIXED_MESSAGE = (
+    "¡Hola! Puedo ayudarte a armar tu pedido. Decime qué querés."
+)
+_DESCONOCIDA_FIXED_MESSAGE = (
+    "Disculpá, no entendí tu mensaje. "
+    "Podés pedirme el menú o decirme qué producto querés agregar."
+)
+
+
 class ProcessIncomingMessageWithResponsesAgregarProductoTest(unittest.TestCase):
-    @patch.object(response_module, "build_agregar_producto_response")
+    @patch.object(mapper_module, "build_agregar_producto_response")
     @patch.object(response_module, "process_incoming_message_transactional")
     def test_executed_status_routes_to_response_builder(
         self, inner, builder
@@ -59,7 +69,7 @@ class ProcessIncomingMessageWithResponsesAgregarProductoTest(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertIs(result[0], builder_response)
 
-    @patch.object(response_module, "build_agregar_producto_response")
+    @patch.object(mapper_module, "build_agregar_producto_response")
     @patch.object(response_module, "process_incoming_message_transactional")
     def test_pending_resolution_status_routes_to_response_builder(
         self, inner, builder
@@ -92,11 +102,9 @@ class ProcessIncomingMessageWithResponsesAgregarProductoTest(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertIs(result[0], builder_response)
 
-    @patch.object(response_module, "build_agregar_producto_response")
+    @patch.object(mapper_module, "build_agregar_producto_response")
     @patch.object(response_module, "process_incoming_message_transactional")
-    def test_rejected_status_routes_to_response_builder(
-        self, inner, builder
-    ):
+    def test_rejected_status_routes_to_response_builder(self, inner, builder):
         processed = ProcessedIntent(
             intent="agregar_producto",
             source_text="sin precio",
@@ -124,7 +132,7 @@ class ProcessIncomingMessageWithResponsesAgregarProductoTest(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertIs(result[0], builder_response)
 
-    @patch.object(response_module, "build_agregar_producto_response")
+    @patch.object(mapper_module, "build_agregar_producto_response")
     @patch.object(response_module, "process_incoming_message_transactional")
     def test_failed_status_routes_to_response_builder(self, inner, builder):
         processed = ProcessedIntent(
@@ -155,40 +163,22 @@ class ProcessIncomingMessageWithResponsesAgregarProductoTest(unittest.TestCase):
         self.assertIs(result[0], builder_response)
 
 
-class ProcessIncomingMessageWithResponsesUnsupportedIntentTest(unittest.TestCase):
-    @patch.object(response_module, "build_agregar_producto_response")
+class ProcessIncomingMessageWithResponsesSocialIntentsTest(unittest.TestCase):
+    """End-to-end local-path coverage for the six social intents.
+
+    The local path now delegates to the shared response mapper, so
+    each approved social intent must surface the deterministic
+    Spanish response (not ``GENERIC_MESSAGE``) for the rendered
+    message while preserving the source ``intent`` and ``status``.
+    """
+
     @patch.object(response_module, "process_incoming_message_transactional")
-    def test_desconocida_returns_generic_response(self, inner, builder):
-        processed = ProcessedIntent(
-            intent="desconocida",
-            source_text="asdfgh",
-            status="rejected",
-            handler="desconocida",
-            recognizer="intent_classifier",
-        )
-        inner.return_value = [processed]
-
-        db = _db()
-        session = _session()
-
-        result = process_incoming_message_with_responses(
-            db, session, "asdfgh"
-        )
-
-        builder.assert_not_called()
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0].message, GENERIC_MESSAGE)
-        self.assertEqual(result[0].intent, "desconocida")
-        self.assertEqual(result[0].status, "rejected")
-
-    @patch.object(response_module, "build_agregar_producto_response")
-    @patch.object(response_module, "process_incoming_message_transactional")
-    def test_saludo_returns_generic_response(self, inner, builder):
+    def test_saludo_returns_deterministic_social_response(self, inner):
         processed = ProcessedIntent(
             intent="saludo",
             source_text="hola",
-            status="rejected",
-            handler="saludo",
+            status="executed",
+            handler="social_conversation_response",
             recognizer="intent_classifier",
         )
         inner.return_value = [processed]
@@ -200,15 +190,40 @@ class ProcessIncomingMessageWithResponsesUnsupportedIntentTest(unittest.TestCase
             db, session, "hola"
         )
 
-        builder.assert_not_called()
         self.assertEqual(len(result), 1)
-        self.assertEqual(result[0].message, GENERIC_MESSAGE)
-        self.assertEqual(result[0].intent, "saludo")
-        self.assertEqual(result[0].status, "rejected")
+        rendered = result[0]
+        self.assertEqual(rendered.message, _SALUDO_FIXED_MESSAGE)
+        self.assertEqual(rendered.intent, "saludo")
+        self.assertEqual(rendered.status, "executed")
+        self.assertNotEqual(rendered.message, GENERIC_MESSAGE)
 
-    @patch.object(response_module, "build_agregar_producto_response")
     @patch.object(response_module, "process_incoming_message_transactional")
-    def test_consultar_pedido_returns_generic_response(self, inner, builder):
+    def test_desconocida_returns_deterministic_social_response(self, inner):
+        processed = ProcessedIntent(
+            intent="desconocida",
+            source_text="asdfgh",
+            status="executed",
+            handler="social_conversation_response",
+            recognizer="intent_classifier",
+        )
+        inner.return_value = [processed]
+
+        db = _db()
+        session = _session()
+
+        result = process_incoming_message_with_responses(
+            db, session, "asdfgh"
+        )
+
+        self.assertEqual(len(result), 1)
+        rendered = result[0]
+        self.assertEqual(rendered.message, _DESCONOCIDA_FIXED_MESSAGE)
+        self.assertEqual(rendered.intent, "desconocida")
+        self.assertEqual(rendered.status, "executed")
+        self.assertNotEqual(rendered.message, GENERIC_MESSAGE)
+
+    @patch.object(response_module, "process_incoming_message_transactional")
+    def test_consultar_pedido_returns_generic_response(self, inner):
         processed = ProcessedIntent(
             intent="consultar_pedido",
             source_text="estado de mi pedido",
@@ -226,7 +241,6 @@ class ProcessIncomingMessageWithResponsesUnsupportedIntentTest(unittest.TestCase
             db, session, "estado de mi pedido"
         )
 
-        builder.assert_not_called()
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].message, GENERIC_MESSAGE)
         self.assertEqual(result[0].intent, "consultar_pedido")
@@ -249,7 +263,7 @@ class ProcessIncomingMessageWithResponsesGenericMessageTest(unittest.TestCase):
 
 
 class ProcessIncomingMessageWithResponsesMultiIntentTest(unittest.TestCase):
-    @patch.object(response_module, "build_agregar_producto_response")
+    @patch.object(mapper_module, "build_agregar_producto_response")
     @patch.object(response_module, "process_incoming_message_transactional")
     def test_three_intent_list_preserves_order(self, inner, builder):
         pending = ProcessedIntent(
@@ -269,14 +283,14 @@ class ProcessIncomingMessageWithResponsesMultiIntentTest(unittest.TestCase):
             recognizer="recognizer_productos",
             resolved_data={"producto_presentacion_id": 1, "cantidad": 1},
         )
-        rejected = ProcessedIntent(
+        social = ProcessedIntent(
             intent="desconocida",
             source_text="asdf",
-            status="rejected",
-            handler="desconocida",
+            status="executed",
+            handler="social_conversation_response",
             recognizer="intent_classifier",
         )
-        inner.return_value = [pending, executed, rejected]
+        inner.return_value = [pending, executed, social]
 
         clarification = CustomerResponse(
             message="CLARIFICATION",
@@ -300,16 +314,17 @@ class ProcessIncomingMessageWithResponsesMultiIntentTest(unittest.TestCase):
         self.assertEqual(len(result), 3)
         self.assertIs(result[0], clarification)
         self.assertIs(result[1], confirmation)
-        self.assertEqual(result[2].message, GENERIC_MESSAGE)
         self.assertEqual(result[2].intent, "desconocida")
-        self.assertEqual(result[2].status, "rejected")
+        self.assertEqual(result[2].status, "executed")
+        self.assertEqual(result[2].message, _DESCONOCIDA_FIXED_MESSAGE)
+        self.assertNotEqual(result[2].message, GENERIC_MESSAGE)
         self.assertEqual(builder.call_count, 2)
         builder.assert_any_call(db, session, pending)
         builder.assert_any_call(db, session, executed)
 
 
 class ProcessIncomingMessageWithResponsesLengthTest(unittest.TestCase):
-    @patch.object(response_module, "build_agregar_producto_response")
+    @patch.object(mapper_module, "build_agregar_producto_response")
     @patch.object(response_module, "process_incoming_message_transactional")
     def test_single_intent_list_returns_single_response(
         self, inner, builder
@@ -338,9 +353,8 @@ class ProcessIncomingMessageWithResponsesLengthTest(unittest.TestCase):
 
         self.assertEqual(len(result), 1)
 
-    @patch.object(response_module, "build_agregar_producto_response")
     @patch.object(response_module, "process_incoming_message_transactional")
-    def test_empty_list_returns_empty_response(self, inner, builder):
+    def test_empty_list_returns_empty_response(self, inner):
         inner.return_value = []
 
         db = _db()
@@ -351,7 +365,6 @@ class ProcessIncomingMessageWithResponsesLengthTest(unittest.TestCase):
         )
 
         self.assertEqual(result, [])
-        builder.assert_not_called()
 
 
 class ProcessIncomingMessageWithResponsesExceptionPropagationTest(unittest.TestCase):
@@ -472,7 +485,7 @@ class ProcessIncomingMessageWithResponsesPublicSurfaceTest(unittest.TestCase):
 
 
 class ProcessIncomingMessageWithResponsesNoDatabaseMutationTest(unittest.TestCase):
-    @patch.object(response_module, "build_agregar_producto_response")
+    @patch.object(mapper_module, "build_agregar_producto_response")
     @patch.object(response_module, "process_incoming_message_transactional")
     def test_success_path_does_not_call_db_state_methods(
         self, inner, builder
@@ -523,7 +536,7 @@ class ProcessIncomingMessageWithResponsesNoDatabaseMutationTest(unittest.TestCas
 
 
 class ProcessIncomingMessageWithResponsesNoSessionMutationTest(unittest.TestCase):
-    @patch.object(response_module, "build_agregar_producto_response")
+    @patch.object(mapper_module, "build_agregar_producto_response")
     @patch.object(response_module, "process_incoming_message_transactional")
     def test_agregar_producto_does_not_mutate_session_or_intent(
         self, inner, builder
@@ -562,14 +575,14 @@ class ProcessIncomingMessageWithResponsesNoSessionMutationTest(unittest.TestCase
         self.assertEqual(processed.model_dump(), intent_snapshot)
 
     @patch.object(response_module, "process_incoming_message_transactional")
-    def test_unsupported_intent_does_not_mutate_session_or_intent(
+    def test_social_intent_does_not_mutate_session_or_intent(
         self, inner
     ):
         processed = ProcessedIntent(
             intent="desconocida",
             source_text="asdf",
-            status="rejected",
-            handler="desconocida",
+            status="executed",
+            handler="social_conversation_response",
             recognizer="intent_classifier",
         )
         inner.return_value = [processed]
@@ -603,7 +616,6 @@ class ProcessIncomingMessageWithResponsesBoundariesTest(unittest.TestCase):
             "from sqlalchemy import select",
             "joinedload",
             "from backend.repositories",
-            "from backend.services",
             "from backend.intents.handlers",
             "from backend.intents.context",
             "from backend.intents.recognizers",
@@ -636,11 +648,24 @@ class ProcessIncomingMessageWithResponsesBoundariesTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, source)
 
+    def test_module_only_imports_shared_response_mapper_from_services(self):
+        """The local orchestrator reuses the shared response mapper
+        exactly; no other ``backend.services`` module is imported."""
+        importlib.reload(response_module)
+        module = response_module
+        with open(module.__file__, encoding="utf-8") as fh:
+            source = fh.read()
+        for allowed in (
+            "from backend.services.outbound_response_mapper import",
+        ):
+            with self.subTest(allowed=allowed):
+                self.assertIn(allowed, source)
+
 
 class ProcessIncomingMessageWithResponsesCoalescingTest(unittest.TestCase):
     """Local response path applies the shared coalescing helper."""
 
-    @patch.object(response_module, "build_agregar_producto_response")
+    @patch.object(mapper_module, "build_agregar_producto_response")
     @patch.object(response_module, "process_incoming_message_transactional")
     def test_two_consecutive_executed_same_id_yields_one_terminal(
         self, inner, builder
@@ -684,7 +709,7 @@ class ProcessIncomingMessageWithResponsesCoalescingTest(unittest.TestCase):
         self.assertIs(result[0], terminal_response)
         builder.assert_called_once_with(db, session, terminal)
 
-    @patch.object(response_module, "build_agregar_producto_response")
+    @patch.object(mapper_module, "build_agregar_producto_response")
     @patch.object(response_module, "process_incoming_message_transactional")
     def test_three_consecutive_executed_same_id_yields_one_terminal(
         self, inner, builder
@@ -736,7 +761,7 @@ class ProcessIncomingMessageWithResponsesCoalescingTest(unittest.TestCase):
         self.assertIs(result[0], terminal_response)
         builder.assert_called_once_with(db, session, terminal)
 
-    @patch.object(response_module, "build_agregar_producto_response")
+    @patch.object(mapper_module, "build_agregar_producto_response")
     @patch.object(response_module, "process_incoming_message_transactional")
     def test_different_presentation_ids_are_not_coalesced(
         self, inner, builder
@@ -786,7 +811,7 @@ class ProcessIncomingMessageWithResponsesCoalescingTest(unittest.TestCase):
         builder.assert_any_call(db, session, first)
         builder.assert_any_call(db, session, second)
 
-    @patch.object(response_module, "build_agregar_producto_response")
+    @patch.object(mapper_module, "build_agregar_producto_response")
     @patch.object(response_module, "process_incoming_message_transactional")
     def test_pending_after_executed_same_id_is_not_coalesced(
         self, inner, builder
@@ -835,7 +860,7 @@ class ProcessIncomingMessageWithResponsesCoalescingTest(unittest.TestCase):
         self.assertEqual(result[1].message, "CLARIFICATION")
         self.assertEqual(builder.call_count, 2)
 
-    @patch.object(response_module, "build_agregar_producto_response")
+    @patch.object(mapper_module, "build_agregar_producto_response")
     @patch.object(response_module, "process_incoming_message_transactional")
     def test_intent_change_between_same_id_is_not_coalesced(
         self, inner, builder

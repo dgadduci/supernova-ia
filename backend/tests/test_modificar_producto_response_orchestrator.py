@@ -9,18 +9,10 @@ from backend.intents.orchestration import (
 from backend.intents.orchestration.incoming_message_response_orchestrator import (
     process_incoming_message_with_responses,
 )
-from backend.intents.responses import (
-    agregar_producto_response as agregar_response_module,
-)
-from backend.intents.responses import (
-    modificar_producto_response as modificar_response_module,
-)
-from backend.intents.responses import (
-    quitar_producto_response as quitar_response_module,
-)
 from backend.intents.schemas.customer_response import CustomerResponse
 from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.models.session import Session as ConversationSession
+from backend.services import outbound_response_mapper as mapper_module
 
 
 def _intent(intent_name: str, status: str = "rejected") -> ProcessedIntent:
@@ -47,15 +39,15 @@ class IncomingMessageResponseOrchestratorModificarProductoTest(unittest.TestCase
         ) as proc:
             proc.return_value = [_intent("modificar_producto", "executed")]
             with patch.object(
-                response_orchestrator_module,
+                mapper_module,
                 "build_modificar_producto_response",
             ) as mod_build:
                 with patch.object(
-                    response_orchestrator_module,
+                    mapper_module,
                     "build_agregar_producto_response",
                 ) as agr_build:
                     with patch.object(
-                        response_orchestrator_module,
+                        mapper_module,
                         "build_quitar_producto_response",
                     ) as quit_build:
                         mod_build.return_value = CustomerResponse(
@@ -85,7 +77,7 @@ class IncomingMessageResponseOrchestratorModificarProductoTest(unittest.TestCase
                 _intent("modificar_producto", "pending_resolution")
             ]
             with patch.object(
-                response_orchestrator_module,
+                mapper_module,
                 "build_modificar_producto_response",
             ) as mod_build:
                 mod_build.return_value = CustomerResponse(
@@ -101,7 +93,10 @@ class IncomingMessageResponseOrchestratorModificarProductoTest(unittest.TestCase
         self.assertEqual(result[0].status, "pending_resolution")
         mod_build.assert_called_once()
 
-    def test_unknown_intent_returns_generic(self):
+    def test_social_intent_does_not_invoke_product_builders(self):
+        """Social intents are routed through the deterministic
+        social builder by the shared mapper; none of the product
+        builders must run."""
         db = MagicMock(spec=DatabaseSession)
         session = MagicMock(spec=ConversationSession)
 
@@ -109,17 +104,17 @@ class IncomingMessageResponseOrchestratorModificarProductoTest(unittest.TestCase
             response_orchestrator_module,
             "process_incoming_message_transactional",
         ) as proc:
-            proc.return_value = [_intent("desconocida", "rejected")]
+            proc.return_value = [_intent("desconocida", "executed")]
             with patch.object(
-                response_orchestrator_module,
+                mapper_module,
                 "build_modificar_producto_response",
             ) as mod_build:
                 with patch.object(
-                    response_orchestrator_module,
+                    mapper_module,
                     "build_agregar_producto_response",
                 ) as agr_build:
                     with patch.object(
-                        response_orchestrator_module,
+                        mapper_module,
                         "build_quitar_producto_response",
                     ) as quit_build:
                         result = process_incoming_message_with_responses(
@@ -128,7 +123,7 @@ class IncomingMessageResponseOrchestratorModificarProductoTest(unittest.TestCase
 
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].intent, "desconocida")
-        self.assertEqual(result[0].status, "rejected")
+        self.assertEqual(result[0].status, "executed")
         mod_build.assert_not_called()
         agr_build.assert_not_called()
         quit_build.assert_not_called()
@@ -143,11 +138,11 @@ class IncomingMessageResponseOrchestratorModificarProductoTest(unittest.TestCase
         ) as proc:
             proc.return_value = [_intent("agregar_producto", "executed")]
             with patch.object(
-                response_orchestrator_module,
+                mapper_module,
                 "build_agregar_producto_response",
             ) as agr_build:
                 with patch.object(
-                    response_orchestrator_module,
+                    mapper_module,
                     "build_modificar_producto_response",
                 ) as mod_build:
                     agr_build.return_value = CustomerResponse(

@@ -20,6 +20,10 @@ from backend.intents.orchestration.new_order_after_confirmation import (
 from backend.intents.orchestration.quitar_producto_initial import (
     process_initial_quitar_producto,
 )
+from backend.intents.responses.social_conversation_response import (
+    SOCIAL_CONVERSATION_HANDLER,
+    is_social_conversation_intent,
+)
 from backend.intents.schemas.intent_classification import IntentName
 from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.intents.services.pending_intent_service import load as load_pending_state
@@ -164,6 +168,18 @@ def dispatch_initial_message(
             processed.append(new_intent)
             if new_intent.status == "executed":
                 session_replaced = True
+            continue
+
+        if is_social_conversation_intent(classified_intent.value):
+            processed.append(
+                ProcessedIntent(
+                    intent=classified_intent.value,
+                    source_text=classified.mensaje,
+                    status="executed",
+                    recognizer="intent_classifier",
+                    handler=SOCIAL_CONVERSATION_HANDLER,
+                )
+            )
             continue
 
         processed.append(

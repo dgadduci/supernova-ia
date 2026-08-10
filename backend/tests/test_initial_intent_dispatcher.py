@@ -87,16 +87,16 @@ class DispatchInitialMessageHappyPathTest(unittest.TestCase):
         self.assertEqual(len(result), 3)
         self.assertIs(result[0], agregar_sentinel)
         self.assertEqual(result[1].intent, "desconocida")
-        self.assertEqual(result[1].handler, "desconocida")
+        self.assertEqual(result[1].handler, "social_conversation_response")
         self.assertEqual(result[2].intent, "saludo")
-        self.assertEqual(result[2].handler, "saludo")
+        self.assertEqual(result[2].handler, "social_conversation_response")
         orchestrator.assert_called_once_with(db, session, "dos pizzas")
 
 
 class DispatchInitialMessageRejectionTest(unittest.TestCase):
     @patch.object(dispatcher_module, "process_initial_agregar_producto")
     @patch.object(dispatcher_module, "IntentClassifier")
-    def test_desconocida_returns_rejected_processed_intent(
+    def test_desconocida_returns_executed_social_processed_intent(
         self, classifier_cls, orchestrator
     ):
         classifier_instance = MagicMock()
@@ -112,19 +112,19 @@ class DispatchInitialMessageRejectionTest(unittest.TestCase):
 
         orchestrator.assert_not_called()
         self.assertEqual(len(result), 1)
-        rejected = result[0]
-        self.assertEqual(rejected.intent, "desconocida")
-        self.assertEqual(rejected.source_text, "asdfgh")
-        self.assertEqual(rejected.status, "rejected")
-        self.assertEqual(rejected.recognizer, "intent_classifier")
-        self.assertEqual(rejected.handler, "desconocida")
-        self.assertEqual(rejected.resolved_data, {})
-        self.assertEqual(rejected.requirements, [])
-        self.assertEqual(rejected.candidate_ids, [])
+        social = result[0]
+        self.assertEqual(social.intent, "desconocida")
+        self.assertEqual(social.source_text, "asdfgh")
+        self.assertEqual(social.status, "executed")
+        self.assertEqual(social.recognizer, "intent_classifier")
+        self.assertEqual(social.handler, "social_conversation_response")
+        self.assertEqual(social.resolved_data, {})
+        self.assertEqual(social.requirements, [])
+        self.assertEqual(social.candidate_ids, [])
 
     @patch.object(dispatcher_module, "process_initial_agregar_producto")
     @patch.object(dispatcher_module, "IntentClassifier")
-    def test_saludo_is_rejected_without_orchestrator(self, classifier_cls, orchestrator):
+    def test_saludo_is_handled_without_orchestrator(self, classifier_cls, orchestrator):
         classifier_instance = MagicMock()
         classifier_instance.query.return_value = _build_result(
             (IntentName.SALUDO, "hola")
@@ -138,12 +138,12 @@ class DispatchInitialMessageRejectionTest(unittest.TestCase):
 
         orchestrator.assert_not_called()
         self.assertEqual(len(result), 1)
-        rejected = result[0]
-        self.assertEqual(rejected.intent, "saludo")
-        self.assertEqual(rejected.source_text, "hola")
-        self.assertEqual(rejected.status, "rejected")
-        self.assertEqual(rejected.recognizer, "intent_classifier")
-        self.assertEqual(rejected.handler, "saludo")
+        social = result[0]
+        self.assertEqual(social.intent, "saludo")
+        self.assertEqual(social.source_text, "hola")
+        self.assertEqual(social.status, "executed")
+        self.assertEqual(social.recognizer, "intent_classifier")
+        self.assertEqual(social.handler, "social_conversation_response")
 
     @patch.object(dispatcher_module, "process_initial_quitar_producto")
     @patch.object(dispatcher_module, "IntentClassifier")
