@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.models import MetodosEntrega
+from backend.models import ComercioMetodoEntrega, MetodosEntrega
 
 
 class MetodoEntregaRepository:
@@ -18,6 +18,23 @@ class MetodoEntregaRepository:
     def get_by_codigo(self, codigo: str) -> MetodosEntrega | None:
         stmt = select(MetodosEntrega).where(MetodosEntrega.codigo == codigo)
         return self._session.execute(stmt).scalar_one_or_none()
+
+    def list_active_for_comercio(self, comercio_id: int) -> list[MetodosEntrega]:
+        """Return the metodos_entrega rows that are globally active and enabled
+        for the supplied comercio. The join enforces commerce isolation.
+        """
+        stmt = (
+            select(MetodosEntrega)
+            .join(
+                ComercioMetodoEntrega,
+                ComercioMetodoEntrega.id_metodo_entrega == MetodosEntrega.id,
+            )
+            .where(ComercioMetodoEntrega.id_comercio == comercio_id)
+            .where(ComercioMetodoEntrega.activo.is_(True))
+            .where(MetodosEntrega.activo.is_(True))
+            .order_by(MetodosEntrega.orden, MetodosEntrega.id)
+        )
+        return list(self._session.execute(stmt).scalars())
 
     def create(
         self,

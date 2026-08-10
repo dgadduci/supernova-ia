@@ -2,12 +2,14 @@
 
 The mapper is the reusable translation boundary between the Phase-5.4
 coordinator pipeline and the durable outbound-message outbox. It
-performs three responsibilities:
+performs three narrow responsibilities:
 
 1. ``build_customer_responses`` — translates processed intents into
    rendered ``CustomerResponse`` values using the existing
-   ``agregar`` / ``quitar`` / ``modificar`` builders plus the
-   generic fallback message.
+   ``agregar`` / ``quitar`` / ``modificar`` builders, the four
+   guided-closure builders (``consultar_resumen_pedido``,
+   ``set_metodo_de_pago``, ``set_metodo_de_entrega``,
+   ``confirmar_pedido``), and the generic fallback message.
 2. ``stage_outbound_rows`` — renders the same responses and stages
    one durable outbox row per response inside the caller's
    transaction.
@@ -38,6 +40,12 @@ from backend.intents.responses.agregar_producto_response import (
 )
 from backend.intents.responses.consecutive_add_product_coalescer import (
     coalesce_consecutive_add_product_intents,
+)
+from backend.intents.responses.draft_order_closure import (
+    build_confirmar_pedido_response,
+    build_consultar_resumen_pedido_response,
+    build_set_metodo_de_entrega_response,
+    build_set_metodo_de_pago_response,
 )
 from backend.intents.responses.modificar_producto_response import (
     build_modificar_producto_response,
@@ -104,6 +112,22 @@ def build_customer_responses(
         elif intent.intent == "modificar_producto":
             responses.append(
                 build_modificar_producto_response(db, session, intent)
+            )
+        elif intent.intent == "consultar_resumen_pedido":
+            responses.append(
+                build_consultar_resumen_pedido_response(db, session, intent)
+            )
+        elif intent.intent == "set_metodo_de_pago":
+            responses.append(
+                build_set_metodo_de_pago_response(db, session, intent)
+            )
+        elif intent.intent == "set_metodo_de_entrega":
+            responses.append(
+                build_set_metodo_de_entrega_response(db, session, intent)
+            )
+        elif intent.intent == "confirmar_pedido":
+            responses.append(
+                build_confirmar_pedido_response(db, session, intent)
             )
         else:
             responses.append(

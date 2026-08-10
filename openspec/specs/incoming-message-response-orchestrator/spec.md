@@ -3,9 +3,7 @@
 ## Purpose
 
 Provide a thin response-layer wrapper around the transactional message processor that converts each returned `ProcessedIntent` into a `CustomerResponse` (delegating `agregar_producto` to `build_agregar_producto_response` and producing a deterministic generic response for every other intent), without re-validating input, re-running orchestration, owning transactions, performing SQLAlchemy access, importing transport / LLM / queue modules, mutating state, or introducing logging, retry, or async behavior.
-
 ## Requirements
-
 ### Requirement: Incoming message response orchestrator module location
 
 The system SHALL expose `process_incoming_message_with_responses` from `backend/intents/orchestration/incoming_message_response_orchestrator.py` and SHALL NOT import from `backend/old_project/`.
@@ -45,7 +43,13 @@ The response orchestrator SHALL call `process_incoming_message_transactional(db,
 
 ### Requirement: Intent order preservation
 
-The response orchestrator SHALL return one `CustomerResponse` per item in the inner transactional processor's `list[ProcessedIntent]` return value, in the same order, including any mix of executed, pending, rejected, and failed items.
+The response orchestrator SHALL preserve the order of response groups from the
+inner transactional processor. It SHALL return one `CustomerResponse` for each
+input `ProcessedIntent` except a consecutive group whose items all have intent
+`"agregar_producto"`, status `"executed"`, and the same positive integer
+`resolved_data["producto_presentacion_id"]`; that group SHALL yield exactly one
+response built from its terminal item. Pending, rejected, failed, distinct, or
+non-consecutive items SHALL remain individually represented.
 
 #### Scenario: Multi-intent list preserves classifier order
 
@@ -57,9 +61,23 @@ The response orchestrator SHALL return one `CustomerResponse` per item in the in
 - **WHEN** `process_incoming_message_transactional` returns a one-item list
 - **THEN** `process_incoming_message_with_responses` returns a one-item list
 
+#### Scenario: Consecutive equivalent executed additions yield one terminal response
+
+- **WHEN** the processor returns two consecutive executed `agregar_producto` items with the same positive `producto_presentacion_id`
+- **THEN** the orchestrator returns one response for that group, rendered from the second item and therefore reporting its final quantity
+
+#### Scenario: Different or interrupted additions are not coalesced
+
+- **WHEN** two `agregar_producto` items have different presentation IDs or are separated by any other item
+- **THEN** each item keeps its existing individual response in original order
+
 ### Requirement: agregar_producto delegation
 
-When a `ProcessedIntent.intent == "agregar_producto"`, the response orchestrator SHALL call `build_agregar_producto_response(db, session, intent)` exactly once, append the returned `CustomerResponse` to the output list, and SHALL NOT construct any other `CustomerResponse` for that item.
+For an individual `ProcessedIntent.intent == "agregar_producto"`, the response
+orchestrator SHALL call `build_agregar_producto_response(db, session, intent)`
+exactly once and append its returned `CustomerResponse`. For an eligible
+consecutive equivalent executed-addition group, it SHALL call that builder
+exactly once for the terminal item and SHALL NOT render any earlier group item.
 
 #### Scenario: agregar_producto returns the builder's CustomerResponse
 
@@ -80,6 +98,11 @@ When a `ProcessedIntent.intent == "agregar_producto"`, the response orchestrator
 
 - **WHEN** `process_incoming_message_transactional` returns a one-item list whose `ProcessedIntent.intent == "agregar_producto"` and `status == "failed"`
 - **THEN** `build_agregar_producto_response(db, session, intent)` is called exactly once and the orchestrator returns a one-item list containing the builder's returned `CustomerResponse`
+
+#### Scenario: Eligible group delegates only its terminal item
+
+- **WHEN** two consecutive executed `agregar_producto` items have the same positive `producto_presentacion_id`
+- **THEN** `build_agregar_producto_response` is called once with the second item and no response is built from the first item
 
 ### Requirement: quitar_producto delegation
 

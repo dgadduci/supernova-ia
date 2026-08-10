@@ -5,6 +5,12 @@ from backend.diagnostics.sink import DiagnosticSink
 from backend.intents.orchestration.agregar_producto_orchestrator import (
     process_initial_agregar_producto,
 )
+from backend.intents.orchestration.draft_order_closure import (
+    process_initial_confirmar_pedido,
+    process_initial_consultar_resumen_pedido,
+    process_initial_set_metodo_de_entrega,
+    process_initial_set_metodo_de_pago,
+)
 from backend.intents.orchestration.modificar_producto_initial import (
     process_initial_modificar_producto,
 )
@@ -105,6 +111,38 @@ def dispatch_initial_message(
         if classified_intent == IntentName.MODIFICAR_PRODUCTO:
             processed.append(
                 process_initial_modificar_producto(
+                    db, session, classified.mensaje
+                )
+            )
+            continue
+
+        if classified_intent == IntentName.CONSULTAR_RESUMEN_PEDIDO:
+            processed.append(
+                process_initial_consultar_resumen_pedido(
+                    db, session, classified.mensaje
+                )
+            )
+            continue
+
+        if classified_intent == IntentName.SET_METODO_DE_PAGO:
+            processed.append(
+                process_initial_set_metodo_de_pago(
+                    db, session, classified.mensaje
+                )
+            )
+            continue
+
+        if classified_intent == IntentName.SET_METODO_DE_ENTREGA:
+            processed.append(
+                process_initial_set_metodo_de_entrega(
+                    db, session, classified.mensaje
+                )
+            )
+            continue
+
+        if classified_intent == IntentName.CONFIRMAR_PEDIDO:
+            processed.append(
+                process_initial_confirmar_pedido(
                     db, session, classified.mensaje
                 )
             )

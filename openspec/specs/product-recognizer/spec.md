@@ -1,11 +1,8 @@
 # Capability: product-recognizer
-
 ## Purpose
 
 Define the pure fuzzy product-matching module `backend.recognizers.product_recognizer` that takes free-text user input and a catalog of product-presentations and returns a structured dict with four keys (`encontrados`, `encontrados_posibles`, `encontrados_no_disponibles`, `no_encontrados`). The function receives the catalog as an argument (the caller is responsible for fetching from the DB and converting to the spec's input shape), does not query the database, does not depend on `backend.data.lista_json`, and does not call repositories.
-
 ## Requirements
-
 ### Requirement: detectar_productos function exists
 The system SHALL export a single function `detectar_productos(texto: str, productos_presentaciones: list[dict]) -> dict` from `backend.recognizers.product_recognizer`. The function SHALL NOT depend on `backend.data.lista_json`, SHALL NOT query the database, SHALL NOT import repositories. The function is pure (plus a `rapidfuzz` import for fuzzy scoring).
 
@@ -114,7 +111,8 @@ The function SHALL match legitimate presentation terms against the catalog item'
 - **THEN** existing presentation filtering behavior is unchanged
 
 ### Requirement: Unavailable handling
-A product-presentation is unavailable when `activo is False` (when present; `True` by default if absent) or `disponible is False` (when present). Unavailable items are placed in `encontrados_no_disponibles`, not in `encontrados`.
+
+The recognizer SHALL treat a product-presentation as unavailable when `activo is False` (when present; `True` by default if absent) or `disponible is False` (when present), and SHALL place unavailable items in `encontrados_no_disponibles`, not in `encontrados`.
 
 #### Scenario: Unavailable product
 - **WHEN** the test calls the function with a catalog item that has `activo: True` and `disponible: False`
@@ -133,7 +131,8 @@ A product-presentation is unavailable when `activo is False` (when present; `Tru
 - **THEN** the item is in `encontrados` (after the caller converts the legacy fields to the new shape with `producto_presentacion_id=id`, `producto_nombre=nombre_producto`, `presentacion_codigo=tamanio`, etc., and `activo` defaults to `True`)
 
 ### Requirement: Unknown products
-A user text that matches no catalog item is placed in `no_encontrados` as the original text fragment.
+
+The recognizer SHALL place user text that matches no catalog item in `no_encontrados` as the original text fragment.
 
 #### Scenario: Unknown product
 - **WHEN** the test calls `detectar_productos("quiero algo raro", [{"producto_presentacion_id": 1, "producto_nombre": "Pizza", "presentacion_codigo": "grande", "presentacion_descripcion": "", "activo": True, "disponible": True, "producto_id": 1, "presentacion_id": 1, "categoria_id": 1, "categoria_nombre": "Pizzas"}])`
@@ -632,3 +631,36 @@ The `encontrados_posibles` element type is the typed-discriminated-union `list[P
 - **AND** the `FuzzyProductRecognizer.recognize` adapter at `backend/recognizers/fuzzy_product_recognizer.py` continues to delegate to `detectar_productos` and returns the same `ProductRecognizerResult` shape (widened through the union)
 - **AND** the `ProductRecognizerResult` protocol at `backend/recognizers/product_recognizer_contract.py` formally types both variants in the `encontrados_posibles` element type
 - **AND** the `__all__` of `backend/recognizers/product_recognizer` continues to export exactly `{"detectar_productos"}`
+
+### Requirement: Candidate-compatible category prefixes do not suppress explicit product matches
+
+When evaluating product candidates, the fuzzy recognizer SHALL treat a
+significant input token that matches the same candidate's catalog category
+(using the existing singular/plural normalization) as context rather than a
+required product-name token, but only when at least one other significant
+product-identifying token remains and matches that candidate under the existing
+key-token rules. It SHALL NOT generate candidates from a category token or
+ignore a token for a candidate in another category.
+
+#### Scenario: Explicit category prefix resolves only product candidates in that category
+
+- **WHEN** the input is `3 Pizza napolitana` and the catalog has `Napolitana`
+  product-presentations in category `Pizzas` plus unrelated products
+- **THEN** the recognizer returns only the existing Napolitana presentation
+  candidates with quantity `3`
+- **AND** it does not return a category-level group or an unmatched fragment
+- **AND** it does not expose an unrelated Pizza or product from another
+  category
+
+#### Scenario: Category-only input remains safe ambiguity
+
+- **WHEN** the input is `3 pizza` and there is no product-identifying token
+- **THEN** the recognizer keeps the existing category-level ambiguity result
+- **AND** it exposes no product IDs as ordinary candidates
+
+#### Scenario: Incompatible category cannot be ignored
+
+- **WHEN** the input category token does not match a candidate's own category
+- **THEN** that token remains required under the existing key-token filtering
+- **AND** the candidate is not promoted merely because its product name
+  otherwise matches

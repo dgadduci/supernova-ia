@@ -10,6 +10,12 @@ from backend.intents.responses.agregar_producto_response import (
 from backend.intents.responses.consecutive_add_product_coalescer import (
     coalesce_consecutive_add_product_intents,
 )
+from backend.intents.responses.draft_order_closure import (
+    build_confirmar_pedido_response,
+    build_consultar_resumen_pedido_response,
+    build_set_metodo_de_entrega_response,
+    build_set_metodo_de_pago_response,
+)
 from backend.intents.responses.modificar_producto_response import (
     build_modificar_producto_response,
 )
@@ -46,6 +52,20 @@ def process_incoming_message_with_responses(
             responses.append(build_quitar_producto_response(db, session, intent))
         elif intent.intent == "modificar_producto":
             responses.append(build_modificar_producto_response(db, session, intent))
+        elif intent.intent == "consultar_resumen_pedido":
+            responses.append(
+                build_consultar_resumen_pedido_response(db, session, intent)
+            )
+        elif intent.intent == "set_metodo_de_pago":
+            responses.append(
+                build_set_metodo_de_pago_response(db, session, intent)
+            )
+        elif intent.intent == "set_metodo_de_entrega":
+            responses.append(
+                build_set_metodo_de_entrega_response(db, session, intent)
+            )
+        elif intent.intent == "confirmar_pedido":
+            responses.append(build_confirmar_pedido_response(db, session, intent))
         else:
             responses.append(
                 CustomerResponse(
