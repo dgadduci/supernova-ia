@@ -21,12 +21,12 @@
 
 ## 3. Validation and controlled production check
 
-- [ ] 3.1 User runs focused pytest, Ruff, compileall and strict OpenSpec
+- [x] 3.1 User runs focused pytest, Ruff, compileall and strict OpenSpec
   validation locally and provides complete output.
-- [ ] 3.2 Deploy only with the flag disabled; verify normal web health and
+- [x] 3.2 Deploy only with the flag disabled; verify normal web health and
   manual CLI recovery remain available.
-- [ ] 3.3 Enable the worker explicitly in Railway, verify Alembic is at head,
+- [x] 3.3 Enable the worker explicitly in Railway, verify Alembic is at head,
   then test one WhatsApp receipt through delivered outbound without manual
   commands or duplicates.
-- [ ] 3.4 Review Railway logs/state, disable/redeploy rollback readiness, and
+- [x] 3.4 Review Railway logs/state, disable/redeploy rollback readiness, and
   obtain separate authorization before sync/archive.

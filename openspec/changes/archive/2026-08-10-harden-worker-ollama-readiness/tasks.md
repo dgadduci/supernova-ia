@@ -16,7 +16,7 @@
 
 ## 3. Validation and controlled production check
 
-- [ ] 3.1 User runs focused pytest, Ruff, compileall and strict OpenSpec validation locally.
+- [x] 3.1 User runs focused pytest, Ruff, compileall and strict OpenSpec validation locally.
 - [ ] 3.2 Deploy with worker enabled and verify no inbound claim while readiness is false.
 - [ ] 3.3 Controlled restart plus WhatsApp receipt reaches delivered outbound automatically without terminal exhaustion in readiness window.
-- [ ] 3.4 Review rollback and obtain separate authorization before sync/archive.
+- [x] 3.4 Review rollback and obtain separate authorization before sync/archive.

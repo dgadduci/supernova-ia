@@ -30,11 +30,11 @@
 
 ## 3. Validation and controlled production check
 
-- [ ] 3.1 User runs focused pytest, Ruff, compileall, and strict OpenSpec
+- [x] 3.1 User runs focused pytest, Ruff, compileall, and strict OpenSpec
   validation locally and provides complete output.
-- [ ] 3.2 Run the controlled Railway audit, record the effective model and
+- [x] 3.2 Run the controlled Railway audit, record the effective model and
   corpus result, and verify no sensitive prompt content reaches runtime logs.
-- [ ] 3.3 Repeat the WhatsApp guided-closure path: summary, payment, delivery,
+- [x] 3.3 Repeat the WhatsApp guided-closure path: summary, payment, delivery,
   confirmation, and delivered outbound evidence.
-- [ ] 3.4 Review scope, privacy, transaction ownership, and test evidence;
+- [x] 3.4 Review scope, privacy, transaction ownership, and test evidence;
   sync/archive only with separate explicit authorization.
