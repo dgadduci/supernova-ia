@@ -14,6 +14,9 @@ from backend.intents.orchestration.draft_order_closure import (
 from backend.intents.orchestration.modificar_producto_initial import (
     process_initial_modificar_producto,
 )
+from backend.intents.orchestration.new_order_after_confirmation import (
+    process_initial_iniciar_pedido,
+)
 from backend.intents.orchestration.quitar_producto_initial import (
     process_initial_quitar_producto,
 )
@@ -85,8 +88,12 @@ def dispatch_initial_message(
 
     processed: list[ProcessedIntent] = []
     active_boundary_reached = False
+    session_replaced = False
     for classified in result.intents:
         classified_intent = classified.intent
+
+        if session_replaced:
+            continue
 
         if classified_intent == IntentName.AGREGAR_PRODUCTO:
             if active_boundary_reached:
@@ -146,6 +153,17 @@ def dispatch_initial_message(
                     db, session, classified.mensaje
                 )
             )
+            continue
+
+        if classified_intent == IntentName.INICIAR_PEDIDO:
+            if active_boundary_reached:
+                continue
+            new_intent = process_initial_iniciar_pedido(
+                db, session, classified.mensaje
+            )
+            processed.append(new_intent)
+            if new_intent.status == "executed":
+                session_replaced = True
             continue
 
         processed.append(

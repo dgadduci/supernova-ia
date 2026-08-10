@@ -19,6 +19,9 @@ from backend.intents.responses.draft_order_closure import (
 from backend.intents.responses.modificar_producto_response import (
     build_modificar_producto_response,
 )
+from backend.intents.responses.new_order_after_confirmation import (
+    build_iniciar_pedido_response,
+)
 from backend.intents.responses.quitar_producto_response import (
     build_quitar_producto_response,
 )
@@ -66,6 +69,8 @@ def process_incoming_message_with_responses(
             )
         elif intent.intent == "confirmar_pedido":
             responses.append(build_confirmar_pedido_response(db, session, intent))
+        elif intent.intent == "iniciar_pedido":
+            responses.append(build_iniciar_pedido_response(db, session, intent))
         else:
             responses.append(
                 CustomerResponse(
