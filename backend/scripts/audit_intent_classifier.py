@@ -64,6 +64,7 @@ class FixtureReport:
     prompt_fingerprint: str
     prompt_template_version: str
     error: str | None = None
+    contamination_offenders: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -80,6 +81,7 @@ class FixtureReport:
             "prompt_fingerprint": self.prompt_fingerprint,
             "prompt_template_version": self.prompt_template_version,
             "error": self.error,
+            "contamination_offenders": list(self.contamination_offenders),
         }
 
 
@@ -141,6 +143,29 @@ def _classify_fixture(
     return result, fingerprint, None, prompt, "ok"
 
 
+def _contamination_offenders(
+    fixture_message: str,
+    result: IntentClassificationResult | None,
+) -> list[str]:
+    """Return ``mensaje`` values that are not substrings of the fixture message.
+
+    A response is contaminated when at least one intent's ``mensaje`` field
+    reproduces content not present in the current fixture message. This
+    catches the failure mode where the upstream LLM copies from the prompt
+    examples or the catalog instead of grounding every intent in the actual
+    customer message.
+    """
+    if result is None:
+        return []
+    baseline = fixture_message.strip()
+    offenders: list[str] = []
+    for item in result.intents:
+        returned = item.mensaje.strip()
+        if returned and returned not in baseline:
+            offenders.append(returned)
+    return offenders
+
+
 def _evaluate_fixture(
     expected_intents: tuple[IntentName, ...],
     expected_fragments: tuple[str, ...],
@@ -148,11 +173,14 @@ def _evaluate_fixture(
     prompt: str,
     fingerprint: str,
     error: str | None,
+    contamination: list[str] | None = None,
 ) -> tuple[bool, str, list[str]]:
     if error is not None:
         return False, "transport_error", []
     if result is None:
         return False, "schema_error", []
+    if contamination:
+        return False, "contamination_detected", list(contamination)
     actual_intents = [str(item.intent.value) for item in result.intents]
     expected_list = [str(item.value) for item in expected_intents]
     if tuple(actual_intents) != tuple(expected_list):
@@ -200,6 +228,7 @@ def build_report(
                 prompt,
                 _category,
             ) = _classify_fixture(classifier, fixture)
+            contamination = _contamination_offenders(fixture.message, result)
             matched, failure_category, preserved = _evaluate_fixture(
                 fixture.expected_intents,
                 fixture.expected_source_fragments,
@@ -207,6 +236,7 @@ def build_report(
                 prompt,
                 fingerprint,
                 None,
+                contamination,
             )
             error_text: str | None = None
         except (QueryLlmError, pydantic.ValidationError, ValueError, TypeError) as exc:
@@ -217,6 +247,7 @@ def build_report(
             matched = False
             failure_category = type(exc).__name__
             preserved = []
+            contamination = []
             error_text = type(exc).__name__
         report.fixtures.append(
             FixtureReport(
@@ -241,6 +272,7 @@ def build_report(
                 prompt_fingerprint=fingerprint,
                 prompt_template_version=PROMPT_TEMPLATE_VERSION,
                 error=error_text,
+                contamination_offenders=contamination,
             )
         )
     return report
@@ -282,6 +314,10 @@ def render_report(report: AuditReport) -> str:
             )
             lines.append(
                 f"  preserved_source_fragments: {fixture.preserved_source_fragments}"
+            )
+        if fixture.contamination_offenders:
+            lines.append(
+                f"  contamination_offenders   : {fixture.contamination_offenders}"
             )
         if fixture.error:
             lines.append(f"  error                     : {fixture.error}")

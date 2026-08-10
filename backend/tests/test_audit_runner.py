@@ -125,7 +125,7 @@ class BuildReportTest(unittest.TestCase):
         self.assertEqual(len(fixture.prompt_fingerprint), 64)
         self.assertIn("Pago en Efectivo (prueba cierre)", fixture.rendered_prompt)
 
-    def test_report_flags_intent_mismatch_for_payment_with_extra_actions(self):
+    def test_report_flags_contamination_before_intent_mismatch(self):
         def _factory() -> IntentClassifier:
             return _make_classifier(
                 {
@@ -153,10 +153,11 @@ class BuildReportTest(unittest.TestCase):
         self.assertEqual(report.failed, 1)
         fixture = report.fixtures[0]
         self.assertFalse(fixture.matched)
-        self.assertEqual(fixture.failure_category, "intent_mismatch")
+        self.assertEqual(fixture.failure_category, "contamination_detected")
         self.assertEqual(
             fixture.actual_intents, ["agregar_producto", "set_metodo_de_pago"]
         )
+        self.assertEqual(fixture.contamination_offenders, ["una empanada"])
 
     def test_report_evaluates_full_corpus_against_deterministic_stub(self):
         def _factory() -> IntentClassifier:
@@ -190,38 +191,32 @@ class BuildReportTest(unittest.TestCase):
             )
             self.assertIn(
                 fixture.failure_category,
-                {"intent_mismatch", "fragment_missing"},
+                {"intent_mismatch", "fragment_missing", "contamination_detected"},
             )
 
-    def test_report_recognises_only_payment_regression_when_sentinel_matches(self):
+    def test_report_recognises_payment_when_fixture_message_matches_response(self):
         def _factory() -> IntentClassifier:
             def _request(prompt: str) -> dict:
-                if "stub-regression-sentinel" in prompt:
-                    return _payment_ok()
-                return {
-                    "intents": [
-                        {"intent": "agregar_producto", "mensaje": "stub"}
-                    ],
-                    "mensaje": "stub",
-                }
+                return _payment_ok()
 
             return IntentClassifier(query_llm=_SimpleStub(_request))
 
-        sentinel_fixture = IntentFixture(
-            fixture_id="F-REG-PAGO-EFECTIVO",
-            description="payment regression",
-            message="stub-regression-sentinel",
+        fixture = IntentFixture(
+            fixture_id="F-CUSTOM-PAGO",
+            description="custom payment",
+            message="Pago en Efectivo (prueba cierre)",
             expected_intents=(IntentName.SET_METODO_DE_PAGO,),
-            expected_source_fragments=(),
+            expected_source_fragments=("Pago en Efectivo (prueba cierre)",),
         )
         report = build_report(
             classifier_factory=_factory,
             settings=_settings(),
-            fixtures=[sentinel_fixture],
+            fixtures=[fixture],
         )
         self.assertEqual(len(report.fixtures), 1)
         self.assertTrue(report.fixtures[0].matched)
         self.assertEqual(report.fixtures[0].failure_category, "ok")
+        self.assertEqual(report.fixtures[0].contamination_offenders, [])
 
 
 class RenderReportTest(unittest.TestCase):
@@ -328,6 +323,110 @@ class MainEntryPointTest(unittest.TestCase):
         payload = json.loads(buffer.getvalue())
         self.assertEqual(payload["total"], 1)
         self.assertEqual(payload["fixtures"][0]["fixture_id"], "F-REG-PAGO-EFECTIVO")
+
+
+class AuditContaminationDetectionTest(unittest.TestCase):
+    """The audit must flag responses whose ``mensaje`` fields reproduce
+    content not present in the current fixture message.
+    """
+
+    def test_audit_flags_response_reproducing_prompt_example_content(self):
+        def _factory() -> IntentClassifier:
+            return _make_classifier(
+                {
+                    "intents": [
+                        {
+                            "intent": "set_direccion_entrega",
+                            "mensaje": "Tilcara 2020",
+                        }
+                    ],
+                    "mensaje": "Tilcara 2020",
+                }
+            )
+
+        report = build_report(
+            classifier_factory=_factory,
+            settings=_settings(),
+            fixtures=[
+                IntentFixture(
+                    fixture_id="F-REG-PAGO-EFECTIVO",
+                    description="payment regression",
+                    message="Pago en Efectivo (prueba cierre)",
+                    expected_intents=(IntentName.SET_METODO_DE_PAGO,),
+                    expected_source_fragments=("Pago en Efectivo (prueba cierre)",),
+                )
+            ],
+        )
+        fixture = report.fixtures[0]
+        self.assertFalse(fixture.matched)
+        self.assertEqual(fixture.failure_category, "contamination_detected")
+        self.assertIn("Tilcara 2020", fixture.contamination_offenders)
+        self.assertEqual(report.failed, 1)
+
+    def test_audit_passes_when_returned_mensaje_is_substring_of_fixture(self):
+        def _factory() -> IntentClassifier:
+            return _make_classifier(
+                {
+                    "intents": [
+                        {
+                            "intent": "set_metodo_de_pago",
+                            "mensaje": "Pago en Efectivo (prueba cierre)",
+                        }
+                    ],
+                    "mensaje": "Pago en Efectivo (prueba cierre)",
+                }
+            )
+
+        report = build_report(
+            classifier_factory=_factory,
+            settings=_settings(),
+            fixtures=[
+                IntentFixture(
+                    fixture_id="F-REG-PAGO-EFECTIVO",
+                    description="payment regression",
+                    message="Pago en Efectivo (prueba cierre)",
+                    expected_intents=(IntentName.SET_METODO_DE_PAGO,),
+                    expected_source_fragments=("Pago en Efectivo (prueba cierre)",),
+                )
+            ],
+        )
+        fixture = report.fixtures[0]
+        self.assertTrue(fixture.matched)
+        self.assertEqual(fixture.contamination_offenders, [])
+        self.assertEqual(report.passed, 1)
+
+    def test_audit_offenders_surface_in_serialized_report(self):
+        def _factory() -> IntentClassifier:
+            return _make_classifier(
+                {
+                    "intents": [
+                        {
+                            "intent": "agregar_producto",
+                            "mensaje": "una empanada de carne",
+                        }
+                    ],
+                    "mensaje": "una empanada de carne",
+                }
+            )
+
+        report = build_report(
+            classifier_factory=_factory,
+            settings=_settings(),
+            fixtures=[
+                IntentFixture(
+                    fixture_id="F-CUSTOM",
+                    description="custom contamination",
+                    message="Pago en Efectivo (prueba cierre)",
+                    expected_intents=(IntentName.SET_METODO_DE_PAGO,),
+                    expected_source_fragments=(),
+                )
+            ],
+        )
+        fixture = report.fixtures[0]
+        self.assertEqual(fixture.failure_category, "contamination_detected")
+        serialized = json.dumps(fixture.to_dict())
+        self.assertIn("contamination_offenders", serialized)
+        self.assertIn("una empanada de carne", serialized)
 
 
 if __name__ == "__main__":

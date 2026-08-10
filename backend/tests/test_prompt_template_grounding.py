@@ -45,7 +45,16 @@ class PromptGroundedIntentsRuleTest(unittest.TestCase):
             query_llm=_StubQueryLlm({"intents": [], "mensaje": ""})
         )
         prompt = classifier._build_prompt("Pago en Efectivo (prueba cierre)")
-        self.assertIn("grounded intents", prompt.casefold())
+        # The prompt must document the hardened contract from the second
+        # correction: substring literal, no reuse from examples or catalog,
+        # single action -> single intent, multi intent only for multi action.
+        lowered = prompt.casefold()
+        self.assertIn("substring", lowered)
+        self.assertIn("literal", lowered)
+        self.assertIn("no inventes", lowered)
+        self.assertIn("no reutilices", lowered)
+        self.assertIn("una única acción", lowered)
+        self.assertIn("exactamente un intent", lowered)
         self.assertIn("Pago en Efectivo (prueba cierre)", prompt)
         self.assertIn("set_metodo_de_pago", prompt)
 
@@ -534,6 +543,113 @@ class EffectiveModelExposureTest(unittest.TestCase):
 class ClassifierPublicSurfaceTest(unittest.TestCase):
     def test_intent_classifier_module_all_is_minimal(self):
         self.assertEqual(intent_classifier_module.__all__, ["IntentClassifier"])
+
+
+class SecondPromptCorrectionStructureTest(unittest.TestCase):
+    """Structural/contract checks for the second prompt correction.
+
+    These tests do not simulate LLM results. They verify that the rendered
+    prompt places the current message last, removes the multi-intent
+    contaminant, and documents the hardened contract.
+    """
+
+    def _build_prompt(self, message: str = "dummy current message") -> str:
+        classifier = IntentClassifier(
+            query_llm=_StubQueryLlm({"intents": [], "mensaje": ""})
+        )
+        return classifier._build_prompt(message)
+
+    def test_intro_instructs_to_classify_only_this_message(self):
+        prompt = self._build_prompt()
+        self.assertIn("clasificá únicamente este mensaje", prompt.casefold())
+
+    def test_catalog_appears_before_examples_section(self):
+        prompt = self._build_prompt()
+        catalog_pos = prompt.find("Catálogo de posibles intents")
+        examples_pos = prompt.find("Ejemplos de referencia")
+        self.assertGreater(catalog_pos, -1)
+        self.assertGreater(examples_pos, -1)
+        self.assertLess(catalog_pos, examples_pos)
+
+    def test_examples_appear_before_current_message(self):
+        prompt = self._build_prompt()
+        examples_pos = prompt.find("Ejemplos de referencia")
+        message_marker = prompt.find("Mensaje actual del cliente")
+        current_message_pos = prompt.find("dummy current message")
+        self.assertGreater(examples_pos, -1)
+        self.assertGreater(message_marker, -1)
+        self.assertGreater(current_message_pos, -1)
+        self.assertLess(examples_pos, message_marker)
+        self.assertLess(message_marker, current_message_pos)
+
+    def test_current_message_is_last_section(self):
+        prompt = self._build_prompt("zzzz-sentinel-current-message")
+        current_pos = prompt.rfind("zzzz-sentinel-current-message")
+        tail = prompt[current_pos + len("zzzz-sentinel-current-message"):]
+        self.assertEqual(tail.strip(), "")
+
+    def test_multi_intent_contaminant_is_removed(self):
+        prompt = self._build_prompt()
+        lowered = prompt.casefold()
+        for forbidden in (
+            "una empanada de carne y dos pizzas de mozzarella",
+            "dos pizzas de mozzarella",
+            "me la envies a tilcara 2020",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, lowered)
+
+    def test_short_examples_for_each_failure_case_are_present(self):
+        prompt = self._build_prompt()
+        cases = [
+            ("Cómo puedo recibir el pedido?", "ver_metodos_de_entrega"),
+            ("La pizza es sin aceitunas", "set_observacion_producto"),
+            (
+                "Por favor que la entrega sea sin demorarse mucho",
+                "set_observacion_pedido",
+            ),
+            ("Me lo envias a Tilcara 2020", "set_direccion_entrega"),
+            ("Pago en Efectivo (prueba cierre)", "set_metodo_de_pago"),
+        ]
+        for message, intent in cases:
+            with self.subTest(intent=intent):
+                self.assertIn(message, prompt)
+                self.assertIn(intent, prompt)
+
+    def test_examples_section_explicitly_disclaims_content_reuse(self):
+        prompt = self._build_prompt()
+        self.assertIn(
+            "no los uses como contenido", prompt.casefold()
+        )
+
+    def test_substring_literal_contract_is_documented(self):
+        prompt = self._build_prompt()
+        lowered = prompt.casefold()
+        self.assertIn("substring literal", lowered)
+        self.assertIn("no reutilices", lowered)
+        self.assertIn("no inventes", lowered)
+
+    def test_single_action_single_intent_contract_is_documented(self):
+        prompt = self._build_prompt()
+        lowered = prompt.casefold()
+        self.assertIn("una única acción", lowered)
+        self.assertIn("exactamente un intent", lowered)
+        self.assertIn("varias acciones distintas", lowered)
+
+    def test_modificar_producto_atomicity_rule_is_documented(self):
+        prompt = self._build_prompt()
+        self.assertIn("modificar_producto", prompt)
+        self.assertIn("atómica", prompt.casefold())
+
+    def test_output_structure_lists_intent_and_mensaje_fields(self):
+        prompt = self._build_prompt()
+        self.assertIn('"intent": "<', prompt)
+        self.assertIn('"mensaje": "<', prompt)
+
+    def test_template_version_bumped_for_second_correction(self):
+        from backend.diagnostics import PROMPT_TEMPLATE_VERSION
+
+        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.2.0")
 
 
 if __name__ == "__main__":

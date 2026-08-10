@@ -21,7 +21,14 @@ from __future__ import annotations
 
 import hashlib
 
-PROMPT_TEMPLATE_VERSION = "intent-classifier/v1.1.0"
+PROMPT_TEMPLATE_VERSION = "intent-classifier/v1.2.0"
+
+_INTRO = (
+    "\n"
+    "Sos un clasificador de intents para un sistema de pedidos por WhatsApp.\n"
+    "Tu única tarea es clasificar el mensaje del cliente que aparece al final de este prompt.\n"
+    "Respetá estrictamente las reglas y el catálogo definidos más abajo.\n"
+)
 
 _INTENT_CATALOG = """
 * Si el cliente saluda = `saludo`
@@ -54,14 +61,114 @@ _INTENT_CATALOG = """
 
 * Las intents deben conservar el orden en que deben ejecutarse.
 
-Ejemplo:
+"""
+
+_RULES = """
+Reglas de clasificación:
+
+1. Cada intent devuelto debe estar respaldado por texto del mensaje actual del cliente. No inventes productos, direcciones, medios de pago ni métodos de entrega que el cliente no haya mencionado.
+
+2. No reutilices ni copies contenido del catálogo, de las reglas, de los ejemplos ni de ninguna otra sección de este prompt. Cada campo `mensaje` que devuelvas debe ser un substring literal del mensaje actual.
+
+3. Un mensaje que expresa una única acción inequívoca debe generar exactamente un intent correspondiente a esa acción y nada más. Nunca lo descompones en acciones no solicitadas.
+
+4. Solo devolvés múltiples intents cuando el mensaje actual exprese varias acciones distintas y ordenadas.
+
+5. El texto del mensaje recibido no debe ser alterado. Podés usar todo o partes, pero no modificarlo.
+
+6. Cuando detectes que se pide reemplazar un producto por otro, generá un único intent `modificar_producto` con el mensaje original completo. NO descomponas en `quitar_producto` + `agregar_producto`; el orquestador `modificar_producto` realiza la sustitución atómica en una sola operación.
+
+7. Cuando se trate de productos, separalos por producto y cantidad (si se especifica) en distintos intents.
+
+"""
+
+_EXAMPLES = """
+Ejemplos de referencia (NO los uses como contenido para clasificar el mensaje actual; solo ilustran el contrato de salida para cada caso):
 
 Mensaje:
+`Cómo puedo recibir el pedido?`
 
+Salida:
+```json
+{
+  "intents": [
+    {
+      "intent": "ver_metodos_de_entrega",
+      "mensaje": "Cómo puedo recibir el pedido?"
+    }
+  ],
+  "mensaje": "Cómo puedo recibir el pedido?"
+}
+```
+
+Mensaje:
+`La pizza es sin aceitunas`
+
+Salida:
+```json
+{
+  "intents": [
+    {
+      "intent": "set_observacion_producto",
+      "mensaje": "La pizza es sin aceitunas"
+    }
+  ],
+  "mensaje": "La pizza es sin aceitunas"
+}
+```
+
+Mensaje:
+`Por favor que la entrega sea sin demorarse mucho`
+
+Salida:
+```json
+{
+  "intents": [
+    {
+      "intent": "set_observacion_pedido",
+      "mensaje": "Por favor que la entrega sea sin demorarse mucho"
+    }
+  ],
+  "mensaje": "Por favor que la entrega sea sin demorarse mucho"
+}
+```
+
+Mensaje:
+`Me lo envias a Tilcara 2020`
+
+Salida:
+```json
+{
+  "intents": [
+    {
+      "intent": "set_direccion_entrega",
+      "mensaje": "Me lo envias a Tilcara 2020"
+    }
+  ],
+  "mensaje": "Me lo envias a Tilcara 2020"
+}
+```
+
+Mensaje:
+`Pago en Efectivo (prueba cierre)`
+
+Salida:
+```json
+{
+  "intents": [
+    {
+      "intent": "set_metodo_de_pago",
+      "mensaje": "Pago en Efectivo (prueba cierre)"
+    }
+  ],
+  "mensaje": "Pago en Efectivo (prueba cierre)"
+}
+```
+
+Mensaje:
 `Cambiame la pizza de mozzarella por una napolitana`
 
 Salida:
-
 ```json
 {
   "intents": [
@@ -77,60 +184,45 @@ Salida:
 """
 
 _OUTPUT_STRUCT = """
+Estructura de salida:
+
 Devolvé únicamente JSON válido.
 No expliques nada.
 No uses Markdown.
-ejemplo:
+El JSON debe respetar esta forma:
+
 {
     "intents": [
         {
-            "intent": "agregar_producto",
-            "mensaje": "una empanada de carne"
-        },
-        {
-            "intent": "agregar_producto",
-            "mensaje": "dos pizzas de mozzarella"
-        },
-        {
-            "intent": "set_metodo_de_entrega",
-            "mensaje": "me la envies a tilcara 2020."
-        },
-        {
-            "intent": "set_metodo_de_pago",
-            "mensaje": "Pago en efectivo"
+            "intent": "<nombre del intent del catálogo>",
+            "mensaje": "<substring literal del mensaje actual>"
         }
     ],
-    "mensaje": "quiero una empanada de carne y dos pizzas de mozzarella y que me la envies a tilcara 2020. Pago en efectivo"
+    "mensaje": "<mensaje actual>"
 }
+
 """
 
-# Static template body with a placeholder for the customer message. The
-# fingerprint is computed over this body so it is never influenced by
-# customer text. ``{message}`` is replaced at render time via ``str.replace``
-# (not ``str.format``) so the literal braces in the JSON example below do
-# not need to be escaped.
-_PROMPT_TEMPLATE_BODY = (
+_MESSAGE_PROMPT = (
     "\n"
-    "Catálogo de posibles intents:\n"
-    f"{_INTENT_CATALOG}"
+    "Mensaje actual del cliente (clasificá únicamente este mensaje):\n"
     "\n"
-    "message\n"
     "{message}\n"
-    "\n"
-    "Instrucciones\n"
-    "Debes devolver del Catalogo de intents, los intent que mejor se adapten al mensaje, siguiendo la estructura json que te envio de ejemplo\n"
-    "Tambien debes devolver el message recibido\n"
-    "Si el mensaje incluye varios intents, envialos como en el ejemplo del json\n"
-    "Cuando detectes que se pide reemplazar un producto por otro, genera un único intent `modificar_producto` con el mensaje original completo. NO descomponas en `quitar_producto` + `agregar_producto`; el orquestador `modificar_producto` realiza la sustitución atómica en una sola operación.\n"
-    "Cuando se trate de productos, separalos por producto y cantidad (si se especifica) en distintos intents\n"
-    "\n"
-    "Regla de no modificacion del mensaje\n"
-    "El texto del mensaje recibido no debe ser alterado. Podes usar todo o partes, pero no modificarlo\n"
-    "\n"
-    "Regla de grounded intents\n"
-    "Cada intent devuelto debe estar respaldado por texto del mensaje recibido. No inventes productos, direcciones, medios de pago ni métodos de entrega que el cliente no haya mencionado. Un mensaje que expresa una única acción (por ejemplo, \"Pago en Efectivo (prueba cierre)\") debe generar exactamente un intent correspondiente a esa acción y nada más; nunca lo descomponas en acciones no solicitadas.\n"
-    f"{_OUTPUT_STRUCT}"
-    "\n"
+)
+
+# Static template body. ``{message}`` is replaced at render time via
+# ``str.replace`` (not ``str.format``) so the literal braces in the JSON
+# examples and structure above do not need to be escaped. The current
+# customer message is the LAST section of the template; everything above
+# (catalog, rules, examples, output structure) is fixed contract text.
+_PROMPT_TEMPLATE_BODY = (
+    _INTRO
+    + "Catálogo de posibles intents:\n"
+    + _INTENT_CATALOG
+    + _RULES
+    + _EXAMPLES
+    + _OUTPUT_STRUCT
+    + _MESSAGE_PROMPT
 )
 
 _PROMPT_TEMPLATE_HASH = hashlib.sha256(_PROMPT_TEMPLATE_BODY.encode("utf-8")).hexdigest()
