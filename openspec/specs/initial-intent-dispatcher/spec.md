@@ -3,9 +3,7 @@
 ## Purpose
 
 Provide the top-level entry point `dispatch_initial_message` that classifies a first user message, delegates recognized intents to the appropriate orchestrator, and emits one `ProcessedIntent` per classified item — without owning persistence, transactions, HTTP, or response generation.
-
 ## Requirements
-
 ### Requirement: Initial intent dispatcher module location
 The system SHALL expose `dispatch_initial_message` from `backend/intents/orchestration/initial_intent_dispatcher.py` and SHALL NOT import from `backend/old_project/`.
 
@@ -211,3 +209,24 @@ The dispatcher SHALL NOT place unrelated `quitar_producto`, `modificar_producto`
 #### Scenario: Other intents are not inserted behind an addition
 - **WHEN** classification contains an `agregar_producto` pending item followed by another intent type
 - **THEN** the other intent is not persisted as `product_selection` queue work
+
+### Requirement: Explicit iniciar_pedido dispatch is session-safe
+
+When the classifier returns `INICIAR_PEDIDO` and the active session has no pending context, the initial dispatcher SHALL delegate the classified message to the approved new-order transition. It SHALL preserve the existing rejection behavior for all unsupported intents and SHALL NOT invoke the transition for any other intent.
+
+#### Scenario: Explicit new-order intent reaches the transition
+
+- **WHEN** the classifier returns one `ClassifiedIntent(intent=INICIAR_PEDIDO, mensaje="quiero hacer otro pedido")`
+- **THEN** the dispatcher calls the new-order transition once with the supplied database session, conversation session, and classified message
+- **AND** returns that transition's `ProcessedIntent`
+
+### Requirement: Successful session replacement ends the current turn
+
+After `iniciar_pedido` successfully creates a successor session/order, the dispatcher SHALL NOT dispatch later classified intents from that same inbound message against the closed predecessor session.
+
+#### Scenario: Later product intent is not applied to the closed order
+
+- **WHEN** the classifier returns `iniciar_pedido` followed by `agregar_producto`
+- **AND** the new-order transition succeeds
+- **THEN** the dispatcher returns only the successor transition result for that boundary
+- **AND** it does not call the product orchestrator with the closed predecessor session
