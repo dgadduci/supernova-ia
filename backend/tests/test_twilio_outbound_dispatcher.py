@@ -12,12 +12,19 @@ Coverage:
 5. The real ``twilio.base.exceptions.TwilioRestException`` from the
    pinned SDK 9.10.9 is classified by its HTTP ``status``, not its
    provider ``code``. Unknown exceptions escape unchanged.
+6. Each normal ``dispatch`` result emits exactly one structured,
+   stdout-bound ``outbound_attempt_outcome`` JSON event that the
+   production observability CLI can query. The event never carries
+   the message body, the destination E.164 or the provider SID.
 """
 from __future__ import annotations
 
 import ast
+import contextlib
 import dataclasses
 import importlib
+import io
+import json
 import logging
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -31,6 +38,11 @@ from backend.models.mensaje_proveedor_saliente import (
     MensajeProveedorSaliente,
     OutboundFailureCategory,
     OutboundProviderMessageState,
+)
+from backend.observability import (
+    COMPONENT_OUTBOUND,
+    EVENT_OUTBOUND_OUTCOME,
+    parse_event,
 )
 from backend.services import outbound_message_dispatcher as dispatcher_module
 from backend.services import twilio_outbound_adapter as adapter_module
@@ -1200,6 +1212,210 @@ class DispatcherSafeAttemptEventTest(unittest.TestCase):
                 self.assertNotIn(sentinel, value)
                 self.assertNotIn("secret-body-content", value)
                 self.assertNotIn("SM-OK", value)
+
+
+class DispatcherOutboundOutcomeEventTest(unittest.TestCase):
+    """The dispatcher must emit exactly one structured
+    ``outbound_attempt_outcome`` JSON event on stdout per normal
+    ``dispatch`` call so the production observability CLI can query
+    the dispatcher state without parsing the Python log record.
+
+    The structured event is the canonical contract the Railway
+    query CLI binds to. The event carries only the allowlisted
+    safe fields and never the outbound body, the destination
+    E.164 or the provider SID. Technical failures do not emit this
+    event; the existing ``provider_outbound_attempt`` log record
+    and the repository-level ``database_technical_failure`` event
+    stay the only safe surface for that path.
+    """
+
+    def setUp(self) -> None:
+        importlib.reload(dispatcher_module)
+
+    @staticmethod
+    def _capture_stdout(callable_):
+        """Invoke ``callable_`` with stdout redirected to a buffer.
+
+        Returns the buffered stdout string so the test can assert
+        verbatim on the JSON lines the dispatcher emits.
+        """
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            callable_()
+        return buffer.getvalue()
+
+    @staticmethod
+    def _parse_outbound_lines(stdout_text: str) -> list[dict]:
+        """Parse every JSON line emitted to stdout and return only
+        the ``outbound_attempt_outcome`` events.
+
+        The dispatcher emits exactly one such line per normal
+        ``dispatch`` call. The Railway query CLI parses the same
+        shape through ``parse_event``; the assert uses the same
+        helper so any contract drift fails the test.
+        """
+        parsed: list[dict] = []
+        for raw_line in stdout_text.splitlines():
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            payload = json.loads(stripped)
+            if payload.get("event") == EVENT_OUTBOUND_OUTCOME:
+                parsed.append(parse_event(stripped))
+        return parsed
+
+    def test_accepted_dispatch_emits_parseable_outbound_outcome_event(
+        self,
+    ) -> None:
+        """A successful ``accepted`` dispatch must emit one
+        parseable ``outbound_attempt_outcome`` event with safe
+        fields only. The event must never carry the message body,
+        the destination E.164 or the provider SID.
+        """
+        sentinel_body = "secret-body-content-accepted"
+        sentinel_phone = "+5491100000099"
+        sentinel_sid = "SM-ACCEPTED-9999"
+
+        db_session = MagicMock(name="DatabaseSession")
+        outbox_repo = MagicMock(name="OutboundProviderMessageRepository")
+        outbox_repo.finalize_accepted.return_value = True
+
+        claimed = _claimed_row()
+        claimed.cuerpo = sentinel_body
+        claimed.destinatario_e164 = sentinel_phone
+        outbox_repo.claim_due.return_value = claimed
+
+        messages_client = _StrictTwilioMessagesClient(sid=sentinel_sid)
+
+        dispatcher = OutboundMessageDispatcher(
+            session_factory=lambda: db_session,
+            messages_client=cast(TwilioMessagesClient, messages_client),
+            config=OutboundDispatchConfig(
+                sender_e164="+5491100000000",
+                status_callback_url="https://example.test/cb",
+                lease_seconds=30,
+                initial_backoff_seconds=30,
+                max_backoff_seconds=300,
+                max_attempts=5,
+            ),
+            outbox_repo_factory=lambda _session: outbox_repo,
+            settings=_settings_stub(),
+            now=datetime(2026, 8, 6, 12, 0, 0, tzinfo=timezone.utc),
+        )
+
+        stdout_text = self._capture_stdout(dispatcher.dispatch)
+        events = self._parse_outbound_lines(stdout_text)
+
+        joined = json.dumps(events, sort_keys=True)
+        self.assertNotIn(sentinel_body, joined)
+        self.assertNotIn(sentinel_phone, joined)
+        self.assertNotIn(sentinel_sid, joined)
+
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["event"], EVENT_OUTBOUND_OUTCOME)
+        self.assertEqual(event["component"], COMPONENT_OUTBOUND)
+        self.assertEqual(event["schema_version"], 1)
+        self.assertEqual(event["outcome"], "accepted")
+        self.assertEqual(event["outbox_id"], 11)
+        self.assertEqual(event["durable_state"], "accepted")
+        self.assertNotIn("failure_category", event)
+        self.assertNotIn("exception_type", event)
+        timestamp = event["timestamp"]
+        self.assertIsInstance(timestamp, str)
+        from datetime import datetime as _dt
+        _dt.fromisoformat(timestamp)
+
+    def test_no_due_row_dispatch_emits_parseable_outbound_outcome_event(
+        self,
+    ) -> None:
+        """The ``no_due_row`` dispatcher branch must also emit the
+        structured ``outbound_attempt_outcome`` event so the CLI
+        can query the idle cycle safe endpoint. The event must
+        carry no outbox context because no row was claimed.
+        """
+        db_session = MagicMock(name="DatabaseSession")
+        outbox_repo = MagicMock(name="OutboundProviderMessageRepository")
+        outbox_repo.claim_due.return_value = None
+        messages_client = MagicMock(name="TwilioMessagesClient")
+
+        dispatcher = OutboundMessageDispatcher(
+            session_factory=lambda: db_session,
+            messages_client=messages_client,
+            config=OutboundDispatchConfig(
+                sender_e164="+5491100000000",
+                status_callback_url="https://example.test/cb",
+                lease_seconds=30,
+                initial_backoff_seconds=30,
+                max_backoff_seconds=300,
+                max_attempts=5,
+            ),
+            outbox_repo_factory=lambda _session: outbox_repo,
+            settings=_settings_stub(),
+            now=datetime(2026, 8, 6, 12, 0, 0, tzinfo=timezone.utc),
+        )
+
+        stdout_text = self._capture_stdout(dispatcher.dispatch)
+        events = self._parse_outbound_lines(stdout_text)
+
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["event"], EVENT_OUTBOUND_OUTCOME)
+        self.assertEqual(event["component"], COMPONENT_OUTBOUND)
+        self.assertEqual(event["outcome"], "no_due_row")
+        self.assertIsNone(event.get("outbox_id"))
+        self.assertIsNone(event.get("durable_state"))
+        self.assertNotIn("failure_category", event)
+        self.assertNotIn("exception_type", event)
+        messages_client.create.assert_not_called()
+
+    def test_technical_failure_does_not_emit_outbound_outcome_event(
+        self,
+    ) -> None:
+        """A technical failure path must keep the existing
+        contract: the ``provider_outbound_attempt`` log record
+        with ``outcome=technical_failure`` is the only operational
+        surface. The structured ``outbound_attempt_outcome`` event
+        would be a no-op duplicate and is intentionally absent so
+        the CLI never fabricates a business outcome from a
+        technical exception.
+        """
+        db_session = MagicMock(name="DatabaseSession")
+        outbox_repo = MagicMock(name="OutboundProviderMessageRepository")
+        outbox_repo.claim_due.return_value = _claimed_row()
+        messages_client = MagicMock(name="TwilioMessagesClient")
+        messages_client.create.side_effect = TypeError(
+            "secret-auth-token-value / leak"
+        )
+
+        dispatcher = OutboundMessageDispatcher(
+            session_factory=lambda: db_session,
+            messages_client=cast(TwilioMessagesClient, messages_client),
+            config=OutboundDispatchConfig(
+                sender_e164="+5491100000000",
+                status_callback_url="https://example.test/cb",
+                lease_seconds=30,
+                initial_backoff_seconds=30,
+                max_backoff_seconds=300,
+                max_attempts=5,
+            ),
+            outbox_repo_factory=lambda _session: outbox_repo,
+            settings=_settings_stub(),
+            now=datetime(2026, 8, 6, 12, 0, 0, tzinfo=timezone.utc),
+        )
+
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            try:
+                dispatcher.dispatch()
+            except TypeError:
+                pass
+
+        events = self._parse_outbound_lines(captured.getvalue())
+        self.assertEqual(events, [])
+        joined = captured.getvalue()
+        self.assertNotIn("secret-auth-token-value", joined)
+        self.assertNotIn("leak", joined)
 
 
 class DispatcherRunPassEvidenceTest(unittest.TestCase):
