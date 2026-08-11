@@ -39,6 +39,7 @@ from backend.config.settings import load_settings
 from backend.dependencies import get_session
 from backend.observability import (
     COMPONENT_CALLBACK,
+    COMPONENT_DATABASE,
     EVENT_CALLBACK_OUTCOME,
     EVENT_DATABASE_TECHNICAL_FAILURE,
     categorize_sqlalchemy_error,
@@ -183,7 +184,7 @@ def post_twilio_whatsapp_status(
     except SQLAlchemyError as exc:
         emit_event(
             event=EVENT_DATABASE_TECHNICAL_FAILURE,
-            component=COMPONENT_CALLBACK,
+            component=COMPONENT_DATABASE,
             failure_category=categorize_sqlalchemy_error(exc),
             exception_type=type(exc).__name__,
         )

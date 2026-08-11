@@ -40,6 +40,7 @@ COMPONENT_WORKER = "provider_worker"
 COMPONENT_LLM = "query_llm"
 COMPONENT_EMBEDDING = "embedding_client"
 COMPONENT_DATABASE = "database_technical_boundary"
+COMPONENT_OBSERVABILITY = "observability_helper"
 
 
 EVENT_OUTBOUND_OUTCOME = "outbound_attempt_outcome"
@@ -51,6 +52,7 @@ EVENT_WORKER_DISABLED = "provider_worker_disabled"
 EVENT_LLM_REQUEST = "llm_request"
 EVENT_EMBEDDING_REQUEST = "embedding_request"
 EVENT_DATABASE_TECHNICAL_FAILURE = "database_technical_failure"
+EVENT_OBSERVABILITY_EMIT_FAILED = "observability_emit_failed"
 
 
 _EVENT_CATALOGUE: dict[str, str] = {
@@ -63,6 +65,7 @@ _EVENT_CATALOGUE: dict[str, str] = {
     EVENT_LLM_REQUEST: COMPONENT_LLM,
     EVENT_EMBEDDING_REQUEST: COMPONENT_EMBEDDING,
     EVENT_DATABASE_TECHNICAL_FAILURE: COMPONENT_DATABASE,
+    EVENT_OBSERVABILITY_EMIT_FAILED: COMPONENT_OBSERVABILITY,
 }
 
 
@@ -105,6 +108,9 @@ _FAILURE_CATEGORIES_BY_EVENT: dict[str, frozenset[str]] = {
     EVENT_DATABASE_TECHNICAL_FAILURE: frozenset(
         {"connection", "integrity", "operational", "unexpected"}
     ),
+    EVENT_OBSERVABILITY_EMIT_FAILED: frozenset(
+        {"validation", "internal"}
+    ),
 }
 
 
@@ -122,6 +128,7 @@ _OPTIONAL_FIELDS_BY_EVENT: dict[str, frozenset[str]] = {
         {"elapsed_ms", "http_status", "exception_type"}
     ),
     EVENT_DATABASE_TECHNICAL_FAILURE: frozenset({"exception_type"}),
+    EVENT_OBSERVABILITY_EMIT_FAILED: frozenset({"exception_type"}),
 }
 
 
@@ -510,19 +517,20 @@ def emit_event(
             elapsed_ms=elapsed_ms,
         )
     except EventValidationError as exc:
-        degraded = {
-            "event": "observability_emit_failed",
-            "schema_version": int(SCHEMA_VERSION),
-            "component": (
-                component if _is_safe_component(component) else "unknown"
-            ),
-            "failure_category": "validation",
-            "exception_type": type(exc).__name__,
-            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
-        }
+        try:
+            degraded_payload = build_event(
+                event=EVENT_OBSERVABILITY_EMIT_FAILED,
+                component=COMPONENT_OBSERVABILITY,
+                failure_category="validation",
+                exception_type=type(exc).__name__,
+            )
+        except EventValidationError:
+            return False
         try:
             sink.write(
-                json.dumps(degraded, sort_keys=True, separators=(",", ":"))
+                json.dumps(
+                    degraded_payload, sort_keys=True, separators=(",", ":")
+                )
                 + "\n"
             )
         except (OSError, ValueError, TypeError):
@@ -545,12 +553,14 @@ __all__ = [
     "COMPONENT_DATABASE",
     "COMPONENT_EMBEDDING",
     "COMPONENT_LLM",
+    "COMPONENT_OBSERVABILITY",
     "COMPONENT_OUTBOUND",
     "COMPONENT_WORKER",
     "EVENT_CALLBACK_OUTCOME",
     "EVENT_DATABASE_TECHNICAL_FAILURE",
     "EVENT_EMBEDDING_REQUEST",
     "EVENT_LLM_REQUEST",
+    "EVENT_OBSERVABILITY_EMIT_FAILED",
     "EVENT_OUTBOUND_OUTCOME",
     "EVENT_WORKER_CYCLE",
     "EVENT_WORKER_DISABLED",

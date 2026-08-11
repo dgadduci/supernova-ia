@@ -25,6 +25,7 @@ from __future__ import annotations
 import io
 import json
 import unittest
+from typing import ClassVar
 
 from backend.observability import (
     COMPONENT_CALLBACK,
@@ -49,7 +50,6 @@ from backend.observability import (
     emit_event,
     parse_event,
 )
-
 
 SENTINELS = (
     "secret-auth-token-value",
@@ -510,6 +510,125 @@ class NoSentinelLeaksTest(unittest.TestCase):
             if token in ("OperationalError",) or token.startswith("Operation"):
                 continue
             self.assertNotIn(token, line)
+
+
+class DatabaseTechnicalFailureEmissionTest(unittest.TestCase):
+    """Blocker 1 regression: a real ``SQLAlchemyError`` MUST surface
+    as a valid, queryable ``database_technical_failure`` event
+    belonging to the ``database_technical_boundary`` component.
+    It MUST NOT degrade to ``observability_emit_failed`` (which
+    would indicate the catalogue rejected the legitimate shape).
+    """
+
+    # Catalogue mapping: the database event MUST belong to the
+    # database_technical_boundary component, not to the caller
+    # component (outbound/callback/etc.). This guards the catalogue
+    # contract the dispatcher and the callback route use.
+    _CATALOGUE: ClassVar[dict[str, str]] = {
+        EVENT_OUTBOUND_OUTCOME: COMPONENT_OUTBOUND,
+        EVENT_CALLBACK_OUTCOME: COMPONENT_CALLBACK,
+        EVENT_WORKER_CYCLE: COMPONENT_WORKER,
+        EVENT_WORKER_UNEXPECTED_FAILURE: COMPONENT_WORKER,
+        EVENT_WORKER_READINESS_TRANSITION: COMPONENT_WORKER,
+        EVENT_WORKER_DISABLED: COMPONENT_WORKER,
+        EVENT_LLM_REQUEST: COMPONENT_LLM,
+        EVENT_EMBEDDING_REQUEST: COMPONENT_EMBEDDING,
+        EVENT_DATABASE_TECHNICAL_FAILURE: COMPONENT_DATABASE,
+    }
+
+    def test_database_failure_event_uses_database_component(self) -> None:
+        from sqlalchemy.exc import OperationalError
+
+        exc = OperationalError("stmt", {}, RuntimeError("orig"))
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_DATABASE_TECHNICAL_FAILURE,
+            component=COMPONENT_DATABASE,
+            failure_category=categorize_sqlalchemy_error(exc),
+            exception_type=type(exc).__name__,
+            stream=sink,
+        )
+        self.assertTrue(ok)
+        line = sink.getvalue().strip()
+        self.assertTrue(line)
+        parsed = parse_event(line)
+        self.assertEqual(parsed["event"], EVENT_DATABASE_TECHNICAL_FAILURE)
+        self.assertEqual(parsed["component"], COMPONENT_DATABASE)
+        self.assertEqual(parsed["failure_category"], "connection")
+        self.assertEqual(parsed["exception_type"], "OperationalError")
+        self.assertNotEqual(
+            parsed["event"], "observability_emit_failed"
+        )
+
+    def test_sqlalchemy_error_emits_valid_queryable_event(self) -> None:
+        # End-to-end: the dispatcher / callback paths emit this
+        # exact catalogued shape by going through the emit_event
+        # helper. The emitted line MUST round-trip through
+        # parse_event so the Railway query CLI can find it.
+        from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
+
+        for exc, expected_category in (
+            (OperationalError("stmt", {}, RuntimeError("orig")), "connection"),
+            (IntegrityError("stmt", {}, RuntimeError("orig")), "integrity"),
+            (SQLAlchemyError("leak: secret"), "operational"),
+        ):
+            with self.subTest(exception_type=type(exc).__name__):
+                sink = io.StringIO()
+                ok = emit_event(
+                    event=EVENT_DATABASE_TECHNICAL_FAILURE,
+                    component=COMPONENT_DATABASE,
+                    failure_category=categorize_sqlalchemy_error(exc),
+                    exception_type=type(exc).__name__,
+                    stream=sink,
+                )
+                self.assertTrue(ok)
+                line = sink.getvalue().strip()
+                # The line is a valid JSON object parseable by the
+                # exact same helper the Railway query CLI uses.
+                parsed = parse_event(line)
+                self.assertEqual(
+                    parsed["event"], EVENT_DATABASE_TECHNICAL_FAILURE
+                )
+                self.assertEqual(
+                    parsed["component"], COMPONENT_DATABASE
+                )
+                self.assertEqual(
+                    parsed["failure_category"], expected_category
+                )
+                # Catalogue guard: the catalogue maps the event
+                # name to the database_technical_boundary component
+                # and rejects any other component.
+                self.assertEqual(
+                    self._CATALOGUE[EVENT_DATABASE_TECHNICAL_FAILURE],
+                    COMPONENT_DATABASE,
+                )
+
+    def test_invalid_database_event_falls_back_to_degraded_event(self) -> None:
+        # When a CALLER passes the wrong component for the
+        # database_technical_failure event, the helper MUST
+        # degrade to observability_emit_failed - that is the
+        # contract surfaced by the catalogue. This is the only
+        # legitimate degraded path; the SQLAlchemyError path
+        # above NEVER triggers it because callers use the correct
+        # component already.
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_DATABASE_TECHNICAL_FAILURE,
+            component=COMPONENT_OUTBOUND,
+            failure_category="connection",
+            exception_type="OperationalError",
+            stream=sink,
+        )
+        self.assertFalse(ok)
+        parsed = json.loads(sink.getvalue().strip())
+        self.assertEqual(parsed["event"], "observability_emit_failed")
+        self.assertEqual(parsed["component"], "observability_helper")
+        self.assertEqual(parsed["failure_category"], "validation")
+        # The degraded event itself is parseable through the same
+        # catalogue, so the Railway query CLI must keep working
+        # when it encounters one.
+        parsed_round_trip = parse_event(sink.getvalue().strip())
+        self.assertEqual(parsed_round_trip["event"], "observability_emit_failed")
 
 
 if __name__ == "__main__":

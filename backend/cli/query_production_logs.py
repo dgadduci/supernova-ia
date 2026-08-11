@@ -8,24 +8,62 @@ The CLI is intentionally narrow:
 
 * arguments require explicit ``--project``, ``--environment`` and
   ``--service`` selection; there is no implicit fallback;
-* filters are bounded: ``--since`` (ISO 8601 lower bound),
-  ``--event`` (exact match), ``--level`` (info or error) and
-  ``--limit`` (1..max, default 100, max 1000);
+* filters are bounded: ``--since`` (ISO 8601 lower bound), ``--event``
+  (exact match, applied as a Railway source-side text filter AND as
+  a local allowlist), ``--level`` (info or error) and ``--limit``
+  (1..max, default 100, max 1000). The same ``--limit`` is also
+  pushed to Railway as ``--lines`` so the source query is bounded
+  and the local array cap is a second line of defence;
 * output is a single JSON object with a bounded ``events`` array; the
   CLI never prints raw Railway lines, never reflects argument
   values back into the output, and never accepts credentials;
 * the CLI never opens a database session, never calls Twilio or
   Ollama directly, and never modifies Railway state.
 
+Source-bound query contract:
+
+* ``--lines`` is supported by Railway (``railway logs --help``) and
+  disables streaming, so the local ``--limit`` cap is applied at the
+  source rather than only at the in-memory stage;
+* ``--since`` is supported by Railway as ``-S``/``--since`` and accepts
+  the same ISO 8601 lower bound the CLI already validates, so the
+  source returns only post-bound lines; the local ``_match_event``
+  also filters by timestamp as a safety net;
+* ``--filter`` is supported by Railway as ``-f``/``--filter`` with a
+  text search syntax for deploy logs. The CLI uses it only with the
+  operator-supplied event name (a closed alphanumeric catalogued
+  token) so the source query never depends on free-form payload.
+
+Railway mixed-log behaviour:
+
+The application emits one structured JSON event per stdout line.
+Railway history interleaves those lines with platform access logs
+and stdout/stderr noise. The CLI distinguishes the three document
+classes:
+
+* a line that is a valid catalogued structured event → returned in
+  the bounded array (after local filters);
+* a line that is *not* structured (plain text log, plain Railway
+  envelope without ``message``, envelope whose ``message`` is not a
+  structured event, etc.) → SKIPPED silently, NEVER printed;
+* a line that *claims* to be a structured event (it carries
+  ``schema_version`` + ``event``) but violates the contract, or a
+  Railway envelope whose ``message`` field claims to be structured
+  but is invalid, or a non-JSON line that contradicts Railway's
+  ``--json`` contract → exit 4 (railway_unparseable_output).
+
+The CLI never prints the raw failing line in any branch; it only
+reports the failure category on stderr.
+
 Exit codes:
 
 * ``0`` success - the JSON output is printed (empty ``events``
-  means "no results matching the filters");
+  means "no matching catalogued events in the requested window");
 * ``2`` invalid arguments or configuration;
 * ``3`` Railway CLI invocation failure (binary missing, timeout or
   non-zero exit code);
-* ``4`` unparseable provider output - the CLI never prints the raw
-  failing line; it only reports the category.
+* ``4`` structured-contract violation - the CLI never prints the
+  raw failing line; it only reports the category.
 """
 from __future__ import annotations
 
@@ -61,6 +99,10 @@ EXIT_OK = 0
 EXIT_INVALID_ARGUMENTS = 2
 EXIT_RAILWAY_INVOCATION_FAILED = 3
 EXIT_RAILWAY_UNPARSEABLE = 4
+
+_STRUCTURED_EVENT_SHAPE_KEYS: frozenset[str] = frozenset(
+    {"event", "schema_version"}
+)
 
 
 class RailwayInvocationError(RuntimeError):
@@ -138,6 +180,24 @@ def _is_valid_iso8601(value: str) -> bool:
     return True
 
 
+def _is_safe_event_name(value: str) -> bool:
+    """Validate that an event-name token is a closed alphanumeric
+    catalogue identifier.
+
+    The same shape rule is used by ``backend.observability.events``
+    so the CLI can confidently push it to Railway's ``--filter``
+    without leaking operator-typed whitespace, control characters
+    or quote-breaking tokens.
+    """
+    if not isinstance(value, str):
+        return False
+    if len(value) == 0 or len(value) > 64:
+        return False
+    if not value.replace("_", "").isalnum():
+        return False
+    return any(c.isalpha() for c in value)
+
+
 def _validate_args(args: argparse.Namespace) -> None:
     if not args.project or not args.environment or not args.service:
         print(
@@ -160,16 +220,38 @@ def _validate_args(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         raise SystemExit(EXIT_INVALID_ARGUMENTS)
-    if args.event is not None and not args.event:
+    if args.event is not None and not _is_safe_event_name(args.event):
         print(
-            "invalid_arguments: --event must be a non-empty string",
+            "invalid_arguments: --event must be a closed alphanumeric "
+            "catalogue token (matching the documented event names)",
             file=sys.stderr,
         )
         raise SystemExit(EXIT_INVALID_ARGUMENTS)
 
 
 def _build_railway_command(args: argparse.Namespace) -> list[str]:
-    return [
+    """Assemble the documented ``railway logs`` invocation.
+
+    The command uses only flags documented in ``railway logs
+    --help``:
+
+    * ``--project``, ``--environment``, ``--service`` for explicit
+      selection (also supported under the short forms ``-p`` /
+      ``-e`` / ``-s``);
+    * ``--json`` for the documented JSON contract;
+    * ``--lines`` to bound the source query at the platform level
+      (it disables streaming and returns at most ``args.limit``
+      historical lines, equivalent to the local output cap);
+    * ``--since`` when the operator provides a valid ISO 8601 lower
+      bound, so the platform only returns post-bound lines;
+    * ``--filter`` when the operator supplies ``--event``, so the
+      platform performs a closed-token text search instead of
+      relying on free-form payload matching.
+
+    The flags are added in a stable order so the focused tests can
+    assert on their positions without over-coupling to internals.
+    """
+    cmd: list[str] = [
         RAILWAY_BINARY,
         RAILWAY_LOGS_SUBCOMMAND,
         "--project",
@@ -179,7 +261,14 @@ def _build_railway_command(args: argparse.Namespace) -> list[str]:
         "--service",
         str(args.service),
         "--json",
+        "--lines",
+        str(int(args.limit)),
     ]
+    if args.since is not None:
+        cmd.extend(["--since", str(args.since)])
+    if args.event is not None:
+        cmd.extend(["--filter", json.dumps(str(args.event))])
+    return cmd
 
 
 def _match_event(event: dict[str, Any], args: argparse.Namespace) -> bool:
@@ -196,18 +285,67 @@ def _match_event(event: dict[str, Any], args: argparse.Namespace) -> bool:
     return True
 
 
-def _extract_event_from_line(line: str) -> dict[str, Any]:
+def _looks_like_structured_event_envelope(payload: Any) -> bool:
+    """Return True when the decoded payload claims the structured
+    event shape (``event`` + ``schema_version``).
+
+    A line is treated as a structured-event claim only when both
+    fields are present in their documented types. Plain access
+    logs, normal Railway envelopes and free-form log lines do NOT
+    satisfy this predicate and are therefore skipped silently.
+    """
+    if not isinstance(payload, dict):
+        return False
+    return (
+        "event" in _STRUCTURED_EVENT_SHAPE_KEYS
+        and isinstance(payload.get("event"), str)
+        and isinstance(payload.get("schema_version"), int)
+    )
+
+
+def _parse_structured_event(line: str, *, where: str) -> dict[str, Any]:
+    """Parse a candidate structured-event JSON line.
+
+    Lines that violate the catalogue raise
+    :class:`UnparseableRailwayOutputError` so the CLI exits with 4.
+    Empty / non-string input raises
+    :class:`UnparseableRailwayOutputError` because the CLI received
+    a line that claimed to be structured but is unusable.
+    """
+    if not isinstance(line, str):
+        raise UnparseableRailwayOutputError(
+            f"railway {where} candidate is not a string"
+        )
+    if not line.strip():
+        raise UnparseableRailwayOutputError(
+            f"railway {where} candidate is empty"
+        )
+    try:
+        return parse_event(line)
+    except EventValidationError as exc:
+        raise UnparseableRailwayOutputError(
+            f"railway {where} is not a valid structured event"
+        ) from exc
+
+
+def _extract_event_from_line(line: str) -> dict[str, Any] | None:
     """Extract a single structured event from a Railway log line.
 
-    Supports two envelope shapes:
+    Returns the parsed event, or ``None`` when the line is normal
+    Railway mixed output that the CLI must skip silently. Raises
+    :class:`UnparseableRailwayOutputError` only when:
 
-    * the line IS the structured event (the application emits raw
-      JSON to stdout and Railway does not envelope it); or
-    * the line is a Railway JSON envelope whose ``message`` field
-      contains the structured event JSON.
+    * the line is not valid JSON at all (Railway broke its ``--json``
+      contract);
+    * the line is a JSON non-object (Railway promises an object per
+      line);
+    * the line *claims* to be a structured event (carries both
+      ``event`` and ``schema_version``) but violates the catalogue;
+    * the line is a Railway envelope whose ``message`` field *claims*
+      to be a structured event but violates the catalogue.
 
-    The envelope inspection is bounded to the ``message`` field and
-    never reflects the envelope itself into the output.
+    The raw failing line is NEVER printed; the error message carries
+    only the category.
     """
     try:
         envelope = json.loads(line)
@@ -219,27 +357,32 @@ def _extract_event_from_line(line: str) -> dict[str, Any]:
         raise UnparseableRailwayOutputError(
             "railway JSON envelope must be an object"
         )
-    if (
-        envelope.get("schema_version") == int(SCHEMA_VERSION)
-        and isinstance(envelope.get("event"), str)
-    ):
-        try:
-            return parse_event(line)
-        except EventValidationError as exc:
-            raise UnparseableRailwayOutputError(
-                "railway line is not a valid structured event"
-            ) from exc
+
+    if _looks_like_structured_event_envelope(envelope):
+        return _parse_structured_event(line, where="line")
+
     message = envelope.get("message")
     if not isinstance(message, str):
-        raise UnparseableRailwayOutputError(
-            "railway envelope has no valid message field"
-        )
+        # Plain Railway envelope (access log, deployment info, etc.):
+        # not a structured event; skip silently.
+        return None
+
     try:
-        return parse_event(message)
-    except EventValidationError as exc:
-        raise UnparseableRailwayOutputError(
-            "railway envelope message is not a valid structured event"
-        ) from exc
+        decoded_message = json.loads(message)
+    except json.JSONDecodeError:
+        # Free-form stdout/stderr wrapped in a Railway envelope:
+        # not a structured event; skip silently.
+        return None
+
+    if _looks_like_structured_event_envelope(decoded_message):
+        # The envelope's message claims to be a structured event; if
+        # the contract is violated we surface it as a parse failure.
+        return _parse_structured_event(message, where="envelope message")
+
+    # The envelope's message is JSON but it is not our structured
+    # event shape (e.g., a provider payload or a third-party log
+    # event). Skip silently - the catalogue does not own this shape.
+    return None
 
 
 def _run_railway(
@@ -285,11 +428,24 @@ def _run_railway(
 
 
 def _parse_lines_into_events(completed: Any) -> list[dict[str, Any]]:
+    """Walk the Railway stdout and collect only catalogued events.
+
+    Empty lines and lines that are not catalogued structured
+    events (free-form stdout, plain Railway access logs, third-party
+    JSON shapes, etc.) are dropped silently. The first line that
+    claims the structured-event shape but violates the catalogue
+    is propagated to the caller as
+    :class:`UnparseableRailwayOutputError` so the CLI can exit
+    with the documented ``4`` code without leaking the raw line.
+    """
     events: list[dict[str, Any]] = []
     for line in completed.stdout.splitlines():
         if not line.strip():
             continue
-        events.append(_extract_event_from_line(line))
+        parsed = _extract_event_from_line(line)
+        if parsed is None:
+            continue
+        events.append(parsed)
     return events
 
 

@@ -58,6 +58,7 @@ from backend.models.mensaje_proveedor_saliente import (
     OutboundFailureCategory,
 )
 from backend.observability import (
+    COMPONENT_DATABASE,
     COMPONENT_OUTBOUND,
     EVENT_DATABASE_TECHNICAL_FAILURE,
     EVENT_OUTBOUND_OUTCOME,
@@ -198,7 +199,7 @@ class OutboundMessageDispatcher:
         except SQLAlchemyError as exc:
             emit_event(
                 event=EVENT_DATABASE_TECHNICAL_FAILURE,
-                component=COMPONENT_OUTBOUND,
+                component=COMPONENT_DATABASE,
                 failure_category=categorize_sqlalchemy_error(exc),
                 exception_type=type(exc).__name__,
             )
@@ -240,7 +241,7 @@ class OutboundMessageDispatcher:
         except SQLAlchemyError as exc:
             emit_event(
                 event=EVENT_DATABASE_TECHNICAL_FAILURE,
-                component=COMPONENT_OUTBOUND,
+                component=COMPONENT_DATABASE,
                 failure_category=categorize_sqlalchemy_error(exc),
                 exception_type=type(exc).__name__,
             )
