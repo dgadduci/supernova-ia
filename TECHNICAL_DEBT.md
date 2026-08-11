@@ -2,20 +2,36 @@
 
 ## Cross-service production observability
 
-**Status:** Pending — separate OpenSpec required.
+**Status:** Addressed by archived OpenSpec
+`2026-08-11-add-production-observability-cli`.
 
-The application has module-level Python logs and Railway captures process
-stdout/stderr, but it has no configured centralized/structured observability
-solution. Twilio delivery evidence is partial; LLM and embedding calls record
-basic lifecycle metadata; Railway platform/deploy events remain separate.
+NovaOrders now emits privacy-safe, versioned operational events to stdout for
+the provider worker, outbound/callback Twilio flow, LLM/Ollama and database
+technical boundaries. The Railway-backed query CLI provides bounded terminal
+access, and the provider-message inventory provides safe read-only retention
+evidence.
 
-A future, explicitly approved change should define a privacy-safe common event
-schema, structured output/retention, service failure and latency visibility
-(Twilio, LLM/Ollama, database and Railway runtime), correlation identifiers,
-and alerting/operational ownership. It must establish redaction rules before
-exporting events and must not log message bodies, E.164 values, credentials,
-tokens, signed URLs, provider payloads or raw exception messages.
+Centralized alerting, dashboards and a third-party telemetry platform remain
+out of scope until they are an operational need. All current observability
+surfaces continue to forbid message bodies, E.164 values, credentials, tokens,
+signed URLs, provider payloads and raw exception messages.
 
-This debt is intentionally outside
-`harden-provider-outbound-delivery`, which only improves safe outbound Twilio
-diagnostics through the existing durable outbox path.
+This work followed `harden-provider-outbound-delivery`, which preserved the
+durable outbox and introduced its initial safe outbound diagnostics.
+
+## Durable provider-message retention and safe purge
+
+**Status:** Deferred — not an immediate product need; separate OpenSpec
+required before implementation.
+
+The read-only provider-message retention inventory can report safe counts by
+age and state, but NovaOrders deliberately has no automatic deletion or purge
+of durable provider-message records. Retaining data indefinitely is not the
+default policy, but no retention period has been selected yet.
+
+A future, explicitly approved OpenSpec must choose the retention window and
+legal/support requirements; define eligible terminal states; preserve active
+leases, pending/retry work and required idempotency evidence; and provide a
+recoverable `--dry-run` / explicit apply process with rollback and backup
+considerations. It must never expose message bodies, E.164 addresses,
+provider SIDs, credentials or payloads in inventory or purge output.
