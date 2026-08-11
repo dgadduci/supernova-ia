@@ -383,6 +383,22 @@ class OutboundMessageDispatcher:
         ``outcome=technical_failure`` and ``exception_type`` only;
         raw exception text, addresses, signatures, payloads and
         tracebacks are never logged.
+
+        Normal results (``sent``, ``retry_scheduled``,
+        ``failed_terminal``, ``no_due_row`` and the
+        ``late_acceptance`` sub-outcome) ALSO emit exactly one
+        structured ``outbound_attempt_outcome`` event on stdout so
+        the production observability CLI can query the dispatcher
+        state without parsing the Python log record. The structured
+        event carries only the allowlisted safe fields
+        (``event``, ``schema_version``, ``component``,
+        ``timestamp``, ``outcome``, ``outbox_id``, ``attempt``,
+        ``durable_state``, ``provider_code``) and never the
+        outbound body, the destination E.164 or the provider SID.
+        Technical failures do not emit the structured event; the
+        existing ``provider_outbound_attempt`` log record and the
+        repository-level ``database_technical_failure`` event stay
+        the only safe surface for that path.
         """
         now = self._now_or()
         claimed: MensajeProveedorSaliente | None = None
@@ -397,6 +413,7 @@ class OutboundMessageDispatcher:
                     ),
                     logger_=logger,
                 )
+                _emit_outbound_event(result)
                 return result
 
             if self._messages is None:
@@ -424,6 +441,7 @@ class OutboundMessageDispatcher:
                 ),
                 logger_=logger,
             )
+            _emit_outbound_event(result)
             return result
         except Exception as exc:
             claimed_outbox_id = (
