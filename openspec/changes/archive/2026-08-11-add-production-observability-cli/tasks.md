@@ -33,6 +33,9 @@
   aggregate outcome. Production commit `a906a28` deployed successfully;
   the controlled inbound returned HTTP 200, the query returned an
   `accepted` event for outbox id 71, and the customer confirmed receipt.
+  A subsequent controlled query after the local `--event` filter correction
+  returned a bounded safe aggregate of 33 matching events; no raw event
+  lines were retained.
 
 ## 4. Deferred
 
