@@ -18,6 +18,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import importlib
+import logging
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -37,8 +38,11 @@ from backend.services.outbound_callback_types import (  # noqa: F401  (boundary 
     OutboundCallbackOutcome,
 )
 from backend.services.outbound_dispatch_types import (
+    OutboundAttemptOutcome,
+    OutboundCycleAggregate,
     OutboundDispatchOutcome,
     OutboundDispatchResult,
+    OutboundPassEvidence,
 )
 from backend.services.outbound_message_dispatcher import (
     OutboundDispatchConfig,
@@ -884,10 +888,450 @@ class TwilioSendResultContractTest(unittest.TestCase):
             message_sid="SM-1",
             categoria=None,
             codigo=None,
+            http_status=None,
             detalle=None,
         )
         with self.assertRaises((AttributeError, dataclasses.FrozenInstanceError)):
             result.message_sid = "SM-2"  # type: ignore[misc]
+
+
+class DispatcherSafeAttemptEventTest(unittest.TestCase):
+    """The dispatcher must emit exactly one sanitized
+    ``provider_outbound_attempt`` log record per completed
+    ``dispatch`` call. The record contains only the allowlisted
+    safe fields and never the raw exception text, addresses,
+    signatures, payloads, bodies or tracebacks.
+    """
+
+    def setUp(self) -> None:
+        importlib.reload(dispatcher_module)
+
+    @staticmethod
+    def _build_dispatcher(
+        *,
+        messages_client: MagicMock,
+        outbox_repo: MagicMock,
+        db_session: MagicMock,
+        attempts: int,
+        now: datetime,
+    ) -> OutboundMessageDispatcher:
+        claimed = _claimed_row(attempts=attempts)
+        outbox_repo.claim_due.return_value = claimed
+        return OutboundMessageDispatcher(
+            session_factory=lambda: db_session,
+            messages_client=cast(TwilioMessagesClient, messages_client),
+            config=OutboundDispatchConfig(
+                sender_e164="+5491100000000",
+                status_callback_url="https://example.test/cb",
+                lease_seconds=30,
+                initial_backoff_seconds=30,
+                max_backoff_seconds=300,
+                max_attempts=5,
+            ),
+            outbox_repo_factory=lambda _session: outbox_repo,
+            settings=_settings_stub(),
+            now=now,
+        )
+
+    def test_accepted_dispatch_emits_safe_attempt_event(self) -> None:
+        db_session = MagicMock(name="DatabaseSession")
+        outbox_repo = MagicMock(name="OutboundProviderMessageRepository")
+        outbox_repo.finalize_accepted.return_value = True
+        messages_client = _StrictTwilioMessagesClient(sid="SM-OK")
+
+        dispatcher = self._build_dispatcher(
+            messages_client=messages_client,
+            outbox_repo=outbox_repo,
+            db_session=db_session,
+            attempts=1,
+            now=datetime(2026, 8, 6, 12, 0, 0, tzinfo=timezone.utc),
+        )
+
+        with self.assertLogs(
+            dispatcher_module.logger, level=logging.INFO
+        ) as log_ctx:
+            dispatcher.dispatch()
+
+        records = [
+            r
+            for r in log_ctx.records
+            if r.getMessage() == "provider_outbound_attempt"
+        ]
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record.outcome, "sent")
+        self.assertEqual(record.outbox_id, 11)
+        self.assertEqual(record.durable_state, "accepted")
+        self.assertIsNone(getattr(record, "attempt_count", None))
+        self.assertIsNone(getattr(record, "failure_category", None))
+        self.assertIsNone(getattr(record, "provider_code", None))
+        self.assertIsNone(getattr(record, "http_status", None))
+        self.assertIsNone(getattr(record, "exception_type", None))
+        self.assertFalse(record.exc_info)
+
+    def test_retryable_dispatch_emits_safe_attempt_event_with_code(
+        self,
+    ) -> None:
+        db_session = MagicMock(name="DatabaseSession")
+        outbox_repo = MagicMock(name="OutboundProviderMessageRepository")
+        outbox_repo.finalize_retryable.return_value = True
+        messages_client = MagicMock(name="TwilioMessagesClient")
+        messages_client.create.side_effect = _synthetic_rest_exception(
+            status=429, provider_code=20003
+        )
+
+        dispatcher = self._build_dispatcher(
+            messages_client=messages_client,
+            outbox_repo=outbox_repo,
+            db_session=db_session,
+            attempts=1,
+            now=datetime(2026, 8, 6, 12, 0, 0, tzinfo=timezone.utc),
+        )
+
+        with self.assertLogs(
+            dispatcher_module.logger, level=logging.INFO
+        ) as log_ctx:
+            dispatcher.dispatch()
+
+        records = [
+            r
+            for r in log_ctx.records
+            if r.getMessage() == "provider_outbound_attempt"
+        ]
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record.outcome, "retry_scheduled")
+        self.assertEqual(record.outbox_id, 11)
+        self.assertEqual(record.attempt_count, 1)
+        self.assertEqual(record.durable_state, "retryable")
+        self.assertEqual(
+            record.failure_category, "retryable_429"
+        )
+        self.assertEqual(record.provider_code, "20003")
+        self.assertEqual(record.http_status, 429)
+        self.assertIsNone(getattr(record, "exception_type", None))
+        self.assertFalse(record.exc_info)
+
+    def test_terminal_dispatch_emits_safe_attempt_event(self) -> None:
+        db_session = MagicMock(name="DatabaseSession")
+        outbox_repo = MagicMock(name="OutboundProviderMessageRepository")
+        outbox_repo.finalize_terminal.return_value = True
+        messages_client = MagicMock(name="TwilioMessagesClient")
+        messages_client.create.side_effect = _synthetic_rest_exception(
+            status=403, provider_code=20003
+        )
+
+        dispatcher = self._build_dispatcher(
+            messages_client=messages_client,
+            outbox_repo=outbox_repo,
+            db_session=db_session,
+            attempts=1,
+            now=datetime(2026, 8, 6, 12, 0, 0, tzinfo=timezone.utc),
+        )
+
+        with self.assertLogs(
+            dispatcher_module.logger, level=logging.INFO
+        ) as log_ctx:
+            dispatcher.dispatch()
+
+        records = [
+            r
+            for r in log_ctx.records
+            if r.getMessage() == "provider_outbound_attempt"
+        ]
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(
+            record.outcome, "failed_terminal"
+        )
+        self.assertEqual(record.outbox_id, 11)
+        self.assertEqual(record.attempt_count, 1)
+        self.assertEqual(
+            record.durable_state, "failed_terminal"
+        )
+        self.assertEqual(
+            record.failure_category, "terminal_4xx"
+        )
+        self.assertEqual(record.provider_code, "20003")
+        self.assertEqual(record.http_status, 403)
+        self.assertIsNone(getattr(record, "exception_type", None))
+        self.assertFalse(record.exc_info)
+
+    def test_no_due_row_emits_safe_attempt_event_without_optionals(
+        self,
+    ) -> None:
+        db_session = MagicMock(name="DatabaseSession")
+        outbox_repo = MagicMock(name="OutboundProviderMessageRepository")
+        outbox_repo.claim_due.return_value = None
+        messages_client = MagicMock(name="TwilioMessagesClient")
+
+        dispatcher = OutboundMessageDispatcher(
+            session_factory=lambda: db_session,
+            messages_client=messages_client,
+            config=OutboundDispatchConfig(
+                sender_e164="+5491100000000",
+                status_callback_url="https://example.test/cb",
+                lease_seconds=30,
+                initial_backoff_seconds=30,
+                max_backoff_seconds=300,
+                max_attempts=5,
+            ),
+            outbox_repo_factory=lambda _session: outbox_repo,
+            settings=_settings_stub(),
+            now=datetime(2026, 8, 6, 12, 0, 0, tzinfo=timezone.utc),
+        )
+
+        with self.assertLogs(
+            dispatcher_module.logger, level=logging.INFO
+        ) as log_ctx:
+            dispatcher.dispatch()
+
+        records = [
+            r
+            for r in log_ctx.records
+            if r.getMessage() == "provider_outbound_attempt"
+        ]
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record.outcome, "no_due_row")
+        self.assertIsNone(getattr(record, "outbox_id", None))
+        self.assertIsNone(getattr(record, "attempt_count", None))
+        self.assertIsNone(getattr(record, "durable_state", None))
+        self.assertIsNone(getattr(record, "failure_category", None))
+        self.assertIsNone(getattr(record, "provider_code", None))
+        self.assertIsNone(getattr(record, "http_status", None))
+        self.assertIsNone(getattr(record, "exception_type", None))
+        self.assertFalse(record.exc_info)
+        messages_client.create.assert_not_called()
+
+    def test_technical_failure_emits_event_with_exception_class_only(
+        self,
+    ) -> None:
+        db_session = MagicMock(name="DatabaseSession")
+        outbox_repo = MagicMock(name="OutboundProviderMessageRepository")
+        outbox_repo.claim_due.return_value = _claimed_row()
+        messages_client = MagicMock(name="TwilioMessagesClient")
+        messages_client.create.side_effect = TypeError(
+            "secret-auth-token-value / +5491100000000 leak"
+        )
+
+        dispatcher = self._build_dispatcher(
+            messages_client=messages_client,
+            outbox_repo=outbox_repo,
+            db_session=db_session,
+            attempts=1,
+            now=datetime(2026, 8, 6, 12, 0, 0, tzinfo=timezone.utc),
+        )
+
+        with self.assertLogs(
+            dispatcher_module.logger, level=logging.INFO
+        ) as log_ctx:
+            with self.assertRaises(TypeError):
+                dispatcher.dispatch()
+
+        records = [
+            r
+            for r in log_ctx.records
+            if r.getMessage() == "provider_outbound_attempt"
+        ]
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(
+            record.outcome, "technical_failure"
+        )
+        self.assertEqual(
+            record.exception_type, "TypeError"
+        )
+        self.assertIsNone(getattr(record, "failure_category", None))
+        self.assertIsNone(getattr(record, "provider_code", None))
+        self.assertIsNone(getattr(record, "http_status", None))
+        self.assertFalse(record.exc_info)
+
+        for value in record.__dict__.values():
+            if isinstance(value, str):
+                self.assertNotIn("secret-auth-token-value", value)
+                self.assertNotIn("+5491100000000", value)
+                self.assertNotIn("leak", value)
+
+    def test_event_payload_never_includes_addresses_or_payloads(
+        self,
+    ) -> None:
+        sentinel = "+5491100000000-leak"
+        db_session = MagicMock(name="DatabaseSession")
+        outbox_repo = MagicMock(name="OutboundProviderMessageRepository")
+        outbox_repo.finalize_accepted.return_value = True
+        messages_client = _StrictTwilioMessagesClient(sid="SM-OK")
+
+        row = _claimed_row()
+        row.destinatario_e164 = sentinel
+        row.cuerpo = "secret-body-content"
+        outbox_repo.claim_due.return_value = row
+
+        dispatcher = OutboundMessageDispatcher(
+            session_factory=lambda: db_session,
+            messages_client=cast(TwilioMessagesClient, messages_client),
+            config=OutboundDispatchConfig(
+                sender_e164="+5491100000000",
+                status_callback_url="https://example.test/cb",
+                lease_seconds=30,
+                initial_backoff_seconds=30,
+                max_backoff_seconds=300,
+                max_attempts=5,
+            ),
+            outbox_repo_factory=lambda _session: outbox_repo,
+            settings=_settings_stub(),
+            now=datetime(2026, 8, 6, 12, 0, 0, tzinfo=timezone.utc),
+        )
+
+        with self.assertLogs(
+            dispatcher_module.logger, level=logging.INFO
+        ) as log_ctx:
+            dispatcher.dispatch()
+
+        records = [
+            r
+            for r in log_ctx.records
+            if r.getMessage() == "provider_outbound_attempt"
+        ]
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        for value in record.__dict__.values():
+            if isinstance(value, str):
+                self.assertNotIn(sentinel, value)
+                self.assertNotIn("secret-body-content", value)
+                self.assertNotIn("SM-OK", value)
+
+
+class DispatcherRunPassEvidenceTest(unittest.TestCase):
+    """``run_pass_with_evidence`` accumulates typed results and
+    captures technical exceptions so the CLI / worker can build
+    per-cycle aggregates without re-running the dispatcher.
+    """
+
+    def setUp(self) -> None:
+        importlib.reload(dispatcher_module)
+
+    def test_run_pass_with_evidence_returns_results_and_exceptions(
+        self,
+    ) -> None:
+        db_session = MagicMock(name="DatabaseSession")
+        outbox_repo = MagicMock(name="OutboundProviderMessageRepository")
+        outbox_repo.claim_due.side_effect = [
+            _claimed_row(attempts=1),
+            _claimed_row(attempts=1),
+            None,
+        ]
+        outbox_repo.finalize_accepted.return_value = True
+        outbox_repo.finalize_retryable.return_value = True
+        messages_client = MagicMock(name="TwilioMessagesClient")
+        messages_client.create.side_effect = [
+            MagicMock(sid="SM-OK"),
+            adapter_module._TwilioTransportError("timeout"),
+        ]
+
+        dispatcher = OutboundMessageDispatcher(
+            session_factory=lambda: db_session,
+            messages_client=cast(TwilioMessagesClient, messages_client),
+            config=OutboundDispatchConfig(
+                sender_e164="+5491100000000",
+                status_callback_url="https://example.test/cb",
+                lease_seconds=30,
+                initial_backoff_seconds=30,
+                max_backoff_seconds=300,
+                max_attempts=5,
+            ),
+            outbox_repo_factory=lambda _session: outbox_repo,
+            settings=_settings_stub(),
+            now=datetime(2026, 8, 6, 12, 0, 0, tzinfo=timezone.utc),
+        )
+
+        evidence = dispatcher.run_pass_with_evidence(max_attempts_per_pass=4)
+
+        self.assertIsInstance(evidence, OutboundPassEvidence)
+        self.assertEqual(
+            [r.outcome for r in evidence.results],
+            [
+                OutboundDispatchOutcome.SENT,
+                OutboundDispatchOutcome.RETRY_SCHEDULED,
+                OutboundDispatchOutcome.NO_DUE_ROW,
+            ],
+        )
+        self.assertEqual(evidence.technical_exceptions, ())
+
+    def test_run_pass_with_evidence_captures_technical_exception(
+        self,
+    ) -> None:
+        db_session = MagicMock(name="DatabaseSession")
+        outbox_repo = MagicMock(name="OutboundProviderMessageRepository")
+        outbox_repo.claim_due.return_value = _claimed_row()
+        messages_client = MagicMock(name="TwilioMessagesClient")
+        messages_client.create.side_effect = TypeError(
+            "leak: secret-auth-token-value"
+        )
+
+        dispatcher = OutboundMessageDispatcher(
+            session_factory=lambda: db_session,
+            messages_client=cast(TwilioMessagesClient, messages_client),
+            config=OutboundDispatchConfig(
+                sender_e164="+5491100000000",
+                status_callback_url="https://example.test/cb",
+                lease_seconds=30,
+                initial_backoff_seconds=30,
+                max_backoff_seconds=300,
+                max_attempts=5,
+            ),
+            outbox_repo_factory=lambda _session: outbox_repo,
+            settings=_settings_stub(),
+            now=datetime(2026, 8, 6, 12, 0, 0, tzinfo=timezone.utc),
+        )
+
+        evidence = dispatcher.run_pass_with_evidence(max_attempts_per_pass=3)
+
+        self.assertEqual(evidence.results, ())
+        self.assertEqual(len(evidence.technical_exceptions), 1)
+        self.assertIsInstance(
+            evidence.technical_exceptions[0], TypeError
+        )
+
+
+class AttemptEventContractTest(unittest.TestCase):
+    """Typed contracts are stable and carry only safe fields."""
+
+    def test_attempt_outcome_enum_covers_all_dispatch_outcomes(self) -> None:
+        self.assertEqual(
+            OutboundAttemptOutcome.SENT.value,
+            OutboundDispatchOutcome.SENT.value,
+        )
+        self.assertEqual(
+            OutboundAttemptOutcome.RETRY_SCHEDULED.value,
+            OutboundDispatchOutcome.RETRY_SCHEDULED.value,
+        )
+        self.assertEqual(
+            OutboundAttemptOutcome.FAILED_TERMINAL.value,
+            OutboundDispatchOutcome.FAILED_TERMINAL.value,
+        )
+        self.assertEqual(
+            OutboundAttemptOutcome.NO_DUE_ROW.value,
+            OutboundDispatchOutcome.NO_DUE_ROW.value,
+        )
+        self.assertEqual(
+            OutboundAttemptOutcome.TECHNICAL_FAILURE.value,
+            "technical_failure",
+        )
+
+    def test_cycle_aggregate_default_values(self) -> None:
+        aggregate = OutboundCycleAggregate()
+        self.assertEqual(aggregate.sent, 0)
+        self.assertEqual(aggregate.retry_scheduled, 0)
+        self.assertEqual(aggregate.failed_terminal, 0)
+        self.assertEqual(aggregate.no_due_row, 0)
+        self.assertEqual(aggregate.technical_failure, 0)
+        self.assertEqual(dict(aggregate.failure_category_counts), {})
+
+    def test_cycle_aggregate_is_frozen(self) -> None:
+        aggregate = OutboundCycleAggregate(sent=1)
+        with self.assertRaises((AttributeError, dataclasses.FrozenInstanceError)):
+            aggregate.sent = 2  # type: ignore[misc]
 
 
 if __name__ == "__main__":

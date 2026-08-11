@@ -104,15 +104,17 @@ class TwilioSendResult:
     ``status`` is the single source of truth for branching. The
     other fields are only meaningful for the matching non-empty
     outcome. ``message_sid`` is only populated when ``status ==
-    SENT``; ``categoria`` and ``codigo`` are only populated when
-    ``status != SENT``. Raw SDK payload bytes never reach the result
-    so observability surfaces cannot leak provider data.
+    SENT``; ``categoria``, ``codigo`` and ``http_status`` are only
+    populated when ``status != SENT`` and the SDK exposed a safe
+    REST status. Raw SDK payload bytes never reach the result so
+    observability surfaces cannot leak provider data.
     """
 
     status: TwilioSendStatus
     message_sid: str | None
     categoria: OutboundFailureCategory | None
     codigo: str | None
+    http_status: int | None
     detalle: str | None
 
 
@@ -200,6 +202,7 @@ def send(
         message_sid=str(sid) if sid is not None else None,
         categoria=None,
         codigo=None,
+        http_status=None,
         detalle=None,
     )
 
@@ -209,21 +212,25 @@ def classify_failure(
     exc: BaseException,
     codigo: str,
     categoria: OutboundFailureCategory,
+    http_status: int | None = None,
 ) -> TwilioSendResult:
     """Translate a transport or API failure into a typed result.
 
     The helper exists so the dispatcher can re-classify a failure
     raised outside the SDK seam (e.g. a timeout from a higher-level
     HTTP wrapper) without losing the typed ``OutboundFailureCategory``
-    contract.
+    contract. ``http_status`` is preserved verbatim when known so
+    the dispatcher can surface the Twilio HTTP classification
+    alongside the safe provider code; the value never reaches the
+    retry policy.
     """
     if categoria in {
         OutboundFailureCategory.RETRYABLE_TIMEOUT,
         OutboundFailureCategory.RETRYABLE_429,
         OutboundFailureCategory.RETRYABLE_5XX,
     }:
-        return _retryable(exc, categoria, codigo)
-    return _terminal(exc, categoria, codigo)
+        return _retryable(exc, categoria, codigo, http_status=http_status)
+    return _terminal(exc, categoria, codigo, http_status=http_status)
 
 
 def _classify_rest_exception(exc: TwilioRestException) -> TwilioSendResult:
@@ -242,15 +249,24 @@ def _classify_rest_exception(exc: TwilioRestException) -> TwilioSendResult:
     status = _coerce_http_status(getattr(exc, "status", None))
     if status == 429:
         return _retryable(
-            exc, OutboundFailureCategory.RETRYABLE_429, _safe_codigo(exc, status)
+            exc,
+            OutboundFailureCategory.RETRYABLE_429,
+            _safe_codigo(exc, status),
+            http_status=status,
         )
     if status in _RETRYABLE_HTTP_STATUSES_5XX:
         return _retryable(
-            exc, OutboundFailureCategory.RETRYABLE_5XX, _safe_codigo(exc, status)
+            exc,
+            OutboundFailureCategory.RETRYABLE_5XX,
+            _safe_codigo(exc, status),
+            http_status=status,
         )
     if status is not None:
         return _terminal(
-            exc, OutboundFailureCategory.TERMINAL_4XX, _safe_codigo(exc, status)
+            exc,
+            OutboundFailureCategory.TERMINAL_4XX,
+            _safe_codigo(exc, status),
+            http_status=status,
         )
     raise exc
 
@@ -297,12 +313,15 @@ def _retryable(
     exc: BaseException,
     categoria: OutboundFailureCategory,
     codigo: str,
+    *,
+    http_status: int | None = None,
 ) -> TwilioSendResult:
     return TwilioSendResult(
         status=TwilioSendStatus.RETRYABLE,
         message_sid=None,
         categoria=categoria,
         codigo=codigo,
+        http_status=http_status,
         detalle=_safe_detail(exc),
     )
 
@@ -311,12 +330,15 @@ def _terminal(
     exc: BaseException,
     categoria: OutboundFailureCategory,
     codigo: str,
+    *,
+    http_status: int | None = None,
 ) -> TwilioSendResult:
     return TwilioSendResult(
         status=TwilioSendStatus.TERMINAL,
         message_sid=None,
         categoria=categoria,
         codigo=codigo,
+        http_status=http_status,
         detalle=_safe_detail(exc),
     )
 

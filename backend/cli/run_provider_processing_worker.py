@@ -110,6 +110,9 @@ from backend.scripts.check_railway_ollama_contracts import (
 from backend.services.exceptions import (
     InvalidProviderProcessingWorkerConfig,
 )
+from backend.services.outbound_dispatch_types import (
+    OutboundCycleAggregate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +124,7 @@ DEFAULT_CYCLE_INTERVAL_SECONDS = (
 
 InboundRunner = Callable[[int], int]
 OutboundRunner = Callable[[int], int]
+OutboundCycleAggregateProducer = Callable[[int], OutboundCycleAggregate]
 Sleeper = Callable[[float], None]
 CycleSummaryWriter = Callable[[dict[str, Any]], None]
 SettingsLoader = Callable[[], Settings]
@@ -137,6 +141,76 @@ _NOT_READY_FALLBACK_RESULT = OllamaReadinessResult(
 )
 
 
+class _WorkerOutboundAggregateCell:
+    """One shared cell between the default outbound runner and
+    the default aggregate producer.
+
+    The cell is process-local and single-threaded: the default
+    runner writes the per-cycle aggregate through a closure; the
+    default aggregate producer reads it. This keeps the dispatcher
+    from running twice per cycle in production while still
+    preserving the injectable seam contract for focused tests.
+    """
+
+    __slots__ = ("aggregate",)
+
+    def __init__(self) -> None:
+        self.aggregate: OutboundCycleAggregate | None = None
+
+
+_WORKER_OUTBOUND_CELL = _WorkerOutboundAggregateCell()
+
+
+def _default_outbound_runner(bound: int) -> int:
+    """Default outbound runner that feeds the aggregate cell.
+
+    The runner clears the shared cell BEFORE delegating to the CLI
+    so a previous cycle's aggregate can never leak into the next
+    cycle, even when the CLI terminates early (settings /
+    validation / Twilio client construction failure) without
+    writing a fresh aggregate. The runner then installs a closure
+    writer that captures the per-cycle aggregate produced by the
+    CLI's bounded pass. Production worker cycles therefore run the
+    dispatcher exactly once per cycle and share the aggregate
+    with the producer seam without re-executing the dispatcher.
+
+    The cell reset MUST happen before any ``run_outbound_dispatch_main``
+    call so that a failed CLI pass leaves the producer with a
+    well-formed empty aggregate instead of a stale previous-cycle
+    record.
+    """
+
+    _WORKER_OUTBOUND_CELL.aggregate = None
+
+    def _capture(aggregate: OutboundCycleAggregate) -> None:
+        _WORKER_OUTBOUND_CELL.aggregate = aggregate
+
+    return run_outbound_dispatch_main(
+        argv=[
+            "--max-attempts-per-pass",
+            str(int(bound)),
+        ],
+        cycle_aggregate_writer=_capture,
+    )
+
+
+def _default_outbound_cycle_aggregate_producer(
+    bound: int,
+) -> OutboundCycleAggregate:
+    """Default outbound aggregate producer used by the worker.
+
+    Reads the aggregate captured by the most recent default
+    outbound runner call. If no aggregate is available (e.g. the
+    test substitutes a custom runner that bypassed the writer
+    seam), the producer returns an empty aggregate so the cycle
+    summary is still well-formed.
+    """
+    aggregate = _WORKER_OUTBOUND_CELL.aggregate
+    if aggregate is None:
+        return OutboundCycleAggregate()
+    return aggregate
+
+
 def _default_settings_loader() -> Settings:
     return load_settings()
 
@@ -144,15 +218,6 @@ def _default_settings_loader() -> Settings:
 def _default_inbound_runner(max_items_per_pass: int) -> int:
     return run_inbound_processing_main(
         argv=["--max-items-per-pass", str(int(max_items_per_pass))],
-    )
-
-
-def _default_outbound_runner(max_attempts_per_pass: int) -> int:
-    return run_outbound_dispatch_main(
-        argv=[
-            "--max-attempts-per-pass",
-            str(int(max_attempts_per_pass)),
-        ],
     )
 
 
@@ -207,11 +272,15 @@ def _default_cycle_summary_writer(summary: dict[str, Any]) -> None:
     index, readiness flag, optional safe not-ready category, optional
     probe duration, inbound / outbound exit codes (or ``None`` when
     inbound was skipped), configured bounds, sleep decision and
-    configured poll interval. The summary NEVER contains the
-    inbound / outbound body, the customer E.164 number, the LLM
-    content, the provider signature, the account SID, the auth
-    token, the probe text, the embedding vector or any environment
-    dump.
+    configured poll interval. When an outbound cycle aggregate is
+    present, the line also exposes the per-outcome counts and the
+    per-failure category breakdown so terminal Twilio failures are
+    not reduced to a single exit code.
+
+    The summary NEVER contains the inbound / outbound body, the
+    customer E.164 number, the LLM content, the provider signature,
+    the account SID, the auth token, the probe text, the embedding
+    vector or any environment dump.
     """
     parts: list[str] = [
         "provider_worker_cycle",
@@ -236,7 +305,41 @@ def _default_cycle_summary_writer(summary: dict[str, Any]) -> None:
             f"sleep_after={summary['sleep_after']}",
         ]
     )
+    aggregate = summary.get("outbound_cycle_aggregate")
+    if isinstance(aggregate, OutboundCycleAggregate):
+        parts.extend(
+            [
+                f"outbound_sent={int(aggregate.sent)}",
+                f"outbound_retry_scheduled={int(aggregate.retry_scheduled)}",
+                f"outbound_failed_terminal={int(aggregate.failed_terminal)}",
+                f"outbound_no_due_row={int(aggregate.no_due_row)}",
+                f"outbound_technical_failure={int(aggregate.technical_failure)}",
+                (
+                    "outbound_failure_categories="
+                    f"{_format_category_counts(aggregate.failure_category_counts)}"
+                ),
+            ]
+        )
     print(" ".join(parts), file=sys.stdout)
+
+
+def _format_category_counts(
+    counts: dict[str, int] | None,
+) -> str:
+    """Render a failure-category breakdown without leaking payload.
+
+    The breakdown is a stable comma-separated ``category=count``
+    list. Categories are sorted alphabetically for determinism so
+    two cycles with the same evidence render the same line.
+    Unknown categories fall back to the literal ``unknown`` key
+    built by the dispatcher / CLI.
+    """
+    if not counts:
+        return "none"
+    pairs = sorted(
+        (str(name), int(value)) for name, value in counts.items()
+    )
+    return ",".join(f"{name}={value}" for name, value in pairs)
 
 
 def _default_unexpected_exception_log(
@@ -329,6 +432,7 @@ def _build_cycle_summary(
     ollama_ready: bool = True,
     not_ready_category: str | None = None,
     probe_duration_seconds: float | None = None,
+    outbound_cycle_aggregate: OutboundCycleAggregate | None = None,
 ) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "cycle_index": int(cycle_index),
@@ -350,6 +454,8 @@ def _build_cycle_summary(
         summary["not_ready_category"] = str(not_ready_category)
     if probe_duration_seconds is not None:
         summary["probe_duration_seconds"] = float(probe_duration_seconds)
+    if outbound_cycle_aggregate is not None:
+        summary["outbound_cycle_aggregate"] = outbound_cycle_aggregate
     return summary
 
 
@@ -364,6 +470,7 @@ def run_cycle(
     ollama_ready: bool = True,
     not_ready_category: str | None = None,
     probe_duration_seconds: float | None = None,
+    outbound_cycle_aggregate_producer: OutboundCycleAggregateProducer | None = None,
 ) -> dict[str, Any]:
     """Run one inbound-then-outbound cycle.
 
@@ -373,6 +480,13 @@ def run_cycle(
     pass uses the configured outbound bound independently of the
     inbound gate, so ready outbound work is never delayed by the
     readiness probe.
+
+    When ``outbound_cycle_aggregate_producer`` is supplied, the
+    producer is invoked once after the outbound pass to capture
+    the per-cycle safe aggregate. The aggregate is added to the
+    summary dictionary so the cycle summary writer can surface
+    terminal / retry counts and the failure-category breakdown
+    without reducing a Twilio terminal to a single exit code.
 
     Returns the safe summary dictionary written to the cycle
     summary writer. The function never raises on business
@@ -400,6 +514,15 @@ def run_cycle(
         )
     )
     sleep_after = bool(sleep_decision(settings, int(cycle_index)))
+    outbound_cycle_aggregate: OutboundCycleAggregate | None = None
+    if outbound_cycle_aggregate_producer is not None:
+        outbound_cycle_aggregate = (
+            outbound_cycle_aggregate_producer(
+                int(
+                    settings.provider_processing_worker_outbound_max_attempts_per_pass
+                )
+            )
+        )
     summary = _build_cycle_summary(
         cycle_index=int(cycle_index),
         inbound_exit_code=inbound_exit_code,
@@ -409,6 +532,7 @@ def run_cycle(
         ollama_ready=bool(ollama_ready),
         not_ready_category=not_ready_category,
         probe_duration_seconds=probe_duration_seconds,
+        outbound_cycle_aggregate=outbound_cycle_aggregate,
     )
     cycle_summary_writer(summary)
     return summary
@@ -425,6 +549,7 @@ def run_forever(
     stop_predicate: Callable[[], bool] | None = None,
     unexpected_exception_log: Callable[..., None] | None = None,
     readiness_probe: ReadinessProbe | None = None,
+    outbound_cycle_aggregate_producer: OutboundCycleAggregateProducer | None = None,
 ) -> int:
     """Run the worker loop until ``stop_predicate`` returns ``True``.
 
@@ -446,6 +571,13 @@ def run_forever(
     every cycle, preserving backward compatibility for focused
     tests and direct ``run_forever`` callers that drive the loop
     with stubs.
+
+    ``outbound_cycle_aggregate_producer``, when supplied, is
+    invoked after every outbound pass to capture the safe
+    per-cycle aggregate. The aggregate is added to the cycle
+    summary so the cycle summary writer can expose per-outcome
+    counts and a failure-category breakdown without re-running
+    the dispatcher.
 
     Returns the number of completed cycles when ``stop_predicate``
     becomes truthy.
@@ -519,6 +651,7 @@ def run_forever(
                 ollama_ready=ollama_ready,
                 not_ready_category=readiness_category,
                 probe_duration_seconds=probe_duration_seconds,
+                outbound_cycle_aggregate_producer=outbound_cycle_aggregate_producer,
             )
         except BaseException as exc:
             unexpected_log(
@@ -561,12 +694,21 @@ def main(
     stop_predicate: Callable[[], bool] | None = None,
     unexpected_exception_log: Callable[..., None] | None = None,
     readiness_probe: ReadinessProbe | None = None,
+    outbound_cycle_aggregate_producer: OutboundCycleAggregateProducer | None = None,
 ) -> int:
     """Run the automatic provider-processing worker.
 
     Returns the number of completed cycles (always zero for the
     production loop, which is unbounded; tests substitute
     ``stop_predicate`` to bound cycles without sleeping).
+
+    ``outbound_cycle_aggregate_producer``, when provided, lets
+    the caller capture the per-cycle safe aggregate for
+    diagnostics. The default wiring uses
+    :func:`_default_outbound_cycle_aggregate_producer` which
+    reads the shared cell populated by
+    :func:`_default_outbound_runner`, so the dispatcher runs
+    exactly once per cycle in production.
     """
     settings = (settings_loader or _default_settings_loader)()
     _validate_worker_settings(settings)
@@ -601,6 +743,11 @@ def main(
         if readiness_probe is not None
         else _default_readiness_probe_factory(settings)
     )
+    outbound_aggregate_producer_fn = (
+        outbound_cycle_aggregate_producer
+        if outbound_cycle_aggregate_producer is not None
+        else _default_outbound_cycle_aggregate_producer
+    )
 
     return run_forever(
         settings=settings,
@@ -612,6 +759,7 @@ def main(
         stop_predicate=stop_predicate,
         unexpected_exception_log=unexpected_exception_log,
         readiness_probe=readiness_probe_fn,
+        outbound_cycle_aggregate_producer=outbound_aggregate_producer_fn,
     )
 
 
