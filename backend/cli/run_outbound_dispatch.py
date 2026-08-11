@@ -58,8 +58,10 @@ from backend.services.exceptions import (
     InvalidTwilioWebhookAuthToken,
 )
 from backend.services.outbound_dispatch_types import (
+    OutboundCycleAggregate,
     OutboundDispatchOutcome,
     OutboundDispatchResult,
+    OutboundPassEvidence,
 )
 from backend.services.outbound_message_dispatcher import (
     OutboundMessageDispatcher,
@@ -69,6 +71,63 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_MAX_ATTEMPTS_PER_PASS = 16
+
+CycleAggregateWriter = Callable[[OutboundCycleAggregate], None]
+
+
+def _build_cycle_aggregate(
+    *,
+    results: Sequence[OutboundDispatchResult],
+    technical_exceptions: Sequence[BaseException],
+) -> OutboundCycleAggregate:
+    """Build one safe per-cycle aggregate from the pass evidence.
+
+    The aggregate includes counts by outcome and a per-failure
+    category breakdown so the worker cycle summary is operationally
+    diagnosable without reducing a terminal Twilio failure to a
+    single exit code. No bodies, addresses, signatures, payloads
+    or exception text are included.
+    """
+    sent = sum(
+        1
+        for r in results
+        if r.outcome is OutboundDispatchOutcome.SENT
+    )
+    retry = sum(
+        1
+        for r in results
+        if r.outcome is OutboundDispatchOutcome.RETRY_SCHEDULED
+    )
+    failed = sum(
+        1
+        for r in results
+        if r.outcome is OutboundDispatchOutcome.FAILED_TERMINAL
+    )
+    no_due = sum(
+        1
+        for r in results
+        if r.outcome is OutboundDispatchOutcome.NO_DUE_ROW
+    )
+    category_counts: dict[str, int] = {}
+    for r in results:
+        if r.outcome not in (
+            OutboundDispatchOutcome.RETRY_SCHEDULED,
+            OutboundDispatchOutcome.FAILED_TERMINAL,
+        ):
+            continue
+        if r.categoria is None:
+            key = "unknown"
+        else:
+            key = str(r.categoria.value)
+        category_counts[key] = category_counts.get(key, 0) + 1
+    return OutboundCycleAggregate(
+        sent=sent,
+        retry_scheduled=retry,
+        failed_terminal=failed,
+        no_due_row=no_due,
+        technical_failure=len(technical_exceptions),
+        failure_category_counts=category_counts,
+    )
 
 
 def _load_settings() -> Settings:
@@ -167,6 +226,7 @@ def _validate_outbound_settings(settings: Settings) -> None:
 
 def _format_summary(
     results: Sequence[OutboundDispatchResult],
+    technical_failure_count: int = 0,
 ) -> str:
     """Render a single safe operational summary line.
 
@@ -191,25 +251,35 @@ def _format_summary(
         for r in results
         if r.outcome is OutboundDispatchOutcome.NO_DUE_ROW
     )
+    total = len(results) + int(technical_failure_count)
     return (
         f"sent={sent} retry_scheduled={retry} "
-        f"failed_terminal={failed} no_due_row={no_due} total={len(results)}"
+        f"failed_terminal={failed} no_due_row={no_due} "
+        f"technical_failure={int(technical_failure_count)} "
+        f"total={total}"
     )
 
 
-def _print_per_attempt(results: Sequence[OutboundDispatchResult]) -> None:
+def _print_per_attempt(
+    results: Sequence[OutboundDispatchResult],
+    technical_exceptions: Sequence[BaseException] = (),
+) -> None:
     """Print one safe per-attempt summary line.
 
-    The line includes the outbox id, the resolved outcome and the
-    Twilio SID when the row was accepted. The outbound body,
-    signature, account SID and auth token never appear in this
-    line.
+    The line includes the outbox id, the resolved outcome, the
+    Twilio SID when the row was accepted, the safe failure
+    category / provider code / HTTP status when the row was a
+    classified failure, and the exception class when a technical
+    failure aborted the loop. The outbound body, signature,
+    account SID, auth token, raw exception text, tracebacks and
+    provider payloads never appear in this line.
     """
     for result in results:
         if result.outcome is OutboundDispatchOutcome.SENT:
             print(
                 f"mensaje_id={result.mensaje_id} outcome=sent "
-                f"identificador_proveedor={result.identificador_proveedor}"
+                f"identificador_proveedor={result.identificador_proveedor} "
+                f"durable_state={result.durable_state or 'accepted'}"
             )
             continue
         if result.outcome is OutboundDispatchOutcome.RETRY_SCHEDULED:
@@ -218,10 +288,17 @@ def _print_per_attempt(results: Sequence[OutboundDispatchResult]) -> None:
                 if result.categoria is not None
                 else "unknown"
             )
+            http_status = (
+                f" http_status={int(result.http_status)}"
+                if result.http_status is not None
+                else ""
+            )
             print(
                 f"mensaje_id={result.mensaje_id} outcome=retry_scheduled "
                 f"intentos={result.intentos} categoria={categoria} "
-                f"codigo={result.codigo}"
+                f"codigo={result.codigo} "
+                f"durable_state={result.durable_state or 'retryable'}"
+                f"{http_status}"
             )
             continue
         if result.outcome is OutboundDispatchOutcome.FAILED_TERMINAL:
@@ -230,15 +307,28 @@ def _print_per_attempt(results: Sequence[OutboundDispatchResult]) -> None:
                 if result.categoria is not None
                 else "unknown"
             )
+            http_status = (
+                f" http_status={int(result.http_status)}"
+                if result.http_status is not None
+                else ""
+            )
             print(
                 f"mensaje_id={result.mensaje_id} outcome=failed_terminal "
                 f"intentos={result.intentos} categoria={categoria} "
-                f"codigo={result.codigo}"
+                f"codigo={result.codigo} "
+                f"durable_state={result.durable_state or 'failed_terminal'}"
+                f"{http_status}"
             )
             continue
         print(
             f"mensaje_id={result.mensaje_id} outcome=no_due_row "
             f"detalle={result.detalle}"
+        )
+
+    for exc in technical_exceptions:
+        print(
+            f"outcome=technical_failure "
+            f"exception_type={type(exc).__name__}"
         )
 
 
@@ -282,6 +372,7 @@ def main(
     session_factory_builder: Callable[[], Callable[[], Any]] | None = None,
     messages_client_builder: Callable[..., Any] | None = None,
     dispatcher_builder: Callable[..., OutboundMessageDispatcher] | None = None,
+    cycle_aggregate_writer: CycleAggregateWriter | None = None,
 ) -> int:
     """Run one bounded Phase-5.6 outbound dispatch pass.
 
@@ -289,8 +380,8 @@ def main(
     the outbound credentials and routing configuration are
     present, builds the dispatcher with the real
     ``_SessionLocal`` factory and the real ``twilio.rest.Client``
-    ``messages`` seam, and invokes ``run_retry_pass`` with the
-    operator-supplied ``--max-attempts-per-pass`` bound.
+    ``messages`` seam, and invokes ``run_pass_with_evidence``
+    with the operator-supplied ``--max-attempts-per-pass`` bound.
 
     Exit codes:
 
@@ -306,6 +397,10 @@ def main(
     The CLI never prints credentials, signatures, inbound text or
     outbound message bodies. The summary line contains only stable
     identifiers and outcome categories.
+
+    ``cycle_aggregate_writer``, when provided, receives one safe
+    :class:`OutboundCycleAggregate` per pass so the worker can
+    emit per-cycle aggregates without re-running the dispatcher.
     """
     load_settings_fn = settings_loader or _load_settings
     build_session_factory_fn = session_factory_builder or _build_session_factory
@@ -323,12 +418,26 @@ def main(
         InvalidTwilioWebhookAuthToken,
     ) as exc:
         print(f"invalid_outbound_settings: {type(exc).__name__}", file=sys.stderr)
+        if cycle_aggregate_writer is not None:
+            cycle_aggregate_writer(
+                _build_cycle_aggregate(
+                    results=(),
+                    technical_exceptions=(exc,),
+                )
+            )
         return 2
 
     try:
         _validate_outbound_settings(settings)
     except InvalidTwilioOutboundDispatchConfig as exc:
         print(f"invalid_outbound_settings: {exc}", file=sys.stderr)
+        if cycle_aggregate_writer is not None:
+            cycle_aggregate_writer(
+                _build_cycle_aggregate(
+                    results=(),
+                    technical_exceptions=(exc,),
+                )
+            )
         return 2
 
     session_factory = build_session_factory_fn()
@@ -348,6 +457,13 @@ def main(
             f"{type(exc).__name__}",
             file=sys.stderr,
         )
+        if cycle_aggregate_writer is not None:
+            cycle_aggregate_writer(
+                _build_cycle_aggregate(
+                    results=(),
+                    technical_exceptions=(exc,),
+                )
+            )
         return 3
 
     dispatcher = build_dispatcher_fn(
@@ -357,7 +473,7 @@ def main(
     )
 
     try:
-        results = dispatcher.run_retry_pass(
+        evidence: OutboundPassEvidence = dispatcher.run_pass_with_evidence(
             max_attempts_per_pass=int(args.max_attempts_per_pass)
         )
     except Exception as exc:  # noqa: BLE001 - defensive: CLI must surface any dispatch failure as exit code 1 without leaking credentials or body bytes
@@ -369,14 +485,35 @@ def main(
             f"dispatch_pass_failed: {type(exc).__name__}",
             file=sys.stderr,
         )
+        if cycle_aggregate_writer is not None:
+            cycle_aggregate_writer(
+                _build_cycle_aggregate(
+                    results=(),
+                    technical_exceptions=(exc,),
+                )
+            )
         return 1
 
-    _print_per_attempt(results)
-    print(_format_summary(results))
+    aggregate = _build_cycle_aggregate(
+        results=evidence.results,
+        technical_exceptions=evidence.technical_exceptions,
+    )
+    if cycle_aggregate_writer is not None:
+        cycle_aggregate_writer(aggregate)
+
+    _print_per_attempt(
+        evidence.results, evidence.technical_exceptions
+    )
+    print(
+        _format_summary(
+            evidence.results,
+            technical_failure_count=aggregate.technical_failure,
+        )
+    )
 
     if any(
         result.outcome is OutboundDispatchOutcome.FAILED_TERMINAL
-        for result in results
+        for result in evidence.results
     ):
         return 1
     return 0

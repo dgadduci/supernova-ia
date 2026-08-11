@@ -47,6 +47,7 @@ from collections.abc import Callable
 from collections.abc import Sequence as SequenceABC
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any
 
 from sqlalchemy.orm import Session as SqlSession
 
@@ -59,8 +60,11 @@ from backend.repositories.mensaje_proveedor_saliente_repository import (
     MensajeProveedorSalienteRepository,
 )
 from backend.services.outbound_dispatch_types import (
+    OutboundAttemptEvent,
+    OutboundAttemptOutcome,
     OutboundDispatchOutcome,
     OutboundDispatchResult,
+    OutboundPassEvidence,
 )
 from backend.services.twilio_outbound_adapter import (
     OutboundDispatchPayload,
@@ -89,6 +93,26 @@ def _to_model_category(
     if value is None:
         return None
     return OutboundFailureCategory(str(value.value))
+
+_DURABLE_STATE_BY_OUTCOME: dict[OutboundDispatchOutcome, str] = {
+    OutboundDispatchOutcome.SENT: "accepted",
+    OutboundDispatchOutcome.RETRY_SCHEDULED: "retryable",
+    OutboundDispatchOutcome.FAILED_TERMINAL: "failed_terminal",
+    OutboundDispatchOutcome.NO_DUE_ROW: "no_due_row",
+}
+
+_ATTEMPT_OUTCOME_BY_DISPATCH_OUTCOME: dict[
+    OutboundDispatchOutcome, OutboundAttemptOutcome
+] = {
+    OutboundDispatchOutcome.SENT: OutboundAttemptOutcome.SENT,
+    OutboundDispatchOutcome.RETRY_SCHEDULED: (
+        OutboundAttemptOutcome.RETRY_SCHEDULED
+    ),
+    OutboundDispatchOutcome.FAILED_TERMINAL: (
+        OutboundAttemptOutcome.FAILED_TERMINAL
+    ),
+    OutboundDispatchOutcome.NO_DUE_ROW: OutboundAttemptOutcome.NO_DUE_ROW,
+}
 
 logger = logging.getLogger(__name__)
 
@@ -244,6 +268,11 @@ class OutboundMessageDispatcher:
                     attempts=attempts,
                     categoria=OutboundFailureCategory.BUDGET_EXHAUSTED,
                     codigo=str(send_result.codigo or ""),
+                    http_status=(
+                        int(send_result.http_status)
+                        if send_result.http_status is not None
+                        else None
+                    ),
                 )
             next_at = _compute_next_attempt_at(
                 now=now,
@@ -270,6 +299,11 @@ class OutboundMessageDispatcher:
                 attempts=attempts,
                 categoria=_to_model_category(adapter_categoria),
                 codigo=str(send_result.codigo or ""),
+                http_status=(
+                    int(send_result.http_status)
+                    if send_result.http_status is not None
+                    else None
+                ),
             )
 
         adapter_categoria = (
@@ -291,6 +325,11 @@ class OutboundMessageDispatcher:
             categoria=_to_model_category(adapter_categoria)
             or OutboundFailureCategory.TERMINAL_4XX,
             codigo=str(send_result.codigo or ""),
+            http_status=(
+                int(send_result.http_status)
+                if send_result.http_status is not None
+                else None
+            ),
         )
 
     def dispatch(self) -> OutboundDispatchResult:
@@ -308,32 +347,68 @@ class OutboundMessageDispatcher:
         Technical failures inside any narrow transaction roll back
         that transaction and propagate so the caller learns about
         them without the dispatcher swallowing them.
+
+        The dispatcher emits one safe ``provider_outbound_attempt``
+        log record per ``dispatch`` call. Typed outcomes carry
+        ``outcome``, ``outbox_id``, ``attempt_count``,
+        ``durable_state``, ``failure_category``, ``provider_code``
+        and ``http_status`` (when known). Technical failures carry
+        ``outcome=technical_failure`` and ``exception_type`` only;
+        raw exception text, addresses, signatures, payloads and
+        tracebacks are never logged.
         """
         now = self._now_or()
-        claimed = self._claim(now)
-        if claimed is None:
-            return _no_due_row()
+        claimed: MensajeProveedorSaliente | None = None
+        send_result: TwilioSendResult | None = None
+        try:
+            claimed = self._claim(now)
+            if claimed is None:
+                result = _no_due_row()
+                _emit_attempt_event(
+                    event=_build_attempt_event(
+                        result=result, send_result=None
+                    ),
+                    logger_=logger,
+                )
+                return result
 
-        if self._messages is None:
-            raise RuntimeError(
-                "OutboundMessageDispatcher.dispatch requires a "
-                "messages_client seam"
+            if self._messages is None:
+                raise RuntimeError(
+                    "OutboundMessageDispatcher.dispatch requires a "
+                    "messages_client seam"
+                )
+
+            request = build_send_request(
+                OutboundDispatchPayload(
+                    destinatario_e164=str(claimed.destinatario_e164),
+                    cuerpo=str(claimed.cuerpo),
+                    idempotency_key=f"outbox-{int(claimed.id)}",
+                ),
+                sender_e164=self._config.sender_e164,
+                status_callback_url=self._config.status_callback_url,
             )
-
-        request = build_send_request(
-            OutboundDispatchPayload(
-                destinatario_e164=str(claimed.destinatario_e164),
-                cuerpo=str(claimed.cuerpo),
-                idempotency_key=f"outbox-{int(claimed.id)}",
-            ),
-            sender_e164=self._config.sender_e164,
-            status_callback_url=self._config.status_callback_url,
-        )
-        send_result = twilio_send(self._messages, request)
-
-        return self._finalize(
-            claimed=claimed, send_result=send_result, now=now
-        )
+            send_result = twilio_send(self._messages, request)
+            result = self._finalize(
+                claimed=claimed, send_result=send_result, now=now
+            )
+            _emit_attempt_event(
+                event=_build_attempt_event(
+                    result=result, send_result=send_result
+                ),
+                logger_=logger,
+            )
+            return result
+        except Exception as exc:
+            claimed_outbox_id = (
+                int(claimed.id) if claimed is not None else None
+            )
+            _emit_attempt_event(
+                event=_build_technical_event(
+                    exc=exc, outbox_id=claimed_outbox_id
+                ),
+                logger_=logger,
+            )
+            raise
 
     def run_retry_pass(
         self, *, max_attempts_per_pass: int = 16
@@ -345,6 +420,11 @@ class OutboundMessageDispatcher:
         point never starves. Each iteration is independent and
         re-reads ``now`` from the supplied clock so a long-running
         pass cannot lock in stale timestamps.
+
+        Technical failures inside ``dispatch`` propagate
+        unchanged; use :meth:`run_pass_with_evidence` when the
+        caller needs the technical exception captured for
+        per-cycle aggregates.
         """
         results: list[OutboundDispatchResult] = []
         for _ in range(int(max_attempts_per_pass)):
@@ -353,6 +433,36 @@ class OutboundMessageDispatcher:
             if outcome.outcome is OutboundDispatchOutcome.NO_DUE_ROW:
                 break
         return tuple(results)
+
+    def run_pass_with_evidence(
+        self, *, max_attempts_per_pass: int = 16
+    ) -> OutboundPassEvidence:
+        """Drive the dispatcher and capture both typed results and
+        technical exceptions.
+
+        The pass is bounded by ``max_attempts_per_pass`` and stops
+        on the first technical exception so the dispatcher never
+        leaves an unrecovered lease behind. The exception is
+        captured so the CLI / worker can surface the per-cycle
+        technical-failure count without re-running the
+        dispatcher. ``run_retry_pass`` is preserved for callers
+        that need the legacy exception-propagating contract.
+        """
+        results: list[OutboundDispatchResult] = []
+        technical_exceptions: list[BaseException] = []
+        for _ in range(int(max_attempts_per_pass)):
+            try:
+                outcome = self.dispatch()
+            except Exception as exc:  # noqa: BLE001 - dispatcher-owned technical failures must be captured for per-cycle aggregates
+                technical_exceptions.append(exc)
+                break
+            results.append(outcome)
+            if outcome.outcome is OutboundDispatchOutcome.NO_DUE_ROW:
+                break
+        return OutboundPassEvidence(
+            results=tuple(results),
+            technical_exceptions=tuple(technical_exceptions),
+        )
 
 
 def _compute_next_attempt_at(
@@ -410,6 +520,138 @@ def _utc():
     return timezone.utc
 
 
+def _build_attempt_event(
+    *,
+    result: OutboundDispatchResult,
+    send_result: TwilioSendResult | None,
+) -> OutboundAttemptEvent:
+    """Translate one ``OutboundDispatchResult`` into a safe event.
+
+    Only the allowlisted safe fields are populated. The Twilio HTTP
+    status is propagated from the adapter result when known;
+    exception text, addresses, signatures, payloads and tracebacks
+    are never included.
+    """
+    outcome = _ATTEMPT_OUTCOME_BY_DISPATCH_OUTCOME[result.outcome]
+    outbox_id = (
+        int(result.mensaje_id)
+        if result.mensaje_id is not None
+        else None
+    )
+    attempt_count = (
+        int(result.intentos)
+        if result.intentos is not None
+        else None
+    )
+    durable_state: str | None = (
+        str(result.durable_state)
+        if result.durable_state
+        else None
+    )
+    if durable_state is None and outbox_id is not None:
+        durable_state = _DURABLE_STATE_BY_OUTCOME[result.outcome]
+    failure_category: str | None = None
+    provider_code: str | None = None
+    http_status: int | None = (
+        int(result.http_status)
+        if result.http_status is not None
+        else None
+    )
+    if result.outcome in (
+        OutboundDispatchOutcome.RETRY_SCHEDULED,
+        OutboundDispatchOutcome.FAILED_TERMINAL,
+    ):
+        if result.categoria is not None:
+            failure_category = str(result.categoria.value)
+        if result.codigo:
+            provider_code = str(result.codigo)
+        if http_status is None and send_result is not None:
+            http_status = (
+                int(send_result.http_status)
+                if send_result.http_status is not None
+                else None
+            )
+    return OutboundAttemptEvent(
+        outcome=outcome,
+        outbox_id=outbox_id,
+        attempt_count=attempt_count,
+        durable_state=durable_state,
+        failure_category=failure_category,
+        provider_code=provider_code,
+        http_status=http_status,
+        exception_type=None,
+    )
+
+
+def _build_technical_event(
+    *, exc: BaseException, outbox_id: int | None
+) -> OutboundAttemptEvent:
+    """Translate an unexpected exception into a safe technical event.
+
+    Only the exception class is exposed. Raw exception text, body
+    bytes, addresses, signatures, payloads and tracebacks are
+    forbidden. ``outbox_id`` is populated only when the dispatcher
+    had already claimed a row before the exception; it remains
+    ``None`` when the failure happened before any claim so the
+    record never fabricates a durable context.
+    """
+    safe_outbox_id = int(outbox_id) if outbox_id is not None else None
+    return OutboundAttemptEvent(
+        outcome=OutboundAttemptOutcome.TECHNICAL_FAILURE,
+        outbox_id=safe_outbox_id,
+        attempt_count=None,
+        durable_state=None,
+        failure_category=None,
+        provider_code=None,
+        http_status=None,
+        exception_type=type(exc).__name__,
+    )
+
+
+def _attempt_event_extra(event: OutboundAttemptEvent) -> dict[str, Any]:
+    """Render an ``OutboundAttemptEvent`` as a logging ``extra`` payload.
+
+    The payload contains only the allowlisted safe fields; every
+    value is explicitly typed so the operator logging surface is
+    uniform regardless of the outcome. ``None`` values are dropped
+    so the log record never advertises an empty field.
+    """
+    payload: dict[str, Any] = {
+        "outcome": str(event.outcome.value),
+    }
+    if event.outbox_id is not None:
+        payload["outbox_id"] = int(event.outbox_id)
+    if event.attempt_count is not None:
+        payload["attempt_count"] = int(event.attempt_count)
+    if event.durable_state is not None:
+        payload["durable_state"] = str(event.durable_state)
+    if event.failure_category is not None:
+        payload["failure_category"] = str(event.failure_category)
+    if event.provider_code is not None:
+        payload["provider_code"] = str(event.provider_code)
+    if event.http_status is not None:
+        payload["http_status"] = int(event.http_status)
+    if event.exception_type is not None:
+        payload["exception_type"] = str(event.exception_type)
+    return payload
+
+
+def _emit_attempt_event(
+    *, event: OutboundAttemptEvent, logger_: logging.Logger
+) -> None:
+    """Emit one safe ``provider_outbound_attempt`` log record.
+
+    The event name is fixed and the payload is restricted to the
+    allowlisted fields via :func:`_attempt_event_extra`. The
+    function never attaches exception info, addresses, signatures,
+    payloads, bodies or tracebacks.
+    """
+    logger_.info(
+        "provider_outbound_attempt",
+        extra=_attempt_event_extra(event),
+    )
+
+
 def _no_due_row() -> OutboundDispatchResult:
     return OutboundDispatchResult(
         outcome=OutboundDispatchOutcome.NO_DUE_ROW,
@@ -442,6 +684,7 @@ def _sent(outbox_id: int, message_sid: str) -> OutboundDispatchResult:
         intentos=None,
         categoria=None,
         codigo=None,
+        durable_state="accepted",
         detalle=None,
     )
 
@@ -452,6 +695,7 @@ def _retry(
     attempts: int,
     categoria: OutboundFailureCategory | None,
     codigo: str,
+    http_status: int | None = None,
 ) -> OutboundDispatchResult:
     return OutboundDispatchResult(
         outcome=OutboundDispatchOutcome.RETRY_SCHEDULED,
@@ -460,6 +704,8 @@ def _retry(
         intentos=attempts,
         categoria=categoria,
         codigo=codigo,
+        durable_state="retryable",
+        http_status=http_status,
         detalle=None,
     )
 
@@ -470,6 +716,7 @@ def _terminal(
     attempts: int,
     categoria: OutboundFailureCategory,
     codigo: str,
+    http_status: int | None = None,
 ) -> OutboundDispatchResult:
     return OutboundDispatchResult(
         outcome=OutboundDispatchOutcome.FAILED_TERMINAL,
@@ -478,6 +725,8 @@ def _terminal(
         intentos=attempts,
         categoria=categoria,
         codigo=codigo,
+        durable_state="failed_terminal",
+        http_status=http_status,
         detalle=None,
     )
 

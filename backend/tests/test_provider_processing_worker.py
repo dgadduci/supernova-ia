@@ -44,6 +44,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 from unittest import mock
+from unittest.mock import MagicMock
 
 from backend.cli import run_provider_processing_worker as worker_cli
 from backend.cli.run_provider_processing_worker import (
@@ -1957,6 +1958,531 @@ class WorkerReadinessDiagnosticCliRegressionTest(unittest.TestCase):
             embedding_batch_size=2,
             embedding_dimension=4,
         )
+
+
+class WorkerOutboundCycleAggregateTest(unittest.TestCase):
+    """The worker must emit one safe per-cycle outbound aggregate
+    so terminal Twilio failures are not reduced to a single exit
+    code. The aggregate flows through the cycle summary writer
+    and never includes bodies, addresses, signatures, payloads or
+    environment dumps.
+    """
+
+    def test_cycle_summary_contains_outbound_aggregate_counts(
+        self,
+    ) -> None:
+        from backend.services.outbound_dispatch_types import (
+            OutboundCycleAggregate,
+        )
+
+        inbound_calls: list[int] = []
+        outbound_calls: list[int] = []
+        summaries: list[dict[str, Any]] = []
+
+        def _inbound(bound: int) -> int:
+            inbound_calls.append(bound)
+            return 0
+
+        def _outbound(bound: int) -> int:
+            outbound_calls.append(bound)
+            return 0
+
+        aggregate = OutboundCycleAggregate(
+            sent=2,
+            retry_scheduled=1,
+            failed_terminal=1,
+            no_due_row=1,
+            technical_failure=0,
+            failure_category_counts={
+                "retryable_429": 1,
+                "terminal_4xx": 1,
+            },
+        )
+
+        def _producer(bound: int) -> OutboundCycleAggregate:
+            return aggregate
+
+        run_cycle(
+            settings=_settings(inbound_bound=1, outbound_bound=16),
+            cycle_index=1,
+            inbound_runner=_inbound,
+            outbound_runner=_outbound,
+            sleep_decision=lambda _settings, _cycle: False,
+            cycle_summary_writer=lambda s: summaries.append(s),
+            outbound_cycle_aggregate_producer=_producer,
+        )
+
+        self.assertEqual(len(summaries), 1)
+        summary = summaries[0]
+        self.assertEqual(summary["outbound_cycle_aggregate"], aggregate)
+        self.assertEqual(summary["outbound_cycle_aggregate"].sent, 2)
+        self.assertEqual(
+            summary["outbound_cycle_aggregate"].failed_terminal, 1
+        )
+
+    def test_cycle_summary_writer_default_renders_safe_aggregate_line(
+        self,
+    ) -> None:
+        from backend.services.outbound_dispatch_types import (
+            OutboundCycleAggregate,
+        )
+
+        summary = _build_cycle_summary(
+            cycle_index=3,
+            inbound_exit_code=0,
+            outbound_exit_code=1,
+            settings=_settings(inbound_bound=1, outbound_bound=16),
+            sleep_after=True,
+            outbound_cycle_aggregate=OutboundCycleAggregate(
+                sent=1,
+                retry_scheduled=2,
+                failed_terminal=1,
+                no_due_row=1,
+                technical_failure=0,
+                failure_category_counts={
+                    "retryable_429": 1,
+                    "terminal_4xx": 1,
+                    "budget_exhausted": 1,
+                },
+            ),
+        )
+
+        with _capture_stdout() as stdout:
+            worker_cli._default_cycle_summary_writer(summary)
+
+        rendered = stdout.getvalue()
+        self.assertIn("outbound_sent=1", rendered)
+        self.assertIn("outbound_retry_scheduled=2", rendered)
+        self.assertIn("outbound_failed_terminal=1", rendered)
+        self.assertIn("outbound_no_due_row=1", rendered)
+        self.assertIn("outbound_technical_failure=0", rendered)
+        self.assertIn("outbound_failure_categories=", rendered)
+        self.assertIn("retryable_429=1", rendered)
+        self.assertIn("terminal_4xx=1", rendered)
+        self.assertIn("budget_exhausted=1", rendered)
+
+        forbidden = (
+            "secret-auth-token-value",
+            "AC000000000000000000000000000000",
+            "+5491100000000",
+            "+5491155556666",
+            "X-Twilio-Signature",
+            "Bearer ",
+        )
+        for token in forbidden:
+            self.assertNotIn(token, rendered)
+
+    def test_cycle_summary_writer_omits_aggregate_when_none(
+        self,
+    ) -> None:
+        summary = _build_cycle_summary(
+            cycle_index=1,
+            inbound_exit_code=0,
+            outbound_exit_code=0,
+            settings=_settings(),
+            sleep_after=False,
+        )
+
+        with _capture_stdout() as stdout:
+            worker_cli._default_cycle_summary_writer(summary)
+
+        rendered = stdout.getvalue()
+        self.assertNotIn("outbound_sent=", rendered)
+        self.assertNotIn("outbound_failure_categories=", rendered)
+
+    def test_default_outbound_runner_shares_aggregate_with_default_producer(
+        self,
+    ) -> None:
+        """Production wiring must feed the per-cycle aggregate
+        from the default outbound runner into the default
+        outbound cycle aggregate producer without re-running the
+        dispatcher.
+        """
+
+        from backend.services.outbound_dispatch_types import (
+            OutboundDispatchOutcome,
+            OutboundDispatchResult,
+            OutboundPassEvidence,
+        )
+
+        # Reset the shared cell so prior tests cannot leak into this
+        # assertion. The cell is process-local by design.
+        worker_cli._WORKER_OUTBOUND_CELL.aggregate = None
+
+        sent_result = OutboundDispatchResult(
+            outcome=OutboundDispatchOutcome.SENT,
+            mensaje_id=42,
+            identificador_proveedor="SM-OK",
+            intentos=None,
+            categoria=None,
+            codigo=None,
+            durable_state="accepted",
+        )
+        evidence = OutboundPassEvidence(
+            results=(sent_result,),
+            technical_exceptions=(),
+        )
+
+        # Inject the dispatcher mock directly into the CLI's
+        # ``main()`` so the default runner's closure writer
+        # receives the per-cycle aggregate and the producer
+        # seam surfaces it without re-running the dispatcher.
+        from backend.cli.run_outbound_dispatch import (
+            main as outbound_main,
+        )
+
+        dispatcher_mock = MagicMock(name="OutboundMessageDispatcher")
+        dispatcher_mock.run_pass_with_evidence.return_value = evidence
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "TWILIO_AUTH_TOKEN": "test-token",
+                "TWILIO_ACCOUNT_SID": "AC" + "0" * 32,
+                "TWILIO_OUTBOUND_SENDER_E164": "+5491100000000",
+                "TWILIO_CALLBACK_STATUS_URL": (
+                    "https://example.test/cb"
+                ),
+            },
+            clear=True,
+        ), _capture_stdout():
+            exit_code = outbound_main(
+                argv=["--max-attempts-per-pass", "16"],
+                session_factory_builder=lambda: MagicMock(
+                    name="SessionFactory"
+                ),
+                messages_client_builder=lambda **_kwargs: MagicMock(
+                    name="TwilioMessagesClient"
+                ),
+                dispatcher_builder=lambda **_: dispatcher_mock,
+                cycle_aggregate_writer=lambda agg: setattr(
+                    worker_cli._WORKER_OUTBOUND_CELL,
+                    "aggregate",
+                    agg,
+                ),
+            )
+
+        self.assertEqual(exit_code, 0)
+
+        producer = worker_cli._default_outbound_cycle_aggregate_producer
+        aggregate = producer(16)
+
+        self.assertEqual(aggregate.sent, 1)
+        self.assertEqual(aggregate.retry_scheduled, 0)
+        self.assertEqual(aggregate.failed_terminal, 0)
+        self.assertEqual(aggregate.technical_failure, 0)
+        self.assertEqual(dict(aggregate.failure_category_counts), {})
+
+        worker_cli._WORKER_OUTBOUND_CELL.aggregate = None
+
+
+class DefaultOutboundRunnerCellResetTest(unittest.TestCase):
+    """The default outbound runner must reset the shared
+    ``_WORKER_OUTBOUND_CELL.aggregate`` BEFORE invoking the CLI
+    so a previous cycle's safe aggregate never leaks into the
+    next cycle, even when the CLI terminates early without
+    writing a fresh aggregate (settings / validation / Twilio
+    client construction failure)."""
+
+    def setUp(self) -> None:
+        # Snapshot the cell so a failing test cannot leak a stale
+        # aggregate into the next test. The cell is process-local
+        # by design.
+        self._previous_cell = worker_cli._WORKER_OUTBOUND_CELL.aggregate
+        worker_cli._WORKER_OUTBOUND_CELL.aggregate = None
+
+    def tearDown(self) -> None:
+        worker_cli._WORKER_OUTBOUND_CELL.aggregate = self._previous_cell
+
+    def test_default_runner_resets_cell_before_invoking_cli(self) -> None:
+        """The cell MUST be cleared before any ``main()`` call so a
+        stale previous-cycle aggregate cannot be observed when the
+        CLI raises before reaching the dispatcher."""
+
+        from backend.services.outbound_dispatch_types import (
+            OutboundCycleAggregate,
+        )
+
+        previous = OutboundCycleAggregate(
+            sent=5,
+            retry_scheduled=3,
+            failed_terminal=2,
+            no_due_row=1,
+            technical_failure=0,
+            failure_category_counts={"foo": 2},
+        )
+        worker_cli._WORKER_OUTBOUND_CELL.aggregate = previous
+
+        observed: list[Any] = []
+
+        def _spy_main(*args: Any, **kwargs: Any) -> int:
+            observed.append(
+                ("cell_at_call", worker_cli._WORKER_OUTBOUND_CELL.aggregate)
+            )
+            from backend.services.exceptions import (
+                InvalidTwilioOutboundDispatchConfig,
+            )
+            raise InvalidTwilioOutboundDispatchConfig("forced settings error")
+
+        with mock.patch.object(
+            worker_cli, "run_outbound_dispatch_main", _spy_main
+        ):
+            with self.assertRaises(InvalidTwilioOutboundDispatchConfig):
+                worker_cli._default_outbound_runner(4)
+
+        self.assertEqual(len(observed), 1)
+        cell_at_call = observed[0][1]
+        self.assertIsNone(
+            cell_at_call,
+            "cell must be cleared before the CLI is invoked; "
+            "stale aggregate would otherwise leak into the next "
+            "cycle's producer",
+        )
+
+    def test_previous_aggregate_then_early_failure_does_not_reuse_stale(
+        self,
+    ) -> None:
+        """A cycle that runs after a previous successful cycle
+        followed by an early CLI failure MUST NOT reuse the
+        previous cycle's ``sent`` / ``retry_scheduled`` /
+        ``failed_terminal`` / ``no_due_row`` / category counts."""
+
+        from backend.cli.run_outbound_dispatch import (
+            main as outbound_main,
+        )
+        from backend.models.mensaje_proveedor_saliente import (
+            OutboundFailureCategory,
+        )
+        from backend.services.outbound_dispatch_types import (
+            OutboundDispatchOutcome,
+            OutboundDispatchResult,
+            OutboundPassEvidence,
+        )
+
+        worker_cli._WORKER_OUTBOUND_CELL.aggregate = None
+
+        # Previous cycle succeeded with non-trivial evidence.
+        sent_result = OutboundDispatchResult(
+            outcome=OutboundDispatchOutcome.SENT,
+            mensaje_id=11,
+            identificador_proveedor="SM-PREV",
+            intentos=None,
+            categoria=None,
+            codigo=None,
+            durable_state="accepted",
+        )
+        retry_result = OutboundDispatchResult(
+            outcome=OutboundDispatchOutcome.RETRY_SCHEDULED,
+            mensaje_id=12,
+            identificador_proveedor=None,
+            intentos=2,
+            categoria=OutboundFailureCategory.RETRYABLE_429,
+            codigo="20003",
+            durable_state="retryable",
+            http_status=429,
+        )
+        terminal_result = OutboundDispatchResult(
+            outcome=OutboundDispatchOutcome.FAILED_TERMINAL,
+            mensaje_id=13,
+            identificador_proveedor=None,
+            intentos=5,
+            categoria=OutboundFailureCategory.TERMINAL_4XX,
+            codigo="403",
+            durable_state="failed_terminal",
+            http_status=403,
+        )
+        previous_evidence = OutboundPassEvidence(
+            results=(sent_result, retry_result, terminal_result),
+            technical_exceptions=(),
+        )
+        dispatcher_mock = MagicMock(name="OutboundMessageDispatcher")
+        dispatcher_mock.run_pass_with_evidence.return_value = (
+            previous_evidence
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "TWILIO_AUTH_TOKEN": "prev-token",
+                "TWILIO_ACCOUNT_SID": "AC" + "0" * 32,
+                "TWILIO_OUTBOUND_SENDER_E164": "+5491100000000",
+                "TWILIO_CALLBACK_STATUS_URL": (
+                    "https://example.test/cb"
+                ),
+            },
+            clear=True,
+        ), _capture_stdout():
+            prev_exit = outbound_main(
+                argv=["--max-attempts-per-pass", "16"],
+                session_factory_builder=lambda: MagicMock(
+                    name="SessionFactory"
+                ),
+                messages_client_builder=lambda **_kwargs: MagicMock(
+                    name="TwilioMessagesClient"
+                ),
+                dispatcher_builder=lambda **_: dispatcher_mock,
+                cycle_aggregate_writer=lambda agg: setattr(
+                    worker_cli._WORKER_OUTBOUND_CELL,
+                    "aggregate",
+                    agg,
+                ),
+            )
+
+        self.assertEqual(prev_exit, 1)
+        previous_aggregate = worker_cli._WORKER_OUTBOUND_CELL.aggregate
+        self.assertIsNotNone(previous_aggregate)
+        self.assertEqual(previous_aggregate.sent, 1)
+        self.assertEqual(previous_aggregate.retry_scheduled, 1)
+        self.assertEqual(previous_aggregate.failed_terminal, 1)
+        self.assertEqual(previous_aggregate.no_due_row, 0)
+        self.assertEqual(previous_aggregate.technical_failure, 0)
+        self.assertEqual(
+            dict(previous_aggregate.failure_category_counts),
+            {"retryable_429": 1, "terminal_4xx": 1},
+        )
+
+        # Second cycle: Twilio client construction fails BEFORE the
+        # dispatcher runs. The shared cell must NOT still hold the
+        # previous cycle's aggregate.
+        def _raise_client(**_kwargs: Any) -> Any:
+            raise RuntimeError("boom twilio construction")
+
+        captured_writer: list[Any] = []
+        with _capture_stdout(), _capture_stderr():
+            second_exit = outbound_main(
+                argv=["--max-attempts-per-pass", "4"],
+                settings_loader=lambda: _settings(),
+                session_factory_builder=lambda: MagicMock(
+                    name="SessionFactory"
+                ),
+                messages_client_builder=_raise_client,
+                dispatcher_builder=lambda **_: MagicMock(
+                    name="OutboundMessageDispatcher"
+                ),
+                cycle_aggregate_writer=captured_writer.append,
+            )
+
+        self.assertEqual(second_exit, 3)
+        self.assertEqual(len(captured_writer), 1)
+        second_aggregate = captured_writer[0]
+        self.assertEqual(second_aggregate.sent, 0)
+        self.assertEqual(second_aggregate.retry_scheduled, 0)
+        self.assertEqual(second_aggregate.failed_terminal, 0)
+        self.assertEqual(second_aggregate.no_due_row, 0)
+        self.assertEqual(second_aggregate.technical_failure, 1)
+        self.assertEqual(dict(second_aggregate.failure_category_counts), {})
+
+        worker_cli._WORKER_OUTBOUND_CELL.aggregate = None
+
+    def test_default_runner_default_producer_no_double_dispatch(
+        self,
+    ) -> None:
+        """The default wiring must feed the per-cycle aggregate
+        from the default outbound runner into the default
+        outbound cycle aggregate producer WITHOUT invoking the
+        dispatcher a second time."""
+
+        from backend.cli.run_outbound_dispatch import (
+            main as outbound_main,
+        )
+        from backend.services.outbound_dispatch_types import (
+            OutboundDispatchOutcome,
+            OutboundDispatchResult,
+            OutboundPassEvidence,
+        )
+
+        worker_cli._WORKER_OUTBOUND_CELL.aggregate = None
+
+        sent_result = OutboundDispatchResult(
+            outcome=OutboundDispatchOutcome.SENT,
+            mensaje_id=42,
+            identificador_proveedor="SM-OK",
+            intentos=None,
+            categoria=None,
+            codigo=None,
+            durable_state="accepted",
+        )
+        no_due_result = OutboundDispatchResult(
+            outcome=OutboundDispatchOutcome.NO_DUE_ROW,
+            mensaje_id=None,
+            identificador_proveedor=None,
+            intentos=None,
+            categoria=None,
+            codigo=None,
+            detalle="no_due_row",
+        )
+        evidence = OutboundPassEvidence(
+            results=(sent_result, no_due_result),
+            technical_exceptions=(),
+        )
+        dispatcher_mock = MagicMock(name="OutboundMessageDispatcher")
+        dispatcher_mock.run_pass_with_evidence.return_value = evidence
+
+        # The dispatcher is wired through the CLI's
+        # ``dispatcher_builder`` seam. The cycle_aggregate_writer
+        # writes to the shared cell exactly as the default
+        # runner's closure writer does in production.
+        with mock.patch.dict(
+            os.environ,
+            {
+                "TWILIO_AUTH_TOKEN": "ok-token",
+                "TWILIO_ACCOUNT_SID": "AC" + "0" * 32,
+                "TWILIO_OUTBOUND_SENDER_E164": "+5491100000000",
+                "TWILIO_CALLBACK_STATUS_URL": (
+                    "https://example.test/cb"
+                ),
+            },
+            clear=True,
+        ), _capture_stdout():
+            exit_code = outbound_main(
+                argv=["--max-attempts-per-pass", "16"],
+                session_factory_builder=lambda: MagicMock(
+                    name="SessionFactory"
+                ),
+                messages_client_builder=lambda **_kwargs: MagicMock(
+                    name="TwilioMessagesClient"
+                ),
+                dispatcher_builder=lambda **_: dispatcher_mock,
+                cycle_aggregate_writer=lambda agg: setattr(
+                    worker_cli._WORKER_OUTBOUND_CELL,
+                    "aggregate",
+                    agg,
+                ),
+            )
+
+        self.assertEqual(exit_code, 0)
+
+        # The default producer must surface the captured
+        # aggregate without invoking the dispatcher a second
+        # time.
+        producer_calls: list[int] = []
+        original_producer = (
+            worker_cli._default_outbound_cycle_aggregate_producer
+        )
+
+        def _producer_with_invariant(bound: int) -> Any:
+            producer_calls.append(bound)
+            return original_producer(bound)
+
+        with mock.patch.object(
+            worker_cli,
+            "_default_outbound_cycle_aggregate_producer",
+            _producer_with_invariant,
+        ):
+            aggregate = worker_cli._default_outbound_cycle_aggregate_producer(
+                16
+            )
+
+        self.assertEqual(producer_calls, [16])
+        self.assertEqual(aggregate.sent, 1)
+        self.assertEqual(aggregate.retry_scheduled, 0)
+        self.assertEqual(aggregate.failed_terminal, 0)
+        self.assertEqual(aggregate.no_due_row, 1)
+        self.assertEqual(aggregate.technical_failure, 0)
+        self.assertEqual(dict(aggregate.failure_category_counts), {})
+        dispatcher_mock.run_pass_with_evidence.assert_called_once()
+
+        worker_cli._WORKER_OUTBOUND_CELL.aggregate = None
 
 
 if __name__ == "__main__":
