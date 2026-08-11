@@ -211,6 +211,21 @@ def _twilio_account_sid_env(name: str) -> str | None:
     return cleaned
 
 
+def _order_management_admin_token_env(name: str) -> str | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise TypeError(
+            f"{name} must be a string when provided "
+            f"(got {type(raw).__name__})"
+        )
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+    return cleaned
+
+
 def _twilio_webhook_base_url_env(name: str) -> str | None:
     raw = _optional_str_env(name, None)
     if raw is None:
@@ -394,6 +409,7 @@ class Settings:
     provider_processing_worker_outbound_max_attempts_per_pass: int = (
         DEFAULT_PROVIDER_PROCESSING_WORKER_OUTBOUND_MAX_ATTEMPTS_PER_PASS
     )
+    order_management_admin_token: str | None = None
 
 
 def load_settings() -> Settings:
@@ -493,6 +509,9 @@ def load_settings() -> Settings:
                 "PROVIDER_PROCESSING_WORKER_OUTBOUND_MAX_ATTEMPTS_PER_PASS",
                 DEFAULT_PROVIDER_PROCESSING_WORKER_OUTBOUND_MAX_ATTEMPTS_PER_PASS,
             )
+        ),
+        order_management_admin_token=_order_management_admin_token_env(
+            "ORDER_MANAGEMENT_ADMIN_TOKEN"
         ),
     )
 
