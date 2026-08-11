@@ -18,4 +18,4 @@
 
 - [x] 3.1 Implementer runs the exact focused pytest, Ruff, and compileall commands from `proposal.md` locally and reports complete output.
 - [x] 3.2 Codex reviews implementation, test output, strict OpenSpec validation, changed scope, transaction ownership, and isolation.
-- [ ] 3.3 Do not sync, archive, deploy, or commit unless separately authorized by the user.
+- [x] 3.3 User authorized merge, production deployment, validation, and archive; do not perform further sync or commits without separate authorization.
