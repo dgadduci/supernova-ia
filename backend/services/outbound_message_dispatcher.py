@@ -49,12 +49,20 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session as SqlSession
 
 from backend.config.settings import Settings, load_settings
 from backend.models.mensaje_proveedor_saliente import (
     MensajeProveedorSaliente,
     OutboundFailureCategory,
+)
+from backend.observability import (
+    COMPONENT_OUTBOUND,
+    EVENT_DATABASE_TECHNICAL_FAILURE,
+    EVENT_OUTBOUND_OUTCOME,
+    categorize_sqlalchemy_error,
+    emit_event,
 )
 from backend.repositories.mensaje_proveedor_saliente_repository import (
     MensajeProveedorSalienteRepository,
@@ -187,6 +195,15 @@ class OutboundMessageDispatcher:
             )
             session.commit()
             return claimed
+        except SQLAlchemyError as exc:
+            emit_event(
+                event=EVENT_DATABASE_TECHNICAL_FAILURE,
+                component=COMPONENT_OUTBOUND,
+                failure_category=categorize_sqlalchemy_error(exc),
+                exception_type=type(exc).__name__,
+            )
+            session.rollback()
+            raise
         except Exception:
             session.rollback()
             raise
@@ -220,6 +237,15 @@ class OutboundMessageDispatcher:
             )
             session.commit()
             return outcome
+        except SQLAlchemyError as exc:
+            emit_event(
+                event=EVENT_DATABASE_TECHNICAL_FAILURE,
+                component=COMPONENT_OUTBOUND,
+                failure_category=categorize_sqlalchemy_error(exc),
+                exception_type=type(exc).__name__,
+            )
+            session.rollback()
+            raise
         except Exception:
             session.rollback()
             raise
@@ -463,6 +489,51 @@ class OutboundMessageDispatcher:
             results=tuple(results),
             technical_exceptions=tuple(technical_exceptions),
         )
+
+
+def _emit_outbound_event(result: OutboundDispatchResult) -> None:
+    """Emit a single ``outbound_attempt_outcome`` event for the result.
+
+    The mapping is intentionally narrow:
+    * SENT → outcome=accepted, durable_state=accepted;
+    * RETRY_SCHEDULED → outcome=retryable, provider_code=send.codigo;
+    * FAILED_TERMINAL → outcome=terminal, provider_code=send.codigo;
+    * NO_DUE_ROW with detalle=late_acceptance → outcome=late_acceptance;
+    * NO_DUE_ROW otherwise → outcome=no_due_row.
+
+    The event never carries the outbound body, the destination
+    E.164, the provider SID, the auth token or the raw exception
+    text. Repository-side SQLAlchemy errors are emitted separately
+    from ``_claim`` / ``_finalize`` so the dispatcher never
+    duplicates signals.
+    """
+    durable_state_map = {
+        OutboundDispatchOutcome.SENT: "accepted",
+        OutboundDispatchOutcome.RETRY_SCHEDULED: "retryable",
+        OutboundDispatchOutcome.FAILED_TERMINAL: "failed_terminal",
+    }
+    if result.outcome is OutboundDispatchOutcome.NO_DUE_ROW:
+        outcome = (
+            "late_acceptance"
+            if result.detalle == "late_acceptance"
+            else "no_due_row"
+        )
+    else:
+        outcome = {
+            OutboundDispatchOutcome.SENT: "accepted",
+            OutboundDispatchOutcome.RETRY_SCHEDULED: "retryable",
+            OutboundDispatchOutcome.FAILED_TERMINAL: "terminal",
+        }[result.outcome]
+
+    emit_event(
+        event=EVENT_OUTBOUND_OUTCOME,
+        component=COMPONENT_OUTBOUND,
+        outcome=outcome,
+        outbox_id=int(result.mensaje_id) if result.mensaje_id is not None else None,
+        attempt=int(result.intentos) if result.intentos is not None else None,
+        durable_state=durable_state_map.get(result.outcome),
+        provider_code=str(result.codigo) if result.codigo else None,
+    )
 
 
 def _compute_next_attempt_at(
