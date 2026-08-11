@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from backend.dependencies import get_session
+from backend.dependencies import get_session, require_admin_token
 from backend.schemas.precio import PrecioCreate, PrecioResponse
 from backend.services.exceptions import (
     DuplicatePrecio,
@@ -11,7 +11,10 @@ from backend.services.exceptions import (
 )
 from backend.services.precio_service import PrecioService
 
-router = APIRouter(tags=["precios"])
+router = APIRouter(
+    tags=["precios"],
+    dependencies=[Depends(require_admin_token)],
+)
 
 
 def _service(session: Session = Depends(get_session)) -> PrecioService:

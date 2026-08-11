@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from backend.dependencies import get_session
+from backend.dependencies import get_session, require_admin_token
 from backend.schemas.medios_pago import MediosPagoCreate, MediosPagoResponse
 from backend.services.exceptions import (
     DuplicateMedioPago,
@@ -10,7 +10,11 @@ from backend.services.exceptions import (
 )
 from backend.services.medios_pago_service import MediosPagoService
 
-router = APIRouter(prefix="/medios-pago", tags=["medios-pago"])
+router = APIRouter(
+    prefix="/medios-pago",
+    tags=["medios-pago"],
+    dependencies=[Depends(require_admin_token)],
+)
 
 
 def _service(session: Session = Depends(get_session)) -> MediosPagoService:

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session as SqlSession
 
-from backend.dependencies import get_session
+from backend.dependencies import get_session, require_admin_token
 from backend.schemas.session import (
     SessionCreate,
     SessionPedidoUpdate,
@@ -17,7 +17,11 @@ from backend.services.exceptions import (
 )
 from backend.services.session_service import SessionService
 
-router = APIRouter(prefix="/sessions", tags=["sessions"])
+router = APIRouter(
+    prefix="/sessions",
+    tags=["sessions"],
+    dependencies=[Depends(require_admin_token)],
+)
 
 
 def _service(session: SqlSession = Depends(get_session)) -> SessionService:

@@ -3,7 +3,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session as DatabaseSession
 
-from backend.dependencies import get_session
+from backend.dependencies import get_session, require_admin_token
 from backend.diagnostics import (
     CollectingDiagnosticSink,
     DiagnosticSink,
@@ -20,7 +20,10 @@ from backend.schemas.incoming_message import (
 from backend.services.exceptions import SessionNotFound
 from backend.services.session_service import SessionService
 
-router = APIRouter(tags=["incoming-messages"])
+router = APIRouter(
+    tags=["incoming-messages"],
+    dependencies=[Depends(require_admin_token)],
+)
 
 
 def _service(

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from backend.dependencies import get_session
+from backend.dependencies import get_session, require_admin_token
 from backend.schemas.metodo_entrega import MetodoEntregaCreate, MetodoEntregaResponse
 from backend.services.exceptions import (
     DuplicateMetodoEntrega,
@@ -10,7 +10,11 @@ from backend.services.exceptions import (
 )
 from backend.services.metodo_entrega_service import MetodoEntregaService
 
-router = APIRouter(prefix="/metodos-entrega", tags=["metodos-entrega"])
+router = APIRouter(
+    prefix="/metodos-entrega",
+    tags=["metodos-entrega"],
+    dependencies=[Depends(require_admin_token)],
+)
 
 
 def _service(session: Session = Depends(get_session)) -> MetodoEntregaService:

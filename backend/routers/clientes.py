@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from backend.dependencies import get_session
+from backend.dependencies import get_session, require_admin_token
 from backend.schemas.cliente import (
     ClienteActivoUpdate,
     ClienteCreate,
@@ -15,7 +15,11 @@ from backend.services.exceptions import (
     InvalidWhatsApp,
 )
 
-router = APIRouter(prefix="/clientes", tags=["clientes"])
+router = APIRouter(
+    prefix="/clientes",
+    tags=["clientes"],
+    dependencies=[Depends(require_admin_token)],
+)
 
 
 def _service(session: Session = Depends(get_session)) -> ClienteService:

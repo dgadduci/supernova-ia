@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from backend.dependencies import get_session
+from backend.dependencies import get_session, require_admin_token
 from backend.schemas.comercio import ComercioCreate, ComercioResponse
 from backend.services.comercio_service import ComercioService
 from backend.services.exceptions import (
@@ -11,7 +11,11 @@ from backend.services.exceptions import (
     EstadoComercioNotFound,
 )
 
-router = APIRouter(prefix="/comercios", tags=["comercios"])
+router = APIRouter(
+    prefix="/comercios",
+    tags=["comercios"],
+    dependencies=[Depends(require_admin_token)],
+)
 
 
 def _service(session: Session = Depends(get_session)) -> ComercioService:

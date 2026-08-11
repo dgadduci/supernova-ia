@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from backend.config.settings import load_settings
-from backend.dependencies import get_session
+from backend.dependencies import get_session, require_admin_token
 from backend.llm.embedding_client import OllamaEmbeddingClient
 from backend.schemas.producto import ProductoCreate, ProductoResponse
 from backend.services.catalog_embedding_synchronization_service import (
@@ -19,7 +19,10 @@ from backend.services.exceptions import (
 )
 from backend.services.producto_service import ProductoService
 
-router = APIRouter(tags=["productos"])
+router = APIRouter(
+    tags=["productos"],
+    dependencies=[Depends(require_admin_token)],
+)
 
 
 def _service(session: Annotated[Session, Depends(get_session)]) -> ProductoService:
