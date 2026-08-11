@@ -28,8 +28,16 @@
 - [x] 3.3 Add focused tests for inventory counts and no-mutation guarantees.
 - [x] 3.4 Run the focused pytest, Ruff, compileall and strict OpenSpec
   validation commands from the proposal.
-- [ ] 3.5 Perform one controlled production query after deployment and record
-  only its safe aggregate outcome. (Requires deployment; deferred to operator.)
+- [ ] 3.5 Perform one controlled `query_production_logs --event
+  outbound_attempt_outcome` after deployment and record only its safe
+  aggregate outcome. (Defer until the CLI fix lands in production:
+  the CLI previously forwarded `--event` as Railway's `--filter`,
+  which is a text search on the envelope `message` field that is
+  empty for our structured events and therefore always returned zero
+  matches. The CLI now applies `--event` only as a local filter on
+  the parsed events; a controlled production query must confirm the
+  bounded array is non-empty for `outbound_attempt_outcome` after
+  deploy.)
 
 ## 4. Deferred
 
