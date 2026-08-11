@@ -28,7 +28,7 @@
 - [x] 3.3 Add focused tests for inventory counts and no-mutation guarantees.
 - [x] 3.4 Run the focused pytest, Ruff, compileall and strict OpenSpec
   validation commands from the proposal.
-- [ ] 3.5 Perform one controlled `query_production_logs --event
+- [x] 3.5 Perform one controlled `query_production_logs --event
   outbound_attempt_outcome` after deployment and record only its safe
   aggregate outcome. (Defer until the CLI fix lands in production:
   the CLI previously forwarded `--event` as Railway's `--filter`,
