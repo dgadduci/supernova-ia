@@ -4,7 +4,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from backend.dependencies import get_session
+from backend.dependencies import get_session, require_admin_token
 from backend.schemas.categoria_producto import CategoriaProductoResponse
 from backend.schemas.categoria_producto import CategoriaProductoDetalleResponse
 from backend.schemas.precio import PrecioResponse
@@ -25,7 +25,10 @@ from backend.services.exceptions import (
 )
 from backend.services.producto_query_service import ProductoQueryService
 
-router = APIRouter(tags=["productos-consultas"])
+router = APIRouter(
+    tags=["productos-consultas"],
+    dependencies=[Depends(require_admin_token)],
+)
 
 
 def _service(session: Session = Depends(get_session)) -> ProductoQueryService:

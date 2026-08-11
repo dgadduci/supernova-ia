@@ -28,7 +28,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import backend.routers.admin_product_embeddings as router_module
-from backend.dependencies import get_session
+from backend.dependencies import get_session, require_admin_token
 from backend.services.exceptions import (
     ComercioNotFound,
     InvalidBatchSize,
@@ -48,7 +48,12 @@ def override_get_session():
     return db
 
 
+def override_require_admin_token():
+    return None
+
+
 app.dependency_overrides[get_session] = override_get_session
+app.dependency_overrides[require_admin_token] = override_require_admin_token
 
 
 class _FakeAdminService:
@@ -108,6 +113,7 @@ def _patch_service(service: _FakeAdminService):
 def _clear_overrides() -> None:
     app.dependency_overrides.clear()
     app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[require_admin_token] = override_require_admin_token
 
 
 REINDEX_URL = "/admin/comercios/1/product-embeddings/reindex"

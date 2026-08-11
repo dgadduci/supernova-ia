@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from backend.config.settings import load_settings
-from backend.dependencies import get_session
+from backend.dependencies import get_session, require_admin_token
 from backend.llm.embedding_client import OllamaEmbeddingClient
 from backend.schemas.categoria_producto import (
     CategoriaProductoCreate,
@@ -20,7 +20,10 @@ from backend.services.exceptions import (
     InvalidCategoriaProducto,
 )
 
-router = APIRouter(tags=["categorias-productos"])
+router = APIRouter(
+    tags=["categorias-productos"],
+    dependencies=[Depends(require_admin_token)],
+)
 
 
 def _service(

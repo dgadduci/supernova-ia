@@ -33,7 +33,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from backend.config.settings import load_settings
-from backend.dependencies import get_session
+from backend.dependencies import get_session, require_admin_token
 from backend.schemas.product_embedding_admin import (
     PerPresentationOutcome,
     ProductEmbeddingCounters,
@@ -56,7 +56,10 @@ from backend.services.producto_presentacion_embedding_seeder import (
     SeedingResult,
 )
 
-router = APIRouter(tags=["admin-product-embeddings"])
+router = APIRouter(
+    tags=["admin-product-embeddings"],
+    dependencies=[Depends(require_admin_token)],
+)
 
 
 def _gate_enabled() -> bool:

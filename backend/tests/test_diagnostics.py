@@ -267,7 +267,7 @@ class TestXDebugFlowHeaderActivatesSink(unittest.TestCase):
         from fastapi.testclient import TestClient
 
         import backend.routers.incoming_messages as router_module
-        from backend.dependencies import get_session
+        from backend.dependencies import get_session, require_admin_token
         from backend.diagnostics import (
             ClassifierCallCompleted,
             ClassifierCallStarted,
@@ -280,6 +280,7 @@ class TestXDebugFlowHeaderActivatesSink(unittest.TestCase):
         app.include_router(router_module.router)
         db = unittest.mock.MagicMock(name="DatabaseSession")
         app.dependency_overrides[get_session] = lambda: db
+        app.dependency_overrides[require_admin_token] = lambda: None
 
         # Replace the dependency with a Header-aware variant so the
         # override machinery actually observes the X-Debug-Flow header.
@@ -333,7 +334,7 @@ class TestXDebugFlowRedactsSecrets(unittest.TestCase):
         from fastapi.testclient import TestClient
 
         import backend.routers.incoming_messages as router_module
-        from backend.dependencies import get_session
+        from backend.dependencies import get_session, require_admin_token
         from backend.diagnostics import (
             ClassifierCallStarted,
             CollectingDiagnosticSink,
@@ -345,6 +346,7 @@ class TestXDebugFlowRedactsSecrets(unittest.TestCase):
         app.include_router(router_module.router)
         db = unittest.mock.MagicMock(name="DatabaseSession")
         app.dependency_overrides[get_session] = lambda: db
+        app.dependency_overrides[require_admin_token] = lambda: None
 
         def _build_sink(
             x_debug_flow: str | None = Header(default=None, alias="X-Debug-Flow"),
@@ -388,13 +390,14 @@ class TestIncomingMessageDefaultResponseUnchanged(unittest.TestCase):
         from fastapi.testclient import TestClient
 
         import backend.routers.incoming_messages as router_module
-        from backend.dependencies import get_session
+        from backend.dependencies import get_session, require_admin_token
         from backend.intents.schemas.customer_response import CustomerResponse
 
         app = FastAPI()
         app.include_router(router_module.router)
         db = unittest.mock.MagicMock(name="DatabaseSession")
         app.dependency_overrides[get_session] = lambda: db
+        app.dependency_overrides[require_admin_token] = lambda: None
         client = TestClient(app)
 
         with unittest.mock.patch.object(

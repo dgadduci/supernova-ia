@@ -8,23 +8,23 @@
   provider ingress, administrative, or already protected.
 - [x] 1.3 Define no-fallback outcomes, transaction ownership, privacy,
   expected tests, rollback, and exclusions.
-- [ ] 1.4 Obtain approval of this change before implementation.
+- [x] 1.4 Obtain approval of this change before implementation.
 
 ## 2. Implementation
 
-- [ ] 2.1 Attach the existing admin dependency at router scope to every
+- [x] 2.1 Attach the existing admin dependency at router scope to every
   classified administrative router; do not alter health or Twilio routers.
-- [ ] 2.2 Preserve the embedding-admin flag as an additional post-auth gate.
-- [ ] 2.3 Add inventory and representative focused tests for the protected and
+- [x] 2.2 Preserve the embedding-admin flag as an additional post-auth gate.
+- [x] 2.3 Add inventory and representative focused tests for the protected and
   exempt surfaces, denial-before-session behavior, and valid-token behavior.
-- [ ] 2.4 Update only impacted existing router tests to supply a safe authorized
+- [x] 2.4 Update only impacted existing router tests to supply a safe authorized
   dependency override.
 
 ## 3. Validation and handoff
 
-- [ ] 3.1 Minimax 3 runs focused pytest, Ruff, compileall, and strict OpenSpec
+- [x] 3.1 Minimax 3 runs focused pytest, Ruff, compileall, and strict OpenSpec
   validation locally and reports complete output.
-- [ ] 3.2 Codex reviews scope, code, tests, transactions, public exceptions,
+- [x] 3.2 Codex reviews scope, code, tests, transactions, public exceptions,
   and the complete reported validation output.
-- [ ] 3.3 Obtain separate authorization before changing Railway configuration,
+- [x] 3.3 Obtain separate authorization before changing Railway configuration,
   deploying, syncing, or archiving.
