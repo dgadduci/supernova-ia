@@ -6,6 +6,11 @@ from typing import Any
 import requests
 
 from backend.config.settings import Settings, load_settings
+from backend.observability import (
+    COMPONENT_LLM,
+    EVENT_LLM_REQUEST,
+    emit_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +114,11 @@ class QueryLlm:
             self._settings.llm_timeout,
             len(prompt),
         )
+        emit_event(
+            event=EVENT_LLM_REQUEST,
+            component=COMPONENT_LLM,
+            outcome="started",
+        )
         started = self._clock()
         status_code: int | None = None
         body = ""
@@ -133,12 +143,60 @@ class QueryLlm:
             result = self._parse(body)
         except requests.exceptions.HTTPError as exc:
             status_code = exc.response.status_code if exc.response is not None else None
+            emit_event(
+                event=EVENT_LLM_REQUEST,
+                component=COMPONENT_LLM,
+                failure_category="http_error",
+                http_status=int(status_code) if status_code is not None else None,
+                exception_type="QueryLlmHttpError",
+                elapsed_ms=int((self._clock() - started) * 1000),
+            )
             raise QueryLlmHttpError(status_code or 0, str(exc)) from exc
+        except QueryLlmTimeoutError as exc:
+            emit_event(
+                event=EVENT_LLM_REQUEST,
+                component=COMPONENT_LLM,
+                failure_category="timeout",
+                exception_type=type(exc).__name__,
+                elapsed_ms=int((self._clock() - started) * 1000),
+            )
+            elapsed = self._clock() - started
+            logger.error("llm request failure duration=%s", elapsed)
+            raise
+        except QueryLlmConnectionError as exc:
+            emit_event(
+                event=EVENT_LLM_REQUEST,
+                component=COMPONENT_LLM,
+                failure_category="connection",
+                exception_type=type(exc).__name__,
+                elapsed_ms=int((self._clock() - started) * 1000),
+            )
+            elapsed = self._clock() - started
+            logger.error("llm request failure duration=%s", elapsed)
+            raise
+        except QueryLlmResponseError as exc:
+            emit_event(
+                event=EVENT_LLM_REQUEST,
+                component=COMPONENT_LLM,
+                failure_category="response_error",
+                exception_type=type(exc).__name__,
+                elapsed_ms=int((self._clock() - started) * 1000),
+            )
+            elapsed = self._clock() - started
+            logger.error("llm request failure duration=%s", elapsed)
+            raise
         except QueryLlmError:
             elapsed = self._clock() - started
             logger.error("llm request failure duration=%s", elapsed)
             raise
         except Exception as exc:
+            emit_event(
+                event=EVENT_LLM_REQUEST,
+                component=COMPONENT_LLM,
+                failure_category="unexpected",
+                exception_type=type(exc).__name__,
+                elapsed_ms=int((self._clock() - started) * 1000),
+            )
             elapsed = self._clock() - started
             logger.error("llm request failure duration=%s", elapsed)
             raise QueryLlmError(str(exc)) from exc
@@ -148,6 +206,13 @@ class QueryLlm:
             elapsed,
             status_code,
             len(body),
+        )
+        emit_event(
+            event=EVENT_LLM_REQUEST,
+            component=COMPONENT_LLM,
+            outcome="completed",
+            elapsed_ms=int(elapsed * 1000),
+            http_status=int(status_code) if status_code is not None else None,
         )
         return result
 

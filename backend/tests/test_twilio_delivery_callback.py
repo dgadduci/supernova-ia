@@ -12,7 +12,9 @@ Coverage:
 """
 from __future__ import annotations
 
+import contextlib
 import inspect
+import io
 import os
 import unittest
 from pathlib import Path
@@ -300,6 +302,75 @@ class CallbackAcceptedRouteTest(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 204)
+
+
+class CallbackDatabaseTechnicalFailureEmissionTest(unittest.TestCase):
+    """Blocker 1 regression for the callback path: when the
+    callback service raises a real ``SQLAlchemyError``, the route
+    MUST emit a valid, queryable ``database_technical_failure``
+    event belonging to ``database_technical_boundary``. It MUST
+    NOT degrade to ``observability_emit_failed``.
+    """
+
+    def setUp(self) -> None:
+        os.environ["TWILIO_AUTH_TOKEN"] = TOKEN
+        os.environ["TWILIO_WEBHOOK_BASE_URL"] = BASE_URL
+
+    def _client(self) -> TestClient:
+        import backend.routers.twilio_delivery_callback as router_module
+
+        app = FastAPI()
+        app.include_router(router_module.router)
+        db = MagicMock(name="DatabaseSession")
+        app.dependency_overrides[get_session] = lambda: db
+        return TestClient(app)
+
+    def test_sqlalchemy_error_emits_database_event(self) -> None:
+        from sqlalchemy.exc import OperationalError
+
+        client = self._client()
+        form = {"MessageSid": "SM-ABC", "MessageStatus": "delivered"}
+        signature = _sign(form)
+        with patch(
+            "backend.routers.twilio_delivery_callback.load_settings",
+            return_value=MagicMock(
+                twilio_auth_token=TOKEN, twilio_webhook_base_url=BASE_URL
+            ),
+        ), patch(
+            "backend.routers.twilio_delivery_callback._validator_factory",
+            return_value=RequestValidator(TOKEN),
+        ), patch(
+            "backend.routers.twilio_delivery_callback.TwilioDeliveryCallbackService"
+        ) as service_cls, contextlib.redirect_stdout(
+            io.StringIO()
+        ) as captured:
+            from backend.observability import parse_event
+
+            service = MagicMock()
+            service.apply_callback.side_effect = OperationalError(
+                "stmt", {}, RuntimeError("orig")
+            )
+            service_cls.return_value = service
+
+            with self.assertRaises(OperationalError):
+                client.post(
+                    ROUTE,
+                    data=form,
+                    headers={"X-Twilio-Signature": signature},
+                )
+
+        lines = [
+            line for line in captured.getvalue().splitlines() if line.strip()
+        ]
+        assert lines, "no event lines captured on stdout"
+        event = parse_event(lines[-1])
+        self.assertEqual(event["event"], "database_technical_failure")
+        self.assertEqual(
+            event["component"], "database_technical_boundary"
+        )
+        self.assertEqual(event["failure_category"], "connection")
+        self.assertEqual(event["exception_type"], "OperationalError")
+        self.assertNotEqual(event["event"], "observability_emit_failed")
 
 
 class CallbackEnvelopeTest(unittest.TestCase):

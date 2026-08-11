@@ -103,6 +103,14 @@ from backend.config.settings import (
     Settings,
     load_settings,
 )
+from backend.observability import (
+    COMPONENT_WORKER,
+    EVENT_WORKER_CYCLE,
+    EVENT_WORKER_DISABLED,
+    EVENT_WORKER_READINESS_TRANSITION,
+    EVENT_WORKER_UNEXPECTED_FAILURE,
+    emit_event,
+)
 from backend.scripts.check_railway_ollama_contracts import (
     OllamaReadinessResult,
     check_ollama_readiness,
@@ -321,6 +329,7 @@ def _default_cycle_summary_writer(summary: dict[str, Any]) -> None:
             ]
         )
     print(" ".join(parts), file=sys.stdout)
+    _emit_worker_cycle_event(summary)
 
 
 def _format_category_counts(
@@ -371,6 +380,34 @@ def _default_unexpected_exception_log(
             "cycle_index": int(cycle_index),
             "reason": str(reason),
         },
+    )
+    emit_event(
+        event=EVENT_WORKER_UNEXPECTED_FAILURE,
+        component=COMPONENT_WORKER,
+        failure_category="worker_exception",
+        exception_type=str(reason),
+    )
+
+
+def _emit_worker_cycle_event(summary: dict[str, Any]) -> None:
+    """Emit a structured ``provider_worker_cycle`` event alongside
+    the existing key=value line.
+
+    The structured event carries the same safe metadata: cycle
+    index, readiness state and, when the cycle ran while the
+    readiness gate was not yet satisfied, the safe not-ready
+    category drives the outcome to ``skipped_inbound_not_ready``.
+    """
+    ollama_ready = bool(summary.get("ollama_ready", False))
+    not_ready_category = summary.get("not_ready_category")
+    if not ollama_ready and not_ready_category is not None:
+        outcome = "skipped_inbound_not_ready"
+    else:
+        outcome = "completed"
+    emit_event(
+        event=EVENT_WORKER_CYCLE,
+        component=COMPONENT_WORKER,
+        outcome=outcome,
     )
 
 
@@ -632,6 +669,18 @@ def run_forever(
                         ),
                     },
                 )
+                emit_event(
+                    event=EVENT_WORKER_READINESS_TRANSITION,
+                    component=COMPONENT_WORKER,
+                    outcome="ready",
+                    elapsed_ms=int(
+                        (
+                            readiness_result.generate_duration_seconds
+                            + readiness_result.embed_duration_seconds
+                        )
+                        * 1000
+                    ),
+                )
             else:
                 readiness_category = _select_not_ready_category(
                     readiness_result
@@ -639,6 +688,12 @@ def run_forever(
                 probe_duration_seconds = float(
                     readiness_result.generate_duration_seconds
                     + readiness_result.embed_duration_seconds
+                )
+                emit_event(
+                    event=EVENT_WORKER_READINESS_TRANSITION,
+                    component=COMPONENT_WORKER,
+                    outcome="not_ready",
+                    elapsed_ms=int(probe_duration_seconds * 1000),
                 )
         try:
             summary = run_cycle(
@@ -730,6 +785,11 @@ def main(
                     DEFAULT_PROVIDER_PROCESSING_WORKER_POLL_INTERVAL_SECONDS
                 ),
             },
+        )
+        emit_event(
+            event=EVENT_WORKER_DISABLED,
+            component=COMPONENT_WORKER,
+            outcome="disabled",
         )
         return 0
 
