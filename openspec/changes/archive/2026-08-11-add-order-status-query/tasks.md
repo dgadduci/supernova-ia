@@ -28,7 +28,7 @@
 - [x] 3.1 Minimax 3 runs the exact focused pytest, Ruff, compileall, and strict
   OpenSpec validation commands in `proposal.md` locally and reports complete
   output.
-- [ ] 3.2 Codex reviews changed scope, code, tests, static checks,
+- [x] 3.2 Codex reviews changed scope, code, tests, static checks,
   transaction ownership, isolation, and the complete local validation output.
-- [ ] 3.3 Do not commit, sync, archive, deploy, or perform retention/purge
-  work without separate user authorization.
+- [x] 3.3 User authorized commit, sync, production deployment, controlled
+  WhatsApp validation, and archive; no retention/purge work was performed.
