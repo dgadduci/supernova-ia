@@ -21,6 +21,9 @@ from backend.intents.orchestration.modificar_producto_initial import (
 from backend.intents.orchestration.new_order_after_confirmation import (
     process_initial_iniciar_pedido,
 )
+from backend.intents.orchestration.order_status_query import (
+    process_initial_order_status_query,
+)
 from backend.intents.orchestration.quitar_producto_initial import (
     process_initial_quitar_producto,
 )
@@ -169,6 +172,14 @@ def dispatch_initial_message(
         if classified_intent == IntentName.VACIAR_PEDIDO:
             processed.append(
                 process_initial_vaciar_pedido(
+                    db, session, classified.mensaje
+                )
+            )
+            continue
+
+        if classified_intent == IntentName.CONSULTAR_ESTADO_PEDIDO:
+            processed.append(
+                process_initial_order_status_query(
                     db, session, classified.mensaje
                 )
             )
