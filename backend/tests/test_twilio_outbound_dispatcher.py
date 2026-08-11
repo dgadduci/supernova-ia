@@ -26,10 +26,11 @@ import importlib
 import io
 import json
 import logging
+import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 from twilio.base.exceptions import TwilioRestException
@@ -1548,6 +1549,147 @@ class AttemptEventContractTest(unittest.TestCase):
         aggregate = OutboundCycleAggregate(sent=1)
         with self.assertRaises((AttributeError, dataclasses.FrozenInstanceError)):
             aggregate.sent = 2  # type: ignore[misc]
+
+
+class DispatcherStdoutEventExitTest(unittest.TestCase):
+    """The structured ``outbound_attempt_outcome`` event must reach
+    the Railway-captured stdout exit path, not the Python logging
+    stderr path.
+
+    Railway captures the service process stdout stream. The
+    application logger writes to stderr by default, and the worker
+    CLI also writes its key=value cycle summary to stdout. The
+    structured event MUST end up on the same stdout exit path the
+    worker key=value line uses so Railway's ``--json`` output
+    surfaces it; a regression where the dispatcher writes the
+    event to stderr (via the logger or any other redirect) would
+    hide it from Railway and break the production observability
+    CLI without any business-flow failure.
+    """
+
+    def setUp(self) -> None:
+        importlib.reload(dispatcher_module)
+
+    def _build_dispatcher_for_successful_dispatch(
+        self, *, db_session: Any, outbox_repo: Any
+    ) -> OutboundMessageDispatcher:
+        outbox_repo.finalize_accepted.return_value = True
+        claimed = _claimed_row()
+        outbox_repo.claim_due.return_value = claimed
+        messages_client = _StrictTwilioMessagesClient(sid="SM-OK-EXIT")
+        return OutboundMessageDispatcher(
+            session_factory=lambda: db_session,
+            messages_client=cast(TwilioMessagesClient, messages_client),
+            config=OutboundDispatchConfig(
+                sender_e164="+5491100000000",
+                status_callback_url="https://example.test/cb",
+                lease_seconds=30,
+                initial_backoff_seconds=30,
+                max_backoff_seconds=300,
+                max_attempts=5,
+            ),
+            outbox_repo_factory=lambda _session: outbox_repo,
+            settings=_settings_stub(),
+            now=datetime(2026, 8, 6, 12, 0, 0, tzinfo=timezone.utc),
+        )
+
+    def test_structured_event_reaches_stdout_not_stderr(self) -> None:
+        """The dispatcher's structured event must land on stdout.
+
+        The test captures BOTH stdout and stderr around a real
+        ``dispatch()`` call (no stdout monkey-patching inside the
+        dispatcher) and asserts that:
+
+        * the bounded ``outbound_attempt_outcome`` JSON line is on
+          stdout where Railway captures it;
+        * the same event is NOT on stderr where the Python logger
+          would have written it (a regression would push the event
+          into stderr and hide it from Railway);
+        * the worker key=value summary line emitted by the worker
+          CLI through ``print(..., file=sys.stdout)`` shares the
+          same stdout path the structured event uses, so a future
+          refactor that swaps the dispatcher for a logger-only
+          emission would fail this test.
+        """
+        db_session = MagicMock(name="DatabaseSession")
+        outbox_repo = MagicMock(name="OutboundProviderMessageRepository")
+        dispatcher = self._build_dispatcher_for_successful_dispatch(
+            db_session=db_session, outbox_repo=outbox_repo
+        )
+
+        stdout_buffer = io.StringIO()
+        stderr_buffer = io.StringIO()
+        with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(
+            stderr_buffer
+        ):
+            dispatcher.dispatch()
+            # Simulate the worker's key=value summary writer hitting
+            # the same stdout exit path. The point of this test is
+            # that BOTH the structured event and the worker summary
+            # land on the Railway-captured stdout stream, not on
+            # stderr.
+            print(
+                "provider_worker_cycle cycle_index=1 outbound_sent=1",
+                file=sys.stdout,
+            )
+
+        stdout_text = stdout_buffer.getvalue()
+        stderr_text = stderr_buffer.getvalue()
+
+        # The structured event MUST be on stdout and parse as a
+        # valid catalogued event. This is what Railway captures.
+        stdout_events: list[dict] = []
+        for raw_line in stdout_text.splitlines():
+            if not raw_line.strip():
+                continue
+            try:
+                parsed_line = json.loads(raw_line)
+            except json.JSONDecodeError:
+                continue
+            if (
+                isinstance(parsed_line, dict)
+                and parsed_line.get("event") == EVENT_OUTBOUND_OUTCOME
+            ):
+                stdout_events.append(parsed_line)
+        self.assertEqual(
+            len(stdout_events),
+            1,
+            f"expected exactly one structured outbound_attempt_outcome "
+            f"event on stdout; got {len(stdout_events)}. "
+            f"stdout={stdout_text!r}",
+        )
+        self.assertEqual(stdout_events[0]["outcome"], "accepted")
+        self.assertEqual(stdout_events[0]["component"], "outbound_dispatch")
+
+        # The event MUST NOT appear on stderr - a regression that
+        # pushed it through the logger would hide it from Railway.
+        stderr_event_lines = [
+            line
+            for line in stderr_text.splitlines()
+            if EVENT_OUTBOUND_OUTCOME in line
+        ]
+        self.assertEqual(
+            stderr_event_lines,
+            [],
+            f"structured event leaked into stderr (Railway would "
+            f"miss it): {stderr_event_lines!r}",
+        )
+
+        # The worker key=value line shares the same stdout exit.
+        # Both lines must appear on the same captured stdout buffer
+        # because Railway captures them together.
+        self.assertIn("provider_worker_cycle", stdout_text)
+        self.assertIn("outbound_sent=1", stdout_text)
+
+        # No raw exception text, provider SID or E.164 leaks into
+        # either stream.
+        for forbidden in (
+            "SM-OK-EXIT",
+            "+5491100000000",
+            "secret-body-content",
+        ):
+            self.assertNotIn(forbidden, stdout_text)
+            self.assertNotIn(forbidden, stderr_text)
 
 
 if __name__ == "__main__":

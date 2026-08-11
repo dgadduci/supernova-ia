@@ -155,7 +155,14 @@ class ArgumentParserTest(unittest.TestCase):
         cmd = _build_railway_command(args)
         self.assertNotIn("--since", cmd)
 
-    def test_build_railway_command_uses_railway_filter_for_event(self) -> None:
+    def test_build_railway_command_does_not_push_event_to_filter(self) -> None:
+        # Railway's --filter is a text-search on the envelope
+        # ``message`` field, which is empty for our structured
+        # events. Pushing ``--event`` as ``--filter`` therefore
+        # returns zero matches from Railway even when the events
+        # are present, so the CLI applies ``--event`` ONLY as a
+        # local filter on the parsed events and MUST NOT forward
+        # it to Railway.
         parser = _build_parser()
         args = parser.parse_args(
             [
@@ -166,15 +173,15 @@ class ArgumentParserTest(unittest.TestCase):
             ]
         )
         cmd = _build_railway_command(args)
-        self.assertIn("--filter", cmd)
-        filter_index = cmd.index("--filter")
-        # Railway's --filter accepts a quoted text search; the CLI
-        # pushes the JSON-encoded event name so the platform can
-        # narrow the source query without depending on free-form
-        # payload matching.
-        self.assertEqual(
-            cmd[filter_index + 1], '"outbound_attempt_outcome"'
+        self.assertNotIn(
+            "--filter",
+            cmd,
+            f"Railway command must not push --event to --filter; "
+            f"got cmd={cmd!r}",
         )
+        # ``--event`` value must never reach the source command
+        # under any flag name; the local filter chain handles it.
+        self.assertNotIn("outbound_attempt_outcome", cmd)
 
     def test_build_railway_command_omits_filter_when_event_absent(self) -> None:
         parser = _build_parser()
@@ -182,6 +189,31 @@ class ArgumentParserTest(unittest.TestCase):
             ["--project", "p1", "--environment", "e1", "--service", "s1"]
         )
         cmd = _build_railway_command(args)
+        self.assertNotIn("--filter", cmd)
+
+    def test_build_railway_command_keeps_lines_and_since_with_event(self) -> None:
+        # ``--lines`` and ``--since`` are the only source-side
+        # filters the CLI forwards to Railway. They MUST stay
+        # present even when ``--event`` is set so the source query
+        # remains bounded.
+        parser = _build_parser()
+        args = parser.parse_args(
+            [
+                "--project", "p1",
+                "--environment", "e1",
+                "--service", "s1",
+                "--limit", "5",
+                "--since", "2026-08-11T10:00:00Z",
+                "--event", "outbound_attempt_outcome",
+            ]
+        )
+        cmd = _build_railway_command(args)
+        self.assertIn("--lines", cmd)
+        lines_index = cmd.index("--lines")
+        self.assertEqual(cmd[lines_index + 1], "5")
+        self.assertIn("--since", cmd)
+        since_index = cmd.index("--since")
+        self.assertEqual(cmd[since_index + 1], "2026-08-11T10:00:00Z")
         self.assertNotIn("--filter", cmd)
 
     def test_build_railway_command_uses_only_supported_flags(self) -> None:
@@ -208,14 +240,11 @@ class ArgumentParserTest(unittest.TestCase):
             "--json",
             "--lines",
             "--since",
-            "--filter",
         }
         for token in cmd:
             if token == RAILWAY_BINARY:
                 continue
             if token in {"p1", "e1", "s1", "5", "2026-08-11T10:00:00Z"}:
-                continue
-            if token.startswith('"'):
                 continue
             if token.startswith("--"):
                 self.assertIn(
@@ -240,9 +269,13 @@ class ArgumentParserTest(unittest.TestCase):
         self.assertEqual(ctx.exception.code, EXIT_INVALID_ARGUMENTS)
 
     def test_validate_args_rejects_event_with_quote(self) -> None:
-        # The Railway --filter value is JSON-encoded by the CLI, so
-        # an event name that could break out of the quoted string is
-        # rejected up front.
+        # ``--event`` is matched exactly against the ``event``
+        # attribute on the parsed events (see ``_match_event``) and
+        # the catalogue is a closed alphanumeric allowlist. An
+        # event name carrying characters outside that allowlist
+        # could never match a real event and would also defeat the
+        # safe-content contract; the validation rejects it up
+        # front so the CLI never accepts a non-catalogue token.
         parser = _build_parser()
         args = parser.parse_args(
             [
@@ -583,6 +616,26 @@ class ExtractEventTest(unittest.TestCase):
         assert parsed is not None
         self.assertEqual(parsed["event"], event["event"])
 
+    def test_direct_event_with_railway_envelope_fields(self) -> None:
+        # Real Railway --json output augments every JSON log line
+        # with ``level`` (always ``"info"``) and ``message`` (empty
+        # for structured events) platform envelope fields. The CLI
+        # must recognise the line as our event AND strip those
+        # platform fields so the catalogue contract stays strict.
+        event = _valid_event()
+        line_payload = {
+            **event,
+            "level": "info",
+            "message": "",
+        }
+        line = json.dumps(line_payload, sort_keys=True, separators=(",", ":"))
+        parsed = _extract_event_from_line(line)
+        assert parsed is not None
+        self.assertEqual(parsed["event"], event["event"])
+        self.assertEqual(parsed["outcome"], event["outcome"])
+        self.assertNotIn("level", parsed)
+        self.assertNotIn("message", parsed)
+
     def test_envelope(self) -> None:
         event = _valid_event()
         envelope = {"message": json.dumps(event, sort_keys=True)}
@@ -590,6 +643,25 @@ class ExtractEventTest(unittest.TestCase):
         parsed = _extract_event_from_line(line)
         assert parsed is not None
         self.assertEqual(parsed["event"], event["event"])
+
+    def test_envelope_wrapping_railway_envelope_around_inner_event(self) -> None:
+        # If Railway wraps the structured event under a top-level
+        # ``message`` field (e.g. when a future deployment shape
+        # changes), the inner event still parses cleanly because the
+        # platform-level ``level`` / ``message`` fields on the outer
+        # envelope do not collide with the catalogue.
+        event = _valid_event()
+        outer = {
+            "level": "info",
+            "message": json.dumps(event, sort_keys=True, separators=(",", ":")),
+            "timestamp": "2026-08-11T10:00:00Z",
+        }
+        line = json.dumps(outer, sort_keys=True, separators=(",", ":"))
+        parsed = _extract_event_from_line(line)
+        assert parsed is not None
+        self.assertEqual(parsed["event"], event["event"])
+        self.assertNotIn("level", parsed)
+        self.assertNotIn("message", parsed)
 
     def test_skip_silently_for_access_log_envelope(self) -> None:
         envelope = {"timestamp": "2026-08-11T10:00:00Z", "stream": "stdout"}
@@ -844,6 +916,93 @@ class MainEntrypointTest(unittest.TestCase):
             rendered["events"][0]["event"], "outbound_attempt_outcome"
         )
 
+    def test_railway_envelope_event_returns_zero_with_stripped_fields(
+        self,
+    ) -> None:
+        # Real Railway --json output augments structured events with
+        # ``level`` and ``message`` platform envelope fields. The
+        # CLI must still treat the line as our catalogued event and
+        # MUST strip those platform fields before returning the
+        # event in the bounded array, otherwise the catalogue
+        # contract would leak Railway metadata into operator output.
+        event = _valid_event(outbox_id=77)
+        augmented_event = {
+            **event,
+            "level": "info",
+            "message": "",
+        }
+        stdout_text = (
+            json.dumps(augmented_event, sort_keys=True) + "\n"
+        )
+        runner = MagicMock(
+            return_value=_FakeCompletedProcess(stdout=stdout_text)
+        )
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            exit_code = main(self._args(), runner=runner)
+        self.assertEqual(exit_code, EXIT_OK)
+        rendered = stdout.getvalue()
+        parsed = json.loads(rendered)
+        self.assertEqual(parsed["count"], 1)
+        returned_event = parsed["events"][0]
+        # The platform fields never reach the returned event - the
+        # CLI returns the original application payload.
+        self.assertNotIn("level", returned_event)
+        self.assertNotIn("message", returned_event)
+        self.assertEqual(
+            returned_event["event"], "outbound_attempt_outcome"
+        )
+        self.assertEqual(returned_event["outbox_id"], 77)
+
+    def test_real_railway_mixed_output_is_parsed(self) -> None:
+        # Defensive: a small reproducible slice of the actual
+        # Railway --json output the platform returns for our app
+        # deployment must produce a successful exit code with the
+        # bounded catalogued events returned and the platform-level
+        # ``level`` / ``message`` fields stripped. The slice mixes
+        # wrapped free-form stdout lines with structured events that
+        # carry Railway's envelope fields.
+        wrapped_text = (
+            '{"level":"info","message":"sent=0 retry_scheduled=0 '
+            'failed_terminal=0 no_due_row=1 technical_failure=0 '
+            'total=1","timestamp":"2026-08-11T10:00:00Z"}'
+        )
+        worker_cycle = (
+            '{"level":"info","message":"","event":"provider_worker_cycle",'
+            '"outcome":"completed","schema_version":1,'
+            '"component":"provider_worker",'
+            '"timestamp":"2026-08-11T10:00:00+00:00"}'
+        )
+        outbound_event = (
+            '{"level":"info","message":"","event":"outbound_attempt_outcome",'
+            '"outcome":"no_due_row","schema_version":1,'
+            '"component":"outbound_dispatch",'
+            '"timestamp":"2026-08-11T10:00:01+00:00"}'
+        )
+        stdout_text = (
+            wrapped_text + "\n"
+            + worker_cycle + "\n"
+            + outbound_event + "\n"
+        )
+        runner = MagicMock(
+            return_value=_FakeCompletedProcess(stdout=stdout_text)
+        )
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            exit_code = main(
+                self._args(event="outbound_attempt_outcome"),
+                runner=runner,
+            )
+        self.assertEqual(exit_code, EXIT_OK)
+        rendered = json.loads(stdout.getvalue())
+        self.assertEqual(rendered["count"], 1)
+        self.assertEqual(
+            rendered["events"][0]["event"], "outbound_attempt_outcome"
+        )
+        self.assertNotIn("level", rendered["events"][0])
+        self.assertNotIn("message", rendered["events"][0])
+        # The wrapped free-form stdout line must NEVER be reflected
+        # back into operator-facing output.
+        self.assertNotIn("sent=0", rendered)
+
     def test_mixed_railway_output_returns_only_structured_events(self) -> None:
         # The CLI must skip plain Railway envelopes / free-form
         # stdout silently while returning only catalogued events.
@@ -892,6 +1051,94 @@ class MainEntrypointTest(unittest.TestCase):
             rendered["events"][0]["event"], "provider_worker_cycle"
         )
         self.assertNotIn("sqlalchemy", stdout.getvalue())
+
+    def test_event_filter_is_applied_locally_on_mixed_output(self) -> None:
+        # Reproduces the production failure mode: Railway returns a
+        # mix of structured events (with the catalogue fields as
+        # top-level attributes and an empty ``message`` envelope)
+        # and free-form stdout lines. The CLI MUST apply ``--event``
+        # locally after parsing so the bounded array contains only
+        # the requested event name; Railway's source-side text
+        # search cannot see our catalogue fields, so the CLI never
+        # relies on it.
+        outbound_event = _valid_event()
+        worker_cycle = _valid_event(
+            event="provider_worker_cycle",
+            component="provider_worker",
+            outcome="completed",
+            timestamp="2026-08-11T09:55:00+00:00",
+        )
+        stdout_text = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "level": "info",
+                        "message": "provider_worker_cycle cycle_index=1",
+                        "timestamp": "2026-08-11T09:55:09Z",
+                    },
+                    sort_keys=True,
+                ),
+                json.dumps(worker_cycle, sort_keys=True),
+                json.dumps(outbound_event, sort_keys=True),
+                json.dumps(
+                    {
+                        "level": "info",
+                        "message": (
+                            "mensaje_id=70 outcome=sent identificador_proveedor="
+                            "SM829a1718b0ef28ec760d7ff79e480722"
+                            " durable_state=accepted"
+                        ),
+                        "timestamp": "2026-08-11T09:55:13Z",
+                    },
+                    sort_keys=True,
+                ),
+                "",
+            ]
+        )
+        runner = MagicMock(
+            return_value=_FakeCompletedProcess(stdout=stdout_text)
+        )
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            exit_code = main(
+                self._args(event="outbound_attempt_outcome"), runner=runner
+            )
+        self.assertEqual(exit_code, EXIT_OK)
+        rendered = json.loads(stdout.getvalue())
+        self.assertEqual(rendered["count"], 1)
+        self.assertEqual(
+            rendered["events"][0]["event"], "outbound_attempt_outcome"
+        )
+        self.assertEqual(
+            rendered["filter"]["event"], "outbound_attempt_outcome"
+        )
+        # The free-form lines and the unrelated worker_cycle must
+        # not appear in the bounded array; the raw SID and any
+        # other sensitive identifier must never be reflected back.
+        joined = stdout.getvalue()
+        self.assertNotIn("SM829a1718b0ef28ec760d7ff79e480722", joined)
+        self.assertNotIn("provider_worker_cycle", joined)
+
+    def test_event_filter_does_not_pass_event_name_to_railway(self) -> None:
+        # Defensive: when ``--event`` is supplied, the operator's
+        # event token MUST NOT appear anywhere in the Railway
+        # subprocess argument list. Otherwise Railway's text search
+        # would always return zero matches and the operator would
+        # see a misleading empty array.
+        captured_cmd: dict[str, list[str]] = {}
+
+        def _runner(cmd: list[str], **_kwargs: Any) -> Any:
+            captured_cmd["cmd"] = list(cmd)
+            return _FakeCompletedProcess(stdout="")
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            exit_code = main(
+                self._args(event="outbound_attempt_outcome"),
+                runner=_runner,
+            )
+        self.assertEqual(exit_code, EXIT_OK)
+        cmd = captured_cmd["cmd"]
+        self.assertNotIn("--filter", cmd)
+        self.assertNotIn("outbound_attempt_outcome", cmd)
 
     def test_limit_caps_output(self) -> None:
         events = [
