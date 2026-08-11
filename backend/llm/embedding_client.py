@@ -19,6 +19,12 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from backend.config.settings import Settings
 
+from backend.observability import (
+    COMPONENT_EMBEDDING,
+    EVENT_EMBEDDING_REQUEST,
+    emit_event,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -297,6 +303,11 @@ class OllamaEmbeddingClient:
             self._settings.embedding_model,
             self._settings.embedding_timeout_seconds,
         )
+        emit_event(
+            event=EVENT_EMBEDDING_REQUEST,
+            component=COMPONENT_EMBEDDING,
+            outcome="started",
+        )
         started = self._clock()
         status_code: int | None = None
         try:
@@ -322,6 +333,57 @@ class OllamaEmbeddingClient:
                 batch_index=batch_index,
                 status_code=status_code,
             )
+        except EmbeddingTimeoutError as exc:
+            emit_event(
+                event=EVENT_EMBEDDING_REQUEST,
+                component=COMPONENT_EMBEDDING,
+                failure_category="timeout",
+                exception_type=type(exc).__name__,
+                elapsed_ms=int((self._clock() - started) * 1000),
+            )
+            elapsed = self._clock() - started
+            logger.error(
+                "embedding request failure batch=%s duration=%s status=%s",
+                batch_index,
+                elapsed,
+                status_code,
+            )
+            raise
+        except EmbeddingConnectionError as exc:
+            emit_event(
+                event=EVENT_EMBEDDING_REQUEST,
+                component=COMPONENT_EMBEDDING,
+                failure_category="connection",
+                exception_type=type(exc).__name__,
+                elapsed_ms=int((self._clock() - started) * 1000),
+            )
+            elapsed = self._clock() - started
+            logger.error(
+                "embedding request failure batch=%s duration=%s status=%s",
+                batch_index,
+                elapsed,
+                status_code,
+            )
+            raise
+        except EmbeddingResponseError as exc:
+            emit_event(
+                event=EVENT_EMBEDDING_REQUEST,
+                component=COMPONENT_EMBEDDING,
+                failure_category="response_error",
+                exception_type=type(exc).__name__,
+                http_status=int(exc.status_code)
+                if exc.status_code is not None
+                else None,
+                elapsed_ms=int((self._clock() - started) * 1000),
+            )
+            elapsed = self._clock() - started
+            logger.error(
+                "embedding request failure batch=%s duration=%s status=%s",
+                batch_index,
+                elapsed,
+                status_code,
+            )
+            raise
         except EmbeddingClientError:
             elapsed = self._clock() - started
             logger.error(
@@ -332,6 +394,13 @@ class OllamaEmbeddingClient:
             )
             raise
         except Exception as exc:  # pragma: no cover - defensive transport guard
+            emit_event(
+                event=EVENT_EMBEDDING_REQUEST,
+                component=COMPONENT_EMBEDDING,
+                failure_category="unexpected",
+                exception_type=type(exc).__name__,
+                elapsed_ms=int((self._clock() - started) * 1000),
+            )
             elapsed = self._clock() - started
             logger.error(
                 "embedding request failure batch=%s duration=%s status=%s",
@@ -349,6 +418,13 @@ class OllamaEmbeddingClient:
             batch_index,
             elapsed,
             status_code,
+        )
+        emit_event(
+            event=EVENT_EMBEDDING_REQUEST,
+            component=COMPONENT_EMBEDDING,
+            outcome="completed",
+            elapsed_ms=int(elapsed * 1000),
+            http_status=int(status_code) if status_code is not None else None,
         )
         return vectors
 

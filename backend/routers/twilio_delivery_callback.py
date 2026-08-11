@@ -32,10 +32,18 @@ import logging
 from collections.abc import Mapping
 
 from fastapi import APIRouter, Depends, Header, Request, Response
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session as DatabaseSession
 
 from backend.config.settings import load_settings
 from backend.dependencies import get_session
+from backend.observability import (
+    COMPONENT_CALLBACK,
+    EVENT_CALLBACK_OUTCOME,
+    EVENT_DATABASE_TECHNICAL_FAILURE,
+    categorize_sqlalchemy_error,
+    emit_event,
+)
 from backend.services.exceptions import (
     InvalidTwilioDeliveryCallbackForm,
     TwilioSignatureUnavailable,
@@ -166,11 +174,20 @@ def post_twilio_whatsapp_status(
         return _xml_response("", 403)
 
     service = TwilioDeliveryCallbackService(session)
-    result = service.apply_callback(
-        proveedor="twilio",
-        identificador_proveedor=envelope.message_sid,
-        message_status=envelope.message_status,
-    )
+    try:
+        result = service.apply_callback(
+            proveedor="twilio",
+            identificador_proveedor=envelope.message_sid,
+            message_status=envelope.message_status,
+        )
+    except SQLAlchemyError as exc:
+        emit_event(
+            event=EVENT_DATABASE_TECHNICAL_FAILURE,
+            component=COMPONENT_CALLBACK,
+            failure_category=categorize_sqlalchemy_error(exc),
+            exception_type=type(exc).__name__,
+        )
+        raise
 
     logger.info(
         "twilio_callback_applied",
@@ -181,6 +198,17 @@ def post_twilio_whatsapp_status(
             "estado_anterior": result.estado_anterior,
             "estado_nuevo": result.estado_nuevo,
         },
+    )
+    emit_event(
+        event=EVENT_CALLBACK_OUTCOME,
+        component=COMPONENT_CALLBACK,
+        outcome=str(result.outcome.value),
+        outbox_id=int(result.mensaje_id) if result.mensaje_id is not None else None,
+        durable_state=(
+            str(result.estado_nuevo)
+            if result.estado_nuevo is not None
+            else None
+        ),
     )
     return _xml_response("", 204)
 
