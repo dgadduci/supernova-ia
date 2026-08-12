@@ -60,18 +60,31 @@ ready within 30 seconds (override only with positive `TS_READY_TIMEOUT_SECONDS`)
 If Tailscale exits after readiness, the entrypoint stops Uvicorn so Railway can
 restart or fail the deployment.
 
-`railway.toml` keeps Alembic as an independent pre-deploy command. `/health`
-remains a liveness endpoint and does not call Ollama.
+`railway.toml` no longer declares an independent pre-deploy command. The
+Docker entrypoint is the single repository-managed migration authority:
+after the required-variable checks and before any Tailscale or Uvicorn
+process starts, it runs `python -m alembic upgrade head`. The gate fails
+closed: a missing URL or a non-zero Alembic exit aborts the entrypoint
+before any child process is launched. `/health` remains a liveness endpoint
+and does not call Ollama.
 
-After a successful release migration, verify the recorded Railway database
-revision from a Railway shell with:
+Authoritative post-deploy migration verification:
 
-```sh
-python -m alembic current
-```
+1. Confirm the deploy succeeded and the entrypoint log contains
+   `migration=completed` (or, on failure, only `startup_error
+   migration_failed` plus the non-zero exit; no traffic was served).
+2. From a Railway shell for the integrated web service, run:
 
-Do not treat a successful build or `/health` response as proof that the
-release migration reached the expected revision.
+   ```sh
+   python -m alembic current
+   ```
+
+   and record only the resulting revision; never print the database URL.
+3. Confirm the public `GET /health` returns `200` with `{"status":"ok"}`
+   only after both of the above.
+
+Do not treat a successful build, config parsing, or `/health` response as
+proof that the release migration reached the expected revision.
 
 ## Readiness boundary
 

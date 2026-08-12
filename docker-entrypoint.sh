@@ -39,6 +39,13 @@ case "$ready_timeout_seconds" in
         ;;
 esac
 
+echo "migration=starting"
+if ! python -m alembic upgrade head; then
+    echo "startup_error migration_failed" >&2
+    exit 1
+fi
+echo "migration=completed"
+
 tailscaled \
     --tun=userspace-networking \
     --state=mem: \
