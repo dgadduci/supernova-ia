@@ -2922,3 +2922,46 @@ Proposal requirements:
 - Deliver only `proposal.md`, `design.md`, specification deltas, and `tasks.md`.
 - Do not implement production code.
 - Do not sync or archive.
+
+### Subphase 4.12C — Safe Product-Recognition Decision Observability [x] — archived 2026-08-12
+
+Make the existing `shadow_product_recognition` telemetry safely queryable through
+the bounded production-observability CLI. This subphase improves operational
+evidence for `hybrid_authoritative`; it does not change product-recognition
+decisions or activate traffic.
+
+**Scope:**
+
+- Add `shadow_product_recognition` to the versioned, allowlisted operational
+  event catalogue and extend the existing bounded query CLI to return only
+  validated instances of it.
+- Permit only: configured/effective mode, authoritative strategy, hybrid
+  decision category, fallback boolean/category, and aggregate latency fields
+  already emitted by the recognizer.
+- Preserve explicit `--project`, `--environment`, `--service`, `--since` and
+  finite `--limit` query bounds; absent events remain an inconclusive result,
+  not a business-success assertion.
+- Add focused contract and privacy tests for valid events, rejected unexpected
+  or sensitive fields, bounded filtering, and no raw-log fallback.
+
+**Non-goals and invariants:**
+
+- Do not change fuzzy, shadow or hybrid-authoritative recognition logic,
+  selected policy, fallback conditions, candidate sets, commerce isolation,
+  transactions, handlers, pending-context behavior, settings or Railway
+  configuration.
+- Never emit or return customer text, E.164 addresses, `commerce_id`, product
+  or candidate IDs, correlation IDs, scores, vectors, prompts, payloads, raw
+  exceptions or raw Railway log lines.
+- Do not add a telemetry platform, database table, endpoint, dashboard,
+  migration, Twilio traffic or synthetic recognition request.
+
+**Expected validation:** focused observability/CLI tests, Ruff and compileall
+on touched Python files, and strict OpenSpec validation. Any production query
+remains a separately authorized, read-only operational gate.
+
+**Outcome:** implemented and archived as
+`2026-08-12-add-safe-product-recognition-observability`; deployed to
+production and verified through one bounded query. The query returned zero
+recognition events, which was recorded as inconclusive without changing mode
+or generating traffic.
