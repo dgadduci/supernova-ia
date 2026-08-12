@@ -89,6 +89,11 @@ class Pedido(Base):
         nullable=True,
     )
 
+    direccion_entrega: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
     medio_pago: Mapped[MediosPago | None] = relationship(MediosPago)
 
     metodo_entrega: Mapped[MetodosEntrega | None] = relationship(MetodosEntrega)
