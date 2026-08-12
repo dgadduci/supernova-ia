@@ -5,18 +5,18 @@
 ### Requirement: Order observation vs delivery method boundary
 
 The system SHALL document, in the static prompt template of
-`IntentClassifier`, a numbered rule that distinguishes
-`set_metodo_de_entrega` from `set_observacion_pedido` whenever the
-customer message contains the word "entrega". The rule SHALL state
-that `set_metodo_de_entrega` is reserved for selecting or changing the
-modality of reception (delivery / home delivery, pickup at the shop,
-dine-in / consumir en salón) and SHALL NOT be emitted for messages
-that describe logistics, access, route, portón, timbre, building,
-security, pets, care, or any other operational indication, even when
-the message contains the word "entrega". The rule SHALL state that,
-in case of doubt, messages that describe CÓMO / CUÁNDO / DÓNDE to
-deliver or that name a recipient must be classified as
-`set_observacion_pedido`. The rule SHALL preserve the existing
+`IntentClassifier`, a numbered rule that gives explicit priority to
+`set_direccion_entrega` for a concrete address, distinguishes
+`set_metodo_de_entrega` from `set_observacion_pedido`, and preserves
+the existing address contract. A street, number, neighborhood, city,
+or other concrete domicile/address SHALL be `set_direccion_entrega`,
+not `set_observacion_pedido`. `set_metodo_de_entrega` is reserved for
+selecting or changing the modality of reception (delivery / home
+delivery, pickup at the shop, dine-in / consumir en salón). Instructions
+that do not establish an address—access, route of entry, portón,
+timbre, building, security, pets, care, or another operational
+indication—SHALL be `set_observacion_pedido`, even when the message
+contains the word "entrega". The rule SHALL preserve the existing
 substring-literal, `no inventes`, `no reutilices`, and
 `una única acción → exactamente un intent` contracts. The rule SHALL
 NOT introduce a new intent name, a new field, a new dispatcher path,
@@ -42,10 +42,17 @@ endpoints, workers, Railway configuration, or deploy.
   the example for that customer message routes it to
   `set_metodo_de_entrega`
 
-### Requirement: Calibration corpus pins four boundary fixtures
+#### Scenario: Concrete address retains delivery-address priority
 
-The controlled corpus `CONTROLLED_INTENT_CORPUS` SHALL include four
-fixtures that pin the new boundary contract. Each fixture SHALL carry
+- **WHEN** the static prompt is rendered for `Me lo envias a Tilcara 2020`
+- **THEN** it documents that the message is `set_direccion_entrega`
+- **AND** it does not reinterpret the address as `set_observacion_pedido`
+
+### Requirement: Calibration corpus pins delivery boundary and address fixtures
+
+The controlled corpus `CONTROLLED_INTENT_CORPUS` SHALL include the four
+boundary fixtures and one concrete-address regression that pin the
+contract. Each fixture SHALL carry
 the exact customer message as its `message`, SHALL pin exactly one
 expected intent (`SET_OBSERVACION_PEDIDO` for the two access / care
 fixtures, `SET_METODO_DE_ENTREGA` for the two modality fixtures), and
@@ -77,3 +84,8 @@ introduce real customer PII or secrets.
   `IntentClassifier._build_prompt`
 - **THEN** the customer `message` is present verbatim in the rendered
   prompt
+
+#### Scenario: Concrete-address fixture retains set_direccion_entrega
+
+- **WHEN** the controlled audit runs `Me lo envias a Tilcara 2020`
+- **THEN** it pins exactly one `set_direccion_entrega` intent
