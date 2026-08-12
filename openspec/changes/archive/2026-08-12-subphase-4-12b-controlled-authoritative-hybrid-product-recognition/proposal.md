@@ -1,10 +1,12 @@
-## Objective
+## Why
 
 Make the already calibrated hybrid recognizer an opt-in authoritative strategy
 behind the existing product-recognition factory, while keeping fuzzy the safe
 default and without activating `hybrid` in production in this phase.
 
-## Current execution path (verified)
+## What Changes
+
+### Current execution path (verified)
 
 `dispatch_initial_message` routes `agregar_producto` to
 `process_initial_agregar_producto`, which loads the commerce catalog and uses
@@ -23,7 +25,7 @@ the quitar/modificar recognizers and both context resolvers currently construct
 the configurable boundary. This change closes that routing gap; it does not
 create another recognition pipeline.
 
-## Scope
+### Scope
 
 - Use the existing `get_product_recognizer(load_settings())` factory as the one
   shared strategy-selection boundary for all production recognition calls.
@@ -37,14 +39,14 @@ create another recognition pipeline.
 - Preserve catalog scope, commerce isolation, `ProcessedIntent` contracts,
   candidate ordering, and 4.12A narrowing.
 
-## Non-goals
+### Non-goals
 
 No production activation, rollout table, per-commerce switch, calibration or
 policy change, dataset/threshold/weight change, embedding/index/model change,
 fuzzy redesign, 4.12A change, migration, catalog endpoint, LangGraph, or
 `api_smoke.py` repair.
 
-## Authoritative outcomes and fallback
+### Authoritative outcomes and fallback
 
 Only a hybrid infrastructure failure may return the byte-for-byte fuzzy result:
 embedding unavailable/failure, vector unavailable/query/repository failure,
@@ -53,21 +55,21 @@ malformed hybrid dependency response, or an unexpected technical exception.
 of a strong candidate are valid hybrid decisions and MUST NOT fall back.
 An invalid mode resolves to fuzzy with a sanitized observation.
 
-## Shared boundary and transactions
+### Shared boundary and transactions
 
 The factory is the sole shared boundary; callers pass their already scoped
 catalog and optional `RecognizeContext`. No recognizer may reload or widen a
 catalog. Recognizers, the factory, observations, and vector collaborators do
 not commit, rollback, flush, or own caller transactions.
 
-## Observability
+### Observability
 
 Reuse `ShadowMetricsRecorder` and its existing comparison/observation payloads
 to record configured mode, effective mode, authoritative strategy, fuzzy
 decision, hybrid decision when evaluated, fallback boolean, and a sanitized
 fallback category. Do not introduce an observability platform.
 
-## Expected files
+### Expected files
 
 - `backend/intents/recognizers/quitar_producto_recognizer.py`
 - `backend/intents/recognizers/modificar_producto_recognizer.py`
@@ -77,7 +79,7 @@ fallback category. Do not introduce an observability platform.
   observation collaborators only if required to complete the stated fields
 - focused recognition, flow, factory, and observation tests
 
-## Focused validation and reversibility
+### Focused validation and reversibility
 
 Run focused pytest for factory/controlled hybrid/shadow observations, agregar,
 quitar, modificar, pending product selection, and pending modification; run

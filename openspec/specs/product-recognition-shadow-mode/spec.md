@@ -3,30 +3,22 @@
 ## Purpose
 
 TBD
-
 ## Requirements
-
 ### Requirement: Product recognizer mode setting
 
-`backend.config.settings.Settings` SHALL expose a `product_recognizer_mode`
-attribute accepting the literals `"fuzzy"`, `"shadow"`, or
-`"hybrid_authoritative"`. The default value SHALL be `"fuzzy"`. The
-setting SHALL be overridable through an environment variable of the
-same name. When the env value is one of the three documented
-literals, `Settings.load()` SHALL accept the literal verbatim. When
-the env value is any other literal (including the empty string), the
-env-var resolver SHALL return `"fuzzy"` as the effective mode and
-SHALL emit a single sanitized structured warning; the resolver SHALL
-NOT raise an exception that prevents application startup or
-customer processing. The fuzzy recognizer SHALL remain the sole
-authoritative recognizer in the `"fuzzy"` mode; the `"shadow"` value
-SHALL remain purely observational; the `"hybrid_authoritative"`
-value SHALL be the opt-in mode documented in
-`controlled-hybrid-product-recognition`. The
-`InvalidProductRecognizerMode(ValueError)` class SHALL remain defined
-as a reserved internal marker for callers that want to validate
-settings coming from a non-env source; the env-var resolver SHALL
-NOT raise it.
+`Settings.product_recognizer_mode` SHALL accept `"fuzzy"`, `"shadow"`, or
+`"hybrid_authoritative"`, defaulting to `"fuzzy"` and overridable through the
+same-named environment variable. Valid values are accepted verbatim. An invalid
+value, including empty, SHALL safely resolve to `"fuzzy"`, emit one sanitized
+warning with `configured_mode`, `effective_mode`, and `reason`, and SHALL NOT
+prevent startup or customer processing. `InvalidProductRecognizerMode` remains
+a reserved marker and is not raised by the environment resolver.
+
+Fuzzy is authoritative in fuzzy and shadow. Shadow is observational and must
+never alter the returned fuzzy result. Hybrid is authoritative only in
+`hybrid_authoritative`. Existing observation structures SHALL record configured
+mode, effective mode, authoritative strategy, fuzzy decision, hybrid decision
+when evaluated, explicit fallback, and a sanitized fallback category.
 
 #### Scenario: Default mode is fuzzy
 
@@ -36,29 +28,32 @@ NOT raise it.
 
 #### Scenario: Shadow mode override is accepted
 
-- **WHEN** the environment variable `PRODUCT_RECOGNIZER_MODE=shadow`
-  is set before `Settings.load()` is called
+- **WHEN** `PRODUCT_RECOGNIZER_MODE=shadow` is set before `Settings.load()`
 - **THEN** `settings.product_recognizer_mode == "shadow"`
 - **AND** no warning is emitted
 
 #### Scenario: Hybrid authoritative mode override is accepted
 
-- **WHEN** the environment variable
-  `PRODUCT_RECOGNIZER_MODE=hybrid_authoritative` is set before
-  `Settings.load()` is called
-- **THEN** `settings.product_recognizer_mode ==
-  "hybrid_authoritative"`
+- **WHEN** `PRODUCT_RECOGNIZER_MODE=hybrid_authoritative` is set before
+  `Settings.load()`
+- **THEN** `settings.product_recognizer_mode == "hybrid_authoritative"`
 - **AND** no warning is emitted
 
 #### Scenario: Invalid mode falls back to fuzzy with a sanitized warning
 
 - **WHEN** `PRODUCT_RECOGNIZER_MODE=hybrid_active` is set before
-  `Settings.load()` is called
+  `Settings.load()`
 - **THEN** `Settings.load()` completes without raising
 - **AND** `settings.product_recognizer_mode == "fuzzy"`
-- **AND** exactly one structured log record is emitted carrying
-  `configured_mode`, `effective_mode`, and `reason`
+- **AND** exactly one structured warning carries `configured_mode`,
+  `effective_mode`, and `reason`
 - **AND** the hybrid authoritative policy file is NOT loaded
+
+#### Scenario: Shadow pipeline failure does not affect quitar
+
+- **WHEN** quitar_producto runs with shadow mode and hybrid observation fails
+- **THEN** the fuzzy result remains authoritative and is returned unchanged
+- **AND** the safe failure category is observed
 
 ### Requirement: Shadow vector top-k setting
 
@@ -1347,3 +1342,4 @@ transactions and SHALL NOT re-query the full commerce catalog.
 - **THEN** the call omits the `intent_metadata` argument (or passes
   `None`)
 - **AND** the call is unaffected by the new argument
+

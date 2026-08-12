@@ -24,9 +24,7 @@ mechanism on `ProductRecognizerProtocol.recognize` so the guard is
 operational at runtime for real customer traffic. The mechanism is
 backward-compatible: every call site that omits the new
 `intent_metadata` argument is unaffected.
-
 ## Requirements
-
 ### Requirement: Hybrid authoritative mode is opt-in via a third `product_recognizer_mode` literal with a safe-fuzzy fallback
 
 The system SHALL add a third value `"hybrid_authoritative"` to the
@@ -674,63 +672,45 @@ helper.
 
 ### Requirement: Recognizer is wired into the shared product-recognition boundary
 
-The system SHALL extend
-`backend/services/product_recognition_factory.py` so that
-`get_product_recognizer(settings)` returns a
-`HybridAuthoritativeProductRecognizer` when
-`settings.product_recognizer_mode == "hybrid_authoritative"`. The
-factory SHALL:
+The system SHALL extend `backend/services/product_recognition_factory.py` so
+that `get_product_recognizer(settings)` returns a
+`HybridAuthoritativeProductRecognizer` when the effective mode is
+`"hybrid_authoritative"`. The factory SHALL construct a
+`FuzzyProductRecognizer`, load the calibrated policy exactly once at factory
+call time, construct the embedding client and per-call vector-search factory,
+and wrap them in the hybrid recognizer with the recorder.
 
-1. Construct a `FuzzyProductRecognizer` instance.
-2. Resolve the calibrated policy through
-   `HybridAuthoritativePolicySource.load(settings)` exactly once at
-   factory call time (not lazily and not on every recognizer call). A
-   failure from the loader SHALL propagate as
-   `HybridAuthoritativePolicyError` so the orchestrator-import-time
-   `get_product_recognizer(load_settings())` call fails closed before
-   any recognizer is built.
-3. Construct the embedding client (`OllamaEmbeddingClient(settings)`
-   by default, overridable through `embedding_client=`), the
-   per-call vector-search-service factory (using the existing
-   `session_provider` injection), the hybrid authoritative recognizer
-   (wrapping the fuzzy recognizer, the calibrated policy, the
-   embedding client, the vector-search-service factory, an optional
-   `commerce_id_resolver`, and the `ShadowMetricsRecorder`).
-4. Return the hybrid authoritative recognizer.
+All production recognition callers — agregar_producto, quitar_producto,
+modificar_producto, pending product selection, and pending modification
+destination resolution — SHALL bind through this factory and retain ownership
+of their already scoped catalog. They SHALL pass their naturally owned
+`id_comercio` through the additive recognition context. The factory and
+recognizers SHALL NOT reload a broader catalog, introduce a per-commerce
+rollout setting, or create a second pipeline.
 
-When the effective mode is `"fuzzy"` (the default and the safe-fuzzy
-fallback case), the factory SHALL return the `FuzzyProductRecognizer`
-instance directly without consulting the hybrid policy path. When the
-effective mode is `"shadow"`, the factory SHALL return the
-`ShadowedProductRecognizer` exactly as the 4.10 spec documents.
-
-The existing `fuzzy` and `shadow` branches of
-`get_product_recognizer` SHALL remain unchanged. The orchestrator
-module (`backend/intents/orchestration/agregar_producto_orchestrator.py`)
-SHALL continue to call `get_product_recognizer(load_settings())` once at
-module import time and SHALL continue to re-export
-`detectar_productos = _product_recognizer.recognize` as a thin
-wrapper that forwards `intent_metadata`. The
-`agregar_producto`, `quitar_producto`, and `modificar_producto`
-orchestrators SHALL remain unchanged and SHALL continue to call
-`detectar_productos` through the shared boundary.
+When the effective mode is `"fuzzy"`, including safe fallback for an invalid
+mode, the factory SHALL return an observable fuzzy recognizer that remains a
+`FuzzyProductRecognizer` instance, does not load hybrid policy or invoke
+embedding/vector work, and emits the documented safe observation. In shadow,
+fuzzy remains authoritative. A hybrid `unique` selects only an ID in the
+passed catalog; `ambiguous` retains the existing pending path; and `unknown`
+retains caller unknown behavior. Only hybrid infrastructure failures may return
+fuzzy; semantic hybrid results MUST NOT fallback.
 
 #### Scenario: Factory returns a HybridAuthoritativeProductRecognizer in hybrid_authoritative mode
 
 - **WHEN** `get_product_recognizer(settings)` is called with
-  `settings.product_recognizer_mode == "hybrid_authoritative"` and a
-  valid `hybrid_authoritative_policy_path`
-- **THEN** the returned recognizer is a
-  `HybridAuthoritativeProductRecognizer` instance
-- **AND** the wrapped inner recognizer is a `FuzzyProductRecognizer`
+  `settings.product_recognizer_mode == "hybrid_authoritative"` and a valid
+  `hybrid_authoritative_policy_path`
+- **THEN** the returned recognizer is a `HybridAuthoritativeProductRecognizer`
   instance
+- **AND** the wrapped inner recognizer is a `FuzzyProductRecognizer` instance
 
 #### Scenario: Factory fails closed on a missing or non-eligible policy file
 
 - **WHEN** `get_product_recognizer(settings)` is called with
-  `settings.product_recognizer_mode == "hybrid_authoritative"` and a
-  `hybrid_authoritative_policy_path` that does not exist (or carries
-  `eligibility.status != "eligible"`)
+  `settings.product_recognizer_mode == "hybrid_authoritative"` and a missing
+  or non-eligible policy path
 - **THEN** the factory raises `HybridAuthoritativePolicyError`
 - **AND** no recognizer is built and returned
 
@@ -738,16 +718,14 @@ orchestrators SHALL remain unchanged and SHALL continue to call
 
 - **WHEN** `get_product_recognizer(settings)` is called with
   `settings.product_recognizer_mode == "fuzzy"`
-- **THEN** the returned recognizer is a `FuzzyProductRecognizer`
-  instance (no hybrid wiring)
+- **THEN** the returned recognizer is a `FuzzyProductRecognizer` instance
+- **AND** no hybrid wiring is invoked
 
 #### Scenario: Factory returns a FuzzyProductRecognizer after the safe-fuzzy fallback
 
 - **WHEN** `get_product_recognizer(load_settings())` is called after
-  `PRODUCT_RECOGNIZER_MODE=hybrid_active` resolved the effective mode
-  to `"fuzzy"` through the safe-fuzzy fallback
-- **THEN** the returned recognizer is a `FuzzyProductRecognizer`
-  instance
+  `PRODUCT_RECOGNIZER_MODE=hybrid_active` resolved effective mode to `"fuzzy"`
+- **THEN** the returned recognizer is a `FuzzyProductRecognizer` instance
 - **AND** no hybrid policy file is read
 - **AND** no `HybridAuthoritativeProductRecognizer` is constructed
 
@@ -755,22 +733,40 @@ orchestrators SHALL remain unchanged and SHALL continue to call
 
 - **WHEN** `get_product_recognizer(settings)` is called with
   `settings.product_recognizer_mode == "shadow"`
-- **THEN** the returned recognizer is a `ShadowedProductRecognizer`
-  instance
-- **AND** the wrapped inner recognizer is a `FuzzyProductRecognizer`
-  instance
+- **THEN** the returned recognizer is a `ShadowedProductRecognizer` instance
+- **AND** the wrapped inner recognizer is a `FuzzyProductRecognizer` instance
 
 #### Scenario: Orchestrator binding uses the factory
 
-- **WHEN** the orchestrator module is imported
-- **THEN** `_product_recognizer` is the result of
+- **WHEN** a production recognition entry point is imported
+- **THEN** its `_product_recognizer` is bound through
   `get_product_recognizer(load_settings())`
-- **AND** `detectar_productos = _product_recognizer.recognize` is
-  re-exported from the orchestrator module as a thin wrapper that
-  forwards `intent_metadata`
-- **AND** the import fails closed with `HybridAuthoritativePolicyError`
-  when the policy path is missing or non-eligible in
-  `hybrid_authoritative` mode
+- **AND** its thin wrapper forwards its scoped catalog and optional context
+- **AND** hybrid mode fails closed with `HybridAuthoritativePolicyError` when
+  the policy path is missing or non-eligible
+
+#### Scenario: Quitar uses the configured boundary without broadening order lines
+
+- **WHEN** quitar_producto recognizes a message while hybrid mode is configured
+- **THEN** it uses the factory-selected recognizer against only active Pedido lines
+- **AND** it does not query the commerce catalog to recognize the line
+
+#### Scenario: Hybrid ambiguity remains pending
+
+- **WHEN** hybrid returns an ambiguous decision for a scoped catalog
+- **THEN** the caller creates or preserves its current pending context
+- **AND** it does not substitute fuzzy merely to avoid ambiguity
+
+#### Scenario: Vector query failure falls back safely
+
+- **WHEN** vector search raises a technical exception
+- **THEN** the returned recognition result equals the fuzzy result
+- **AND** telemetry records `fallback=true` and a safe vector failure category
+
+#### Scenario: Cross-commerce vector candidate is discarded
+
+- **WHEN** vector search returns an ID absent from the caller catalog
+- **THEN** that ID cannot appear in the hybrid result or pending candidates
 
 ### Requirement: Recognizer preserves existing 4.5–4.11 module surfaces
 
@@ -938,3 +934,4 @@ production database state. The tests SHALL cover:
   scenario replacement) and
   `test_product_recognition_factory.py` (safe-fuzzy fallback
   scenario addition)
+
