@@ -517,6 +517,82 @@ class SetFechaHoraEntregaMapperTest(unittest.TestCase):
         self.assertNotIn("15/08/2026 19:30", expected.message)
         self.assertNotIn("dd/mm/yyyy_hh:mm", expected.message)
 
+    def test_spanish_executed_renders_fixed_confirmation(self) -> None:
+        intent = self._intent(
+            status="executed",
+            accepted_format="spanish_relative",
+        )
+        db = MagicMock()
+        session = MagicMock()
+        local = build_set_fecha_hora_entrega_response(db, session, intent)
+        mapped = build_customer_responses(db, session, [intent])[0]
+        self.assertEqual(mapped, local)
+        self.assertEqual(
+            mapped.message,
+            "Listo, guardé la fecha y hora de entrega.",
+        )
+        self.assertNotIn("spanish_relative", mapped.message)
+        self.assertNotIn("hoy a las 22 horas", mapped.message)
+
+    def test_needs_date_rejection_renders_distinct_message(self) -> None:
+        intent = self._intent(status="rejected", reason="needs_date")
+        mapped = build_customer_responses(MagicMock(), MagicMock(), [intent])[0]
+        self.assertEqual(mapped.status, "rejected")
+        self.assertEqual(mapped.intent, "set_fecha_hora_entrega")
+        self.assertNotIn("needs_date", mapped.message)
+        self.assertNotIn("a las 11 de la noche", mapped.message)
+        self.assertNotIn("15/08/2026", mapped.message)
+        self.assertNotIn("America/Argentina", mapped.message)
+
+    def test_past_datetime_rejection_renders_distinct_message(self) -> None:
+        intent = self._intent(status="rejected", reason="past_datetime")
+        mapped = build_customer_responses(MagicMock(), MagicMock(), [intent])[0]
+        self.assertEqual(mapped.status, "rejected")
+        self.assertEqual(mapped.intent, "set_fecha_hora_entrega")
+        self.assertNotIn("past_datetime", mapped.message)
+        self.assertNotIn("hoy a las 22", mapped.message)
+        self.assertNotIn("ya pasó", "")
+        self.assertIn("ya pasó", mapped.message)
+
+    def test_invalid_format_rejection_renders_distinct_message(self) -> None:
+        intent = self._intent(status="rejected", reason="invalid_format")
+        mapped = build_customer_responses(MagicMock(), MagicMock(), [intent])[0]
+        self.assertEqual(mapped.status, "rejected")
+        self.assertEqual(mapped.intent, "set_fecha_hora_entrega")
+        self.assertNotIn("invalid_format", mapped.message)
+        self.assertNotIn("En dos horas", mapped.message)
+        self.assertIn("'hoy'", mapped.message)
+
+    def test_spanish_outbox_staging_uses_the_same_message(self) -> None:
+        intent = self._intent(
+            status="executed",
+            accepted_format="spanish_relative",
+        )
+        db = MagicMock()
+        session = MagicMock()
+        expected = build_customer_responses(db, session, [intent])[0]
+        outbox_repo = MagicMock()
+        staged_row = MagicMock()
+        staged_row.id = 400
+        outbox_repo.stage.return_value = staged_row
+
+        result = stage_outbound_rows(
+            db,
+            session,
+            proveedor="twilio",
+            recepcion_mensaje_proveedor_id=1,
+            destinatario_e164="+5491112345678",
+            intents=[intent],
+            outbox_repo=outbox_repo,
+        )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].customer_response, expected)
+        self.assertEqual(
+            outbox_repo.stage.call_args.kwargs["cuerpo"],
+            expected.message,
+        )
+        self.assertNotIn("spanish_relative", expected.message)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

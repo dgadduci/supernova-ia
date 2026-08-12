@@ -399,6 +399,17 @@ _FECHA_HORA_ENTREGA_SUCCESS_MESSAGE = (
 _FECHA_HORA_ENTREGA_REJECTION_MESSAGE = (
     "No pude guardar la fecha y hora de entrega. Tu pedido no fue modificado."
 )
+_FECHA_HORA_ENTREGA_NEEDS_DATE_MESSAGE = (
+    "Necesito el día (hoy, mañana o un día de la semana) "
+    "junto con la hora a la que querés recibir tu pedido."
+)
+_FECHA_HORA_ENTREGA_PAST_DATETIME_MESSAGE = (
+    "Ese horario ya pasó. Decime un horario futuro para tu entrega."
+)
+_FECHA_HORA_ENTREGA_INVALID_FORMAT_MESSAGE = (
+    "Decime 'hoy', 'mañana' o un día de la semana junto con una hora "
+    "concreta, por ejemplo 'mañana a las 6 de la tarde'."
+)
 
 
 def build_set_fecha_hora_entrega_response(
@@ -413,8 +424,17 @@ def build_set_fecha_hora_entrega_response(
             status=intent.status,
         )
     if intent.status == "rejected":
+        reason = intent.resolved_data.get("reason")
+        if reason == "needs_date":
+            message = _FECHA_HORA_ENTREGA_NEEDS_DATE_MESSAGE
+        elif reason == "past_datetime":
+            message = _FECHA_HORA_ENTREGA_PAST_DATETIME_MESSAGE
+        elif reason == "invalid_format":
+            message = _FECHA_HORA_ENTREGA_INVALID_FORMAT_MESSAGE
+        else:
+            message = _FECHA_HORA_ENTREGA_REJECTION_MESSAGE
         return CustomerResponse(
-            message=_FECHA_HORA_ENTREGA_REJECTION_MESSAGE,
+            message=message,
             intent="set_fecha_hora_entrega",
             status="rejected",
         )

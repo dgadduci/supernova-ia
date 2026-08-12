@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -677,8 +677,200 @@ _DELIVERY_SCHEDULE_FORMATS = (
     ),
 )
 
+_SPANISH_DAY_NAMES: dict[str, int] = {
+    "lunes": 0,
+    "martes": 1,
+    "miercoles": 2,
+    "jueves": 3,
+    "viernes": 4,
+    "sabado": 5,
+    "domingo": 6,
+}
 
-def _parse_fecha_hora_entrega(source_text: str) -> tuple[datetime, str] | None:
+_SPANISH_FRAGMENT_RE = re.compile(
+    r"(?P<date>"
+    r"hoy"
+    r"|ma[ñn]ana"
+    r"|(?:el\s+)?(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)"
+    r")"
+    r"\s+a\s+las\s+"
+    r"(?P<hour>\d{1,2})"
+    r"(?::(?P<minute>\d{1,2}))?"
+    r"(?:\s+horas)?"
+    r"(?:\s+de\s+la\s+(?P<qualifier>ma[ñn]ana|tarde|noche))?",
+    flags=re.IGNORECASE | re.UNICODE,
+)
+
+_SPANISH_TIME_ONLY_RE = re.compile(
+    r"\ba\s+las\s+"
+    r"(?P<hour>\d{1,2})"
+    r"(?::(?P<minute>\d{1,2}))?"
+    r"(?:\s+horas)?"
+    r"(?P<qualifier>\s+de\s+la\s+(?:ma[ñn]ana|tarde|noche))?",
+    flags=re.IGNORECASE | re.UNICODE,
+)
+
+
+def _normalize_for_recognition(text: str) -> str:
+    lowered = text.lower()
+    decomposed = unicodedata.normalize("NFD", lowered)
+    stripped = "".join(
+        char for char in decomposed if not unicodedata.combining(char)
+    )
+    return re.sub(r"\s+", " ", stripped).strip()
+
+
+def _qualifier_word(group_str: str | None) -> str | None:
+    if not group_str:
+        return None
+    if "manana" in group_str:
+        return "manana"
+    if "tarde" in group_str:
+        return "tarde"
+    if "noche" in group_str:
+        return "noche"
+    return None
+
+
+def _validate_time_only(
+    match: re.Match[str],
+) -> tuple[datetime | None, str]:
+    """Validate a time-only Spanish fragment.
+
+    Returns ``(None, "needs_date")`` when the hour is unambiguous and
+    only a date is missing, and ``(None, "invalid_format")`` when the
+    hour is ambiguous, out of range, or qualified by ``manana`` or
+    ``noche`` at 12.
+    """
+    try:
+        hour_int = int(match.group("hour"))
+        minute_int = int(match.group("minute") or "0")
+    except (TypeError, ValueError):
+        return None, "invalid_format"
+
+    if minute_int < 0 or minute_int > 59:
+        return None, "invalid_format"
+
+    qualifier = _qualifier_word(match.group("qualifier"))
+
+    if qualifier is None:
+        if 13 <= hour_int <= 23:
+            return None, "needs_date"
+        return None, "invalid_format"
+
+    if hour_int < 1 or hour_int > 12:
+        return None, "invalid_format"
+    if qualifier in ("manana", "noche") and hour_int == 12:
+        return None, "invalid_format"
+    return None, "needs_date"
+
+
+def _resolve_hour(hour_int: int, qualifier: str | None) -> int | None:
+    if qualifier is None:
+        if 0 <= hour_int <= 23:
+            return hour_int
+        return None
+    if hour_int < 1 or hour_int > 12:
+        return None
+    if qualifier == "manana":
+        if hour_int == 12:
+            return None
+        return hour_int
+    if qualifier == "tarde":
+        if hour_int == 12:
+            return 12
+        return hour_int + 12
+    if qualifier == "noche":
+        if hour_int == 12:
+            return None
+        return hour_int + 12
+    return None
+
+
+def _parse_spanish_expression(
+    normalized: str,
+    now_local: datetime,
+) -> tuple[datetime | None, str]:
+    """Parse a normalized Spanish temporal phrase.
+
+    Returns ``(datetime, "spanish_relative")`` on success,
+    ``(None, "needs_date")`` for time-only fragments,
+    ``(None, "past_datetime")`` for resolved dates that are no longer
+    future (with no rollover for ``hoy``), and
+    ``(None, "invalid_format")`` for any other unrecognised,
+    ambiguous, multi-fragment or off-contract input.
+    """
+    fragments = list(_SPANISH_FRAGMENT_RE.finditer(normalized))
+    if not fragments:
+        time_only = list(_SPANISH_TIME_ONLY_RE.finditer(normalized))
+        if len(time_only) == 1:
+            return _validate_time_only(time_only[0])
+        return None, "invalid_format"
+    if len(fragments) > 1:
+        return None, "invalid_format"
+
+    match = fragments[0]
+    raw_date = match.group("date").strip()
+    hour_str = match.group("hour")
+    minute_str = match.group("minute") or "00"
+    qualifier = match.group("qualifier")
+
+    try:
+        hour_int = int(hour_str)
+        minute_int = int(minute_str)
+    except ValueError:
+        return None, "invalid_format"
+
+    if minute_int < 0 or minute_int > 59:
+        return None, "invalid_format"
+
+    resolved_hour = _resolve_hour(hour_int, _qualifier_word(qualifier))
+    if resolved_hour is None:
+        return None, "invalid_format"
+
+    date_token = raw_date.removeprefix("el ")
+
+    if date_token == "hoy":
+        target_date = now_local.date()
+    elif date_token == "manana":
+        target_date = now_local.date() + timedelta(days=1)
+    else:
+        target_weekday = _SPANISH_DAY_NAMES.get(date_token)
+        if target_weekday is None:
+            return None, "invalid_format"
+        days_ahead = (target_weekday - now_local.weekday()) % 7
+        target_date = now_local.date() + timedelta(days=days_ahead)
+
+    candidate_dt = datetime(
+        target_date.year,
+        target_date.month,
+        target_date.day,
+        resolved_hour,
+        minute_int,
+        tzinfo=_DELIVERY_SCHEDULE_TIMEZONE,
+    )
+
+    if candidate_dt <= now_local:
+        if date_token == "hoy":
+            return None, "past_datetime"
+        candidate_dt = candidate_dt + timedelta(days=7)
+        if candidate_dt <= now_local:
+            return None, "past_datetime"
+
+    return candidate_dt, "spanish_relative"
+
+
+def _parse_fecha_hora_entrega(
+    source_text: str,
+    *,
+    now: datetime | None = None,
+) -> tuple[datetime | None, str]:
+    """Parse an absolute or Spanish-relative temporal expression.
+
+    Returns ``(datetime, accepted_format)`` on success or
+    ``(None, reason)`` on rejection. The reasons are
+    ``"needs_date"``, ``"past_datetime"`` and ``"invalid_format"``.
+    """
     stripped = source_text.strip()
     for pattern, format_value, accepted_format in _DELIVERY_SCHEDULE_FORMATS:
         if re.fullmatch(pattern, stripped) is None:
@@ -691,7 +883,23 @@ def _parse_fecha_hora_entrega(source_text: str) -> tuple[datetime, str] | None:
         except ValueError:
             continue
         return parsed_datetime, accepted_format
-    return None
+
+    if not stripped:
+        return None, "invalid_format"
+
+    reference = (
+        now
+        if now is not None
+        else datetime.now(_DELIVERY_SCHEDULE_TIMEZONE)
+    )
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=_DELIVERY_SCHEDULE_TIMEZONE)
+
+    normalized = _normalize_for_recognition(stripped)
+    if not normalized:
+        return None, "invalid_format"
+
+    return _parse_spanish_expression(normalized, reference)
 
 
 def _is_future_fecha_hora_entrega(
@@ -699,9 +907,12 @@ def _is_future_fecha_hora_entrega(
     *,
     now: datetime | None = None,
 ) -> bool:
-    reference_datetime = (
-        now if now is not None else datetime.now(_DELIVERY_SCHEDULE_TIMEZONE)
-    )
+    if now is None:
+        reference_datetime = datetime.now(_DELIVERY_SCHEDULE_TIMEZONE)
+    elif now.tzinfo is None:
+        reference_datetime = now.replace(tzinfo=_DELIVERY_SCHEDULE_TIMEZONE)
+    else:
+        reference_datetime = now
     return parsed_datetime > reference_datetime
 
 
@@ -709,6 +920,8 @@ def process_initial_set_fecha_hora_entrega(
     db: DatabaseSession,
     session: ConversationSession,
     source_text: str,
+    *,
+    now: datetime | None = None,
 ) -> ProcessedIntent:
     if session.estado_session != EstadoSession.ACTIVA:
         return _rejected(
@@ -744,17 +957,19 @@ def process_initial_set_fecha_hora_entrega(
             "set_fecha_hora_entrega",
         )
 
-    parsed = _parse_fecha_hora_entrega(source_text)
-    if parsed is None:
+    if now is None:
+        now = datetime.now(_DELIVERY_SCHEDULE_TIMEZONE)
+
+    parsed_datetime, label = _parse_fecha_hora_entrega(source_text, now=now)
+    if parsed_datetime is None:
         return _rejected(
             "set_fecha_hora_entrega",
             source_text,
-            "invalid_format",
+            label,
             "draft_order_closure",
             "set_fecha_hora_entrega",
         )
-    parsed_datetime, accepted_format = parsed
-    if not _is_future_fecha_hora_entrega(parsed_datetime):
+    if not _is_future_fecha_hora_entrega(parsed_datetime, now=now):
         return _rejected(
             "set_fecha_hora_entrega",
             source_text,
@@ -770,7 +985,7 @@ def process_initial_set_fecha_hora_entrega(
         status="executed",
         recognizer="draft_order_closure",
         handler="set_fecha_hora_entrega",
-        resolved_data={"accepted_format": accepted_format},
+        resolved_data={"accepted_format": label},
     )
 
 

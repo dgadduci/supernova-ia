@@ -327,5 +327,89 @@ class ProcessIncomingMessageTransactionalPublicSurfaceTest(unittest.TestCase):
         )
 
 
+class ProcessIncomingMessageTransactionalSpanishExpressionRollbackTest(
+    unittest.TestCase
+):
+    """Outer-transaction ownership evidence for the Spanish-expression
+    extension of ``set_fecha_hora_entrega``.
+
+    The orchestrator must stage attribute changes through the outer
+    transaction; a technical exception raised while staging a Spanish
+    success path triggers the wrapper's rollback and propagates.
+    """
+
+    @patch.object(processor_module, "process_incoming_message")
+    def test_inner_exception_on_spanish_success_rolls_back_full_turn(
+        self, inner
+    ) -> None:
+        class _SentinelError(RuntimeError):
+            pass
+
+        executed = ProcessedIntent(
+            intent="set_fecha_hora_entrega",
+            source_text="hoy a las 22 horas",
+            status="executed",
+            recognizer="draft_order_closure",
+            handler="set_fecha_hora_entrega",
+            resolved_data={"accepted_format": "spanish_relative"},
+        )
+
+        def _raise_after_staging(_db, _session, _message):
+            inner.return_value = [executed]
+            raise _SentinelError(
+                "later promoted handler raised after spanish staging"
+            )
+
+        inner.side_effect = _SentinelError(
+            "later promoted handler raised after spanish staging"
+        )
+
+        db = _db()
+        session = _session()
+
+        with self.assertRaises(_SentinelError) as ctx:
+            process_incoming_message_transactional(
+                db, session, "hoy a las 22 horas"
+            )
+
+        self.assertIs(ctx.exception, inner.side_effect)
+        inner.assert_called_once_with(db, session, "hoy a las 22 horas")
+        db.rollback.assert_called_once_with()
+        db.commit.assert_not_called()
+        db.flush.assert_not_called()
+        db.refresh.assert_not_called()
+
+    @patch.object(processor_module, "process_incoming_message")
+    def test_spanish_executed_outcome_commits_exactly_once(
+        self, inner
+    ) -> None:
+        executed = ProcessedIntent(
+            intent="set_fecha_hora_entrega",
+            source_text="hoy a las 22 horas",
+            status="executed",
+            recognizer="draft_order_closure",
+            handler="set_fecha_hora_entrega",
+            resolved_data={"accepted_format": "spanish_relative"},
+        )
+        inner.return_value = [executed]
+
+        db = _db()
+        session = _session()
+
+        result = process_incoming_message_transactional(
+            db, session, "hoy a las 22 horas"
+        )
+
+        inner.assert_called_once_with(db, session, "hoy a las 22 horas")
+        db.commit.assert_called_once_with()
+        db.rollback.assert_not_called()
+        self.assertEqual(
+            result[0].resolved_data, {"accepted_format": "spanish_relative"}
+        )
+        for value in result[0].resolved_data.values():
+            self.assertNotIn("2026", repr(value))
+            self.assertNotIn("spanish_relative datetime", repr(value))
+
+
 if __name__ == "__main__":
     unittest.main()

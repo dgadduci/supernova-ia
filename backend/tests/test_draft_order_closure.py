@@ -1651,16 +1651,18 @@ class SetFechaHoraEntregaUnitTest(unittest.TestCase):
                     "America/Argentina/Buenos_Aires",
                 )
 
-    def test_invalid_calendar_values_return_none(self) -> None:
+    def test_invalid_calendar_values_return_invalid_format(self) -> None:
         for source_text in (
             "31/02/2027 19:30",
             "2027-13-15 19:30",
             "15/12/2027 25:30",
         ):
             with self.subTest(source_text=source_text):
-                self.assertIsNone(
+                parsed_datetime, label = (
                     closure_module._parse_fecha_hora_entrega(source_text)
                 )
+                self.assertIsNone(parsed_datetime)
+                self.assertEqual(label, "invalid_format")
 
     def test_invalid_and_ambiguous_inputs_reject_and_preserve(self) -> None:
         for source_text in (
@@ -1769,6 +1771,772 @@ class SetFechaHoraEntregaUnitTest(unittest.TestCase):
         datetime_text = scheduled.isoformat()
         for value in result.resolved_data.values():
             self.assertNotIn(datetime_text, repr(value))
+
+
+class ParseSpanishExpressionTest(unittest.TestCase):
+    """Pure parser tests for the Spanish temporal-expression extension."""
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime(2026, 8, 12, 6, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"))
+
+    def _assert_success(
+        self,
+        source_text: str,
+        expected: datetime,
+    ) -> None:
+        parsed, label = closure_module._parse_fecha_hora_entrega(
+            source_text, now=self._now()
+        )
+        self.assertEqual(parsed, expected)
+        self.assertEqual(label, "spanish_relative")
+
+    def _assert_rejected(
+        self,
+        source_text: str,
+        reason: str,
+    ) -> None:
+        parsed, label = closure_module._parse_fecha_hora_entrega(
+            source_text, now=self._now()
+        )
+        self.assertIsNone(parsed)
+        self.assertEqual(label, reason)
+
+    def test_hoy_a_las_22_horas_persists_today_22(self) -> None:
+        self._assert_success(
+            "hoy a las 22 horas",
+            datetime(2026, 8, 12, 22, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires")),
+        )
+
+    def test_hoy_a_las_22_sin_horas_persists_today_22(self) -> None:
+        self._assert_success(
+            "hoy a las 22",
+            datetime(2026, 8, 12, 22, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires")),
+        )
+
+    def test_hoy_a_las_8_uses_24_hour_zero_padded(self) -> None:
+        self._assert_success(
+            "hoy a las 8",
+            datetime(2026, 8, 12, 8, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires")),
+        )
+
+    def test_hoy_a_las_8_30_persists_minutes(self) -> None:
+        self._assert_success(
+            "hoy a las 8:30",
+            datetime(2026, 8, 12, 8, 30, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires")),
+        )
+
+    def test_wrapped_hoy_a_las_22_horas_persists_when_contiguous(self) -> None:
+        self._assert_success(
+            "Quiero que me lo envíes hoy a las 22 horas",
+            datetime(2026, 8, 12, 22, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires")),
+        )
+
+    def test_manana_a_las_6_tarde_translates_to_18(self) -> None:
+        self._assert_success(
+            "mañana a las 6 de la tarde",
+            datetime(2026, 8, 13, 18, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires")),
+        )
+
+    def test_manana_a_las_9_manana_keeps_hour(self) -> None:
+        self._assert_success(
+            "mañana a las 9 de la mañana",
+            datetime(2026, 8, 13, 9, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires")),
+        )
+
+    def test_manana_a_las_11_noche_translates_to_23(self) -> None:
+        self._assert_success(
+            "mañana a las 11 de la noche",
+            datetime(2026, 8, 13, 23, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires")),
+        )
+
+    def test_manana_a_las_12_tarde_keeps_noon(self) -> None:
+        self._assert_success(
+            "mañana a las 12 de la tarde",
+            datetime(2026, 8, 13, 12, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires")),
+        )
+
+    def test_manana_a_las_12_manana_is_ambiguous_invalid(self) -> None:
+        self._assert_rejected(
+            "hoy a las 12 de la mañana",
+            "invalid_format",
+        )
+
+    def test_manana_a_las_12_noche_is_ambiguous_invalid(self) -> None:
+        self._assert_rejected(
+            "hoy a las 12 de la noche",
+            "invalid_format",
+        )
+
+    def test_manana_a_las_13_con_manana_is_out_of_range(self) -> None:
+        self._assert_rejected(
+            "mañana a las 13 de la mañana",
+            "invalid_format",
+        )
+
+    def test_hoy_a_las_24_is_out_of_range(self) -> None:
+        self._assert_rejected(
+            "hoy a las 24",
+            "invalid_format",
+        )
+
+    def test_el_viernes_a_las_20_resolves_to_next_friday(self) -> None:
+        self._assert_success(
+            "el viernes a las 20",
+            datetime(2026, 8, 14, 20, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires")),
+        )
+
+    def test_viernes_a_las_20_without_el_resolves_to_next_friday(self) -> None:
+        self._assert_success(
+            "viernes a las 20",
+            datetime(2026, 8, 14, 20, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires")),
+        )
+
+    def test_el_sabado_a_las_10_with_accents_normalizes(self) -> None:
+        self._assert_success(
+            "el sábado a las 10",
+            datetime(2026, 8, 15, 10, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires")),
+        )
+
+    def test_a_las_11_noche_without_date_is_needs_date(self) -> None:
+        self._assert_rejected(
+            "a las 11 de la noche",
+            "needs_date",
+        )
+
+    def test_a_las_8_without_date_and_without_qualifier_is_invalid(self) -> None:
+        self._assert_rejected(
+            "A las 8",
+            "invalid_format",
+        )
+
+    def test_a_las_20_without_date_without_qualifier_is_needs_date(self) -> None:
+        self._assert_rejected(
+            "a las 20",
+            "needs_date",
+        )
+
+    def test_two_temporal_fragments_is_invalid(self) -> None:
+        self._assert_rejected(
+            "hoy a las 8 y mañana a las 9",
+            "invalid_format",
+        )
+
+    def test_en_dos_horas_is_invalid(self) -> None:
+        self._assert_rejected("En dos horas", "invalid_format")
+
+    def test_entre_19_y_20_is_invalid(self) -> None:
+        self._assert_rejected("Entre 19 y 20", "invalid_format")
+
+    def test_al_mediodia_is_invalid(self) -> None:
+        self._assert_rejected("Al mediodía", "invalid_format")
+
+    def test_manana_temprano_is_invalid(self) -> None:
+        self._assert_rejected("Mañana temprano", "invalid_format")
+
+    def test_tipo_8_is_invalid(self) -> None:
+        self._assert_rejected("Tipo 8", "invalid_format")
+
+    def test_hoy_a_las_22_after_22_is_past_not_rolled_over(self) -> None:
+        late_now = datetime(
+            2026, 8, 12, 23, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires")
+        )
+        parsed, label = closure_module._parse_fecha_hora_entrega(
+            "hoy a las 22", now=late_now
+        )
+        self.assertIsNone(parsed)
+        self.assertEqual(label, "past_datetime")
+
+    def test_past_hoy_does_not_advance_to_manana(self) -> None:
+        late_now = datetime(
+            2026, 8, 12, 23, 30, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires")
+        )
+        with TestingSessionLocal() as db:
+            pedido_row = self._seed_pedido_with_datetime(
+                datetime(
+                    2026, 8, 13, 10, 0,
+                    tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"),
+                )
+            )
+            try:
+                session_row = db.get(SessionModel, pedido_row["session_id"])
+                assert session_row is not None
+                with patch.object(
+                    closure_module, "datetime", wraps=datetime
+                ) as mock_dt:
+                    mock_dt.now.return_value = late_now
+                    result = process_initial_set_fecha_hora_entrega(
+                        db, session_row, "hoy a las 22"
+                    )
+                self.assertEqual(result.status, "rejected")
+                self.assertEqual(
+                    result.resolved_data.get("reason"), "past_datetime"
+                )
+                with TestingSessionLocal() as verify_db:
+                    pedido = verify_db.get(Pedido, pedido_row["pedido_id"])
+                    assert pedido is not None
+                    self.assertEqual(
+                        pedido.datetime_entrega_programada,
+                        datetime(
+                            2026, 8, 13, 10, 0,
+                            tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"),
+                        ),
+                    )
+            finally:
+                _cleanup_pedido(pedido_row)
+
+    @staticmethod
+    def _seed_pedido_with_datetime(
+        previous: datetime,
+    ) -> dict:
+        ids = _seed_base()
+        with TestingSessionLocal() as db, db.begin():
+            pedido = db.get(Pedido, ids["pedido_id"])
+            assert pedido is not None
+            pedido.datetime_entrega_programada = previous
+        return ids
+
+
+def _cleanup_pedido(ids: dict) -> None:
+    _cleanup(ids)
+
+
+class TimeOnlyFragmentValidationTest(unittest.TestCase):
+    """Hour validation for time-only Spanish fragments (no date token).
+
+    A time-only hour is unambiguous (returns ``needs_date``) when:
+
+    - the hour is in 13-23 with no qualifier (24-hour interpretation);
+    - the hour is in 1-11 with ``de la mañana``, ``de la tarde`` or
+      ``de la noche``;
+    - the hour is 12 with ``de la tarde`` (interpreted as 12:xx).
+
+    All other hours (``A las 8``, out-of-range, ambiguous noon with
+    ``de la mañana`` or ``de la noche``) return ``invalid_format``.
+    """
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime(
+            2026, 8, 12, 6, 0,
+            tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"),
+        )
+
+    def _assert(self, source_text: str, expected_reason: str) -> None:
+        parsed, label = closure_module._parse_fecha_hora_entrega(
+            source_text, now=self._now()
+        )
+        self.assertIsNone(parsed)
+        self.assertEqual(label, expected_reason)
+
+    def test_a_las_20_returns_needs_date(self) -> None:
+        self._assert("a las 20", "needs_date")
+
+    def test_a_las_22_horas_returns_needs_date(self) -> None:
+        self._assert("a las 22 horas", "needs_date")
+
+    def test_a_las_11_noche_returns_needs_date(self) -> None:
+        self._assert("a las 11 de la noche", "needs_date")
+
+    def test_a_las_6_tarde_returns_needs_date(self) -> None:
+        self._assert("a las 6 de la tarde", "needs_date")
+
+    def test_a_las_9_manana_returns_needs_date(self) -> None:
+        self._assert("a las 9 de la mañana", "needs_date")
+
+    def test_a_las_12_tarde_returns_needs_date(self) -> None:
+        self._assert("a las 12 de la tarde", "needs_date")
+
+    def test_a_las_8_sin_calificador_returns_invalid_format(self) -> None:
+        self._assert("A las 8", "invalid_format")
+
+    def test_a_las_25_returns_invalid_format(self) -> None:
+        self._assert("a las 25", "invalid_format")
+
+    def test_a_las_99_tarde_returns_invalid_format(self) -> None:
+        self._assert("a las 99 de la tarde", "invalid_format")
+
+    def test_a_las_12_manana_returns_invalid_format(self) -> None:
+        self._assert("a las 12 de la mañana", "invalid_format")
+
+    def test_a_las_12_noche_returns_invalid_format(self) -> None:
+        self._assert("a las 12 de la noche", "invalid_format")
+
+    def test_a_las_13_manana_returns_invalid_format(self) -> None:
+        self._assert("a las 13 de la mañana", "invalid_format")
+
+    def test_two_a_las_clauses_returns_invalid_format(self) -> None:
+        self._assert(
+            "lo envío a las 20 y lo entregamos a las 21",
+            "invalid_format",
+        )
+
+
+class SingleClockInjectionTest(unittest.TestCase):
+    """The orchestrator must capture ``datetime.now(tz)`` at most once
+    per invocation and pass the same reference to the parser and the
+    future-check, so microscale clock drift cannot race the boundary
+    comparison.
+    """
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime(
+            2026, 8, 12, 6, 0,
+            tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"),
+        )
+
+    def _stub_db(self) -> MagicMock:
+        db = MagicMock()
+        db.get.return_value = MagicMock(
+            id_session=10,
+            estado_pedido=EstadoPedido.BORRADOR,
+        )
+        return db
+
+    def test_orchestrator_captures_datetime_now_exactly_once(self) -> None:
+        captured_now = self._now()
+        call_counter = {"n": 0}
+
+        def _counting_now(tz=None):
+            call_counter["n"] += 1
+            return captured_now
+
+        with patch.object(
+            closure_module, "datetime", wraps=datetime
+        ) as mock_dt:
+            mock_dt.now.side_effect = _counting_now
+            result = process_initial_set_fecha_hora_entrega(
+                self._stub_db(),
+                MagicMock(
+                    id=10,
+                    id_pedido=20,
+                    estado_session=EstadoSession.ACTIVA,
+                ),
+                "hoy a las 22 horas",
+            )
+
+        self.assertEqual(result.status, "executed")
+        self.assertEqual(
+            result.resolved_data, {"accepted_format": "spanish_relative"}
+        )
+        self.assertEqual(call_counter["n"], 1)
+
+    def test_orchestrator_with_explicit_now_does_not_capture(self) -> None:
+        explicit_now = self._now()
+        call_counter = {"n": 0}
+
+        def _counting_now(tz=None):
+            call_counter["n"] += 1
+            return explicit_now
+
+        with patch.object(
+            closure_module, "datetime", wraps=datetime
+        ) as mock_dt:
+            mock_dt.now.side_effect = _counting_now
+            result = process_initial_set_fecha_hora_entrega(
+                self._stub_db(),
+                MagicMock(
+                    id=10,
+                    id_pedido=20,
+                    estado_session=EstadoSession.ACTIVA,
+                ),
+                "hoy a las 22 horas",
+                now=explicit_now,
+            )
+
+        self.assertEqual(result.status, "executed")
+        self.assertEqual(call_counter["n"], 0)
+
+
+class SetFechaHoraEntregaSpanishExpressionTest(unittest.TestCase):
+    """Orchestrator-level coverage of the Spanish-expression extension."""
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime(2026, 8, 12, 6, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"))
+
+    def _build_pedido(
+        self,
+        *,
+        previous: datetime | None = None,
+        estado=EstadoPedido.BORRADOR,
+    ) -> dict:
+        ids = _seed_base()
+        if previous is not None:
+            with TestingSessionLocal() as db, db.begin():
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                pedido.datetime_entrega_programada = previous
+        return ids
+
+    def test_hoy_a_las_22_horas_persists_via_orchestrator(self) -> None:
+        ids = self._build_pedido()
+        try:
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                with patch.object(
+                    closure_module, "datetime", wraps=datetime
+                ) as mock_dt:
+                    mock_dt.now.return_value = self._now()
+                    result = process_initial_set_fecha_hora_entrega(
+                        db,
+                        session_row,
+                        "Quiero que me lo envíes hoy a las 22 horas",
+                    )
+                self.assertEqual(result.status, "executed")
+                self.assertEqual(
+                    result.resolved_data,
+                    {"accepted_format": "spanish_relative"},
+                )
+                db.commit()
+            pedido = _load_pedido(ids["pedido_id"])
+            assert pedido is not None
+            self.assertIsNotNone(pedido.datetime_entrega_programada)
+            self.assertEqual(
+                pedido.datetime_entrega_programada,
+                datetime(
+                    2026, 8, 12, 22, 0,
+                    tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"),
+                ),
+            )
+        finally:
+            _cleanup(ids)
+
+    def test_manana_a_las_6_tarde_persists_via_orchestrator(self) -> None:
+        ids = self._build_pedido()
+        try:
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                with patch.object(
+                    closure_module, "datetime", wraps=datetime
+                ) as mock_dt:
+                    mock_dt.now.return_value = self._now()
+                    result = process_initial_set_fecha_hora_entrega(
+                        db, session_row, "mañana a las 6 de la tarde"
+                    )
+                self.assertEqual(result.status, "executed")
+                db.commit()
+            pedido = _load_pedido(ids["pedido_id"])
+            assert pedido is not None
+            self.assertEqual(
+                pedido.datetime_entrega_programada,
+                datetime(
+                    2026, 8, 13, 18, 0,
+                    tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"),
+                ),
+            )
+        finally:
+            _cleanup(ids)
+
+    def test_a_las_11_noche_returns_needs_date(self) -> None:
+        ids = self._build_pedido()
+        try:
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                result = process_initial_set_fecha_hora_entrega(
+                    db, session_row, "a las 11 de la noche"
+                )
+                self.assertEqual(result.status, "rejected")
+                self.assertEqual(
+                    result.resolved_data.get("reason"), "needs_date"
+                )
+                self.assertNotIn("a las 11 de la noche", str(
+                    result.resolved_data
+                ))
+            pedido = _load_pedido(ids["pedido_id"])
+            assert pedido is not None
+            self.assertIsNone(pedido.datetime_entrega_programada)
+        finally:
+            _cleanup(ids)
+
+    def test_hoy_past_datetime_returns_past_datetime_and_preserves(self) -> None:
+        previous = datetime(
+            2026, 8, 13, 10, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires")
+        )
+        ids = self._build_pedido(previous=previous)
+        try:
+            late_now = datetime(
+                2026, 8, 12, 23, 0,
+                tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"),
+            )
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                with patch.object(
+                    closure_module, "datetime", wraps=datetime
+                ) as mock_dt:
+                    mock_dt.now.return_value = late_now
+                    result = process_initial_set_fecha_hora_entrega(
+                        db, session_row, "hoy a las 22"
+                    )
+                self.assertEqual(result.status, "rejected")
+                self.assertEqual(
+                    result.resolved_data.get("reason"), "past_datetime"
+                )
+                db.commit()
+            pedido = _load_pedido(ids["pedido_id"])
+            assert pedido is not None
+            self.assertEqual(pedido.datetime_entrega_programada, previous)
+        finally:
+            _cleanup(ids)
+
+    def test_invalid_format_does_not_mutate(self) -> None:
+        previous = datetime(
+            2026, 8, 13, 10, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires")
+        )
+        ids = self._build_pedido(previous=previous)
+        try:
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                for source_text in (
+                    "En dos horas",
+                    "Entre 19 y 20",
+                    "Tipo 8",
+                    "Mañana temprano",
+                    "Al mediodía",
+                    "hoy a las 8 y mañana a las 9",
+                ):
+                    result = process_initial_set_fecha_hora_entrega(
+                        db, session_row, source_text
+                    )
+                    self.assertEqual(
+                        result.status, "rejected",
+                        msg=f"unexpected status for {source_text!r}",
+                    )
+                    self.assertEqual(
+                        result.resolved_data.get("reason"),
+                        "invalid_format",
+                        msg=f"unexpected reason for {source_text!r}",
+                    )
+                db.commit()
+            pedido = _load_pedido(ids["pedido_id"])
+            assert pedido is not None
+            self.assertEqual(pedido.datetime_entrega_programada, previous)
+        finally:
+            _cleanup(ids)
+
+    def test_spanish_success_changes_only_datetime(self) -> None:
+        ids = self._build_pedido()
+        try:
+            _seed_line(pedido_id=ids["pedido_id"], pp_id=ids["pp_id"])
+            with TestingSessionLocal() as db, db.begin():
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                pedido.id_medio_pago = ids["medio_pago_id"]
+                pedido.id_metodo_entrega = ids["metodo_entrega_id"]
+                pedido.observaciones = "observación previa"
+                pedido.direccion_entrega = "dirección previa"
+                pedido_id_session = pedido.id_session
+
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                with patch.object(
+                    closure_module, "datetime", wraps=datetime
+                ) as mock_dt:
+                    mock_dt.now.return_value = self._now()
+                    result = process_initial_set_fecha_hora_entrega(
+                        db, session_row, "mañana a las 9 de la mañana"
+                    )
+                self.assertEqual(result.status, "executed")
+                db.commit()
+
+            pedido = _load_pedido(ids["pedido_id"])
+            assert pedido is not None
+            self.assertEqual(
+                pedido.datetime_entrega_programada,
+                datetime(
+                    2026, 8, 13, 9, 0,
+                    tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"),
+                ),
+            )
+            self.assertEqual(pedido.id_session, pedido_id_session)
+            self.assertEqual(pedido.id_medio_pago, ids["medio_pago_id"])
+            self.assertEqual(
+                pedido.id_metodo_entrega, ids["metodo_entrega_id"]
+            )
+            self.assertEqual(pedido.observaciones, "observación previa")
+            self.assertEqual(pedido.direccion_entrega, "dirección previa")
+            self.assertEqual(pedido.estado_pedido, EstadoPedido.BORRADOR)
+        finally:
+            _cleanup(ids)
+
+    def test_spanish_does_not_call_transaction_control_methods(self) -> None:
+        timezone = ZoneInfo("America/Argentina/Buenos_Aires")
+        ids = _seed_base()
+        try:
+            db_mock = MagicMock()
+            db_mock.get.return_value = MagicMock(
+                id_session=ids["session_id"],
+                estado_pedido=EstadoPedido.BORRADOR,
+            )
+            with patch.object(
+                closure_module, "datetime", wraps=datetime
+            ) as mock_dt:
+                mock_dt.now.return_value = datetime(2026, 8, 12, 6, 0, tzinfo=timezone)
+                result = process_initial_set_fecha_hora_entrega(
+                    db_mock,
+                    MagicMock(
+                        id=ids["session_id"],
+                        id_pedido=ids["pedido_id"],
+                        estado_session=EstadoSession.ACTIVA,
+                    ),
+                    "hoy a las 22 horas",
+                )
+            self.assertEqual(result.status, "executed")
+            for method in (
+                "commit",
+                "rollback",
+                "begin",
+                "flush",
+                "refresh",
+                "expire",
+                "close",
+            ):
+                getattr(db_mock, method).assert_not_called()
+        finally:
+            _cleanup(ids)
+
+    def test_spanish_resolved_data_does_not_leak_datetime_or_text(self) -> None:
+        ids = self._build_pedido()
+        try:
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                with patch.object(
+                    closure_module, "datetime", wraps=datetime
+                ) as mock_dt:
+                    mock_dt.now.return_value = self._now()
+                    result = process_initial_set_fecha_hora_entrega(
+                        db,
+                        session_row,
+                        "Quiero que me lo envíes hoy a las 22 horas",
+                    )
+                self.assertEqual(result.status, "executed")
+                for value in result.resolved_data.values():
+                    self.assertNotIn("22", repr(value))
+                    self.assertNotIn("horas", repr(value))
+                    self.assertNotIn("hoy", repr(value))
+        finally:
+            _cleanup(ids)
+
+
+class SetFechaHoraEntregaLocalPipelineSpanishTest(unittest.TestCase):
+    """Integration: end-to-end local pipeline renders the fixed
+    private messages for the Spanish-expression extension.
+    """
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime(2026, 8, 12, 6, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"))
+
+    def test_success_renders_fixed_confirmation_without_leak(self) -> None:
+        ids = _seed_base()
+        try:
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                with _patched_classifier(IntentName.SET_FECHA_HORA_ENTREGA):
+                    with patch.object(
+                        closure_module, "datetime", wraps=datetime
+                    ) as mock_dt:
+                        mock_dt.now.return_value = self._now()
+                        responses = process_incoming_message_with_responses(
+                            db,
+                            session_row,
+                            "Quiero que me lo envíes hoy a las 22 horas",
+                        )
+                self.assertEqual(len(responses), 1)
+                response = responses[0]
+                self.assertEqual(response.intent, "set_fecha_hora_entrega")
+                self.assertEqual(response.status, "executed")
+                self.assertEqual(
+                    response.message,
+                    "Listo, guardé la fecha y hora de entrega.",
+                )
+                self.assertNotIn("hoy", response.message)
+                self.assertNotIn("22", response.message)
+                self.assertNotIn("horas", response.message)
+                self.assertNotIn(str(ids["pedido_id"]), response.message)
+                db.commit()
+        finally:
+            _cleanup(ids)
+
+    def test_needs_date_renders_distinct_message(self) -> None:
+        ids = _seed_base()
+        try:
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                with _patched_classifier(IntentName.SET_FECHA_HORA_ENTREGA):
+                    responses = process_incoming_message_with_responses(
+                        db, session_row, "a las 11 de la noche"
+                    )
+                self.assertEqual(len(responses), 1)
+                response = responses[0]
+                self.assertEqual(response.intent, "set_fecha_hora_entrega")
+                self.assertEqual(response.status, "rejected")
+                self.assertIn("Necesito", response.message)
+                self.assertNotIn(
+                    "a las 11 de la noche", response.message
+                )
+                self.assertNotIn("pedido", str(response.intent))
+                db.commit()
+        finally:
+            _cleanup(ids)
+
+    def test_past_datetime_renders_distinct_message(self) -> None:
+        ids = _seed_base()
+        try:
+            late_now = datetime(
+                2026, 8, 12, 23, 0,
+                tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"),
+            )
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                with _patched_classifier(IntentName.SET_FECHA_HORA_ENTREGA):
+                    with patch.object(
+                        closure_module, "datetime", wraps=datetime
+                    ) as mock_dt:
+                        mock_dt.now.return_value = late_now
+                        responses = process_incoming_message_with_responses(
+                            db, session_row, "hoy a las 22"
+                        )
+                self.assertEqual(len(responses), 1)
+                response = responses[0]
+                self.assertEqual(response.intent, "set_fecha_hora_entrega")
+                self.assertEqual(response.status, "rejected")
+                self.assertIn("ya pasó", response.message)
+                self.assertNotIn("hoy a las 22", response.message)
+                db.commit()
+        finally:
+            _cleanup(ids)
+
+    def test_invalid_format_renders_distinct_message(self) -> None:
+        ids = _seed_base()
+        try:
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                with _patched_classifier(IntentName.SET_FECHA_HORA_ENTREGA):
+                    responses = process_incoming_message_with_responses(
+                        db, session_row, "En dos horas"
+                    )
+                self.assertEqual(len(responses), 1)
+                response = responses[0]
+                self.assertEqual(response.intent, "set_fecha_hora_entrega")
+                self.assertEqual(response.status, "rejected")
+                self.assertIn("'hoy'", response.message)
+                self.assertNotIn("En dos horas", response.message)
+                db.commit()
+        finally:
+            _cleanup(ids)
 
 
 class SetDireccionEntregaUnitTest(unittest.TestCase):
