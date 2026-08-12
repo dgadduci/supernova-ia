@@ -12,14 +12,14 @@
 
 ## 2. Implementation (after approval)
 
-- [ ] 2.1 Remove the independent Railway `preDeployCommand` migration path.
-- [ ] 2.2 Add the safe Alembic lifecycle gate to `docker-entrypoint.sh` after
+- [x] 2.1 Remove the independent Railway `preDeployCommand` migration path.
+- [x] 2.2 Add the safe Alembic lifecycle gate to `docker-entrypoint.sh` after
   production database validation and before Tailscale/Uvicorn.
-- [ ] 2.3 Update the focused manifest/entrypoint tests to prove the ordering,
+- [x] 2.3 Update the focused manifest/entrypoint tests to prove the ordering,
   fail-closed behavior, and unchanged worker supervision boundary.
-- [ ] 2.4 Update the Railway runbook with the new authoritative migration
+- [x] 2.4 Update the Railway runbook with the new authoritative migration
   evidence and rollback constraint.
-- [ ] 2.5 Review scope, privacy, transaction ownership, and deployment
+- [x] 2.5 Review scope, privacy, transaction ownership, and deployment
   boundary against this approved change.
 
 ## 3. Validation and controlled production check

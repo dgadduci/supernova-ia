@@ -1,6 +1,8 @@
 import contextlib
 import io
+import os
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,11 +26,20 @@ class RailwayTailscaleEntrypointTest(unittest.TestCase):
         self.assertNotIn("ALL_PROXY=", source)
         self.assertIn("required_var OLLAMA_PROXY_URL", source)
 
-    def test_railway_predeploy_does_not_enter_tailscale_lifecycle(self):
+    def test_railway_manifest_has_no_pre_deploy_command(self):
         railway_toml = (_ROOT / "railway.toml").read_text()
         self.assertIn('builder = "DOCKERFILE"', railway_toml)
-        self.assertIn("python -m alembic upgrade head", railway_toml)
         self.assertIn('startCommand = "./docker-entrypoint.sh"', railway_toml)
+        self.assertIn('healthcheckPath = "/health"', railway_toml)
+        self.assertNotIn("preDeployCommand", railway_toml)
+        self.assertNotIn("pre_deploy", railway_toml)
+        self.assertNotIn("python -m alembic", railway_toml)
+
+    def test_railway_manifest_healthcheck_and_restart_policy_intact(self):
+        railway_toml = (_ROOT / "railway.toml").read_text()
+        self.assertIn("healthcheckTimeout = 100", railway_toml)
+        self.assertIn('restartPolicyType = "ON_FAILURE"', railway_toml)
+        self.assertIn("restartPolicyMaxRetries = 3", railway_toml)
 
     def test_transport_diagnostic_reports_received_bytes_without_response_body(self):
         from backend.scripts.check_railway_ollama_contracts import (
@@ -90,3 +101,142 @@ class RailwayTailscaleEntrypointTest(unittest.TestCase):
         self.assertIn("http_status=200", output.getvalue())
         self.assertIn("received_bytes=0", output.getvalue())
         self.assertIn("category=empty_response", output.getvalue())
+
+
+class EntrypointMigrationGateTest(unittest.TestCase):
+    """The Docker entrypoint is the sole repository-managed migration
+    authority. Alembic MUST run after SUPERNOVA_DATABASE_URL is validated
+    and before any Tailscale or Uvicorn process is launched. A failed or
+    absent migration MUST abort the entrypoint with a safe lifecycle
+    marker; the worker supervision contract remains unchanged."""
+
+    @staticmethod
+    def _entrypoint_source() -> str:
+        return (_ROOT / "docker-entrypoint.sh").read_text()
+
+    def test_entrypoint_runs_alembic_after_database_url_validation(self):
+        source = self._entrypoint_source()
+        url_check = source.index("required_var SUPERNOVA_DATABASE_URL")
+        alembic_call = source.index("python -m alembic upgrade head")
+        self.assertLess(
+            url_check,
+            alembic_call,
+            "Alembic must run after SUPERNOVA_DATABASE_URL validation",
+        )
+
+    def test_entrypoint_runs_alembic_before_tailscaled(self):
+        source = self._entrypoint_source()
+        alembic_call = source.index("python -m alembic upgrade head")
+        tailscaled_call = source.index("tailscaled \\")
+        self.assertLess(
+            alembic_call,
+            tailscaled_call,
+            "Alembic must complete before tailscaled is launched",
+        )
+
+    def test_entrypoint_runs_alembic_before_uvicorn(self):
+        source = self._entrypoint_source()
+        alembic_call = source.index("python -m alembic upgrade head")
+        uvicorn_call = source.index("uvicorn backend.main:app")
+        self.assertLess(
+            alembic_call,
+            uvicorn_call,
+            "Alembic must complete before Uvicorn accepts traffic",
+        )
+
+    def test_entrypoint_emits_safe_lifecycle_markers(self):
+        source = self._entrypoint_source()
+        self.assertIn("migration=starting", source)
+        self.assertIn("migration=completed", source)
+        self.assertIn("startup_error migration_failed", source)
+
+    def test_entrypoint_migration_gate_omits_secret_leaks(self):
+        source = self._entrypoint_source()
+        gate_start = source.index("migration=starting")
+        gate_end = source.index("migration=completed") + len(
+            "migration=completed"
+        )
+        gate = source[gate_start:gate_end]
+        for forbidden in (
+            "printenv",
+            "env |",
+            "echo \"$SUPERNOVA_DATABASE_URL\"",
+            "alembic --sql",
+            "alembic --pg",
+        ):
+            self.assertNotIn(forbidden, gate)
+
+    def test_entrypoint_preserves_worker_supervision(self):
+        source = self._entrypoint_source()
+        self.assertIn("stop_processes()", source)
+        self.assertIn('kill "$worker_pid"', source)
+        self.assertIn('kill "$app_pid"', source)
+        self.assertIn("startup_error provider_worker_exited", source)
+        alembic_idx = source.index("python -m alembic upgrade head")
+        worker_validate_idx = source.index(
+            "validate_worker_startup_or_exit"
+        )
+        self.assertLess(
+            alembic_idx,
+            worker_validate_idx,
+            (
+                "Provider worker validation must remain after the "
+                "migration gate"
+            ),
+        )
+
+    def test_migration_failure_aborts_before_any_traffic(self):
+        """With ``PROVIDER_PROCESSING_WORKER_ENABLED=false`` (so the
+        flag check passes) and a ``python`` shim that fails
+        ``python -m alembic``, the entrypoint MUST exit 1, emit the
+        safe ``startup_error migration_failed`` marker, and MUST NOT
+        start Tailscale or Uvicorn."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            shim = tmp_path / "python"
+            shim.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = \"-m\" ] && [ \"$2\" = \"alembic\" ]\n"
+                "then\n"
+                "    exit 1\n"
+                "fi\n"
+                "exec /usr/bin/env python \"$@\"\n"
+            )
+            shim.chmod(0o755)
+            env = {
+                "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
+                "SUPERNOVA_DATABASE_URL": "postgresql://x/y",
+                "TS_AUTHKEY": "test-authkey",
+                "TS_HOSTNAME": "test-host",
+                "OLLAMA_PROXY_URL": "socks5h://127.0.0.1:1055",
+                "PORT": "8000",
+                "PROVIDER_PROCESSING_WORKER_ENABLED": "false",
+            }
+            proc = subprocess.run(
+                ["sh", str(_ROOT / "docker-entrypoint.sh")],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+                timeout=15,
+            )
+
+        self.assertEqual(
+            proc.returncode,
+            1,
+            msg=(
+                f"expected exit 1, got {proc.returncode}: "
+                f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+            ),
+        )
+        self.assertIn("migration=starting", proc.stdout)
+        self.assertNotIn("migration=completed", proc.stdout)
+        self.assertIn("startup_error migration_failed", proc.stderr)
+        self.assertNotIn("tailscale_ready", proc.stdout)
+        self.assertNotIn("uvicorn", proc.stdout)
+        self.assertNotIn(
+            "test-authkey", proc.stdout + proc.stderr,
+        )
+        self.assertNotIn(
+            "postgresql://x/y", proc.stdout + proc.stderr,
+        )

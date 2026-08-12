@@ -2,7 +2,6 @@
 builder = "DOCKERFILE"
 
 [deploy]
-preDeployCommand = ["test -n \"$SUPERNOVA_DATABASE_URL\" && python -m alembic upgrade head"]
 startCommand = "./docker-entrypoint.sh"
 healthcheckPath = "/health"
 healthcheckTimeout = 100
