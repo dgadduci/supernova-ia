@@ -2,7 +2,7 @@ import enum
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum, ForeignKey, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.models.base import Base
@@ -82,6 +82,11 @@ class Pedido(Base):
         nullable=False,
         server_default=func.now(),
         onupdate=func.now(),
+    )
+
+    observaciones: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
     )
 
     medio_pago: Mapped[MediosPago | None] = relationship(MediosPago)

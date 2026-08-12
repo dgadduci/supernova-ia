@@ -10,6 +10,7 @@ from backend.intents.orchestration.draft_order_closure import (
     process_initial_consultar_resumen_pedido,
     process_initial_set_metodo_de_entrega,
     process_initial_set_metodo_de_pago,
+    process_initial_set_observacion_pedido,
 )
 from backend.intents.orchestration.informational_commerce_queries import (
     is_informational_commerce_intent,
@@ -164,6 +165,14 @@ def dispatch_initial_message(
         if classified_intent == IntentName.CONFIRMAR_PEDIDO:
             processed.append(
                 process_initial_confirmar_pedido(
+                    db, session, classified.mensaje
+                )
+            )
+            continue
+
+        if classified_intent == IntentName.SET_OBSERVACION_PEDIDO:
+            processed.append(
+                process_initial_set_observacion_pedido(
                     db, session, classified.mensaje
                 )
             )

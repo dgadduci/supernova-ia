@@ -15,7 +15,6 @@ from backend.intents.schemas.customer_response import CustomerResponse
 from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.models.session import Session as ConversationSession
 
-
 _FAILED_MESSAGE = "Tuve un problema técnico, ¿podrías intentarlo de nuevo en unos minutos?"
 _NO_DRAFT_MESSAGE = "Todavía no tenés un pedido activo."
 _NOT_BORRADOR_MESSAGE = "Tu pedido ya fue confirmado y no se puede modificar."
@@ -310,9 +309,52 @@ def build_confirmar_pedido_response(
     )
 
 
+_OBSERVATION_SUCCESS_MESSAGE = "Listo, guardé tu observación."
+_OBSERVATION_REJECTION_MESSAGE = (
+    "No pude guardar tu observación. Tu pedido no fue modificado."
+)
+
+
+def build_set_observacion_pedido_response(
+    db: DatabaseSession,
+    session: ConversationSession,
+    intent: ProcessedIntent,
+) -> CustomerResponse:
+    if intent.intent != "set_observacion_pedido":
+        return CustomerResponse(
+            message=_FAILED_MESSAGE,
+            intent=intent.intent,
+            status=intent.status,
+        )
+    if intent.status == "rejected":
+        return CustomerResponse(
+            message=_OBSERVATION_REJECTION_MESSAGE,
+            intent="set_observacion_pedido",
+            status="rejected",
+        )
+    if intent.status == "executed":
+        return CustomerResponse(
+            message=_OBSERVATION_SUCCESS_MESSAGE,
+            intent="set_observacion_pedido",
+            status="executed",
+        )
+    if intent.status == "failed":
+        return CustomerResponse(
+            message=_FAILED_MESSAGE,
+            intent="set_observacion_pedido",
+            status="failed",
+        )
+    return CustomerResponse(
+        message=_FAILED_MESSAGE,
+        intent="set_observacion_pedido",
+        status=intent.status,
+    )
+
+
 __all__ = [
-    "build_consultar_resumen_pedido_response",
-    "build_set_metodo_de_pago_response",
-    "build_set_metodo_de_entrega_response",
     "build_confirmar_pedido_response",
+    "build_consultar_resumen_pedido_response",
+    "build_set_metodo_de_entrega_response",
+    "build_set_metodo_de_pago_response",
+    "build_set_observacion_pedido_response",
 ]
