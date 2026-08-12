@@ -12,8 +12,10 @@ import importlib
 import unittest
 import uuid
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import sessionmaker
@@ -25,6 +27,7 @@ from backend.intents.orchestration.draft_order_closure import (
     process_initial_confirmar_pedido,
     process_initial_consultar_resumen_pedido,
     process_initial_set_direccion_entrega,
+    process_initial_set_fecha_hora_entrega,
     process_initial_set_metodo_de_entrega,
     process_initial_set_metodo_de_pago,
 )
@@ -375,6 +378,7 @@ class DraftOrderClosureBoundariesTest(unittest.TestCase):
                 "build_confirmar_pedido_response",
                 "build_consultar_resumen_pedido_response",
                 "build_set_direccion_entrega_response",
+                "build_set_fecha_hora_entrega_response",
                 "build_set_metodo_de_entrega_response",
                 "build_set_metodo_de_pago_response",
                 "build_set_observacion_pedido_response",
@@ -388,6 +392,7 @@ class DraftOrderClosureBoundariesTest(unittest.TestCase):
                 "process_initial_confirmar_pedido",
                 "process_initial_consultar_resumen_pedido",
                 "process_initial_set_direccion_entrega",
+                "process_initial_set_fecha_hora_entrega",
                 "process_initial_set_metodo_de_entrega",
                 "process_initial_set_metodo_de_pago",
                 "process_initial_set_observacion_pedido",
@@ -1331,6 +1336,36 @@ class DraftOrderClosureLocalResponseTest(unittest.TestCase):
         finally:
             _cleanup(ids)
 
+    def test_local_response_pipeline_renders_fixed_schedule_message(
+        self,
+    ) -> None:
+        ids = _seed_base()
+        try:
+            timezone = ZoneInfo("America/Argentina/Buenos_Aires")
+            scheduled = datetime.now(timezone) + timedelta(days=7)
+            source_text = scheduled.strftime("%d/%m/%Y %H:%M")
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                with _patched_classifier(IntentName.SET_FECHA_HORA_ENTREGA):
+                    responses = process_incoming_message_with_responses(
+                        db, session_row, source_text
+                    )
+                self.assertEqual(len(responses), 1)
+                response = responses[0]
+                self.assertEqual(response.intent, "set_fecha_hora_entrega")
+                self.assertEqual(response.status, "executed")
+                self.assertEqual(
+                    response.message,
+                    "Listo, guardé la fecha y hora de entrega.",
+                )
+                self.assertNotIn(source_text.strip(), response.message)
+                self.assertNotIn("Buenos Aires", response.message)
+                self.assertNotIn(str(ids["pedido_id"]), response.message)
+                db.commit()
+        finally:
+            _cleanup(ids)
+
 
 class DraftOrderClosureProviderPathTest(unittest.TestCase):
     """Re-exports the provider-path scenario. The full PostgreSQL-backed
@@ -1426,6 +1461,314 @@ class DraftOrderClosureDispatcherRoutingTest(unittest.TestCase):
                     MagicMock(), MagicMock(context_type=None), "x"
                 )
         self.assertEqual(result, [sentinel])
+
+    def test_dispatcher_routes_set_fecha_hora_entrega_intent(self) -> None:
+        from backend.intents.orchestration import (
+            initial_intent_dispatcher as dispatcher_module,
+        )
+
+        sentinel = ProcessedIntent(
+            intent="set_fecha_hora_entrega",
+            source_text="x",
+            status="rejected",
+            recognizer="draft_order_closure",
+            handler="set_fecha_hora_entrega",
+        )
+        with patch.object(
+            dispatcher_module,
+            "process_initial_set_fecha_hora_entrega",
+            return_value=sentinel,
+        ):
+            with _patched_classifier(IntentName.SET_FECHA_HORA_ENTREGA):
+                result = dispatch_initial_message(
+                    MagicMock(), MagicMock(context_type=None), "x"
+                )
+        self.assertEqual(result, [sentinel])
+
+    def test_pending_context_short_circuits_schedule_intent(self) -> None:
+        from backend.intents.orchestration import (
+            initial_intent_dispatcher as dispatcher_module,
+        )
+
+        with patch.object(
+            dispatcher_module, "IntentClassifier"
+        ) as classifier:
+            with patch.object(
+                dispatcher_module,
+                "process_initial_set_fecha_hora_entrega",
+            ) as handler:
+                result = dispatch_initial_message(
+                    MagicMock(),
+                    MagicMock(context_type="pending"),
+                    "15/08/2026 19:30",
+                )
+        self.assertEqual(result, [])
+        classifier.assert_not_called()
+        handler.assert_not_called()
+
+
+class SetFechaHoraEntregaUnitTest(unittest.TestCase):
+    @staticmethod
+    def _session(
+        *,
+        session_id: int = 10,
+        pedido_id: int | None = 20,
+        estado_session=EstadoSession.ACTIVA,
+    ) -> MagicMock:
+        return MagicMock(
+            id=session_id,
+            id_pedido=pedido_id,
+            estado_session=estado_session,
+        )
+
+    @staticmethod
+    def _pedido(
+        *,
+        session_id: int = 10,
+        estado_pedido=EstadoPedido.BORRADOR,
+        previous_datetime: datetime | None = None,
+    ) -> MagicMock:
+        return MagicMock(
+            id_session=session_id,
+            estado_pedido=estado_pedido,
+            datetime_entrega_programada=previous_datetime,
+            id_medio_pago=30,
+            id_metodo_entrega=40,
+            observaciones="observación previa",
+            direccion_entrega="dirección previa",
+        )
+
+    def test_inactive_session_rejects_without_lookup(self) -> None:
+        db = MagicMock()
+        result = process_initial_set_fecha_hora_entrega(
+            db,
+            self._session(estado_session=EstadoSession.CERRADA),
+            "15/08/2026 19:30",
+        )
+        self.assertEqual(result.status, "rejected")
+        self.assertEqual(
+            result.resolved_data.get("reason"), "session_not_active"
+        )
+        db.get.assert_not_called()
+
+    def test_no_draft_rejects_without_lookup(self) -> None:
+        db = MagicMock()
+        result = process_initial_set_fecha_hora_entrega(
+            db,
+            self._session(pedido_id=None),
+            "15/08/2026 19:30",
+        )
+        self.assertEqual(result.status, "rejected")
+        self.assertEqual(result.resolved_data.get("reason"), "no_draft")
+        db.get.assert_not_called()
+
+    def test_missing_pedido_row_rejects(self) -> None:
+        db = MagicMock()
+        db.get.return_value = None
+        result = process_initial_set_fecha_hora_entrega(
+            db, self._session(), "15/08/2026 19:30"
+        )
+        self.assertEqual(result.status, "rejected")
+        self.assertEqual(result.resolved_data.get("reason"), "no_draft")
+
+    def test_foreign_session_pedido_rejects_and_preserves(self) -> None:
+        previous = datetime(2027, 1, 1, tzinfo=ZoneInfo("UTC"))
+        pedido = self._pedido(session_id=99, previous_datetime=previous)
+        db = MagicMock()
+        db.get.return_value = pedido
+        result = process_initial_set_fecha_hora_entrega(
+            db, self._session(), "15/08/2026 19:30"
+        )
+        self.assertEqual(result.status, "rejected")
+        self.assertEqual(
+            result.resolved_data.get("reason"), "session_mismatch"
+        )
+        self.assertIs(pedido.datetime_entrega_programada, previous)
+
+    def test_non_borrador_pedido_rejects_for_each_state(self) -> None:
+        for state in (
+            EstadoPedido.INGRESADO,
+            EstadoPedido.PREPARACION,
+            EstadoPedido.TERMINADO,
+            EstadoPedido.ENTREGADO,
+            EstadoPedido.CANCELADO,
+        ):
+            with self.subTest(state=state.value):
+                previous = datetime(2027, 1, 1, tzinfo=ZoneInfo("UTC"))
+                pedido = self._pedido(
+                    estado_pedido=state,
+                    previous_datetime=previous,
+                )
+                db = MagicMock()
+                db.get.return_value = pedido
+                result = process_initial_set_fecha_hora_entrega(
+                    db, self._session(), "15/08/2026 19:30"
+                )
+                self.assertEqual(result.status, "rejected")
+                self.assertEqual(
+                    result.resolved_data.get("reason"),
+                    "pedido_not_borrador",
+                )
+                self.assertIs(pedido.datetime_entrega_programada, previous)
+
+    def test_only_exact_documented_formats_are_accepted(self) -> None:
+        timezone = ZoneInfo("America/Argentina/Buenos_Aires")
+        scheduled = datetime.now(timezone) + timedelta(days=30)
+        for source_text, expected_format in (
+            (
+                f"  {scheduled.strftime('%d/%m/%Y %H:%M')}  ",
+                "dd/mm/yyyy_hh:mm",
+            ),
+            (
+                f"\t{scheduled.strftime('%Y-%m-%d %H:%M')}\n",
+                "yyyy-mm-dd_hh:mm",
+            ),
+        ):
+            with self.subTest(source_text=source_text):
+                previous = datetime(2027, 1, 1, tzinfo=timezone)
+                pedido = self._pedido(previous_datetime=previous)
+                db = MagicMock()
+                db.get.return_value = pedido
+                result = process_initial_set_fecha_hora_entrega(
+                    db, self._session(), source_text
+                )
+                self.assertEqual(result.status, "executed")
+                self.assertEqual(
+                    result.resolved_data,
+                    {"accepted_format": expected_format},
+                )
+                self.assertIsNotNone(pedido.datetime_entrega_programada)
+                self.assertEqual(
+                    pedido.datetime_entrega_programada,
+                    scheduled.replace(second=0, microsecond=0),
+                )
+                self.assertEqual(
+                    pedido.datetime_entrega_programada.utcoffset(),
+                    scheduled.utcoffset(),
+                )
+                self.assertEqual(
+                    pedido.datetime_entrega_programada.tzinfo.key,
+                    "America/Argentina/Buenos_Aires",
+                )
+
+    def test_invalid_calendar_values_return_none(self) -> None:
+        for source_text in (
+            "31/02/2027 19:30",
+            "2027-13-15 19:30",
+            "15/12/2027 25:30",
+        ):
+            with self.subTest(source_text=source_text):
+                self.assertIsNone(
+                    closure_module._parse_fecha_hora_entrega(source_text)
+                )
+
+    def test_invalid_and_ambiguous_inputs_reject_and_preserve(self) -> None:
+        for source_text in (
+            "31/02/2027 19:30",
+            "2027-13-15 19:30",
+            "15/12/2027 25:30",
+            "mañana",
+            "15/08/2026",
+            "19:30",
+            "15/8/2026 19:30",
+            "2026-8-15 19:30",
+            "15/08/26 19:30",
+            "15/08/2026 7:30",
+            "15/08/2026 19:30 mañana",
+            "2026-08-15T19:30",
+            "2026-08-15 19:30 -03:00",
+            "15-08-2026 19:30",
+        ):
+            with self.subTest(source_text=source_text):
+                previous = datetime(2027, 1, 1, tzinfo=ZoneInfo("UTC"))
+                pedido = self._pedido(previous_datetime=previous)
+                db = MagicMock()
+                db.get.return_value = pedido
+                result = process_initial_set_fecha_hora_entrega(
+                    db, self._session(), source_text
+                )
+                self.assertEqual(result.status, "rejected")
+                self.assertEqual(
+                    result.resolved_data.get("reason"), "invalid_format"
+                )
+                self.assertIs(pedido.datetime_entrega_programada, previous)
+
+    def test_past_datetime_rejects_and_preserves(self) -> None:
+        timezone = ZoneInfo("America/Argentina/Buenos_Aires")
+        previous = datetime(2027, 1, 1, tzinfo=timezone)
+        pedido = self._pedido(previous_datetime=previous)
+        db = MagicMock()
+        db.get.return_value = pedido
+        past = datetime.now(timezone) - timedelta(days=1)
+        result = process_initial_set_fecha_hora_entrega(
+            db,
+            self._session(),
+            past.strftime("%d/%m/%Y %H:%M"),
+        )
+        self.assertEqual(result.status, "rejected")
+        self.assertEqual(
+            result.resolved_data.get("reason"), "past_datetime"
+        )
+        self.assertIs(pedido.datetime_entrega_programada, previous)
+
+    def test_replacement_only_mutates_delivery_datetime(self) -> None:
+        timezone = ZoneInfo("America/Argentina/Buenos_Aires")
+        previous = datetime(2027, 1, 1, tzinfo=timezone)
+        pedido = self._pedido(previous_datetime=previous)
+        db = MagicMock()
+        db.get.return_value = pedido
+        scheduled = datetime.now(timezone) + timedelta(days=7)
+        result = process_initial_set_fecha_hora_entrega(
+            db,
+            self._session(),
+            scheduled.strftime("%d/%m/%Y %H:%M"),
+        )
+        self.assertEqual(result.status, "executed")
+        self.assertEqual(
+            pedido.datetime_entrega_programada,
+            scheduled.replace(second=0, microsecond=0),
+        )
+        self.assertEqual(pedido.id_medio_pago, 30)
+        self.assertEqual(pedido.id_metodo_entrega, 40)
+        self.assertEqual(pedido.observaciones, "observación previa")
+        self.assertEqual(pedido.direccion_entrega, "dirección previa")
+        self.assertEqual(pedido.estado_pedido, EstadoPedido.BORRADOR)
+
+    def test_no_transaction_control_methods_called(self) -> None:
+        timezone = ZoneInfo("America/Argentina/Buenos_Aires")
+        scheduled = datetime.now(timezone) + timedelta(days=7)
+        db = MagicMock()
+        db.get.return_value = self._pedido()
+        result = process_initial_set_fecha_hora_entrega(
+            db,
+            self._session(),
+            scheduled.strftime("%d/%m/%Y %H:%M"),
+        )
+        self.assertEqual(result.status, "executed")
+        for method in (
+            "commit",
+            "rollback",
+            "begin",
+            "flush",
+            "refresh",
+            "expire",
+            "close",
+        ):
+            getattr(db, method).assert_not_called()
+
+    def test_resolved_data_contains_only_safe_format_indicator(self) -> None:
+        timezone = ZoneInfo("America/Argentina/Buenos_Aires")
+        scheduled = datetime.now(timezone) + timedelta(days=7)
+        db = MagicMock()
+        db.get.return_value = self._pedido()
+        result = process_initial_set_fecha_hora_entrega(
+            db,
+            self._session(),
+            scheduled.strftime("%d/%m/%Y %H:%M"),
+        )
+        datetime_text = scheduled.isoformat()
+        for value in result.resolved_data.values():
+            self.assertNotIn(datetime_text, repr(value))
 
 
 class SetDireccionEntregaUnitTest(unittest.TestCase):
@@ -1910,6 +2253,239 @@ class SetDireccionEntregaIntegrationTest(unittest.TestCase):
             self.assertEqual(pedido.direccion_entrega, "valor previo")
         finally:
             _cleanup(ids)
+
+
+class SetFechaHoraEntregaIntegrationTest(unittest.TestCase):
+    def test_success_persists_authoritative_timezone(self) -> None:
+        ids = _seed_base()
+        try:
+            timezone = ZoneInfo("America/Argentina/Buenos_Aires")
+            scheduled = datetime.now(timezone) + timedelta(days=7)
+            source_text = scheduled.strftime("%d/%m/%Y %H:%M")
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                result = process_initial_set_fecha_hora_entrega(
+                    db, session_row, source_text
+                )
+                self.assertEqual(result.status, "executed")
+                self.assertEqual(
+                    result.resolved_data,
+                    {"accepted_format": "dd/mm/yyyy_hh:mm"},
+                )
+                db.commit()
+
+            pedido = _load_pedido(ids["pedido_id"])
+            assert pedido is not None
+            self.assertIsNotNone(pedido.datetime_entrega_programada)
+            self.assertEqual(
+                pedido.datetime_entrega_programada,
+                scheduled.replace(second=0, microsecond=0),
+            )
+            self.assertEqual(
+                pedido.datetime_entrega_programada.tzinfo.key,
+                "America/Argentina/Buenos_Aires",
+            )
+        finally:
+            _cleanup(ids)
+
+    def test_success_replaces_existing_schedule(self) -> None:
+        ids = _seed_base()
+        try:
+            timezone = ZoneInfo("America/Argentina/Buenos_Aires")
+            previous = datetime.now(timezone) + timedelta(days=1)
+            replacement = previous + timedelta(days=1)
+            with TestingSessionLocal() as db, db.begin():
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                pedido.datetime_entrega_programada = previous
+
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                result = process_initial_set_fecha_hora_entrega(
+                    db,
+                    session_row,
+                    replacement.strftime("%Y-%m-%d %H:%M"),
+                )
+                self.assertEqual(result.status, "executed")
+                self.assertEqual(
+                    result.resolved_data,
+                    {"accepted_format": "yyyy-mm-dd_hh:mm"},
+                )
+                db.commit()
+
+            pedido = _load_pedido(ids["pedido_id"])
+            assert pedido is not None
+            self.assertEqual(
+                pedido.datetime_entrega_programada,
+                replacement.replace(second=0, microsecond=0),
+            )
+        finally:
+            _cleanup(ids)
+
+    def test_invalid_and_past_inputs_preserve_existing_schedule(self) -> None:
+        ids = _seed_base()
+        try:
+            timezone = ZoneInfo("America/Argentina/Buenos_Aires")
+            previous = datetime.now(timezone) + timedelta(days=1)
+            past = datetime.now(timezone) - timedelta(days=1)
+            with TestingSessionLocal() as db, db.begin():
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                pedido.datetime_entrega_programada = previous
+
+            for source_text, expected_reason in (
+                ("15/08/2026", "invalid_format"),
+                (past.strftime("%d/%m/%Y %H:%M"), "past_datetime"),
+            ):
+                with self.subTest(source_text=source_text):
+                    with TestingSessionLocal() as db:
+                        session_row = db.get(SessionModel, ids["session_id"])
+                        assert session_row is not None
+                        result = process_initial_set_fecha_hora_entrega(
+                            db, session_row, source_text
+                        )
+                        self.assertEqual(result.status, "rejected")
+                        self.assertEqual(
+                            result.resolved_data.get("reason"),
+                            expected_reason,
+                        )
+                        db.commit()
+
+                    pedido = _load_pedido(ids["pedido_id"])
+                    assert pedido is not None
+                    self.assertEqual(
+                        pedido.datetime_entrega_programada,
+                        previous,
+                    )
+        finally:
+            _cleanup(ids)
+
+    def test_success_changes_only_delivery_schedule(self) -> None:
+        ids = _seed_base()
+        try:
+            line_id = _seed_line(pedido_id=ids["pedido_id"], pp_id=ids["pp_id"])
+            pending_intents = {"active": "vaciar_pedido", "queue": []}
+            with TestingSessionLocal() as db, db.begin():
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                pedido.id_medio_pago = ids["medio_pago_id"]
+                pedido.id_metodo_entrega = ids["metodo_entrega_id"]
+                pedido.observaciones = "observación previa"
+                pedido.direccion_entrega = "dirección previa"
+                pedido_id_session = pedido.id_session
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                session_row.pending_intents = pending_intents
+                session_before = {
+                    "id_pedido": session_row.id_pedido,
+                    "context_type": session_row.context_type,
+                }
+
+            timezone = ZoneInfo("America/Argentina/Buenos_Aires")
+            scheduled = datetime.now(timezone) + timedelta(days=7)
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                result = process_initial_set_fecha_hora_entrega(
+                    db,
+                    session_row,
+                    scheduled.strftime("%d/%m/%Y %H:%M"),
+                )
+                self.assertEqual(result.status, "executed")
+                db.commit()
+
+            pedido = _load_pedido(ids["pedido_id"])
+            assert pedido is not None
+            self.assertEqual(
+                pedido.datetime_entrega_programada,
+                scheduled.replace(second=0, microsecond=0),
+            )
+            self.assertEqual(pedido.id_session, pedido_id_session)
+            self.assertEqual(pedido.id_medio_pago, ids["medio_pago_id"])
+            self.assertEqual(
+                pedido.id_metodo_entrega,
+                ids["metodo_entrega_id"],
+            )
+            self.assertEqual(pedido.observaciones, "observación previa")
+            self.assertEqual(pedido.direccion_entrega, "dirección previa")
+            self.assertEqual(pedido.estado_pedido, EstadoPedido.BORRADOR)
+            lines = _load_lines(ids["pedido_id"])
+            self.assertEqual([line.id for line in lines], [line_id])
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                self.assertEqual(
+                    session_row.id_pedido,
+                    session_before["id_pedido"],
+                )
+                self.assertEqual(
+                    session_row.context_type,
+                    session_before["context_type"],
+                )
+                self.assertEqual(session_row.pending_intents, pending_intents)
+        finally:
+            _cleanup(ids)
+
+    def test_outer_rollback_restores_prior_schedule(self) -> None:
+        ids = _seed_base()
+        try:
+            timezone = ZoneInfo("America/Argentina/Buenos_Aires")
+            previous = datetime.now(timezone) + timedelta(days=1)
+            with TestingSessionLocal() as db, db.begin():
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                pedido.datetime_entrega_programada = previous
+
+            class _BoomOnCommit(Exception):
+                pass
+
+            class _ExplodingSession:
+                def __init__(self, real) -> None:
+                    self._real = real
+
+                def get(self, *args, **kwargs):
+                    return self._real.get(*args, **kwargs)
+
+                def commit(self):
+                    raise _BoomOnCommit("simulated technical failure")
+
+                def rollback(self):
+                    self._real.rollback()
+
+            timezone = ZoneInfo("America/Argentina/Buenos_Aires")
+            scheduled = datetime.now(timezone) + timedelta(days=7)
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                wrapped = _ExplodingSession(db)
+                result = process_initial_set_fecha_hora_entrega(
+                    wrapped,
+                    session_row,
+                    scheduled.strftime("%d/%m/%Y %H:%M"),
+                )
+                self.assertEqual(result.status, "executed")
+                with self.assertRaises(_BoomOnCommit):
+                    wrapped.commit()
+                wrapped.rollback()
+
+            pedido = _load_pedido(ids["pedido_id"])
+            assert pedido is not None
+            self.assertEqual(pedido.datetime_entrega_programada, previous)
+        finally:
+            _cleanup(ids)
+
+
+def _load_lines(pedido_id: int) -> list[PedidoProducto]:
+    with TestingSessionLocal() as db:
+        return list(
+            db.execute(
+                select(PedidoProducto).where(
+                    PedidoProducto.id_pedido == pedido_id
+                )
+            ).scalars()
+        )
 
 
 def _load_pedido(pedido_id: int) -> Pedido | None:

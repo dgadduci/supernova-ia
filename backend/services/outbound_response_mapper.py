@@ -50,6 +50,7 @@ from backend.intents.responses.draft_order_closure import (
     build_confirmar_pedido_response,
     build_consultar_resumen_pedido_response,
     build_set_direccion_entrega_response,
+    build_set_fecha_hora_entrega_response,
     build_set_metodo_de_entrega_response,
     build_set_metodo_de_pago_response,
     build_set_observacion_pedido_response,
@@ -171,6 +172,10 @@ def build_customer_responses(
         elif intent.intent == "set_direccion_entrega":
             responses.append(
                 build_set_direccion_entrega_response(db, session, intent)
+            )
+        elif intent.intent == "set_fecha_hora_entrega":
+            responses.append(
+                build_set_fecha_hora_entrega_response(db, session, intent)
             )
         elif is_informational_commerce_intent(intent.intent):
             responses.append(

@@ -9,6 +9,7 @@ from backend.intents.orchestration.draft_order_closure import (
     process_initial_confirmar_pedido,
     process_initial_consultar_resumen_pedido,
     process_initial_set_direccion_entrega,
+    process_initial_set_fecha_hora_entrega,
     process_initial_set_metodo_de_entrega,
     process_initial_set_metodo_de_pago,
     process_initial_set_observacion_pedido,
@@ -182,6 +183,14 @@ def dispatch_initial_message(
         if classified_intent == IntentName.SET_DIRECCION_ENTREGA:
             processed.append(
                 process_initial_set_direccion_entrega(
+                    db, session, classified.mensaje
+                )
+            )
+            continue
+
+        if classified_intent == IntentName.SET_FECHA_HORA_ENTREGA:
+            processed.append(
+                process_initial_set_fecha_hora_entrega(
                     db, session, classified.mensaje
                 )
             )

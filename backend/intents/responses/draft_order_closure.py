@@ -393,10 +393,55 @@ def build_set_direccion_entrega_response(
     )
 
 
+_FECHA_HORA_ENTREGA_SUCCESS_MESSAGE = (
+    "Listo, guardé la fecha y hora de entrega."
+)
+_FECHA_HORA_ENTREGA_REJECTION_MESSAGE = (
+    "No pude guardar la fecha y hora de entrega. Tu pedido no fue modificado."
+)
+
+
+def build_set_fecha_hora_entrega_response(
+    db: DatabaseSession,
+    session: ConversationSession,
+    intent: ProcessedIntent,
+) -> CustomerResponse:
+    if intent.intent != "set_fecha_hora_entrega":
+        return CustomerResponse(
+            message=_FAILED_MESSAGE,
+            intent=intent.intent,
+            status=intent.status,
+        )
+    if intent.status == "rejected":
+        return CustomerResponse(
+            message=_FECHA_HORA_ENTREGA_REJECTION_MESSAGE,
+            intent="set_fecha_hora_entrega",
+            status="rejected",
+        )
+    if intent.status == "executed":
+        return CustomerResponse(
+            message=_FECHA_HORA_ENTREGA_SUCCESS_MESSAGE,
+            intent="set_fecha_hora_entrega",
+            status="executed",
+        )
+    if intent.status == "failed":
+        return CustomerResponse(
+            message=_FAILED_MESSAGE,
+            intent="set_fecha_hora_entrega",
+            status="failed",
+        )
+    return CustomerResponse(
+        message=_FAILED_MESSAGE,
+        intent="set_fecha_hora_entrega",
+        status=intent.status,
+    )
+
+
 __all__ = [
     "build_confirmar_pedido_response",
     "build_consultar_resumen_pedido_response",
     "build_set_direccion_entrega_response",
+    "build_set_fecha_hora_entrega_response",
     "build_set_metodo_de_entrega_response",
     "build_set_metodo_de_pago_response",
     "build_set_observacion_pedido_response",

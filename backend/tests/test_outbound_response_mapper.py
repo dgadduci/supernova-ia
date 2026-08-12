@@ -37,6 +37,7 @@ from unittest.mock import MagicMock, patch
 
 from backend.intents.responses.draft_order_closure import (
     build_set_direccion_entrega_response,
+    build_set_fecha_hora_entrega_response,
 )
 from backend.intents.responses.social_conversation_response import (
     SOCIAL_CONVERSATION_HANDLER,
@@ -404,6 +405,117 @@ class SetDireccionEntregaMapperTest(unittest.TestCase):
         )
         self.assertNotIn("Tilcara", expected.message)
         self.assertEqual(result[0].sequence, 0)
+
+
+class SetFechaHoraEntregaMapperTest(unittest.TestCase):
+    @staticmethod
+    def _intent(
+        *,
+        status: IntentStatus,
+        reason: str | None = None,
+        accepted_format: str | None = None,
+    ) -> ProcessedIntent:
+        resolved: dict = {}
+        if reason is not None:
+            resolved["reason"] = reason
+        if accepted_format is not None:
+            resolved["accepted_format"] = accepted_format
+        return ProcessedIntent(
+            intent="set_fecha_hora_entrega",
+            source_text="15/08/2026 19:30",
+            status=status,
+            recognizer="draft_order_closure",
+            handler="set_fecha_hora_entrega",
+            resolved_data=resolved,
+        )
+
+    def test_mapper_and_shared_builder_are_equivalent(self) -> None:
+        intent = self._intent(
+            status="executed",
+            accepted_format="dd/mm/yyyy_hh:mm",
+        )
+        db = MagicMock()
+        session = MagicMock()
+        local = build_set_fecha_hora_entrega_response(db, session, intent)
+        mapped = build_customer_responses(db, session, [intent])[0]
+        self.assertEqual(mapped, local)
+        self.assertNotIn("15/08/2026 19:30", mapped.message)
+        self.assertNotIn("Buenos Aires", mapped.message)
+
+    def test_executed_renders_fixed_confirmation(self) -> None:
+        intent = self._intent(
+            status="executed",
+            accepted_format="yyyy-mm-dd_hh:mm",
+        )
+        mapped = build_customer_responses(MagicMock(), MagicMock(), [intent])[0]
+        self.assertEqual(mapped.status, "executed")
+        self.assertEqual(mapped.intent, "set_fecha_hora_entrega")
+        self.assertEqual(
+            mapped.message,
+            "Listo, guardé la fecha y hora de entrega.",
+        )
+        self.assertNotIn("2026-08-15 19:30", mapped.message)
+        self.assertNotIn("America/Argentina/Buenos_Aires", mapped.message)
+
+    def test_all_rejections_render_safe_message(self) -> None:
+        for reason in (
+            "invalid_format",
+            "past_datetime",
+            "no_draft",
+            "session_mismatch",
+            "session_not_active",
+            "pedido_not_borrador",
+        ):
+            with self.subTest(reason=reason):
+                intent = self._intent(status="rejected", reason=reason)
+                mapped = build_customer_responses(
+                    MagicMock(), MagicMock(), [intent]
+                )[0]
+                self.assertEqual(mapped.status, "rejected")
+                self.assertEqual(mapped.intent, "set_fecha_hora_entrega")
+                self.assertNotIn(reason, mapped.message)
+                self.assertNotIn("15/08/2026", mapped.message)
+                self.assertNotIn("19:30", mapped.message)
+                self.assertNotIn("Buenos Aires", mapped.message)
+
+    def test_failed_renders_generic_message(self) -> None:
+        intent = self._intent(status="failed")
+        mapped = build_customer_responses(MagicMock(), MagicMock(), [intent])[0]
+        self.assertEqual(mapped.status, "failed")
+        self.assertIn("técnico", mapped.message.lower())
+        self.assertNotIn("15/08/2026 19:30", mapped.message)
+
+    def test_outbox_staging_uses_same_message(self) -> None:
+        intent = self._intent(
+            status="executed",
+            accepted_format="dd/mm/yyyy_hh:mm",
+        )
+        db = MagicMock()
+        session = MagicMock()
+        expected = build_customer_responses(db, session, [intent])[0]
+        outbox_repo = MagicMock()
+        staged_row = MagicMock()
+        staged_row.id = 300
+        outbox_repo.stage.return_value = staged_row
+
+        result = stage_outbound_rows(
+            db,
+            session,
+            proveedor="twilio",
+            recepcion_mensaje_proveedor_id=1,
+            destinatario_e164="+5491112345678",
+            intents=[intent],
+            outbox_repo=outbox_repo,
+        )
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].customer_response, expected)
+        self.assertEqual(
+            outbox_repo.stage.call_args.kwargs["cuerpo"],
+            expected.message,
+        )
+        self.assertNotIn("15/08/2026 19:30", expected.message)
+        self.assertNotIn("dd/mm/yyyy_hh:mm", expected.message)
 
 
 if __name__ == "__main__":

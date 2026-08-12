@@ -31,7 +31,9 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session as DatabaseSession
 
@@ -661,10 +663,122 @@ def process_initial_set_direccion_entrega(
     )
 
 
+_DELIVERY_SCHEDULE_TIMEZONE = ZoneInfo("America/Argentina/Buenos_Aires")
+_DELIVERY_SCHEDULE_FORMATS = (
+    (
+        r"\d{2}/\d{2}/\d{4} \d{2}:\d{2}",
+        "%d/%m/%Y %H:%M",
+        "dd/mm/yyyy_hh:mm",
+    ),
+    (
+        r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}",
+        "%Y-%m-%d %H:%M",
+        "yyyy-mm-dd_hh:mm",
+    ),
+)
+
+
+def _parse_fecha_hora_entrega(source_text: str) -> tuple[datetime, str] | None:
+    stripped = source_text.strip()
+    for pattern, format_value, accepted_format in _DELIVERY_SCHEDULE_FORMATS:
+        if re.fullmatch(pattern, stripped) is None:
+            continue
+        try:
+            parsed_datetime = datetime.strptime(
+                f"{stripped}+0000",
+                f"{format_value}%z",
+            ).replace(tzinfo=_DELIVERY_SCHEDULE_TIMEZONE)
+        except ValueError:
+            continue
+        return parsed_datetime, accepted_format
+    return None
+
+
+def _is_future_fecha_hora_entrega(
+    parsed_datetime: datetime,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    reference_datetime = (
+        now if now is not None else datetime.now(_DELIVERY_SCHEDULE_TIMEZONE)
+    )
+    return parsed_datetime > reference_datetime
+
+
+def process_initial_set_fecha_hora_entrega(
+    db: DatabaseSession,
+    session: ConversationSession,
+    source_text: str,
+) -> ProcessedIntent:
+    if session.estado_session != EstadoSession.ACTIVA:
+        return _rejected(
+            "set_fecha_hora_entrega",
+            source_text,
+            "session_not_active",
+            "draft_order_closure",
+            "set_fecha_hora_entrega",
+        )
+    pedido = _load_session_pedido(db, session)
+    if pedido is None:
+        return _rejected(
+            "set_fecha_hora_entrega",
+            source_text,
+            "no_draft",
+            "draft_order_closure",
+            "set_fecha_hora_entrega",
+        )
+    if int(pedido.id_session) != int(session.id):
+        return _rejected(
+            "set_fecha_hora_entrega",
+            source_text,
+            "session_mismatch",
+            "draft_order_closure",
+            "set_fecha_hora_entrega",
+        )
+    if pedido.estado_pedido != EstadoPedido.BORRADOR:
+        return _rejected(
+            "set_fecha_hora_entrega",
+            source_text,
+            "pedido_not_borrador",
+            "draft_order_closure",
+            "set_fecha_hora_entrega",
+        )
+
+    parsed = _parse_fecha_hora_entrega(source_text)
+    if parsed is None:
+        return _rejected(
+            "set_fecha_hora_entrega",
+            source_text,
+            "invalid_format",
+            "draft_order_closure",
+            "set_fecha_hora_entrega",
+        )
+    parsed_datetime, accepted_format = parsed
+    if not _is_future_fecha_hora_entrega(parsed_datetime):
+        return _rejected(
+            "set_fecha_hora_entrega",
+            source_text,
+            "past_datetime",
+            "draft_order_closure",
+            "set_fecha_hora_entrega",
+        )
+
+    pedido.datetime_entrega_programada = parsed_datetime
+    return ProcessedIntent(
+        intent="set_fecha_hora_entrega",
+        source_text=source_text,
+        status="executed",
+        recognizer="draft_order_closure",
+        handler="set_fecha_hora_entrega",
+        resolved_data={"accepted_format": accepted_format},
+    )
+
+
 __all__ = [
     "process_initial_confirmar_pedido",
     "process_initial_consultar_resumen_pedido",
     "process_initial_set_direccion_entrega",
+    "process_initial_set_fecha_hora_entrega",
     "process_initial_set_metodo_de_entrega",
     "process_initial_set_metodo_de_pago",
     "process_initial_set_observacion_pedido",
