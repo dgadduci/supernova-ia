@@ -371,10 +371,11 @@ class DraftOrderClosureBoundariesTest(unittest.TestCase):
         self.assertEqual(
             response_module.__all__,
             [
-                "build_consultar_resumen_pedido_response",
-                "build_set_metodo_de_pago_response",
-                "build_set_metodo_de_entrega_response",
                 "build_confirmar_pedido_response",
+                "build_consultar_resumen_pedido_response",
+                "build_set_metodo_de_entrega_response",
+                "build_set_metodo_de_pago_response",
+                "build_set_observacion_pedido_response",
             ],
         )
 
@@ -382,10 +383,11 @@ class DraftOrderClosureBoundariesTest(unittest.TestCase):
         self.assertEqual(
             closure_module.__all__,
             [
-                "process_initial_consultar_resumen_pedido",
-                "process_initial_set_metodo_de_pago",
-                "process_initial_set_metodo_de_entrega",
                 "process_initial_confirmar_pedido",
+                "process_initial_consultar_resumen_pedido",
+                "process_initial_set_metodo_de_entrega",
+                "process_initial_set_metodo_de_pago",
+                "process_initial_set_observacion_pedido",
             ],
         )
 

@@ -1,16 +1,20 @@
 """Guided draft-order closure orchestrators.
 
-The four `consultar_resumen_pedido`, `set_metodo_de_entrega`,
-`set_metodo_de_pago`, and `confirmar_pedido` intents all operate exclusively
-against the conversation session's associated `borrador` pedido. Each
-orchestrator returns a typed `ProcessedIntent` whose `status` is one of:
+The `consultar_resumen_pedido`, `set_metodo_de_entrega`,
+`set_metodo_de_pago`, `set_observacion_pedido`, and `confirmar_pedido`
+intents all operate exclusively against the conversation session's
+associated `borrador` pedido. Each orchestrator returns a typed
+`ProcessedIntent` whose `status` is one of:
 
 - `executed` — a permitted mutation succeeded (or, for summary, a complete
   read was produced). For `confirmar_pedido` this is the single
-  `borrador → ingresado` transition.
+  `borrador → ingresado` transition. For `set_observacion_pedido` this is
+  the single replacement of `pedidos.observaciones` with the normalized
+  in-range text.
 - `rejected` — a valid business outcome that mutates nothing: missing or
   non-borrador pedido, empty pedido, missing required choice, ambiguous,
-  inactive, or commerce-foreign choice, already-confirmed pedido, etc.
+  inactive, or commerce-foreign choice, already-confirmed pedido,
+  out-of-range observation text, etc.
 - `failed` — reserved for technical exceptions. These propagate to the
   existing transactional owner (`process_incoming_message_transactional`
   or `ProviderInboundMessageCoordinator.process_lease`), which performs
@@ -30,6 +34,7 @@ from sqlalchemy.orm import Session as DatabaseSession
 
 from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.models import EstadoPedido, MediosPago, MetodosEntrega, Pedido
+from backend.models.session import EstadoSession
 from backend.models.session import Session as ConversationSession
 from backend.repositories.medios_pago_repository import MediosPagoRepository
 from backend.repositories.metodo_entrega_repository import MetodoEntregaRepository
@@ -423,9 +428,123 @@ def process_initial_confirmar_pedido(
     )
 
 
+_OBSERVATION_MIN_LENGTH = 1
+_OBSERVATION_MAX_LENGTH = 500
+
+
+def _normalize_observacion(text: str) -> str:
+    """Normalize a free-text observation for `set_observacion_pedido`.
+
+    The function applies Unicode NFKC normalization to fold compatibility
+    forms (full-width spaces, ligatures, etc.), then strips leading and
+    trailing whitespace (Python's built-in ``str.strip()`` removes every
+    code point classified as whitespace by ``unicodedata.category``),
+    then collapses any internal run of whitespace into a single ASCII
+    space using a Unicode-aware regex.
+
+    The function never truncates, never strips courtesies, never
+    lowercases, never reclassifies, and never alters the codepoints of
+    non-whitespace characters. The returned string's length is measured
+    in code points.
+    """
+    normalized = unicodedata.normalize("NFKC", text)
+    stripped = normalized.strip()
+    return re.sub(r"\s+", " ", stripped, flags=re.UNICODE)
+
+
+def process_initial_set_observacion_pedido(
+    db: DatabaseSession,
+    session: ConversationSession,
+    source_text: str,
+) -> ProcessedIntent:
+    """Replace the borrador pedido's general observation with the normalized text.
+
+    The orchestrator uses exclusively `session.id_pedido` as the target
+    authority. It validates `Pedido.id_session == session.id` and
+    `pedido.estado_pedido == BORRADOR` before staging any write. The
+    text is normalized (NFKC + strip + Unicode whitespace collapse) and
+    accepted only when its length is in the closed interval
+    `[1, 500]` code points. A valid value replaces the prior
+    `pedidos.observaciones` value (which may be `NULL` or a previous
+    accepted text). An empty, whitespace-only, or too-long value is a
+    non-mutating rejection that preserves the prior value.
+
+    The orchestrator never reclassifies, never invokes the LLM, never
+    consults the product recognizer, never reads or writes
+    `PedidoProducto.observaciones`, never widens or modifies any
+    pending candidate set, and never takes transaction ownership. The
+    `CustomerResponse` text never carries the raw or normalized
+    observation text; the `resolved_data` carries only a stable reason
+    code on rejection and a non-revealing `accepted_length` on success.
+    """
+    if session.estado_session != EstadoSession.ACTIVA:
+        return _rejected(
+            "set_observacion_pedido",
+            source_text,
+            "session_not_active",
+            "draft_order_closure",
+            "set_observacion_pedido",
+        )
+    pedido = _load_session_pedido(db, session)
+    if pedido is None:
+        return _rejected(
+            "set_observacion_pedido",
+            source_text,
+            "no_draft",
+            "draft_order_closure",
+            "set_observacion_pedido",
+        )
+    if int(pedido.id_session) != int(session.id):
+        return _rejected(
+            "set_observacion_pedido",
+            source_text,
+            "session_mismatch",
+            "draft_order_closure",
+            "set_observacion_pedido",
+        )
+    if pedido.estado_pedido != EstadoPedido.BORRADOR:
+        return _rejected(
+            "set_observacion_pedido",
+            source_text,
+            "pedido_not_borrador",
+            "draft_order_closure",
+            "set_observacion_pedido",
+        )
+
+    normalized = _normalize_observacion(source_text)
+    length = len(normalized)
+    if length < _OBSERVATION_MIN_LENGTH:
+        return _rejected(
+            "set_observacion_pedido",
+            source_text,
+            "text_empty",
+            "draft_order_closure",
+            "set_observacion_pedido",
+        )
+    if length > _OBSERVATION_MAX_LENGTH:
+        return _rejected(
+            "set_observacion_pedido",
+            source_text,
+            "text_too_long",
+            "draft_order_closure",
+            "set_observacion_pedido",
+        )
+
+    pedido.observaciones = normalized
+    return ProcessedIntent(
+        intent="set_observacion_pedido",
+        source_text=source_text,
+        status="executed",
+        recognizer="draft_order_closure",
+        handler="set_observacion_pedido",
+        resolved_data={"accepted_length": length},
+    )
+
+
 __all__ = [
-    "process_initial_consultar_resumen_pedido",
-    "process_initial_set_metodo_de_pago",
-    "process_initial_set_metodo_de_entrega",
     "process_initial_confirmar_pedido",
+    "process_initial_consultar_resumen_pedido",
+    "process_initial_set_metodo_de_entrega",
+    "process_initial_set_metodo_de_pago",
+    "process_initial_set_observacion_pedido",
 ]

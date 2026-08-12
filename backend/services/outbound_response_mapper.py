@@ -50,6 +50,7 @@ from backend.intents.responses.draft_order_closure import (
     build_consultar_resumen_pedido_response,
     build_set_metodo_de_entrega_response,
     build_set_metodo_de_pago_response,
+    build_set_observacion_pedido_response,
 )
 from backend.intents.responses.informational_commerce_queries import (
     build_informational_commerce_response,
@@ -160,6 +161,10 @@ def build_customer_responses(
         elif intent.intent == "vaciar_pedido":
             responses.append(
                 build_vaciar_pedido_response(db, session, intent)
+            )
+        elif intent.intent == "set_observacion_pedido":
+            responses.append(
+                build_set_observacion_pedido_response(db, session, intent)
             )
         elif is_informational_commerce_intent(intent.intent):
             responses.append(
