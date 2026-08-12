@@ -649,7 +649,125 @@ class SecondPromptCorrectionStructureTest(unittest.TestCase):
     def test_template_version_bumped_for_second_correction(self):
         from backend.diagnostics import PROMPT_TEMPLATE_VERSION
 
-        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.2.0")
+        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.3.0")
+
+
+class BoundaryCalibrationStructureTest(unittest.TestCase):
+    """Structural/contract checks for the boundary-calibration prompt.
+
+    These tests do not simulate LLM results. They verify that the
+    rendered prompt documents the new numbered rule 8 (boundary between
+    `set_metodo_de_entrega` and `set_observacion_pedido`) and the four
+    contrastive `Mensaje:` / `Salida:` examples pinned by the change.
+    """
+
+    def _build_prompt(self, message: str = "dummy current message") -> str:
+        classifier = IntentClassifier(
+            query_llm=_StubQueryLlm({"intents": [], "mensaje": ""})
+        )
+        return classifier._build_prompt(message)
+
+    def test_rule_8_is_present(self):
+        prompt = self._build_prompt()
+        self.assertIn("8.", prompt)
+
+    def test_rule_8_documents_modality_boundary(self):
+        prompt = self._build_prompt()
+        lowered = prompt.casefold()
+        self.assertIn("set_metodo_de_entrega", lowered)
+        self.assertIn("set_observacion_pedido", lowered)
+        self.assertIn("set_direccion_entrega", lowered)
+        self.assertIn("modalidad", lowered)
+        self.assertIn("operativas", lowered)
+        self.assertIn("direccionales", lowered)
+
+    def test_rule_8_gives_priority_to_set_direccion_entrega(self):
+        prompt = self._build_prompt()
+        lowered = prompt.casefold()
+        self.assertIn("set_direccion_entrega", lowered)
+        self.assertIn("domicilio", lowered)
+        self.assertIn("dirección", lowered)
+        self.assertIn("siempre", lowered)
+        self.assertIn("nunca", lowered)
+
+    def test_rule_8_scopes_observation_to_non_directional_operations(self):
+        prompt = self._build_prompt()
+        lowered = prompt.casefold()
+        self.assertIn("set_observacion_pedido", lowered)
+        for term in ("portón", "timbre", "mascotas", "cuidado", "edificio"):
+            with self.subTest(term=term):
+                self.assertIn(term, lowered)
+
+    def test_rule_8_keeps_substring_literal_contract(self):
+        prompt = self._build_prompt()
+        lowered = prompt.casefold()
+        self.assertIn("substring literal", lowered)
+        self.assertIn("no reutilices", lowered)
+        self.assertIn("no inventes", lowered)
+        self.assertIn("una única acción", lowered)
+        self.assertIn("exactamente un intent", lowered)
+
+    def test_rule_8_orders_observation_example_before_modality_example(self):
+        prompt = self._build_prompt()
+        observation_pos = prompt.find("La entrega es por el portón lateral")
+        modality_pos = prompt.find("Quiero envío a domicilio")
+        self.assertGreater(observation_pos, -1)
+        self.assertGreater(modality_pos, -1)
+        self.assertLess(observation_pos, modality_pos)
+
+    def test_boundary_examples_route_observation_messages_to_set_observacion_pedido(self):
+        prompt = self._build_prompt()
+        cases = [
+            "La entrega es por el portón lateral",
+            "Cuidado con el perro",
+        ]
+        for message in cases:
+            with self.subTest(message=message):
+                message_pos = prompt.find(message)
+                self.assertGreater(message_pos, -1)
+                salta_pos = prompt.find("Salida:", message_pos)
+                self.assertGreater(salta_pos, message_pos)
+                json_pos = prompt.find("```json", salta_pos)
+                self.assertGreater(json_pos, salta_pos)
+                end_pos = prompt.find("```", json_pos + len("```json"))
+                self.assertGreater(end_pos, json_pos)
+                block = prompt[json_pos:end_pos]
+                self.assertIn("set_observacion_pedido", block)
+                self.assertNotIn("set_metodo_de_entrega", block)
+
+    def test_boundary_examples_route_modality_messages_to_set_metodo_de_entrega(self):
+        prompt = self._build_prompt()
+        cases = [
+            "Quiero envío a domicilio",
+            "Lo retiro por el local",
+        ]
+        for message in cases:
+            with self.subTest(message=message):
+                message_pos = prompt.find(message)
+                self.assertGreater(message_pos, -1)
+                salta_pos = prompt.find("Salida:", message_pos)
+                self.assertGreater(salta_pos, message_pos)
+                json_pos = prompt.find("```json", salta_pos)
+                self.assertGreater(json_pos, salta_pos)
+                end_pos = prompt.find("```", json_pos + len("```json"))
+                self.assertGreater(end_pos, json_pos)
+                block = prompt[json_pos:end_pos]
+                self.assertIn("set_metodo_de_entrega", block)
+                self.assertNotIn("set_observacion_pedido", block)
+
+    def test_boundary_messages_are_substring_literals(self):
+        prompt = self._build_prompt()
+        for message in (
+            "La entrega es por el portón lateral",
+            "Cuidado con el perro",
+            "Quiero envío a domicilio",
+            "Lo retiro por el local",
+        ):
+            with self.subTest(message=message):
+                self.assertIn(message, prompt)
+
+    def test_template_version_bumped_to_v1_3_0(self):
+        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.3.0")
 
 
 if __name__ == "__main__":
