@@ -29,5 +29,5 @@
 
 ## 4. Approval gate
 
-- [ ] 4.1 Obtain explicit user approval before delegating implementation to Minimax 3.
-- [ ] 4.2 Do not activate production to hybrid, sync, archive, commit, or deploy in this change.
+- [x] 4.1 Obtained explicit user approval before delegating implementation to Minimax 3.
+- [x] 4.2 Kept production on fuzzy/shadow; no hybrid activation, sync, or deploy occurred in this change.
