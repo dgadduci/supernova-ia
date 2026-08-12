@@ -13,8 +13,8 @@ from typing import cast
 
 from sqlalchemy.orm import Session as DatabaseSession
 
+from backend.config.settings import load_settings
 from backend.models import Session as ConversationSession
-from backend.recognizers.fuzzy_product_recognizer import FuzzyProductRecognizer
 from backend.recognizers.product_recognizer import (
     PALABRAS_CANTIDAD,
     _normalizar_texto,
@@ -24,8 +24,9 @@ from backend.recognizers.product_recognizer_contract import (
     RecognizeContext,
 )
 from backend.services.pedido_producto_service import PedidoProductoService
+from backend.services.product_recognition_factory import get_product_recognizer
 
-_product_recognizer: ProductRecognizerProtocol = FuzzyProductRecognizer()
+_product_recognizer: ProductRecognizerProtocol = get_product_recognizer(load_settings())
 
 
 def detectar_productos(
@@ -170,7 +171,17 @@ def recognize_quitar_producto(
 
     catalog = _build_order_line_catalog(pedido_productos)
 
-    detected = cast(dict, detectar_productos(message, catalog))
+    detected = cast(
+        dict,
+        detectar_productos(
+            message,
+            catalog,
+            intent_metadata={
+                "catalog_scope": "commerce_dynamic_database",
+                "commerce_id": session.id_comercio,
+            },
+        ),
+    )
     encontrados = _attach_pedido_producto_id(detected.get("encontrados") or [], catalog)
     encontrados_posibles = _attach_pedido_producto_id_to_posibles(
         detected.get("encontrados_posibles") or [],

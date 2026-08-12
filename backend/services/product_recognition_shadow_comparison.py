@@ -34,7 +34,7 @@ Agreement = Literal[
 ]
 
 
-HybridDecision = Literal["unique", "ambiguous", "unknown"]
+HybridDecision = Literal["unique", "ambiguous", "unknown", "not_evaluated"]
 
 
 @dataclass(frozen=True)
@@ -78,6 +78,12 @@ class ProductRecognitionShadowComparison:
       when both pipelines succeeded). The recorder applies the
       ``"unknown"`` fallback on its own; the comparison itself never
       carries ``"unknown"``.
+    - ``fallback``: explicit ``True`` when the recognizer returned
+      the fuzzy result instead of the hybrid (or shadow) decision
+      for an approved technical reason. ``False`` when the hybrid
+      (or shadow) decision was authoritative. Semantic hybrid
+      outcomes (``unknown`` / ``ambiguous`` / filtered-empty
+      vector) never set this flag.
 
     The dataclass is a plain ``frozen=True`` :func:`dataclasses.dataclass`;
     it is NOT a Pydantic model, a SQLAlchemy ORM model, or a class
@@ -98,6 +104,7 @@ class ProductRecognitionShadowComparison:
     vector_latency_ms: float
     vector_available: bool
     failure_category: str | None
+    fallback: bool = False
 
 
 @dataclass(frozen=True)

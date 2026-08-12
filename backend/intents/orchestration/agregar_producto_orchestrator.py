@@ -41,7 +41,14 @@ def process_initial_agregar_producto(
     source_text: str,
 ) -> ProcessedIntent:
     catalog = ProductoQueryService(db).list_recognizer_catalog(session.id_comercio)
-    recognized = detectar_productos(source_text, catalog)
+    recognized = detectar_productos(
+        source_text,
+        catalog,
+        intent_metadata={
+            "catalog_scope": "commerce_dynamic_database",
+            "commerce_id": session.id_comercio,
+        },
+    )
     normalized = resolve_product_intent(cast(dict, recognized))
     processed_intent = process_agregar_producto(source_text, normalized)
 

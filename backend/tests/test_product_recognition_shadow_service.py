@@ -183,9 +183,17 @@ class FuzzyModeIsNoOpTest(unittest.TestCase):
         """The ``fuzzy`` mode is a no-op for embedding and vector search.
 
         The boundary test asserts that the factory short-circuits in
-        ``fuzzy`` mode and returns the ``FuzzyProductRecognizer``
-        directly. The shadow service is never invoked.
+        ``fuzzy`` mode and returns a fuzzy-compatible recognizer
+        (subclass of ``FuzzyProductRecognizer`` so the ``isinstance``
+        contract keeps holding) without invoking the embedding client.
+        The Subphase 4.12B ``ObservedFuzzyProductRecognizer``
+        decorator subclasses ``FuzzyProductRecognizer`` to emit
+        per-request observability; the embedding client must still
+        be untouched in fuzzy mode.
         """
+        from backend.recognizers.fuzzy_product_recognizer import (
+            FuzzyProductRecognizer,
+        )
         from backend.services.product_recognition_factory import (
             get_product_recognizer,
         )
@@ -198,10 +206,7 @@ class FuzzyModeIsNoOpTest(unittest.TestCase):
             settings,
             embedding_client=embedding_client,
         )
-        self.assertEqual(
-            type(recognizer).__name__,
-            "FuzzyProductRecognizer",
-        )
+        self.assertIsInstance(recognizer, FuzzyProductRecognizer)
         self.assertEqual(embed_calls, [])
 
 
@@ -853,8 +858,8 @@ class ShadowServiceHasNoHiddenFailureCategoryTest(unittest.TestCase):
             source,
         )
 
-    def test_comparison_exposes_twelve_fields(self):
-        """The dataclass exposes exactly the twelve documented fields
+    def test_comparison_exposes_thirteen_fields(self):
+        """The dataclass exposes exactly the thirteen documented fields
         and does not carry a hidden ``_failure_category`` attribute
         on constructed instances.
         """
@@ -875,6 +880,7 @@ class ShadowServiceHasNoHiddenFailureCategoryTest(unittest.TestCase):
             "vector_latency_ms",
             "vector_available",
             "failure_category",
+            "fallback",
         }
         actual_fields = {f.name for f in ProductRecognitionShadowComparison.__dataclass_fields__.values()}
         self.assertEqual(actual_fields, expected_fields)

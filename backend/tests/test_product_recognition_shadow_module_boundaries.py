@@ -183,7 +183,7 @@ class ComparisonDataclassBoundaryTest(unittest.TestCase):
         with self.assertRaises((Exception,)):
             comparison.fuzzy_best_id = 2  # type: ignore[misc]
 
-    def test_dataclass_exposes_only_twelve_documented_fields(self):
+    def test_dataclass_exposes_only_thirteen_documented_fields(self):
         from backend.services.product_recognition_shadow_comparison import (
             ProductRecognitionShadowComparison,
         )
@@ -202,6 +202,7 @@ class ComparisonDataclassBoundaryTest(unittest.TestCase):
             "vector_latency_ms",
             "vector_available",
             "failure_category",
+            "fallback",
         }
         self.assertEqual(names, expected)
 

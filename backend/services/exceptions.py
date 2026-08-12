@@ -361,6 +361,34 @@ class HybridAuthoritativePolicyError(Exception):
     """
 
 
+class HybridAuthoritativeCommerceIdMissing(RuntimeError):
+    """Raised by the hybrid authoritative recognizer when neither the
+    ``intent_metadata`` context nor the factory-injected
+    ``commerce_id_resolver`` can produce the ``id_comercio`` the
+    vector-search pipeline needs.
+
+    The OpenSpec contract for Subphase 4.12B requires every
+    production entry point (``agregar_producto``,
+    ``quitar_producto``, ``modificar_producto``, pending product
+    selection, and pending modification destination) to thread the
+    ``commerce_id`` through ``RecognizeContext.commerce_id``. When
+    that contract is honoured the resolver is irrelevant and this
+    exception is unreachable.
+
+    The exception is the explicit boundary for the integration
+    contract: a silent fallback to fuzzy would mask a configuration
+    bug, and the OpenSpec only authorises fallback for technical
+    failures (embedding/vector/repository/malformed/unexpected).
+    Surfacing the missing-commerce-id condition immediately is the
+    minimum safe behaviour compatible with the documented contract.
+
+    The exception never carries the customer text, the catalog
+    payload, the embedding prompt, the database credentials, a
+    Python stack trace, or any internal infrastructure exception
+    text.
+    """
+
+
 class InvalidCanalWhatsappDestination(ValueError):
     """Raised when a destination number is not a canonical E.164 value.
 

@@ -87,7 +87,7 @@ def dispatch_pending_context(
     if session.context_type == ContextType.PRODUCT_SELECTION.value:
         result = ProductSelectionContextService(
             db, sink=diagnostic_sink
-        ).resolve(message, active)
+        ).resolve(message, active, commerce_id=session.id_comercio)
         set_active(session, result)
         post_state = load_pending_state(session)
         _emit_pending_snapshot(diagnostic_sink, session, post_state, "after_resolver")

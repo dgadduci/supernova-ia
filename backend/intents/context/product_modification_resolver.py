@@ -14,6 +14,7 @@ from typing import cast
 
 from sqlalchemy.orm import Session as DatabaseSession
 
+from backend.config.settings import load_settings
 from backend.diagnostics import (
     NoopDiagnosticSink,
     ResolverCallCompleted,
@@ -26,14 +27,14 @@ from backend.intents.recognizers.quitar_producto_recognizer import (
 from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.intents.schemas.requirement_state import RequirementState
 from backend.models.session import Session as ConversationSession
-from backend.recognizers.fuzzy_product_recognizer import FuzzyProductRecognizer
 from backend.recognizers.product_recognizer_contract import (
     ProductRecognizerProtocol,
     RecognizeContext,
 )
+from backend.services.product_recognition_factory import get_product_recognizer
 from backend.services.producto_query_service import ProductoQueryService
 
-_product_recognizer: ProductRecognizerProtocol = FuzzyProductRecognizer()
+_product_recognizer: ProductRecognizerProtocol = get_product_recognizer(load_settings())
 
 
 def detectar_productos(
@@ -226,7 +227,20 @@ def _resolve_destination_selection(
     if not catalog:
         return active_intent.model_copy(update={"status": "rejected"})
 
-    recognized = cast(dict, detectar_productos(message, catalog))
+    modification_metadata: RecognizeContext = {
+        "catalog_scope": "commerce_dynamic_database",
+    }
+    session_commerce_id = getattr(session, "id_comercio", None)
+    if session_commerce_id is not None:
+        modification_metadata["commerce_id"] = session_commerce_id
+    recognized = cast(
+        dict,
+        detectar_productos(
+            message,
+            catalog,
+            intent_metadata=modification_metadata,
+        ),
+    )
     recognized_dest_ids = _flatten_producto_presentacion_ids(recognized)
     if not recognized_dest_ids:
         return active_intent

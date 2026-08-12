@@ -1,5 +1,6 @@
 from typing import Literal
 
+from backend.config.settings import load_settings
 from backend.diagnostics import (
     NoopDiagnosticSink,
     ResolverCallCompleted,
@@ -8,7 +9,6 @@ from backend.diagnostics import (
 from backend.diagnostics.sink import DiagnosticSink
 from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.intents.schemas.requirement_state import RequirementState
-from backend.recognizers.fuzzy_product_recognizer import FuzzyProductRecognizer
 from backend.recognizers.product_recognizer import (
     PRESENTACION_ALIASES,
     STOPWORDS,
@@ -20,8 +20,9 @@ from backend.recognizers.product_recognizer_contract import (
     ProductRecognizerProtocol,
     RecognizeContext,
 )
+from backend.services.product_recognition_factory import get_product_recognizer
 
-_product_recognizer: ProductRecognizerProtocol = FuzzyProductRecognizer()
+_product_recognizer: ProductRecognizerProtocol = get_product_recognizer(load_settings())
 
 
 def detectar_productos(
@@ -199,6 +200,7 @@ def resolve_product_selection(
     *,
     sink: DiagnosticSink | None = None,
     resolver_purpose: str = "product_selection_refinement",
+    commerce_id: int | None = None,
 ) -> ProcessedIntent:
     diagnostic_sink: DiagnosticSink = sink if sink is not None else NoopDiagnosticSink()
     started = ResolverCallStarted(
@@ -224,10 +226,15 @@ def resolve_product_selection(
         if active_intent.status != "pending_resolution" or not active_intent.candidate_ids:
             return result
 
+        intent_metadata: RecognizeContext = {
+            "catalog_scope": "pending_product_selection_restricted",
+        }
+        if commerce_id is not None:
+            intent_metadata["commerce_id"] = commerce_id
         resultado = detectar_productos(
             message,
             productos_presentaciones,
-            intent_metadata={"catalog_scope": "pending_product_selection_restricted"},
+            intent_metadata=intent_metadata,
         )
 
         if len(resultado["encontrados"]) == 1:

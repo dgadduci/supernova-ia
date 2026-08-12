@@ -779,7 +779,6 @@ class ResolveProductSelectionBoundariesTest(unittest.TestCase):
             "from twilio",
             "from backend.repositories",
             "from backend.routers",
-            "from backend.services",
             "from backend.models",
             "db.commit",
             "db.rollback",
@@ -792,6 +791,17 @@ class ResolveProductSelectionBoundariesTest(unittest.TestCase):
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, source)
+        # The Subphase 4.12B binding allows only the recognizer factory
+        # from backend.services; every other service import remains
+        # forbidden so the resolver stays a thin collaboration layer.
+        allowed_services = {"backend.services.product_recognition_factory"}
+        for line in source.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("from backend.services"):
+                continue
+            import_path = stripped[len("from ") :].split(" import ", 1)[0].strip()
+            with self.subTest(import_path=import_path):
+                self.assertIn(import_path, allowed_services)
 
     def test_public_surface_is_limited(self):
         self.assertEqual(

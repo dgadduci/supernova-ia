@@ -23,6 +23,7 @@ class ProductSelectionContextService:
         active_intent: ProcessedIntent,
         *,
         resolver_purpose: str = "pending_context_resolution",
+        commerce_id: int | None = None,
     ) -> ProcessedIntent:
         if active_intent.status != "pending_resolution" or not active_intent.candidate_ids:
             return active_intent
@@ -35,6 +36,7 @@ class ProductSelectionContextService:
             catalog,
             sink=self._sink,
             resolver_purpose=resolver_purpose,
+            commerce_id=commerce_id,
         )
         if fragment_result.status == "ready":
             return fragment_result

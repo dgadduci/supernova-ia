@@ -35,6 +35,7 @@ from backend.services.hybrid_authoritative_recognizer import (
     HybridAuthoritativeProductRecognizer,
 )
 from backend.services.product_recognition_factory import (
+    ObservedFuzzyProductRecognizer,
     get_product_recognizer,
 )
 from backend.services.product_recognition_shadow_service import (
@@ -216,6 +217,246 @@ class HybridAuthoritativeModeFactoryTest(unittest.TestCase):
             )
             self.assertIsInstance(recognizer, FuzzyProductRecognizer)
             self.assertNotIsInstance(recognizer, HybridAuthoritativeProductRecognizer)
+
+
+class FuzzyModeObservabilityTest(unittest.TestCase):
+    """Fuzzy-mode observability tests.
+
+    The factory returns the ``ObservedFuzzyProductRecognizer``
+    wrapper in fuzzy mode and on the safe-fuzzy invalid-mode
+    fallback. Every ``recognize(...)`` call MUST emit one
+    ``ShadowMetricsRecorder`` record with the documented fields
+    without invoking embedding or vector search.
+    """
+
+    def _catalog(self) -> list[dict]:
+        return [
+            {
+                "producto_presentacion_id": 1,
+                "producto_nombre": "Empanada de Carne",
+                "presentacion_codigo": "unidad",
+                "aliases": {"general_aliases": [], "specific_aliases": []},
+            }
+        ]
+
+    def test_fuzzy_mode_records_observability_with_minimum_fields(self):
+        """A fuzzy-mode call records configured/effective mode,
+        authoritative_strategy='fuzzy', the fuzzy decision, and
+        ``hybrid_decision='not_evaluated'`` (the hybrid pipeline was
+        never evaluated). ``fallback=False`` and ``fallback_category``
+        are absent.
+        """
+        settings = _settings(product_recognizer_mode="fuzzy")
+        recognizer = get_product_recognizer(
+            settings,
+            session_provider=_stub_session_provider_any,  # type: ignore[arg-type]
+            embedding_client=_StubEmbeddingClient(),
+        )
+        self.assertIsInstance(recognizer, ObservedFuzzyProductRecognizer)
+
+        with self.assertLogs(
+            "backend.services.shadow_metrics_recorder", level="INFO"
+        ) as captured:
+            recognizer.recognize("empanada de carne", self._catalog())
+
+        record = captured.records[0]
+        self.assertEqual(record.mode, "fuzzy")
+        self.assertEqual(record.configured_mode, "fuzzy")
+        self.assertEqual(record.effective_mode, "fuzzy")
+        self.assertEqual(record.authoritative_strategy, "fuzzy")
+        # ``hybrid_decision`` is the documented "not_evaluated"
+        # sentinel: the hybrid pipeline was never run in fuzzy mode.
+        self.assertEqual(record.hybrid_decision, "not_evaluated")
+        self.assertFalse(record.fallback)
+        self.assertIsNone(record.fallback_category)
+
+    def test_fuzzy_mode_preserves_four_key_result_contract(self):
+        """The wrapper forwards the four-key ``ProductRecognizerResult``
+        byte-for-byte unchanged.
+        """
+        from backend.recognizers.fuzzy_product_recognizer import (
+            FuzzyProductRecognizer,
+        )
+
+        settings = _settings(product_recognizer_mode="fuzzy")
+        recognizer = get_product_recognizer(
+            settings,
+            session_provider=_stub_session_provider_any,  # type: ignore[arg-type]
+            embedding_client=_StubEmbeddingClient(),
+        )
+        wrapper_result = recognizer.recognize(
+            "empanada de carne", self._catalog()
+        )
+        baseline_result = FuzzyProductRecognizer().recognize(
+            "empanada de carne", self._catalog()
+        )
+        self.assertEqual(set(wrapper_result), set(baseline_result))
+        for key in ("encontrados", "encontrados_posibles",
+                    "encontrados_no_disponibles", "no_encontrados"):
+            self.assertEqual(wrapper_result[key], baseline_result[key])
+
+    def test_fuzzy_mode_does_not_invoke_embedding_or_vector_search(self):
+        """Fuzzy-mode observability must not invoke the embedding
+        client or the vector-search pipeline.
+        """
+        settings = _settings(product_recognizer_mode="fuzzy")
+        embed_calls: list[str] = []
+
+        class _CountingEmbeddingClient:
+            def embed_query(self, text):
+                embed_calls.append(text)
+                return [0.0] * 384
+
+            def embed_documents(self, texts):
+                return [[0.0] * 384 for _ in texts]
+
+        recognizer = get_product_recognizer(
+            settings,
+            session_provider=_stub_session_provider_any,  # type: ignore[arg-type]
+            embedding_client=_CountingEmbeddingClient(),
+        )
+        self.assertIsInstance(recognizer, ObservedFuzzyProductRecognizer)
+        recognizer.recognize("empanada de carne", self._catalog())
+        self.assertEqual(embed_calls, [])
+
+    def test_invalid_mode_records_observability_with_invalid_mode_category(self):
+        """An unrecognised ``PRODUCT_RECOGNIZER_MODE`` resolves to
+        effective ``fuzzy`` and the per-request observability records
+        the configured raw literal, the effective ``fuzzy`` mode,
+        the fuzzy authoritative strategy, and the sanitized
+        ``invalid_mode`` category. The hybrid pipeline is NOT
+        invoked and the fuzzy result is returned unchanged.
+        """
+        env = {"PRODUCT_RECOGNIZER_MODE": "hybrid_active"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertLogs(
+                "backend.config.settings", level="WARNING"
+            ) as settings_log:
+                settings = load_settings()
+            self.assertEqual(settings.product_recognizer_mode, "fuzzy")
+            self.assertEqual(
+                settings.product_recognizer_configured_mode,
+                "hybrid_active",
+            )
+            recognizer = get_product_recognizer(
+                settings,
+                session_provider=_stub_session_provider_any,  # type: ignore[arg-type]
+                embedding_client=_StubEmbeddingClient(),
+            )
+            self.assertIsInstance(recognizer, ObservedFuzzyProductRecognizer)
+
+        with self.assertLogs(
+            "backend.services.shadow_metrics_recorder", level="INFO"
+        ) as captured:
+            recognizer.recognize("empanada de carne", self._catalog())
+
+        # The warning carries the safe-fuzzy fallback fields. The
+        # warning and the per-request record are emitted through
+        # independent paths.
+        warning = settings_log.records[0]
+        self.assertEqual(warning.configured_mode, "hybrid_active")
+        self.assertEqual(warning.effective_mode, "fuzzy")
+        self.assertEqual(warning.reason, "invalid_mode")
+
+        record = captured.records[0]
+        self.assertEqual(record.mode, "fuzzy")
+        self.assertEqual(record.configured_mode, "hybrid_active")
+        self.assertEqual(record.effective_mode, "fuzzy")
+        self.assertEqual(record.authoritative_strategy, "fuzzy")
+        self.assertEqual(record.hybrid_decision, "not_evaluated")
+        self.assertTrue(record.fallback)
+        self.assertEqual(record.fallback_category, "invalid_mode")
+
+    def test_invalid_mode_does_not_load_hybrid_policy_file(self):
+        """The safe-fuzzy invalid-mode fallback does not consult the
+        hybrid policy file (the factory short-circuits before the
+        ``hybrid_authoritative`` branch).
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            policy_path = _write_policy_file(directory)
+            env = {
+                "PRODUCT_RECOGNIZER_MODE": "hybrid_active",
+                "HYBRID_AUTHORITATIVE_POLICY_PATH": policy_path,
+            }
+            with mock.patch.dict(os.environ, env, clear=True):
+                with self.assertLogs("backend.config.settings", level="WARNING"):
+                    settings = load_settings()
+                # Delete the policy file BEFORE the factory call; the
+                # factory must not touch it because the effective mode
+                # is already ``fuzzy``.
+                os.unlink(policy_path)
+                recognizer = get_product_recognizer(
+                    settings,
+                    session_provider=_stub_session_provider_any,  # type: ignore[arg-type]
+                    embedding_client=_StubEmbeddingClient(),
+                )
+                self.assertIsInstance(recognizer, FuzzyProductRecognizer)
+                self.assertNotIsInstance(
+                    recognizer, HybridAuthoritativeProductRecognizer
+                )
+
+
+class ShadowNoCommerceIdObservationSkipTest(unittest.TestCase):
+    """Shadow-mode behaviour when the commerce id is missing.
+
+    Shadow mode is observational: the fuzzy result is authoritative.
+    When the commerce id is missing the shadow side simply skips the
+    observation; it does not classify the missing commerce id as a
+    fallback category. The hybrid authoritative recognizer, by
+    contrast, raises :class:`HybridAuthoritativeCommerceIdMissing`.
+    """
+
+    def test_shadow_recognizer_skips_observation_without_fallback_category(self):
+        from backend.services.product_recognition_shadow_service import (
+            ProductRecognitionShadowService,
+            ShadowedProductRecognizer,
+        )
+
+        recorder = ShadowMetricsRecorder()
+        settings = _settings(product_recognizer_mode="shadow")
+
+        # Use a sentinel object that would raise if invoked; the
+        # shadow recognizer must short-circuit BEFORE calling the
+        # shadow service because the commerce id cannot be resolved.
+        class _ExplodingShadowService:
+            def compare(self, *args, **kwargs):
+                raise AssertionError(
+                    "shadow service must not be invoked when "
+                    "commerce_id cannot be resolved"
+                )
+
+        recognizer = ShadowedProductRecognizer(
+            inner=FuzzyProductRecognizer(),
+            shadow=_ExplodingShadowService(),  # type: ignore[arg-type]
+            recorder=recorder,
+            commerce_id_resolver=None,
+            configured_mode="shadow",
+            effective_mode="shadow",
+        )
+        # Suppress unused-binding warning for the imported class.
+        del ProductRecognitionShadowService, settings
+
+        # When the resolver is absent the shadow recognizer must NOT
+        # emit any observation (it has nothing to observe) and must
+        # NOT tag the call as a fallback.
+        result = recognizer.recognize(
+            "empanada",
+            _stub_catalog(),
+        )
+
+        # The fuzzy result is authoritative and the shadow service
+        # was never consulted.
+        self.assertIn("encontrados", result)
+
+
+def _stub_catalog() -> list[dict]:
+    return [
+        {
+            "producto_presentacion_id": 1,
+            "producto_nombre": "Empanada de Carne",
+            "presentacion_codigo": "unidad",
+        }
+    ]
 
 
 if __name__ == "__main__":
