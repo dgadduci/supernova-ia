@@ -21,6 +21,8 @@ verify:
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -254,21 +256,20 @@ class FuzzyModeObservabilityTest(unittest.TestCase):
         )
         self.assertIsInstance(recognizer, ObservedFuzzyProductRecognizer)
 
-        with self.assertLogs(
-            "backend.services.shadow_metrics_recorder", level="INFO"
-        ) as captured:
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
             recognizer.recognize("empanada de carne", self._catalog())
 
-        record = captured.records[0]
-        self.assertEqual(record.mode, "fuzzy")
-        self.assertEqual(record.configured_mode, "fuzzy")
-        self.assertEqual(record.effective_mode, "fuzzy")
-        self.assertEqual(record.authoritative_strategy, "fuzzy")
+        event = json.loads(stdout.getvalue().strip())
+        self.assertEqual(event["event"], "shadow_product_recognition")
+        self.assertEqual(event["component"], "product_recognition")
+        self.assertEqual(event["configured_mode"], "fuzzy")
+        self.assertEqual(event["effective_mode"], "fuzzy")
+        self.assertEqual(event["authoritative_strategy"], "fuzzy")
         # ``hybrid_decision`` is the documented "not_evaluated"
         # sentinel: the hybrid pipeline was never run in fuzzy mode.
-        self.assertEqual(record.hybrid_decision, "not_evaluated")
-        self.assertFalse(record.fallback)
-        self.assertIsNone(record.fallback_category)
+        self.assertEqual(event["hybrid_decision"], "not_evaluated")
+        self.assertFalse(event["fallback"])
+        self.assertNotIn("fallback_category", event)
 
     def test_fuzzy_mode_preserves_four_key_result_contract(self):
         """The wrapper forwards the four-key ``ProductRecognizerResult``
@@ -322,10 +323,11 @@ class FuzzyModeObservabilityTest(unittest.TestCase):
     def test_invalid_mode_records_observability_with_invalid_mode_category(self):
         """An unrecognised ``PRODUCT_RECOGNIZER_MODE`` resolves to
         effective ``fuzzy`` and the per-request observability records
-        the configured raw literal, the effective ``fuzzy`` mode,
-        the fuzzy authoritative strategy, and the sanitized
-        ``invalid_mode`` category. The hybrid pipeline is NOT
-        invoked and the fuzzy result is returned unchanged.
+        the configured raw literal as the sanitized ``invalid_mode``
+        token, the effective ``fuzzy`` mode, the fuzzy authoritative
+        strategy, and the sanitized ``invalid_mode`` category. The
+        hybrid pipeline is NOT invoked and the fuzzy result is
+        returned unchanged.
         """
         env = {"PRODUCT_RECOGNIZER_MODE": "hybrid_active"}
         with mock.patch.dict(os.environ, env, clear=True):
@@ -345,9 +347,7 @@ class FuzzyModeObservabilityTest(unittest.TestCase):
             )
             self.assertIsInstance(recognizer, ObservedFuzzyProductRecognizer)
 
-        with self.assertLogs(
-            "backend.services.shadow_metrics_recorder", level="INFO"
-        ) as captured:
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
             recognizer.recognize("empanada de carne", self._catalog())
 
         # The warning carries the safe-fuzzy fallback fields. The
@@ -358,14 +358,18 @@ class FuzzyModeObservabilityTest(unittest.TestCase):
         self.assertEqual(warning.effective_mode, "fuzzy")
         self.assertEqual(warning.reason, "invalid_mode")
 
-        record = captured.records[0]
-        self.assertEqual(record.mode, "fuzzy")
-        self.assertEqual(record.configured_mode, "hybrid_active")
-        self.assertEqual(record.effective_mode, "fuzzy")
-        self.assertEqual(record.authoritative_strategy, "fuzzy")
-        self.assertEqual(record.hybrid_decision, "not_evaluated")
-        self.assertTrue(record.fallback)
-        self.assertEqual(record.fallback_category, "invalid_mode")
+        event = json.loads(stdout.getvalue().strip())
+        self.assertEqual(event["event"], "shadow_product_recognition")
+        self.assertEqual(event["component"], "product_recognition")
+        # The recorder sanitizes the raw operator literal to the
+        # closed ``invalid_mode`` token so the closed-shape contract
+        # never reflects operator input verbatim.
+        self.assertEqual(event["configured_mode"], "invalid_mode")
+        self.assertEqual(event["effective_mode"], "fuzzy")
+        self.assertEqual(event["authoritative_strategy"], "fuzzy")
+        self.assertEqual(event["hybrid_decision"], "not_evaluated")
+        self.assertTrue(event["fallback"])
+        self.assertEqual(event["fallback_category"], "invalid_mode")
 
     def test_invalid_mode_does_not_load_hybrid_policy_file(self):
         """The safe-fuzzy invalid-mode fallback does not consult the

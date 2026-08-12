@@ -23,7 +23,9 @@ run without infrastructure.
 """
 from __future__ import annotations
 
+import contextlib
 import importlib
+import io
 import json
 import logging
 import os
@@ -944,12 +946,18 @@ class TelemetrySurfaceTest(unittest.TestCase):
             recorder=ShadowMetricsRecorder(),
             commerce_id_resolver=_resolver_with_commerce(99),
         )
-        with self.assertLogs("backend.services.shadow_metrics_recorder", level="INFO") as captured:
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
             recognizer.recognize("empanada", _catalog())
-        self.assertEqual(len(captured.records), 1)
-        record = captured.records[0]
-        self.assertEqual(getattr(record, "mode", None), "hybrid_authoritative")
-        self.assertFalse(getattr(record, "hybrid_non_authoritative", True))
+        event = json.loads(stdout.getvalue().strip())
+        self.assertEqual(event["event"], "shadow_product_recognition")
+        self.assertEqual(event["configured_mode"], "hybrid_authoritative")
+        self.assertEqual(event["effective_mode"], "hybrid_authoritative")
+        self.assertEqual(event["authoritative_strategy"], "hybrid")
+        # The hybrid_authoritative call MUST NOT mark ``hybrid_non_authoritative``
+        # (the provisional weights/thresholds are no longer part of the
+        # closed-shape event, but the recorder no longer attaches them at
+        # all so the operator-facing payload stays bounded).
+        self.assertFalse(event.get("hybrid_non_authoritative", False))
 
     def test_recorder_records_filtered_vector_side(self):
         recognizer = HybridAuthoritativeProductRecognizer(
@@ -962,14 +970,18 @@ class TelemetrySurfaceTest(unittest.TestCase):
             recorder=ShadowMetricsRecorder(),
             commerce_id_resolver=_resolver_with_commerce(99),
         )
-        with self.assertLogs("backend.services.shadow_metrics_recorder", level="INFO") as captured:
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
             recognizer.recognize(
                 "empanada",
                 _catalog(),
                 intent_metadata={"catalog_scope": "commerce_dynamic_database"},
             )
-        record = captured.records[0]
-        self.assertEqual(getattr(record, "vector_candidate_count", None), 1)
+        event = json.loads(stdout.getvalue().strip())
+        # Vector candidate count is not part of the closed-shape event;
+        # the closed event only carries the bounded aggregate latencies.
+        self.assertNotIn("vector_candidate_count", event)
+        self.assertIn("vector_latency_ms", event)
+        self.assertIsInstance(event["vector_latency_ms"], int)
 
 
 class DecideHybridHelperTest(unittest.TestCase):
@@ -1826,13 +1838,14 @@ class ObservabilityPayloadTest(unittest.TestCase):
     never logged.
     """
 
-    def _safe_extra_keys(self, record) -> set[str]:
-        """Verify the recorder never carries raw sensitive fields.
+    def _safe_extra_keys(self, event: dict) -> set[str]:
+        """Verify the closed-shape event never carries raw sensitive fields.
 
         Forbidden substrings target raw customer text, raw query
-        embeddings, raw vector scores, and credentials. Latency and
-        latency-counter fields named ``vector_*`` are operational
-        metrics, not raw vectors; they are explicitly allowed.
+        embeddings, raw vector scores, and credentials. Operational
+        latency fields named ``vector_latency_ms`` are explicitly
+        allowed; the rest of the closed-shape contract forbids raw
+        vector data, candidate counts, candidate ids and best ids.
         """
         forbidden_substrings = (
             "texto_origen",
@@ -1843,17 +1856,18 @@ class ObservabilityPayloadTest(unittest.TestCase):
             "stack_trace",
             "raw_exception",
             "credencial",
-        )
-        allowed_latency_metrics = {
-            "vector_latency_ms",
             "vector_candidate_count",
             "vector_best_id",
             "vector_candidate_ids",
-        }
-        keys = {attr for attr in dir(record) if not attr.startswith("_")}
+            "fuzzy_best_id",
+            "fuzzy_candidate",
+            "id_comercio",
+            "intent",
+            "correlation_id",
+            "scores",
+        )
+        keys = {key for key in event if not key.startswith("_")}
         for key in keys:
-            if key in allowed_latency_metrics:
-                continue
             for forbidden in forbidden_substrings:
                 self.assertNotIn(forbidden, key.lower())
         return keys
@@ -1862,7 +1876,7 @@ class ObservabilityPayloadTest(unittest.TestCase):
         """A successful hybrid authoritative call records
         configured_mode, effective_mode, authoritative_strategy,
         fuzzy_decision (implicit via ranking), hybrid_decision,
-        fallback=False, and fallback_category=None.
+        fallback=False, and fallback_category absent.
         """
         recognizer = HybridAuthoritativeProductRecognizer(
             inner=_StubFuzzyRecognizer(decision="unique", encontrados=[1]),
@@ -1879,9 +1893,7 @@ class ObservabilityPayloadTest(unittest.TestCase):
             effective_mode="hybrid_authoritative",
         )
 
-        with self.assertLogs(
-            "backend.services.shadow_metrics_recorder", level="INFO"
-        ) as captured:
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
             recognizer.recognize(
                 "empanada",
                 _catalog(),
@@ -1891,17 +1903,18 @@ class ObservabilityPayloadTest(unittest.TestCase):
                 },
             )
 
-        record = captured.records[0]
-        self.assertEqual(record.mode, "hybrid_authoritative")
+        event = json.loads(stdout.getvalue().strip())
+        self.assertEqual(event["event"], "shadow_product_recognition")
+        self.assertEqual(event["component"], "product_recognition")
         self.assertEqual(
-            record.configured_mode, "hybrid_authoritative"
+            event["configured_mode"], "hybrid_authoritative"
         )
-        self.assertEqual(record.effective_mode, "hybrid_authoritative")
-        self.assertEqual(record.authoritative_strategy, "hybrid")
-        self.assertEqual(record.hybrid_decision, "unique")
-        self.assertFalse(record.fallback)
-        self.assertIsNone(record.fallback_category)
-        self._safe_extra_keys(record)
+        self.assertEqual(event["effective_mode"], "hybrid_authoritative")
+        self.assertEqual(event["authoritative_strategy"], "hybrid")
+        self.assertEqual(event["hybrid_decision"], "unique")
+        self.assertFalse(event["fallback"])
+        self.assertNotIn("fallback_category", event)
+        self._safe_extra_keys(event)
 
     def test_hybrid_authoritative_embedding_failure_records_fallback_category(
         self,
@@ -1928,9 +1941,7 @@ class ObservabilityPayloadTest(unittest.TestCase):
             effective_mode="hybrid_authoritative",
         )
 
-        with self.assertLogs(
-            "backend.services.shadow_metrics_recorder", level="INFO"
-        ) as captured:
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
             recognizer.recognize(
                 "empanada",
                 _catalog(),
@@ -1940,15 +1951,14 @@ class ObservabilityPayloadTest(unittest.TestCase):
                 },
             )
 
-        record = captured.records[0]
-        self.assertEqual(record.mode, "hybrid_authoritative")
-        self.assertEqual(record.effective_mode, "hybrid_authoritative")
-        self.assertEqual(record.authoritative_strategy, "hybrid")
-        self.assertTrue(record.fallback)
+        event = json.loads(stdout.getvalue().strip())
+        self.assertEqual(event["effective_mode"], "hybrid_authoritative")
+        self.assertEqual(event["authoritative_strategy"], "hybrid")
+        self.assertTrue(event["fallback"])
         self.assertEqual(
-            record.fallback_category, "embedding_failure"
+            event["fallback_category"], "embedding_failure"
         )
-        self._safe_extra_keys(record)
+        self._safe_extra_keys(event)
 
     def test_hybrid_authoritative_unknown_decision_does_not_fallback(self):
         """A semantic hybrid ``unknown`` decision does NOT trigger
@@ -1969,9 +1979,7 @@ class ObservabilityPayloadTest(unittest.TestCase):
             effective_mode="hybrid_authoritative",
         )
 
-        with self.assertLogs(
-            "backend.services.shadow_metrics_recorder", level="INFO"
-        ) as captured:
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
             recognizer.recognize(
                 "empanada",
                 _catalog(),
@@ -1981,11 +1989,11 @@ class ObservabilityPayloadTest(unittest.TestCase):
                 },
             )
 
-        record = captured.records[0]
-        self.assertEqual(record.hybrid_decision, "unknown")
-        self.assertFalse(record.fallback)
-        self.assertIsNone(record.fallback_category)
-        self._safe_extra_keys(record)
+        event = json.loads(stdout.getvalue().strip())
+        self.assertEqual(event["hybrid_decision"], "unknown")
+        self.assertFalse(event["fallback"])
+        self.assertNotIn("fallback_category", event)
+        self._safe_extra_keys(event)
 
     def test_hybrid_authoritative_ambiguous_decision_does_not_fallback(self):
         """A semantic hybrid ``ambiguous`` decision does NOT trigger
@@ -2021,9 +2029,7 @@ class ObservabilityPayloadTest(unittest.TestCase):
             effective_mode="hybrid_authoritative",
         )
 
-        with self.assertLogs(
-            "backend.services.shadow_metrics_recorder", level="INFO"
-        ) as captured:
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
             recognizer.recognize(
                 "empanada",
                 _catalog(),
@@ -2033,11 +2039,11 @@ class ObservabilityPayloadTest(unittest.TestCase):
                 },
             )
 
-        record = captured.records[0]
-        self.assertEqual(record.hybrid_decision, "ambiguous")
-        self.assertFalse(record.fallback)
-        self.assertIsNone(record.fallback_category)
-        self._safe_extra_keys(record)
+        event = json.loads(stdout.getvalue().strip())
+        self.assertEqual(event["hybrid_decision"], "ambiguous")
+        self.assertFalse(event["fallback"])
+        self.assertNotIn("fallback_category", event)
+        self._safe_extra_keys(event)
 
     def test_hybrid_authoritative_missing_commerce_id_is_not_a_fallback(self):
         """Missing ``commerce_id`` is NOT a fallback reason under the
@@ -2125,9 +2131,7 @@ class ObservabilityPayloadTest(unittest.TestCase):
             effective_mode="shadow",
         )
 
-        with self.assertLogs(
-            "backend.services.shadow_metrics_recorder", level="INFO"
-        ) as captured:
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
             recognizer.recognize(
                 "empanada",
                 _catalog(),
@@ -2137,14 +2141,14 @@ class ObservabilityPayloadTest(unittest.TestCase):
                 },
             )
 
-        record = captured.records[0]
-        self.assertEqual(record.mode, "shadow")
-        self.assertEqual(record.configured_mode, "shadow")
-        self.assertEqual(record.effective_mode, "shadow")
-        self.assertEqual(record.authoritative_strategy, "fuzzy")
-        self.assertFalse(record.fallback)
-        self.assertIsNone(record.fallback_category)
-        self._safe_extra_keys(record)
+        event = json.loads(stdout.getvalue().strip())
+        self.assertEqual(event["event"], "shadow_product_recognition")
+        self.assertEqual(event["configured_mode"], "shadow")
+        self.assertEqual(event["effective_mode"], "shadow")
+        self.assertEqual(event["authoritative_strategy"], "fuzzy")
+        self.assertFalse(event["fallback"])
+        self.assertNotIn("fallback_category", event)
+        self._safe_extra_keys(event)
 
 
 class FuzzyModeObservabilityTest(unittest.TestCase):
@@ -2159,13 +2163,14 @@ class FuzzyModeObservabilityTest(unittest.TestCase):
     """
 
     @staticmethod
-    def _safe_extra_keys(test_case, record) -> set[str]:
-        """Verify the recorder never carries raw sensitive fields.
+    def _safe_extra_keys(test_case, event: dict) -> set[str]:
+        """Verify the closed-shape event never carries raw sensitive fields.
 
         Forbidden substrings target raw customer text, raw query
         embeddings, raw vector scores, and credentials. Operational
-        latency and counter fields named ``vector_*`` are explicitly
-        allowed (they are metrics, not raw vectors).
+        latency fields named ``vector_latency_ms`` are explicitly
+        allowed; the rest of the closed-shape contract forbids raw
+        vector data, candidate counts, candidate ids and best ids.
         """
         forbidden_substrings = (
             "texto_origen",
@@ -2176,17 +2181,18 @@ class FuzzyModeObservabilityTest(unittest.TestCase):
             "stack_trace",
             "raw_exception",
             "credencial",
-        )
-        allowed_latency_metrics = {
-            "vector_latency_ms",
             "vector_candidate_count",
             "vector_best_id",
             "vector_candidate_ids",
-        }
-        keys = {attr for attr in dir(record) if not attr.startswith("_")}
+            "fuzzy_best_id",
+            "fuzzy_candidate",
+            "id_comercio",
+            "intent",
+            "correlation_id",
+            "scores",
+        )
+        keys = {key for key in event if not key.startswith("_")}
         for key in keys:
-            if key in allowed_latency_metrics:
-                continue
             for forbidden in forbidden_substrings:
                 test_case.assertNotIn(forbidden, key.lower())
         return keys
@@ -2229,20 +2235,18 @@ class FuzzyModeObservabilityTest(unittest.TestCase):
             effective_mode="fuzzy",
         )
 
-        with self.assertLogs(
-            "backend.services.shadow_metrics_recorder", level="INFO"
-        ) as captured:
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
             recognizer.recognize("empanada de carne", self._catalog())
 
-        record = captured.records[0]
-        self.assertEqual(record.mode, "fuzzy")
-        self.assertEqual(record.configured_mode, "fuzzy")
-        self.assertEqual(record.effective_mode, "fuzzy")
-        self.assertEqual(record.authoritative_strategy, "fuzzy")
-        self.assertEqual(record.hybrid_decision, "not_evaluated")
-        self.assertFalse(record.fallback)
-        self.assertIsNone(record.fallback_category)
-        FuzzyModeObservabilityTest._safe_extra_keys(self, record)
+        event = json.loads(stdout.getvalue().strip())
+        self.assertEqual(event["event"], "shadow_product_recognition")
+        self.assertEqual(event["configured_mode"], "fuzzy")
+        self.assertEqual(event["effective_mode"], "fuzzy")
+        self.assertEqual(event["authoritative_strategy"], "fuzzy")
+        self.assertEqual(event["hybrid_decision"], "not_evaluated")
+        self.assertFalse(event["fallback"])
+        self.assertNotIn("fallback_category", event)
+        FuzzyModeObservabilityTest._safe_extra_keys(self, event)
 
     def test_fuzzy_mode_preserves_four_key_result_contract(self):
         """The decorator forwards the four-key
@@ -2268,9 +2272,9 @@ class FuzzyModeObservabilityTest(unittest.TestCase):
             self.assertIsInstance(result[key], list)
 
     def test_invalid_mode_records_invalid_mode_category(self):
-        """The decorator carries the configured-mode literal so the
-        per-request record exposes ``configured_mode='hybrid_active'``,
-        ``effective_mode='fuzzy'``,
+        """The decorator sanitizes the configured-mode literal so the
+        per-request record exposes ``configured_mode='invalid_mode'``
+        (the closed sanitized token), ``effective_mode='fuzzy'``,
         ``authoritative_strategy='fuzzy'``, ``fallback=True``,
         ``fallback_category='invalid_mode'``, and a non-evaluated
         ``hybrid_decision``. The ``Settings.load()`` warning is
@@ -2287,20 +2291,21 @@ class FuzzyModeObservabilityTest(unittest.TestCase):
             fallback_category="invalid_mode",
         )
 
-        with self.assertLogs(
-            "backend.services.shadow_metrics_recorder", level="INFO"
-        ) as captured:
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
             recognizer.recognize("empanada de carne", self._catalog())
 
-        record = captured.records[0]
-        self.assertEqual(record.mode, "fuzzy")
-        self.assertEqual(record.configured_mode, "hybrid_active")
-        self.assertEqual(record.effective_mode, "fuzzy")
-        self.assertEqual(record.authoritative_strategy, "fuzzy")
-        self.assertEqual(record.hybrid_decision, "not_evaluated")
-        self.assertTrue(record.fallback)
-        self.assertEqual(record.fallback_category, "invalid_mode")
-        FuzzyModeObservabilityTest._safe_extra_keys(self, record)
+        event = json.loads(stdout.getvalue().strip())
+        self.assertEqual(event["event"], "shadow_product_recognition")
+        # The recorder sanitizes the raw operator literal to the
+        # closed ``invalid_mode`` token so the closed-shape contract
+        # never reflects operator input verbatim.
+        self.assertEqual(event["configured_mode"], "invalid_mode")
+        self.assertEqual(event["effective_mode"], "fuzzy")
+        self.assertEqual(event["authoritative_strategy"], "fuzzy")
+        self.assertEqual(event["hybrid_decision"], "not_evaluated")
+        self.assertTrue(event["fallback"])
+        self.assertEqual(event["fallback_category"], "invalid_mode")
+        FuzzyModeObservabilityTest._safe_extra_keys(self, event)
 
 
 class HybridAuthoritativeCommerceIdExceptionTest(unittest.TestCase):
@@ -2363,20 +2368,19 @@ class HybridAuthoritativeCommerceIdExceptionTest(unittest.TestCase):
             effective_mode="hybrid_authoritative",
         )
 
-        with self.assertRaises(HybridAuthoritativeCommerceIdMissing):
-            recognizer.recognize(
-                "empanada",
-                _catalog(),
-                intent_metadata={"catalog_scope": "commerce_dynamic_database"},
-            )
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            with self.assertRaises(HybridAuthoritativeCommerceIdMissing):
+                recognizer.recognize(
+                    "empanada",
+                    _catalog(),
+                    intent_metadata={
+                        "catalog_scope": "commerce_dynamic_database",
+                    },
+                )
 
         # No observation record was emitted for the integration bug.
         # The factory boundary is the only safe place to surface it.
-        with self.assertRaises(AssertionError):
-            with self.assertLogs(
-                "backend.services.shadow_metrics_recorder", level="INFO"
-            ) as captured:
-                self.assertEqual(captured.records, [])
+        self.assertEqual(stdout.getvalue(), "")
 
 
 if __name__ == "__main__":

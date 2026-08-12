@@ -106,8 +106,16 @@ class HybridAuthoritativeProductRecognizer:
         self._vector_search_service_factory = vector_search_service
         self._recorder = recorder
         self._commerce_id_resolver = commerce_id_resolver
-        self._configured_mode = configured_mode
-        self._effective_mode = effective_mode
+        self._configured_mode = (
+            configured_mode
+            if configured_mode is not None
+            else "hybrid_authoritative"
+        )
+        self._effective_mode = (
+            effective_mode
+            if effective_mode is not None
+            else "hybrid_authoritative"
+        )
         self._clock = clock
 
     def recognize(

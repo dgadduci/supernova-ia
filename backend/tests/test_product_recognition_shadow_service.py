@@ -36,7 +36,10 @@ Additional tests:
 """
 from __future__ import annotations
 
+import contextlib
 import inspect
+import io
+import json
 import logging
 import unittest
 from typing import Any
@@ -638,21 +641,22 @@ class SafeMetricsTest(unittest.TestCase):
             recorder=recorder,
             commerce_id_resolver=lambda catalog: 1,
         )
-        with self.assertLogs(
-            "backend.services.shadow_metrics_recorder", level="INFO"
-        ) as captured:
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
             recognizer.recognize(
                 "mensaje-secreto-cliente",
                 [_row(1, "pizza")],
             )
-        for record in captured.records:
-            self.assertNotIn("mensaje-secreto-cliente", record.getMessage())
-            for field in dir(record):
-                if field.startswith("_"):
-                    continue
-                value = getattr(record, field, None)
-                if isinstance(value, str):
-                    self.assertNotIn("mensaje-secreto-cliente", value)
+        line = stdout.getvalue()
+        self.assertNotIn("mensaje-secreto-cliente", line)
+        event = json.loads(line.strip())
+        self.assertEqual(event["event"], "shadow_product_recognition")
+        for field in ("configured_mode", "effective_mode",
+                      "authoritative_strategy", "hybrid_decision",
+                      "fallback_category", "fuzzy_latency_ms",
+                      "embedding_latency_ms", "vector_latency_ms"):
+            value = event.get(field, "")
+            if isinstance(value, str):
+                self.assertNotIn("mensaje-secreto-cliente", value)
 
 
 class HybridObservationTest(unittest.TestCase):

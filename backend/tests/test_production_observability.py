@@ -33,12 +33,14 @@ from backend.observability import (
     COMPONENT_EMBEDDING,
     COMPONENT_LLM,
     COMPONENT_OUTBOUND,
+    COMPONENT_PRODUCT_RECOGNITION,
     COMPONENT_WORKER,
     EVENT_CALLBACK_OUTCOME,
     EVENT_DATABASE_TECHNICAL_FAILURE,
     EVENT_EMBEDDING_REQUEST,
     EVENT_LLM_REQUEST,
     EVENT_OUTBOUND_OUTCOME,
+    EVENT_SHADOW_PRODUCT_RECOGNITION,
     EVENT_WORKER_CYCLE,
     EVENT_WORKER_DISABLED,
     EVENT_WORKER_READINESS_TRANSITION,
@@ -629,6 +631,531 @@ class DatabaseTechnicalFailureEmissionTest(unittest.TestCase):
         # when it encounters one.
         parsed_round_trip = parse_event(sink.getvalue().strip())
         self.assertEqual(parsed_round_trip["event"], "observability_emit_failed")
+
+
+class RecognitionEventContractTest(unittest.TestCase):
+    """Focused tests for the closed ``shadow_product_recognition``
+    event.
+
+    Coverage:
+
+    * business ``unique`` / ``ambiguous`` / ``unknown`` round-trip
+      through the catalogue without becoming a technical fallback;
+    * ``not_evaluated`` is emitted by the fuzzy-mode path and
+      never claims a fallback;
+    * technical fallback categories round-trip only when paired
+      with ``fallback=true``;
+    * invalid configured mode resolves to the sanitized
+      ``invalid_mode`` token;
+    * forbidden sensitive fields are rejected by the catalogue and
+      the bounded CLI never prints raw Railway lines.
+    """
+
+    _SAFE_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "event",
+            "schema_version",
+            "component",
+            "timestamp",
+            "configured_mode",
+            "effective_mode",
+            "authoritative_strategy",
+            "hybrid_decision",
+            "fallback",
+            "fuzzy_latency_ms",
+            "embedding_latency_ms",
+            "vector_latency_ms",
+        }
+    )
+
+    def test_event_belongs_to_product_recognition_component(self) -> None:
+        payload = build_event(
+            event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+            component=COMPONENT_PRODUCT_RECOGNITION,
+            configured_mode="shadow",
+            effective_mode="shadow",
+            authoritative_strategy="fuzzy",
+            hybrid_decision="unique",
+            fallback=False,
+        )
+        self.assertEqual(
+            payload["event"], EVENT_SHADOW_PRODUCT_RECOGNITION
+        )
+        self.assertEqual(
+            payload["component"], COMPONENT_PRODUCT_RECOGNITION
+        )
+        self.assertEqual(
+            payload["schema_version"], int(SCHEMA_VERSION)
+        )
+        self.assertNotIn("outcome", payload)
+        self.assertNotIn("failure_category", payload)
+        self.assertEqual(payload["configured_mode"], "shadow")
+        self.assertEqual(payload["effective_mode"], "shadow")
+        self.assertEqual(payload["authoritative_strategy"], "fuzzy")
+        self.assertEqual(payload["hybrid_decision"], "unique")
+        self.assertFalse(payload["fallback"])
+
+    def test_component_mismatch_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+                component=COMPONENT_OUTBOUND,
+                configured_mode="shadow",
+                effective_mode="shadow",
+                authoritative_strategy="fuzzy",
+                hybrid_decision="unique",
+                fallback=False,
+            )
+
+    def test_hybrid_unique_is_business_outcome_not_fallback(self) -> None:
+        payload = build_event(
+            event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+            component=COMPONENT_PRODUCT_RECOGNITION,
+            configured_mode="hybrid_authoritative",
+            effective_mode="hybrid_authoritative",
+            authoritative_strategy="hybrid",
+            hybrid_decision="unique",
+            fallback=False,
+        )
+        self.assertEqual(payload["hybrid_decision"], "unique")
+        self.assertFalse(payload["fallback"])
+        self.assertNotIn("fallback_category", payload)
+
+    def test_hybrid_ambiguous_is_business_outcome_not_fallback(self) -> None:
+        payload = build_event(
+            event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+            component=COMPONENT_PRODUCT_RECOGNITION,
+            configured_mode="shadow",
+            effective_mode="shadow",
+            authoritative_strategy="fuzzy",
+            hybrid_decision="ambiguous",
+            fallback=False,
+        )
+        self.assertEqual(payload["hybrid_decision"], "ambiguous")
+        self.assertFalse(payload["fallback"])
+        self.assertNotIn("fallback_category", payload)
+
+    def test_hybrid_unknown_is_business_outcome_not_fallback(self) -> None:
+        payload = build_event(
+            event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+            component=COMPONENT_PRODUCT_RECOGNITION,
+            configured_mode="shadow",
+            effective_mode="shadow",
+            authoritative_strategy="fuzzy",
+            hybrid_decision="unknown",
+            fallback=False,
+        )
+        self.assertEqual(payload["hybrid_decision"], "unknown")
+        self.assertFalse(payload["fallback"])
+        self.assertNotIn("fallback_category", payload)
+
+    def test_not_evaluated_is_fuzzy_mode_outcome(self) -> None:
+        payload = build_event(
+            event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+            component=COMPONENT_PRODUCT_RECOGNITION,
+            configured_mode="fuzzy",
+            effective_mode="fuzzy",
+            authoritative_strategy="fuzzy",
+            hybrid_decision="not_evaluated",
+            fallback=False,
+        )
+        self.assertEqual(payload["hybrid_decision"], "not_evaluated")
+        self.assertFalse(payload["fallback"])
+
+    def test_technical_fallback_embedding_failure_round_trips(self) -> None:
+        payload = build_event(
+            event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+            component=COMPONENT_PRODUCT_RECOGNITION,
+            configured_mode="hybrid_authoritative",
+            effective_mode="hybrid_authoritative",
+            authoritative_strategy="hybrid",
+            hybrid_decision="unknown",
+            fallback=True,
+            fallback_category="embedding_failure",
+            fuzzy_latency_ms=15,
+            embedding_latency_ms=200,
+            vector_latency_ms=0,
+        )
+        self.assertTrue(payload["fallback"])
+        self.assertEqual(payload["fallback_category"], "embedding_failure")
+        line = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        parsed = parse_event(line)
+        self.assertEqual(parsed, payload)
+
+    def test_technical_fallback_vector_failure_round_trips(self) -> None:
+        payload = build_event(
+            event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+            component=COMPONENT_PRODUCT_RECOGNITION,
+            configured_mode="hybrid_authoritative",
+            effective_mode="hybrid_authoritative",
+            authoritative_strategy="hybrid",
+            hybrid_decision="unknown",
+            fallback=True,
+            fallback_category="vector_failure",
+            fuzzy_latency_ms=15,
+            embedding_latency_ms=180,
+            vector_latency_ms=42,
+        )
+        self.assertEqual(payload["fallback_category"], "vector_failure")
+        line = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        self.assertEqual(parse_event(line), payload)
+
+    def test_invalid_mode_configured_sanitized(self) -> None:
+        payload = build_event(
+            event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+            component=COMPONENT_PRODUCT_RECOGNITION,
+            configured_mode="invalid_mode",
+            effective_mode="fuzzy",
+            authoritative_strategy="fuzzy",
+            hybrid_decision="not_evaluated",
+            fallback=True,
+            fallback_category="invalid_mode",
+        )
+        self.assertEqual(payload["configured_mode"], "invalid_mode")
+        self.assertEqual(payload["effective_mode"], "fuzzy")
+        self.assertTrue(payload["fallback"])
+        self.assertEqual(payload["fallback_category"], "invalid_mode")
+        line = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        self.assertEqual(parse_event(line), payload)
+
+    def test_outcome_field_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+                component=COMPONENT_PRODUCT_RECOGNITION,
+                configured_mode="shadow",
+                effective_mode="shadow",
+                authoritative_strategy="fuzzy",
+                hybrid_decision="unique",
+                fallback=False,
+                outcome="completed",
+            )
+
+    def test_failure_category_field_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+                component=COMPONENT_PRODUCT_RECOGNITION,
+                configured_mode="shadow",
+                effective_mode="shadow",
+                authoritative_strategy="fuzzy",
+                hybrid_decision="unique",
+                fallback=False,
+                failure_category="embedding_failure",
+            )
+
+    def test_correlation_id_field_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+                component=COMPONENT_PRODUCT_RECOGNITION,
+                configured_mode="shadow",
+                effective_mode="shadow",
+                authoritative_strategy="fuzzy",
+                hybrid_decision="unique",
+                fallback=False,
+                correlation_id="corr-abc",
+            )
+
+    def test_outbox_id_field_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+                component=COMPONENT_PRODUCT_RECOGNITION,
+                configured_mode="shadow",
+                effective_mode="shadow",
+                authoritative_strategy="fuzzy",
+                hybrid_decision="unique",
+                fallback=False,
+                outbox_id=42,
+            )
+
+    def test_exception_type_field_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+                component=COMPONENT_PRODUCT_RECOGNITION,
+                configured_mode="shadow",
+                effective_mode="shadow",
+                authoritative_strategy="fuzzy",
+                hybrid_decision="unknown",
+                fallback=True,
+                fallback_category="embedding_failure",
+                exception_type="EmbeddingResponseError",
+            )
+
+    def test_fallback_category_required_when_fallback_true(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+                component=COMPONENT_PRODUCT_RECOGNITION,
+                configured_mode="shadow",
+                effective_mode="shadow",
+                authoritative_strategy="fuzzy",
+                hybrid_decision="unknown",
+                fallback=True,
+            )
+
+    def test_fallback_category_forbidden_when_fallback_false(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+                component=COMPONENT_PRODUCT_RECOGNITION,
+                configured_mode="shadow",
+                effective_mode="shadow",
+                authoritative_strategy="fuzzy",
+                hybrid_decision="unique",
+                fallback=False,
+                fallback_category="embedding_failure",
+            )
+
+    def test_fallback_category_must_be_in_sanitized_allowlist(self) -> None:
+        for forbidden_category in (
+            "unknown",
+            "score_leak",
+            "customer_value",
+            "id_comercio",
+            "+5491100000000",
+            "secret-auth-token-value",
+        ):
+            with self.subTest(category=forbidden_category):
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+                        component=COMPONENT_PRODUCT_RECOGNITION,
+                        configured_mode="shadow",
+                        effective_mode="shadow",
+                        authoritative_strategy="fuzzy",
+                        hybrid_decision="unknown",
+                        fallback=True,
+                        fallback_category=forbidden_category,
+                    )
+
+    def test_invalid_configured_mode_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+                component=COMPONENT_PRODUCT_RECOGNITION,
+                configured_mode="banana",
+                effective_mode="shadow",
+                authoritative_strategy="fuzzy",
+                hybrid_decision="unique",
+                fallback=False,
+            )
+
+    def test_invalid_effective_mode_rejected(self) -> None:
+        # ``invalid_mode`` is reserved for the configured-mode
+        # sanitization path; the effective mode always resolves to
+        # one of the three documented runtime modes.
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+                component=COMPONENT_PRODUCT_RECOGNITION,
+                configured_mode="shadow",
+                effective_mode="invalid_mode",
+                authoritative_strategy="fuzzy",
+                hybrid_decision="unique",
+                fallback=False,
+            )
+
+    def test_invalid_authoritative_strategy_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+                component=COMPONENT_PRODUCT_RECOGNITION,
+                configured_mode="shadow",
+                effective_mode="shadow",
+                authoritative_strategy="shadow",
+                hybrid_decision="unique",
+                fallback=False,
+            )
+
+    def test_invalid_hybrid_decision_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+                component=COMPONENT_PRODUCT_RECOGNITION,
+                configured_mode="shadow",
+                effective_mode="shadow",
+                authoritative_strategy="fuzzy",
+                hybrid_decision="score_leak",
+                fallback=False,
+            )
+
+    def test_fallback_must_be_boolean(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+                component=COMPONENT_PRODUCT_RECOGNITION,
+                configured_mode="shadow",
+                effective_mode="shadow",
+                authoritative_strategy="fuzzy",
+                hybrid_decision="unique",
+                fallback="yes",  # type: ignore[arg-type]
+            )
+
+    def test_negative_latency_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+                component=COMPONENT_PRODUCT_RECOGNITION,
+                configured_mode="shadow",
+                effective_mode="shadow",
+                authoritative_strategy="fuzzy",
+                hybrid_decision="unique",
+                fallback=False,
+                fuzzy_latency_ms=-1,
+            )
+
+    def test_non_integer_latency_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+                component=COMPONENT_PRODUCT_RECOGNITION,
+                configured_mode="shadow",
+                effective_mode="shadow",
+                authoritative_strategy="fuzzy",
+                hybrid_decision="unique",
+                fallback=False,
+                fuzzy_latency_ms=1.5,  # type: ignore[arg-type]
+            )
+
+    def test_required_fields_must_be_present(self) -> None:
+        # The catalogue enforces a closed shape; missing required
+        # recognition fields are rejected.
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+                component=COMPONENT_PRODUCT_RECOGNITION,
+                configured_mode="shadow",
+                effective_mode="shadow",
+                authoritative_strategy="fuzzy",
+                fallback=False,
+            )
+
+    def test_parse_event_rejects_unknown_keys(self) -> None:
+        with self.assertRaises(EventValidationError):
+            parse_event(
+                '{"event":"shadow_product_recognition","schema_version":1,'
+                '"component":"product_recognition","configured_mode":"shadow",'
+                '"effective_mode":"shadow","authoritative_strategy":"fuzzy",'
+                '"hybrid_decision":"unique","fallback":false,'
+                '"timestamp":"2026-08-12T00:00:00+00:00",'
+                '"id_comercio":42,"intent":"agregar_producto"}'
+            )
+
+    def test_parse_event_rejects_sensitive_field_claim(self) -> None:
+        # A Railway line that claims the structured-event shape but
+        # carries a forbidden field MUST be rejected before any raw
+        # value is reflected back into the bounded CLI output.
+        with self.assertRaises(EventValidationError):
+            parse_event(
+                '{"event":"shadow_product_recognition","schema_version":1,'
+                '"component":"product_recognition","configured_mode":"shadow",'
+                '"effective_mode":"shadow","authoritative_strategy":"fuzzy",'
+                '"hybrid_decision":"unique","fallback":false,'
+                '"timestamp":"2026-08-12T00:00:00+00:00",'
+                '"scores":[0.9,0.7]}'
+            )
+
+    def test_no_sentinel_leaks_in_recognition_payload(self) -> None:
+        # Defence-in-depth: the event payload never reflects any of
+        # the documented sentinel tokens. The recorder never tries
+        # to pass them in, but a downstream caller or a malicious
+        # JSON line carrying sentinels MUST be rejected by the
+        # catalogue before any line is emitted.
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+            component=COMPONENT_PRODUCT_RECOGNITION,
+            configured_mode="shadow",
+            effective_mode="shadow",
+            authoritative_strategy="fuzzy",
+            hybrid_decision="unique",
+            fallback=True,
+            fallback_category="embedding_failure",
+            fuzzy_latency_ms=15,
+            embedding_latency_ms=200,
+            vector_latency_ms=0,
+            stream=sink,
+        )
+        self.assertTrue(ok)
+        line = sink.getvalue()
+        for token in SENTINELS:
+            if token in (
+                "shadow",
+                "hybrid_authoritative",
+                "invalid_mode",
+                "embedding_failure",
+                "vector_failure",
+                "malformed_response",
+                "unexpected_technical_failure",
+                "not_evaluated",
+                "product_recognition",
+                EVENT_SHADOW_PRODUCT_RECOGNITION,
+            ):
+                continue
+            self.assertNotIn(token, line)
+
+    def test_recognition_event_excludes_outcome_failure(self) -> None:
+        # The recognition event is an observation; it MUST NOT
+        # carry ``outcome`` or ``failure_category`` and the parser
+        # rejects lines that smuggle those fields in.
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+            component=COMPONENT_PRODUCT_RECOGNITION,
+            configured_mode="shadow",
+            effective_mode="shadow",
+            authoritative_strategy="fuzzy",
+            hybrid_decision="unique",
+            fallback=False,
+            fuzzy_latency_ms=12,
+            embedding_latency_ms=0,
+            vector_latency_ms=0,
+            stream=sink,
+        )
+        self.assertTrue(ok)
+        parsed = json.loads(sink.getvalue().strip())
+        self.assertNotIn("outcome", parsed)
+        self.assertNotIn("failure_category", parsed)
+        self.assertNotIn("id_comercio", parsed)
+        self.assertNotIn("intent", parsed)
+        self.assertNotIn("correlation_id", parsed)
+        self.assertNotIn("scores", parsed)
+
+    def test_emit_event_emits_only_allowed_keys(self) -> None:
+        # The closed shape: every emitted payload carries exactly
+        # the documented recognition keys plus the standard envelope.
+        sink = io.StringIO()
+        emit_event(
+            event=EVENT_SHADOW_PRODUCT_RECOGNITION,
+            component=COMPONENT_PRODUCT_RECOGNITION,
+            configured_mode="shadow",
+            effective_mode="shadow",
+            authoritative_strategy="fuzzy",
+            hybrid_decision="unique",
+            fallback=False,
+            fuzzy_latency_ms=12,
+            embedding_latency_ms=0,
+            vector_latency_ms=0,
+            stream=sink,
+        )
+        parsed = json.loads(sink.getvalue().strip())
+        self.assertEqual(
+            set(parsed.keys()),
+            self._SAFE_FIELDS,
+        )
+
+    def test_recognition_event_is_queryable_in_catalogue(self) -> None:
+        # Defence: the recognition event name MUST appear in the
+        # catalogue mapping so the bounded Railway CLI can find it.
+        from backend.observability.events import _EVENT_CATALOGUE
+
+        self.assertEqual(
+            _EVENT_CATALOGUE[EVENT_SHADOW_PRODUCT_RECOGNITION],
+            COMPONENT_PRODUCT_RECOGNITION,
+        )
 
 
 if __name__ == "__main__":

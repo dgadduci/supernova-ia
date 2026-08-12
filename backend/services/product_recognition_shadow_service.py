@@ -278,8 +278,12 @@ class ShadowedProductRecognizer:
         self._shadow = shadow
         self._recorder = recorder
         self._commerce_id_resolver = commerce_id_resolver
-        self._configured_mode = configured_mode
-        self._effective_mode = effective_mode
+        self._configured_mode = (
+            configured_mode if configured_mode is not None else "shadow"
+        )
+        self._effective_mode = (
+            effective_mode if effective_mode is not None else "shadow"
+        )
         self._clock = clock
 
     def recognize(
