@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import hashlib
 
-PROMPT_TEMPLATE_VERSION = "intent-classifier/v1.2.0"
+PROMPT_TEMPLATE_VERSION = "intent-classifier/v1.3.0"
 
 _INTRO = (
     "\n"
@@ -79,6 +79,12 @@ Reglas de clasificación:
 6. Cuando detectes que se pide reemplazar un producto por otro, generá un único intent `modificar_producto` con el mensaje original completo. NO descomponas en `quitar_producto` + `agregar_producto`; el orquestador `modificar_producto` realiza la sustitución atómica en una sola operación.
 
 7. Cuando se trate de productos, separalos por producto y cantidad (si se especifica) en distintos intents.
+
+8. Distinguí `set_metodo_de_entrega` de `set_observacion_pedido` y respetá la prioridad de `set_direccion_entrega` cuando el mensaje mencione "entrega":
+   * Si el mensaje establece o cambia un DOMICILIO o DIRECCIÓN concreta (calle, número, barrio, ciudad o referencias de la dirección), usá SIEMPRE `set_direccion_entrega`. Ejemplos: "me lo envias a Tilcara 2020", "mi casa queda en San Martín 1234", "la dirección es Córdoba 567". Ninguna observación general prevalece sobre la dirección.
+   * Usá `set_metodo_de_entrega` ÚNICAMENTE cuando el cliente selecciona o cambia la MODALIDAD de recepción (delivery / envío a domicilio, retiro por el local, consumo en salón). Verbos característicos: "quiero envío a domicilio", "lo paso a retirar", "lo retiro por el local", "lo voy a comer ahí", "que sea para llevar".
+   * Usá `set_observacion_pedido` SOLO para instrucciones operativas NO direccionales: portón, timbre, acceso, ruta de ingreso, edificio o portería, seguridad, mascotas, cuidado o indicaciones similares, aunque aparezca la palabra "entrega". Verbos característicos: "la entrega es por el portón lateral", "tocar timbre", "dejar en la puerta", "cuidado con el perro", "es un edificio con portero".
+   En la duda, si el mensaje contiene un DOMICILIO o DIRECCIÓN concreta, clasificá como `set_direccion_entrega` y NUNCA como `set_observacion_pedido`. La palabra "entrega" por sí sola no implica `set_metodo_de_entrega` ni `set_observacion_pedido` cuando la intención es fijar una dirección.
 
 """
 
@@ -178,6 +184,70 @@ Salida:
     }
   ],
   "mensaje": "Cambiame la pizza de mozzarella por una napolitana"
+}
+```
+
+Mensaje:
+`La entrega es por el portón lateral`
+
+Salida:
+```json
+{
+  "intents": [
+    {
+      "intent": "set_observacion_pedido",
+      "mensaje": "La entrega es por el portón lateral"
+    }
+  ],
+  "mensaje": "La entrega es por el portón lateral"
+}
+```
+
+Mensaje:
+`Cuidado con el perro`
+
+Salida:
+```json
+{
+  "intents": [
+    {
+      "intent": "set_observacion_pedido",
+      "mensaje": "Cuidado con el perro"
+    }
+  ],
+  "mensaje": "Cuidado con el perro"
+}
+```
+
+Mensaje:
+`Quiero envío a domicilio`
+
+Salida:
+```json
+{
+  "intents": [
+    {
+      "intent": "set_metodo_de_entrega",
+      "mensaje": "Quiero envío a domicilio"
+    }
+  ],
+  "mensaje": "Quiero envío a domicilio"
+}
+```
+
+Mensaje:
+`Lo retiro por el local`
+
+Salida:
+```json
+{
+  "intents": [
+    {
+      "intent": "set_metodo_de_entrega",
+      "mensaje": "Lo retiro por el local"
+    }
+  ],
+  "mensaje": "Lo retiro por el local"
 }
 ```
 

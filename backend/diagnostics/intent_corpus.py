@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from backend.intents.schemas.intent_classification import IntentName
 
-CORPUS_VERSION = "intent-corpus/v1.1.0"
+CORPUS_VERSION = "intent-corpus/v1.2.0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,8 +200,44 @@ CONTROLLED_INTENT_CORPUS: tuple[IntentFixture, ...] = (
         (IntentName.SET_METODO_DE_ENTREGA,),
     ),
     _fixture(
+        "F-REG-OBSERVACION_PEDIDO-PORTON_LATERAL",
+        "Regression: access/route instruction that mentions 'entrega' "
+        "must remain a single set_observacion_pedido intent",
+        "La entrega es por el portón lateral",
+        (IntentName.SET_OBSERVACION_PEDIDO,),
+    ),
+    _fixture(
+        "F-REG-OBSERVACION_PEDIDO-MASCOTAS",
+        "Regression: care/pets instruction must remain a single "
+        "set_observacion_pedido intent",
+        "Cuidado con el perro",
+        (IntentName.SET_OBSERVACION_PEDIDO,),
+    ),
+    _fixture(
+        "F-REG-METODO_DE_ENTREGA-ENVIO_DOMICILIO",
+        "Regression: explicit delivery modality must remain a single "
+        "set_metodo_de_entrega intent",
+        "Quiero envío a domicilio",
+        (IntentName.SET_METODO_DE_ENTREGA,),
+    ),
+    _fixture(
+        "F-REG-METODO_DE_ENTREGA-RETIRO_LOCAL",
+        "Regression: explicit pickup modality must remain a single "
+        "set_metodo_de_entrega intent",
+        "Lo retiro por el local",
+        (IntentName.SET_METODO_DE_ENTREGA,),
+    ),
+    _fixture(
         "F-SET_DIRECCION_ENTREGA",
         "Sets the delivery address",
+        "Me lo envias a Tilcara 2020",
+        (IntentName.SET_DIRECCION_ENTREGA,),
+    ),
+    _fixture(
+        "F-REG-DIRECCION_ENTREGA-TILCARA_2020",
+        "Regression: explicit concrete address must remain a single "
+        "set_direccion_entrega intent and must NOT become "
+        "set_observacion_pedido despite the word 'entrega'",
         "Me lo envias a Tilcara 2020",
         (IntentName.SET_DIRECCION_ENTREGA,),
     ),

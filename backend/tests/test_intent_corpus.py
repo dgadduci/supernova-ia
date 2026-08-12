@@ -57,6 +57,69 @@ class ControlledCorpusShapeTest(unittest.TestCase):
             (IntentName.SET_OBSERVACION_PEDIDO,),
         )
 
+    def test_boundary_porton_lateral_fixture_pins_single_observacion_pedido(self):
+        fixture = next(
+            f for f in CONTROLLED_INTENT_CORPUS
+            if f.fixture_id == "F-REG-OBSERVACION_PEDIDO-PORTON_LATERAL"
+        )
+        self.assertEqual(
+            fixture.expected_intents,
+            (IntentName.SET_OBSERVACION_PEDIDO,),
+        )
+        self.assertEqual(fixture.message, "La entrega es por el portón lateral")
+
+    def test_boundary_mascotas_fixture_pins_single_observacion_pedido(self):
+        fixture = next(
+            f for f in CONTROLLED_INTENT_CORPUS
+            if f.fixture_id == "F-REG-OBSERVACION_PEDIDO-MASCOTAS"
+        )
+        self.assertEqual(
+            fixture.expected_intents,
+            (IntentName.SET_OBSERVACION_PEDIDO,),
+        )
+        self.assertEqual(fixture.message, "Cuidado con el perro")
+
+    def test_boundary_envio_domicilio_fixture_pins_single_metodo_de_entrega(self):
+        fixture = next(
+            f for f in CONTROLLED_INTENT_CORPUS
+            if f.fixture_id == "F-REG-METODO_DE_ENTREGA-ENVIO_DOMICILIO"
+        )
+        self.assertEqual(
+            fixture.expected_intents,
+            (IntentName.SET_METODO_DE_ENTREGA,),
+        )
+        self.assertEqual(fixture.message, "Quiero envío a domicilio")
+
+    def test_boundary_retiro_local_fixture_pins_single_metodo_de_entrega(self):
+        fixture = next(
+            f for f in CONTROLLED_INTENT_CORPUS
+            if f.fixture_id == "F-REG-METODO_DE_ENTREGA-RETIRO_LOCAL"
+        )
+        self.assertEqual(
+            fixture.expected_intents,
+            (IntentName.SET_METODO_DE_ENTREGA,),
+        )
+        self.assertEqual(fixture.message, "Lo retiro por el local")
+
+    def test_direccion_entrega_tilcara_fixture_pins_single_set_direccion_entrega(self):
+        fixture = next(
+            f for f in CONTROLLED_INTENT_CORPUS
+            if f.fixture_id == "F-REG-DIRECCION_ENTREGA-TILCARA_2020"
+        )
+        self.assertEqual(
+            fixture.expected_intents,
+            (IntentName.SET_DIRECCION_ENTREGA,),
+        )
+        self.assertEqual(fixture.message, "Me lo envias a Tilcara 2020")
+        self.assertNotIn(
+            IntentName.SET_OBSERVACION_PEDIDO,
+            fixture.expected_intents,
+        )
+        self.assertNotIn(
+            IntentName.SET_METODO_DE_ENTREGA,
+            fixture.expected_intents,
+        )
+
     def test_fixture_ids_are_unique(self):
         ids = [fixture.fixture_id for fixture in CONTROLLED_INTENT_CORPUS]
         self.assertEqual(len(ids), len(set(ids)))
