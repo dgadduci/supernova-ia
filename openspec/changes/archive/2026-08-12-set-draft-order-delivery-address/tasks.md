@@ -17,5 +17,5 @@
 ## 3. Validation and release
 
 - [x] 3.1 Usuario ejecuta validaciones locales y entrega salida completa.
-- [ ] 3.2 Tras autorización separada, deploy y verificación productiva E2E.
-- [ ] 3.3 Obtener autorización separada antes de sync/archive.
+- [x] 3.2 Tras autorización separada, deploy y verificación productiva E2E.
+- [x] 3.3 Obtener autorización separada antes de sync/archive.
