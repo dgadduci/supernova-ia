@@ -40,6 +40,7 @@ COMPONENT_WORKER = "provider_worker"
 COMPONENT_LLM = "query_llm"
 COMPONENT_EMBEDDING = "embedding_client"
 COMPONENT_DATABASE = "database_technical_boundary"
+COMPONENT_PRODUCT_RECOGNITION = "product_recognition"
 COMPONENT_OBSERVABILITY = "observability_helper"
 
 
@@ -52,6 +53,7 @@ EVENT_WORKER_DISABLED = "provider_worker_disabled"
 EVENT_LLM_REQUEST = "llm_request"
 EVENT_EMBEDDING_REQUEST = "embedding_request"
 EVENT_DATABASE_TECHNICAL_FAILURE = "database_technical_failure"
+EVENT_SHADOW_PRODUCT_RECOGNITION = "shadow_product_recognition"
 EVENT_OBSERVABILITY_EMIT_FAILED = "observability_emit_failed"
 
 
@@ -65,6 +67,7 @@ _EVENT_CATALOGUE: dict[str, str] = {
     EVENT_LLM_REQUEST: COMPONENT_LLM,
     EVENT_EMBEDDING_REQUEST: COMPONENT_EMBEDDING,
     EVENT_DATABASE_TECHNICAL_FAILURE: COMPONENT_DATABASE,
+    EVENT_SHADOW_PRODUCT_RECOGNITION: COMPONENT_PRODUCT_RECOGNITION,
     EVENT_OBSERVABILITY_EMIT_FAILED: COMPONENT_OBSERVABILITY,
 }
 
@@ -114,6 +117,42 @@ _FAILURE_CATEGORIES_BY_EVENT: dict[str, frozenset[str]] = {
 }
 
 
+# Recognition observation allowlists (closed, sanitized). The
+# ``shadow_product_recognition`` event is an observation: hybrid
+# ``unique`` / ``ambiguous`` / ``unknown`` are valid business
+# outcomes, NEVER technical fallback. Only existing sanitized
+# technical categories plus ``invalid_mode`` may mark fallback.
+_RECOGNITION_CONFIGURED_MODES: frozenset[str] = frozenset(
+    {"fuzzy", "shadow", "hybrid_authoritative", "invalid_mode"}
+)
+_RECOGNITION_EFFECTIVE_MODES: frozenset[str] = frozenset(
+    {"fuzzy", "shadow", "hybrid_authoritative"}
+)
+_RECOGNITION_AUTHORITATIVE_STRATEGIES: frozenset[str] = frozenset(
+    {"fuzzy", "hybrid"}
+)
+_RECOGNITION_HYBRID_DECISIONS: frozenset[str] = frozenset(
+    {"unique", "ambiguous", "unknown", "not_evaluated"}
+)
+_RECOGNITION_FALLBACK_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "embedding_failure",
+        "vector_failure",
+        "malformed_response",
+        "unexpected_technical_failure",
+        "invalid_mode",
+    }
+)
+
+
+_EVENTS_WITHOUT_OUTCOME_OR_FAILURE: frozenset[str] = frozenset(
+    {EVENT_SHADOW_PRODUCT_RECOGNITION}
+)
+_EVENTS_WITH_RECOGNITION_FIELDS: frozenset[str] = frozenset(
+    {EVENT_SHADOW_PRODUCT_RECOGNITION}
+)
+
+
 _OPTIONAL_FIELDS_BY_EVENT: dict[str, frozenset[str]] = {
     EVENT_OUTBOUND_OUTCOME: frozenset(
         {"outbox_id", "attempt", "durable_state", "provider_code", "exception_type"}
@@ -148,6 +187,15 @@ _ALLOWED_PAYLOAD_KEYS: frozenset[str] = frozenset(
         "http_status",
         "exception_type",
         "elapsed_ms",
+        "configured_mode",
+        "effective_mode",
+        "authoritative_strategy",
+        "hybrid_decision",
+        "fallback",
+        "fallback_category",
+        "fuzzy_latency_ms",
+        "embedding_latency_ms",
+        "vector_latency_ms",
     }
 )
 
@@ -273,6 +321,141 @@ def _validate_failure_category(event: str, failure_category: Any) -> None:
         )
 
 
+def _is_safe_recognition_mode_token(value: Any) -> bool:
+    return _is_safe_short_string(value, max_length=_MAX_OUTCOME)
+
+
+def _is_safe_recognition_strategy_token(value: Any) -> bool:
+    return _is_safe_short_string(value, max_length=_MAX_OUTCOME)
+
+
+def _is_safe_recognition_decision_token(value: Any) -> bool:
+    return _is_safe_short_string(value, max_length=_MAX_OUTCOME)
+
+
+def _is_safe_recognition_fallback_category_token(value: Any) -> bool:
+    return _is_safe_short_string(value, max_length=_MAX_FAILURE_CATEGORY)
+
+
+def _is_safe_recognition_latency_ms(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return False
+    return 0 <= value <= _MAX_ELAPSED_MS
+
+
+def _validate_recognition_event_fields(
+    *,
+    configured_mode: Any,
+    effective_mode: Any,
+    authoritative_strategy: Any,
+    hybrid_decision: Any,
+    fallback: Any,
+    fallback_category: Any,
+    fuzzy_latency_ms: Any,
+    embedding_latency_ms: Any,
+    vector_latency_ms: Any,
+) -> dict[str, Any]:
+    """Validate the closed recognition observation fields.
+
+    Returns the validated field dict. The shape enforces:
+
+    * ``configured_mode``, ``effective_mode``, ``authoritative_strategy``,
+      ``hybrid_decision``, ``fallback`` are REQUIRED for the
+      ``shadow_product_recognition`` event.
+    * ``fallback_category`` is REQUIRED when ``fallback`` is ``True``
+      and MUST NOT be present when ``fallback`` is ``False``.
+    * ``fuzzy_latency_ms``, ``embedding_latency_ms`` and
+      ``vector_latency_ms`` are OPTIONAL and, when present, must be
+      bounded non-negative integers.
+    """
+    fields: dict[str, Any] = {}
+
+    if not _is_safe_recognition_mode_token(configured_mode):
+        raise EventValidationError(
+            "configured_mode must be a short alnum token "
+            f"(got {configured_mode!r})"
+        )
+    if configured_mode not in _RECOGNITION_CONFIGURED_MODES:
+        raise EventValidationError(
+            f"configured_mode {configured_mode!r} not in recognition allowlist"
+        )
+    fields["configured_mode"] = configured_mode
+
+    if not _is_safe_recognition_mode_token(effective_mode):
+        raise EventValidationError(
+            "effective_mode must be a short alnum token "
+            f"(got {effective_mode!r})"
+        )
+    if effective_mode not in _RECOGNITION_EFFECTIVE_MODES:
+        raise EventValidationError(
+            f"effective_mode {effective_mode!r} not in recognition allowlist"
+        )
+    fields["effective_mode"] = effective_mode
+
+    if not _is_safe_recognition_strategy_token(authoritative_strategy):
+        raise EventValidationError(
+            "authoritative_strategy must be a short alnum token "
+            f"(got {authoritative_strategy!r})"
+        )
+    if authoritative_strategy not in _RECOGNITION_AUTHORITATIVE_STRATEGIES:
+        raise EventValidationError(
+            f"authoritative_strategy {authoritative_strategy!r} "
+            "not in recognition allowlist"
+        )
+    fields["authoritative_strategy"] = authoritative_strategy
+
+    if not _is_safe_recognition_decision_token(hybrid_decision):
+        raise EventValidationError(
+            "hybrid_decision must be a short alnum token "
+            f"(got {hybrid_decision!r})"
+        )
+    if hybrid_decision not in _RECOGNITION_HYBRID_DECISIONS:
+        raise EventValidationError(
+            f"hybrid_decision {hybrid_decision!r} not in recognition allowlist"
+        )
+    fields["hybrid_decision"] = hybrid_decision
+
+    if not isinstance(fallback, bool):
+        raise EventValidationError(
+            f"fallback must be a boolean (got {type(fallback).__name__})"
+        )
+    fields["fallback"] = fallback
+
+    if fallback:
+        if not _is_safe_recognition_fallback_category_token(fallback_category):
+            raise EventValidationError(
+                "fallback_category must be a short alnum token when "
+                f"fallback=true (got {fallback_category!r})"
+            )
+        if fallback_category not in _RECOGNITION_FALLBACK_CATEGORIES:
+            raise EventValidationError(
+                f"fallback_category {fallback_category!r} "
+                "not in recognition allowlist"
+            )
+        fields["fallback_category"] = fallback_category
+    elif fallback_category is not None:
+        raise EventValidationError(
+            "fallback_category must be absent when fallback=false "
+            f"(got {fallback_category!r})"
+        )
+
+    for field_name, value in (
+        ("fuzzy_latency_ms", fuzzy_latency_ms),
+        ("embedding_latency_ms", embedding_latency_ms),
+        ("vector_latency_ms", vector_latency_ms),
+    ):
+        if value is None:
+            continue
+        if not _is_safe_recognition_latency_ms(value):
+            raise EventValidationError(
+                f"{field_name} must be a non-negative integer "
+                f"<= {_MAX_ELAPSED_MS} (got {value!r})"
+            )
+        fields[field_name] = value
+
+    return fields
+
+
 def build_event(
     *,
     event: str,
@@ -288,6 +471,15 @@ def build_event(
     http_status: int | None = None,
     exception_type: str | None = None,
     elapsed_ms: int | None = None,
+    configured_mode: str | None = None,
+    effective_mode: str | None = None,
+    authoritative_strategy: str | None = None,
+    hybrid_decision: str | None = None,
+    fallback: bool | None = None,
+    fallback_category: str | None = None,
+    fuzzy_latency_ms: int | None = None,
+    embedding_latency_ms: int | None = None,
+    vector_latency_ms: int | None = None,
 ) -> dict[str, Any]:
     """Validate the input and return the JSON-ready payload.
 
@@ -310,21 +502,34 @@ def build_event(
             f"got {component!r}"
         )
 
-    if outcome is None and failure_category is None:
-        raise EventValidationError(
-            "event must declare exactly one of outcome or failure_category"
-        )
-    if outcome is not None and failure_category is not None:
-        raise EventValidationError(
-            "event must declare exactly one of outcome or failure_category, "
-            "not both"
-        )
-    if outcome is not None:
-        _validate_outcome(event, outcome)
-    else:
-        _validate_failure_category(event, failure_category)
+    is_recognition_event = event in _EVENTS_WITH_RECOGNITION_FIELDS
+    allows_no_outcome_or_failure = (
+        event in _EVENTS_WITHOUT_OUTCOME_OR_FAILURE
+    )
 
-    has_outcome = outcome is not None
+    if is_recognition_event or allows_no_outcome_or_failure:
+        if outcome is not None:
+            raise EventValidationError(
+                f"event {event!r} does not accept outcome"
+            )
+        if failure_category is not None:
+            raise EventValidationError(
+                f"event {event!r} does not accept failure_category"
+            )
+    else:
+        if outcome is None and failure_category is None:
+            raise EventValidationError(
+                "event must declare exactly one of outcome or failure_category"
+            )
+        if outcome is not None and failure_category is not None:
+            raise EventValidationError(
+                "event must declare exactly one of outcome or failure_category, "
+                "not both"
+            )
+        if outcome is not None:
+            _validate_outcome(event, outcome)
+        else:
+            _validate_failure_category(event, failure_category)
 
     payload: dict[str, Any] = {
         "event": event,
@@ -335,10 +540,43 @@ def build_event(
             else datetime.now(tz=timezone.utc).isoformat()
         ),
     }
-    if has_outcome:
-        payload["outcome"] = outcome
+    if not is_recognition_event and not allows_no_outcome_or_failure:
+        if outcome is not None:
+            payload["outcome"] = outcome
+        else:
+            payload["failure_category"] = failure_category
+
+    if is_recognition_event:
+        recognition_fields = _validate_recognition_event_fields(
+            configured_mode=configured_mode,
+            effective_mode=effective_mode,
+            authoritative_strategy=authoritative_strategy,
+            hybrid_decision=hybrid_decision,
+            fallback=fallback,
+            fallback_category=fallback_category,
+            fuzzy_latency_ms=fuzzy_latency_ms,
+            embedding_latency_ms=embedding_latency_ms,
+            vector_latency_ms=vector_latency_ms,
+        )
+        payload.update(recognition_fields)
     else:
-        payload["failure_category"] = failure_category
+        if any(
+            value is not None
+            for value in (
+                configured_mode,
+                effective_mode,
+                authoritative_strategy,
+                hybrid_decision,
+                fallback,
+                fallback_category,
+                fuzzy_latency_ms,
+                embedding_latency_ms,
+                vector_latency_ms,
+            )
+        ):
+            raise EventValidationError(
+                f"event {event!r} does not accept recognition fields"
+            )
 
     allowed_optional = _OPTIONAL_FIELDS_BY_EVENT.get(event, frozenset())
     optional_values: dict[str, Any] = {
@@ -437,6 +675,15 @@ def parse_event(line: str) -> dict[str, Any]:
         http_status=decoded.get("http_status"),
         exception_type=decoded.get("exception_type"),
         elapsed_ms=decoded.get("elapsed_ms"),
+        configured_mode=decoded.get("configured_mode"),
+        effective_mode=decoded.get("effective_mode"),
+        authoritative_strategy=decoded.get("authoritative_strategy"),
+        hybrid_decision=decoded.get("hybrid_decision"),
+        fallback=decoded.get("fallback"),
+        fallback_category=decoded.get("fallback_category"),
+        fuzzy_latency_ms=decoded.get("fuzzy_latency_ms"),
+        embedding_latency_ms=decoded.get("embedding_latency_ms"),
+        vector_latency_ms=decoded.get("vector_latency_ms"),
     )
 
 
@@ -484,6 +731,15 @@ def emit_event(
     http_status: int | None = None,
     exception_type: str | None = None,
     elapsed_ms: int | None = None,
+    configured_mode: str | None = None,
+    effective_mode: str | None = None,
+    authoritative_strategy: str | None = None,
+    hybrid_decision: str | None = None,
+    fallback: bool | None = None,
+    fallback_category: str | None = None,
+    fuzzy_latency_ms: int | None = None,
+    embedding_latency_ms: int | None = None,
+    vector_latency_ms: int | None = None,
     stream: Any = None,
 ) -> bool:
     """Build and emit a single JSON event line to the supplied stream.
@@ -515,6 +771,15 @@ def emit_event(
             http_status=http_status,
             exception_type=exception_type,
             elapsed_ms=elapsed_ms,
+            configured_mode=configured_mode,
+            effective_mode=effective_mode,
+            authoritative_strategy=authoritative_strategy,
+            hybrid_decision=hybrid_decision,
+            fallback=fallback,
+            fallback_category=fallback_category,
+            fuzzy_latency_ms=fuzzy_latency_ms,
+            embedding_latency_ms=embedding_latency_ms,
+            vector_latency_ms=vector_latency_ms,
         )
     except EventValidationError as exc:
         try:
@@ -555,6 +820,7 @@ __all__ = [
     "COMPONENT_LLM",
     "COMPONENT_OBSERVABILITY",
     "COMPONENT_OUTBOUND",
+    "COMPONENT_PRODUCT_RECOGNITION",
     "COMPONENT_WORKER",
     "EVENT_CALLBACK_OUTCOME",
     "EVENT_DATABASE_TECHNICAL_FAILURE",
@@ -562,6 +828,7 @@ __all__ = [
     "EVENT_LLM_REQUEST",
     "EVENT_OBSERVABILITY_EMIT_FAILED",
     "EVENT_OUTBOUND_OUTCOME",
+    "EVENT_SHADOW_PRODUCT_RECOGNITION",
     "EVENT_WORKER_CYCLE",
     "EVENT_WORKER_DISABLED",
     "EVENT_WORKER_READINESS_TRANSITION",

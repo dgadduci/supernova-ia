@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal, Protocol, Required, TypedDict
+from typing import Literal, NotRequired, Protocol, Required, TypedDict
 
 
 class AliasProjection(TypedDict, total=False):
@@ -96,12 +96,23 @@ class RecognizeContext(TypedDict, total=True):
       when the fuzzy decision is ``"ambiguous"``.
     - ``"commerce_dynamic_database"`` — the catalog is the active
       commerce dynamic database. The 4.11.5 guard is short-circuited.
+
+    The ``commerce_id`` field is optional and carries the
+    ``id_comercio`` the hybrid authoritative recognizer needs to run
+    its vector-search pipeline. Each entry point that owns the
+    ``id_comercio`` (``agregar_producto``, ``quitar_producto``,
+    ``modificar_producto``, the pending product selection resolver,
+    and the pending modification resolver) sets it through
+    ``intent_metadata``. When ``commerce_id`` is absent and the
+    factory did not inject a resolver, the hybrid authoritative
+    recognizer safely returns the fuzzy result.
     """
 
     catalog_scope: Literal[
         "pending_product_selection_restricted",
         "commerce_dynamic_database",
     ]
+    commerce_id: NotRequired[int]
 
 
 class ProductRecognizerProtocol(Protocol):

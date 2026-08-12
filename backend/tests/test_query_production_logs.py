@@ -55,6 +55,10 @@ from backend.cli.query_production_logs import (
     _validate_args,
     main,
 )
+from backend.observability import (
+    COMPONENT_PRODUCT_RECOGNITION,
+    EVENT_SHADOW_PRODUCT_RECOGNITION,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -1218,6 +1222,483 @@ class DefaultLimitTest(unittest.TestCase):
     def test_timeout_is_bounded(self) -> None:
         self.assertGreaterEqual(RAILWAY_TIMEOUT_SECONDS, 1)
         self.assertLessEqual(RAILWAY_TIMEOUT_SECONDS, 300)
+
+
+def _recognition_event(
+    *,
+    hybrid_decision: str = "unique",
+    fallback: bool = False,
+    fallback_category: str | None = None,
+    configured_mode: str = "shadow",
+    effective_mode: str = "shadow",
+    authoritative_strategy: str = "fuzzy",
+    fuzzy_latency_ms: int | None = 12,
+    embedding_latency_ms: int | None = 0,
+    vector_latency_ms: int | None = 0,
+    timestamp: str = "2026-08-11T11:00:00+00:00",
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "event": EVENT_SHADOW_PRODUCT_RECOGNITION,
+        "schema_version": 1,
+        "component": COMPONENT_PRODUCT_RECOGNITION,
+        "timestamp": timestamp,
+        "configured_mode": configured_mode,
+        "effective_mode": effective_mode,
+        "authoritative_strategy": authoritative_strategy,
+        "hybrid_decision": hybrid_decision,
+        "fallback": fallback,
+    }
+    if fallback_category is not None:
+        payload["fallback_category"] = fallback_category
+    if fuzzy_latency_ms is not None:
+        payload["fuzzy_latency_ms"] = fuzzy_latency_ms
+    if embedding_latency_ms is not None:
+        payload["embedding_latency_ms"] = embedding_latency_ms
+    if vector_latency_ms is not None:
+        payload["vector_latency_ms"] = vector_latency_ms
+    return payload
+
+
+class RecognitionEventCliTest(unittest.TestCase):
+    """Coverage for the closed ``shadow_product_recognition``
+    catalogue contract through the bounded Railway CLI.
+
+    The CLI must:
+
+    * apply ``--event shadow_product_recognition`` as a local
+      filter without ever forwarding the operator's event token to
+      Railway;
+    * return the bounded recognition event with all the documented
+      recognition fields, and the technical fallback / business
+      outcome distinction intact;
+    * treat empty Railway windows as inconclusive (zero-count
+      result, no recognition conclusions inferred);
+    * reject any line that *claims* the structured-event shape but
+      carries a forbidden sensitive field, never printing the raw
+      failing line.
+    """
+
+    def _args(self) -> list[str]:
+        return [
+            "--project", "p1",
+            "--environment", "e1",
+            "--service", "s1",
+            "--event", EVENT_SHADOW_PRODUCT_RECOGNITION,
+        ]
+
+    def test_recognition_event_with_unique_decision_round_trips(self) -> None:
+        event = _recognition_event(hybrid_decision="unique")
+        runner = MagicMock(
+            return_value=_FakeCompletedProcess(
+                stdout=json.dumps(event, sort_keys=True) + "\n"
+            )
+        )
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            exit_code = main(self._args(), runner=runner)
+        self.assertEqual(exit_code, EXIT_OK)
+        rendered = json.loads(stdout.getvalue())
+        self.assertEqual(rendered["count"], 1)
+        returned = rendered["events"][0]
+        self.assertEqual(returned["event"], EVENT_SHADOW_PRODUCT_RECOGNITION)
+        self.assertEqual(returned["component"], COMPONENT_PRODUCT_RECOGNITION)
+        self.assertEqual(returned["hybrid_decision"], "unique")
+        self.assertFalse(returned["fallback"])
+        self.assertNotIn("fallback_category", returned)
+        self.assertNotIn("id_comercio", returned)
+        self.assertNotIn("intent", returned)
+        self.assertNotIn("correlation_id", returned)
+        self.assertNotIn("scores", returned)
+
+    def test_recognition_event_with_ambiguous_is_not_fallback(self) -> None:
+        event = _recognition_event(hybrid_decision="ambiguous")
+        runner = MagicMock(
+            return_value=_FakeCompletedProcess(
+                stdout=json.dumps(event, sort_keys=True) + "\n"
+            )
+        )
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            exit_code = main(self._args(), runner=runner)
+        self.assertEqual(exit_code, EXIT_OK)
+        rendered = json.loads(stdout.getvalue())
+        returned = rendered["events"][0]
+        self.assertEqual(returned["hybrid_decision"], "ambiguous")
+        self.assertFalse(returned["fallback"])
+
+    def test_recognition_event_with_unknown_is_not_fallback(self) -> None:
+        event = _recognition_event(hybrid_decision="unknown")
+        runner = MagicMock(
+            return_value=_FakeCompletedProcess(
+                stdout=json.dumps(event, sort_keys=True) + "\n"
+            )
+        )
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            exit_code = main(self._args(), runner=runner)
+        self.assertEqual(exit_code, EXIT_OK)
+        rendered = json.loads(stdout.getvalue())
+        returned = rendered["events"][0]
+        self.assertEqual(returned["hybrid_decision"], "unknown")
+        self.assertFalse(returned["fallback"])
+
+    def test_recognition_event_with_technical_fallback_round_trips(self) -> None:
+        event = _recognition_event(
+            hybrid_decision="unknown",
+            fallback=True,
+            fallback_category="embedding_failure",
+            configured_mode="hybrid_authoritative",
+            effective_mode="hybrid_authoritative",
+            authoritative_strategy="hybrid",
+        )
+        runner = MagicMock(
+            return_value=_FakeCompletedProcess(
+                stdout=json.dumps(event, sort_keys=True) + "\n"
+            )
+        )
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            exit_code = main(self._args(), runner=runner)
+        self.assertEqual(exit_code, EXIT_OK)
+        rendered = json.loads(stdout.getvalue())
+        returned = rendered["events"][0]
+        self.assertTrue(returned["fallback"])
+        self.assertEqual(returned["fallback_category"], "embedding_failure")
+        self.assertEqual(returned["authoritative_strategy"], "hybrid")
+
+    def test_recognition_event_with_invalid_mode_round_trips(self) -> None:
+        event = _recognition_event(
+            hybrid_decision="not_evaluated",
+            fallback=True,
+            fallback_category="invalid_mode",
+            configured_mode="invalid_mode",
+            effective_mode="fuzzy",
+            authoritative_strategy="fuzzy",
+        )
+        runner = MagicMock(
+            return_value=_FakeCompletedProcess(
+                stdout=json.dumps(event, sort_keys=True) + "\n"
+            )
+        )
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            exit_code = main(self._args(), runner=runner)
+        self.assertEqual(exit_code, EXIT_OK)
+        rendered = json.loads(stdout.getvalue())
+        returned = rendered["events"][0]
+        self.assertEqual(returned["configured_mode"], "invalid_mode")
+        self.assertEqual(returned["effective_mode"], "fuzzy")
+        self.assertTrue(returned["fallback"])
+        self.assertEqual(returned["fallback_category"], "invalid_mode")
+
+    def test_recognition_event_does_not_push_event_token_to_railway(self) -> None:
+        captured_cmd: dict[str, list[str]] = {}
+
+        def _runner(cmd: list[str], **_kwargs: Any) -> Any:
+            captured_cmd["cmd"] = list(cmd)
+            return _FakeCompletedProcess(stdout="")
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            exit_code = main(self._args(), runner=_runner)
+        self.assertEqual(exit_code, EXIT_OK)
+        cmd = captured_cmd["cmd"]
+        self.assertNotIn("--filter", cmd)
+        self.assertNotIn(EVENT_SHADOW_PRODUCT_RECOGNITION, cmd)
+
+    def test_recognition_event_with_no_matches_is_inconclusive(self) -> None:
+        runner = MagicMock(return_value=_FakeCompletedProcess(stdout=""))
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            exit_code = main(self._args(), runner=runner)
+        self.assertEqual(exit_code, EXIT_OK)
+        rendered = json.loads(stdout.getvalue())
+        self.assertEqual(rendered["count"], 0)
+        self.assertEqual(rendered["events"], [])
+        # An empty bounded result is inconclusive; the CLI MUST
+        # not print success verdicts, traffic counters, fallback
+        # narratives or any other inference.
+        joined = stdout.getvalue()
+        for forbidden in ("recognized", "fallback", "leak", "matched"):
+            self.assertNotIn(forbidden, joined)
+
+    def test_recognition_event_with_mixed_railway_output_returns_only_event(self) -> None:
+        target = _recognition_event(hybrid_decision="ambiguous")
+        unrelated = _valid_event(event="outbound_attempt_outcome")
+        stdout_text = (
+            json.dumps(
+                {
+                    "timestamp": "2026-08-11T10:59:50Z",
+                    "stream": "stdout",
+                    "message": "INFO sqlalchemy.engine created engine",
+                },
+                sort_keys=True,
+            )
+            + "\n"
+            + json.dumps(unrelated, sort_keys=True)
+            + "\n"
+            + json.dumps(target, sort_keys=True)
+            + "\n"
+        )
+        runner = MagicMock(
+            return_value=_FakeCompletedProcess(stdout=stdout_text)
+        )
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            exit_code = main(self._args(), runner=runner)
+        self.assertEqual(exit_code, EXIT_OK)
+        rendered = json.loads(stdout.getvalue())
+        self.assertEqual(rendered["count"], 1)
+        self.assertEqual(
+            rendered["events"][0]["event"], EVENT_SHADOW_PRODUCT_RECOGNITION
+        )
+        self.assertNotIn("sqlalchemy", stdout.getvalue())
+
+    def test_recognition_event_with_sensitive_field_claim_rejected(self) -> None:
+        # A Railway line that claims the structured-event shape but
+        # smuggles a forbidden sensitive field MUST be rejected as
+        # an unparseable-output failure without the raw line ever
+        # leaking into operator-facing output.
+        envelope = {
+            "timestamp": "2026-08-11T11:00:00Z",
+            "message": json.dumps(
+                {
+                    "event": EVENT_SHADOW_PRODUCT_RECOGNITION,
+                    "schema_version": 1,
+                    "component": COMPONENT_PRODUCT_RECOGNITION,
+                    "configured_mode": "shadow",
+                    "effective_mode": "shadow",
+                    "authoritative_strategy": "fuzzy",
+                    "hybrid_decision": "unique",
+                    "fallback": False,
+                    "timestamp": "2026-08-11T11:00:00+00:00",
+                    "id_comercio": 42,
+                },
+                sort_keys=True,
+            ),
+        }
+        runner = MagicMock(
+            return_value=_FakeCompletedProcess(
+                stdout=json.dumps(envelope, sort_keys=True) + "\n"
+            )
+        )
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                exit_code = main(self._args(), runner=runner)
+        self.assertEqual(exit_code, EXIT_RAILWAY_UNPARSEABLE)
+        joined_stdout = stdout.getvalue()
+        joined_stderr = stderr.getvalue()
+        self.assertIn("railway_unparseable_output", joined_stderr)
+        self.assertNotIn("id_comercio", joined_stdout)
+        self.assertNotIn("id_comercio", joined_stderr)
+
+    def test_recognition_event_with_correlation_id_claim_rejected(self) -> None:
+        envelope = {
+            "timestamp": "2026-08-11T11:00:00Z",
+            "message": json.dumps(
+                {
+                    "event": EVENT_SHADOW_PRODUCT_RECOGNITION,
+                    "schema_version": 1,
+                    "component": COMPONENT_PRODUCT_RECOGNITION,
+                    "configured_mode": "shadow",
+                    "effective_mode": "shadow",
+                    "authoritative_strategy": "fuzzy",
+                    "hybrid_decision": "unique",
+                    "fallback": False,
+                    "timestamp": "2026-08-11T11:00:00+00:00",
+                    "correlation_id": "corr-abc",
+                },
+                sort_keys=True,
+            ),
+        }
+        runner = MagicMock(
+            return_value=_FakeCompletedProcess(
+                stdout=json.dumps(envelope, sort_keys=True) + "\n"
+            )
+        )
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                exit_code = main(self._args(), runner=runner)
+        self.assertEqual(exit_code, EXIT_RAILWAY_UNPARSEABLE)
+        self.assertNotIn("corr-abc", stdout.getvalue())
+        self.assertNotIn("corr-abc", stderr.getvalue())
+
+    def test_recognition_event_with_unsanitized_fallback_rejected(self) -> None:
+        # A Railway line that carries ``fallback=true`` with a
+        # non-sanitized ``fallback_category`` MUST be rejected by
+        # the catalogue without leaking the raw line.
+        envelope = {
+            "timestamp": "2026-08-11T11:00:00Z",
+            "message": json.dumps(
+                {
+                    "event": EVENT_SHADOW_PRODUCT_RECOGNITION,
+                    "schema_version": 1,
+                    "component": COMPONENT_PRODUCT_RECOGNITION,
+                    "configured_mode": "shadow",
+                    "effective_mode": "shadow",
+                    "authoritative_strategy": "fuzzy",
+                    "hybrid_decision": "unknown",
+                    "fallback": True,
+                    "fallback_category": "unknown",
+                    "timestamp": "2026-08-11T11:00:00+00:00",
+                },
+                sort_keys=True,
+            ),
+        }
+        runner = MagicMock(
+            return_value=_FakeCompletedProcess(
+                stdout=json.dumps(envelope, sort_keys=True) + "\n"
+            )
+        )
+        with contextlib.redirect_stderr(io.StringIO()):
+            exit_code = main(self._args(), runner=runner)
+        self.assertEqual(exit_code, EXIT_RAILWAY_UNPARSEABLE)
+
+    def test_recognition_event_fallback_without_category_rejected(self) -> None:
+        # The catalogue enforces ``fallback_category`` required
+        # when ``fallback=true``; the CLI rejects lines that
+        # violate that contract.
+        envelope = {
+            "timestamp": "2026-08-11T11:00:00Z",
+            "message": json.dumps(
+                {
+                    "event": EVENT_SHADOW_PRODUCT_RECOGNITION,
+                    "schema_version": 1,
+                    "component": COMPONENT_PRODUCT_RECOGNITION,
+                    "configured_mode": "shadow",
+                    "effective_mode": "shadow",
+                    "authoritative_strategy": "fuzzy",
+                    "hybrid_decision": "unknown",
+                    "fallback": True,
+                    "timestamp": "2026-08-11T11:00:00+00:00",
+                },
+                sort_keys=True,
+            ),
+        }
+        runner = MagicMock(
+            return_value=_FakeCompletedProcess(
+                stdout=json.dumps(envelope, sort_keys=True) + "\n"
+            )
+        )
+        with contextlib.redirect_stderr(io.StringIO()):
+            exit_code = main(self._args(), runner=runner)
+        self.assertEqual(exit_code, EXIT_RAILWAY_UNPARSEABLE)
+
+    def test_recognition_event_with_negative_latency_rejected(self) -> None:
+        envelope = {
+            "timestamp": "2026-08-11T11:00:00Z",
+            "message": json.dumps(
+                {
+                    "event": EVENT_SHADOW_PRODUCT_RECOGNITION,
+                    "schema_version": 1,
+                    "component": COMPONENT_PRODUCT_RECOGNITION,
+                    "configured_mode": "shadow",
+                    "effective_mode": "shadow",
+                    "authoritative_strategy": "fuzzy",
+                    "hybrid_decision": "unique",
+                    "fallback": False,
+                    "fuzzy_latency_ms": -1,
+                    "timestamp": "2026-08-11T11:00:00+00:00",
+                },
+                sort_keys=True,
+            ),
+        }
+        runner = MagicMock(
+            return_value=_FakeCompletedProcess(
+                stdout=json.dumps(envelope, sort_keys=True) + "\n"
+            )
+        )
+        with contextlib.redirect_stderr(io.StringIO()):
+            exit_code = main(self._args(), runner=runner)
+        self.assertEqual(exit_code, EXIT_RAILWAY_UNPARSEABLE)
+
+    def test_recognition_event_with_invalid_outcome_field_rejected(self) -> None:
+        # A recognition event must NOT carry ``outcome``; a Railway
+        # line that smuggles one MUST be rejected by the catalogue.
+        envelope = {
+            "timestamp": "2026-08-11T11:00:00Z",
+            "message": json.dumps(
+                {
+                    "event": EVENT_SHADOW_PRODUCT_RECOGNITION,
+                    "schema_version": 1,
+                    "component": COMPONENT_PRODUCT_RECOGNITION,
+                    "configured_mode": "shadow",
+                    "effective_mode": "shadow",
+                    "authoritative_strategy": "fuzzy",
+                    "hybrid_decision": "unique",
+                    "fallback": False,
+                    "outcome": "completed",
+                    "timestamp": "2026-08-11T11:00:00+00:00",
+                },
+                sort_keys=True,
+            ),
+        }
+        runner = MagicMock(
+            return_value=_FakeCompletedProcess(
+                stdout=json.dumps(envelope, sort_keys=True) + "\n"
+            )
+        )
+        with contextlib.redirect_stderr(io.StringIO()):
+            exit_code = main(self._args(), runner=runner)
+        self.assertEqual(exit_code, EXIT_RAILWAY_UNPARSEABLE)
+
+    def test_recognition_event_event_filter_validated_through_catalogue(self) -> None:
+        # ``--event shadow_product_recognition`` is a closed
+        # alnum token; the CLI's local event matcher accepts the
+        # operator's request and finds the matching line in the
+        # Railway output.
+        event = _recognition_event(hybrid_decision="unique")
+        runner = MagicMock(
+            return_value=_FakeCompletedProcess(
+                stdout=json.dumps(event, sort_keys=True) + "\n"
+            )
+        )
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            exit_code = main(self._args(), runner=runner)
+        self.assertEqual(exit_code, EXIT_OK)
+        rendered = json.loads(stdout.getvalue())
+        self.assertEqual(rendered["filter"]["event"], EVENT_SHADOW_PRODUCT_RECOGNITION)
+        self.assertEqual(rendered["count"], 1)
+
+    def test_recognition_event_bounded_by_limit(self) -> None:
+        events = [
+            _recognition_event(
+                hybrid_decision="unique",
+                timestamp=f"2026-08-11T11:00:0{i}+00:00",
+            )
+            for i in range(5)
+        ]
+        stdout_text = "\n".join(
+            json.dumps(ev, sort_keys=True) for ev in events
+        )
+        runner = MagicMock(
+            return_value=_FakeCompletedProcess(stdout=stdout_text + "\n")
+        )
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            exit_code = main(self._args() + ["--limit", "2"], runner=runner)
+        self.assertEqual(exit_code, EXIT_OK)
+        rendered = json.loads(stdout.getvalue())
+        self.assertEqual(rendered["count"], 2)
+
+    def test_recognition_event_since_filter_applied(self) -> None:
+        before = _recognition_event(
+            hybrid_decision="unique",
+            timestamp="2026-08-11T10:00:00+00:00",
+        )
+        after = _recognition_event(
+            hybrid_decision="unique",
+            timestamp="2026-08-11T12:00:00+00:00",
+        )
+        stdout_text = (
+            json.dumps(before, sort_keys=True)
+            + "\n"
+            + json.dumps(after, sort_keys=True)
+            + "\n"
+        )
+        runner = MagicMock(
+            return_value=_FakeCompletedProcess(stdout=stdout_text)
+        )
+        args = self._args() + ["--since", "2026-08-11T11:00:00+00:00"]
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            exit_code = main(args, runner=runner)
+        self.assertEqual(exit_code, EXIT_OK)
+        rendered = json.loads(stdout.getvalue())
+        self.assertEqual(rendered["count"], 1)
+        self.assertEqual(
+            rendered["events"][0]["timestamp"], "2026-08-11T12:00:00+00:00"
+        )
 
 
 if __name__ == "__main__":

@@ -75,22 +75,32 @@ def _float_env(name: str, default: float) -> float:
 _RECOGNIZER_MODES = ("fuzzy", "shadow", "hybrid_authoritative")
 
 
-def _product_recognizer_mode_env(name: str, default: str) -> str:
+def _product_recognizer_mode_env(name: str, default: str) -> tuple[str, str]:
+    """Resolve ``PRODUCT_RECOGNIZER_MODE``.
+
+    Returns a ``(configured_mode, effective_mode)`` tuple. The
+    configured mode is the raw operator-supplied env value (or the
+    default when the env var is unset). The effective mode is the
+    value the runtime actually applies (the configured literal when
+    valid, ``"fuzzy"`` when the configured literal falls outside the
+    documented set — with a single sanitized structured warning
+    carrying the configured literal, the effective mode, and the
+    sanitized reason category ``"invalid_mode"``).
+    """
     raw = os.environ.get(name)
-    if raw is None:
-        raw = default
-    if raw in _RECOGNIZER_MODES:
-        return raw
+    configured = raw if raw is not None else default
+    if configured in _RECOGNIZER_MODES:
+        return configured, configured
     fallback = "fuzzy"
     logger.warning(
         "product_recognizer_mode_invalid",
         extra={
-            "configured_mode": raw,
+            "configured_mode": configured,
             "effective_mode": fallback,
             "reason": "invalid_mode",
         },
     )
-    return fallback
+    return configured, fallback
 
 
 def _shadow_vector_top_k_env(name: str, default: int) -> int:
@@ -370,6 +380,7 @@ class Settings:
     embedding_timeout_seconds: int = DEFAULT_EMBEDDING_TIMEOUT_SECONDS
     embedding_batch_size: int = DEFAULT_EMBEDDING_BATCH_SIZE
     enable_local_admin_endpoints: bool = False
+    product_recognizer_configured_mode: str = DEFAULT_PRODUCT_RECOGNIZER_MODE
     product_recognizer_mode: Literal["fuzzy", "shadow", "hybrid_authoritative"] = (
         DEFAULT_PRODUCT_RECOGNIZER_MODE
     )
@@ -413,7 +424,7 @@ class Settings:
 
 
 def load_settings() -> Settings:
-    effective_mode = _product_recognizer_mode_env(
+    configured_mode, effective_mode = _product_recognizer_mode_env(
         "PRODUCT_RECOGNIZER_MODE",
         DEFAULT_PRODUCT_RECOGNIZER_MODE,
     )
@@ -444,6 +455,7 @@ def load_settings() -> Settings:
         enable_local_admin_endpoints=_bool_env(
             "ENABLE_LOCAL_ADMIN_ENDPOINTS", False
         ),
+        product_recognizer_configured_mode=configured_mode,
         product_recognizer_mode=cast(
             Literal["fuzzy", "shadow", "hybrid_authoritative"],
             effective_mode,

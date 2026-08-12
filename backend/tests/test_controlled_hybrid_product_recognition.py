@@ -23,20 +23,37 @@ run without infrastructure.
 """
 from __future__ import annotations
 
+import contextlib
+import importlib
+import io
 import json
 import logging
 import os
+import sys
 import tempfile
 import unittest
 from typing import Any
 from unittest import mock
+from unittest.mock import MagicMock, patch
 
 from backend.config.settings import Settings, load_settings
+from backend.intents.context import (
+    product_modification_resolver as modification_resolver_module,
+)
+from backend.intents.context import (
+    product_selection_context_resolver as selection_resolver_module,
+)
 from backend.intents.context.product_modification_resolver import (
     detectar_productos as detectar_productos_modification,
 )
 from backend.intents.context.product_selection_context_resolver import (
     detectar_productos as detectar_productos_selection,
+)
+from backend.intents.recognizers import (
+    modificar_producto_recognizer as modificar_recognizer_module,
+)
+from backend.intents.recognizers import (
+    quitar_producto_recognizer as quitar_recognizer_module,
 )
 from backend.intents.recognizers.modificar_producto_recognizer import (
     detectar_productos as detectar_productos_modificar,
@@ -44,13 +61,18 @@ from backend.intents.recognizers.modificar_producto_recognizer import (
 from backend.intents.recognizers.quitar_producto_recognizer import (
     detectar_productos as detectar_productos_quitar,
 )
+from backend.intents.schemas.processed_intent import ProcessedIntent
+from backend.intents.schemas.requirement_state import RequirementState
 from backend.recognizers.fuzzy_product_recognizer import FuzzyProductRecognizer
 from backend.recognizers.product_recognizer_contract import (
     ProductRecognizerProtocol,
     ProductRecognizerResult,
     RecognizeContext,
 )
-from backend.services.exceptions import HybridAuthoritativePolicyError
+from backend.services.exceptions import (
+    HybridAuthoritativeCommerceIdMissing,
+    HybridAuthoritativePolicyError,
+)
 from backend.services.hybrid_authoritative_policy_source import (
     HybridAuthoritativePolicySource,
 )
@@ -102,6 +124,18 @@ def _stub_policy() -> HybridDecisionPolicy:
         minimum_score_gap=0.05,
         vector_top_k=5,
     )
+
+
+class _StubSession:
+    """Stub SQLAlchemy session used by the factory integration tests."""
+
+    def close(self) -> None:  # pragma: no cover - trivial
+        return None
+
+
+def _stub_session_provider_any() -> Any:
+    """Return a non-SQLAlchemy session stub for the factory."""
+    return _StubSession()
 
 
 class _StubEmbeddingClient:
@@ -168,6 +202,10 @@ class _StubRecorder:
         id_comercio: int,
         intent: str | None,
         correlation_id: str,
+        configured_mode: str | None = None,
+        effective_mode: str | None = None,
+        authoritative_strategy: str = "fuzzy",
+        fallback_category: str | None = None,
         mode: str = "shadow",
     ) -> None:
         self.calls.append(
@@ -177,6 +215,10 @@ class _StubRecorder:
                 "id_comercio": id_comercio,
                 "intent": intent,
                 "correlation_id": correlation_id,
+                "configured_mode": configured_mode,
+                "effective_mode": effective_mode,
+                "authoritative_strategy": authoritative_strategy,
+                "fallback_category": fallback_category,
                 "mode": mode,
             }
         )
@@ -803,7 +845,7 @@ class FuzzyFallbackTest(unittest.TestCase):
         self.assertEqual(comparison.failure_category, "vector_failure")
         self.assertFalse(comparison.vector_available)
 
-    def test_resolver_returns_none_skips_pipeline(self):
+    def test_resolver_returns_none_raises_commerce_id_missing(self):
         inner = _StubFuzzyRecognizer(decision="ambiguous", posibles=[1, 2])
         recorder = _StubRecorder()
         recognizer = HybridAuthoritativeProductRecognizer(
@@ -814,15 +856,15 @@ class FuzzyFallbackTest(unittest.TestCase):
             recorder=recorder,
             commerce_id_resolver=lambda catalog: None,
         )
-        result = recognizer.recognize("empanada", _catalog())
-        fuzzy_result = inner.recognize("empanada", _catalog())
-        self.assertEqual(
-            result["encontrados_posibles"],
-            fuzzy_result["encontrados_posibles"],
-        )
+        with self.assertRaises(
+            HybridAuthoritativeCommerceIdMissing
+        ) as ctx:
+            recognizer.recognize("empanada", _catalog())
+        self.assertIn("commerce_id", str(ctx.exception))
+        # No silent fallback to fuzzy; the integration bug surfaces.
         self.assertEqual(recorder.calls, [])
 
-    def test_resolver_not_provided_skips_pipeline(self):
+    def test_resolver_not_provided_raises_commerce_id_missing(self):
         inner = _StubFuzzyRecognizer(decision="ambiguous", posibles=[1, 2])
         recorder = _StubRecorder()
         recognizer = HybridAuthoritativeProductRecognizer(
@@ -833,12 +875,11 @@ class FuzzyFallbackTest(unittest.TestCase):
             recorder=recorder,
             commerce_id_resolver=None,
         )
-        result = recognizer.recognize("empanada", _catalog())
-        fuzzy_result = inner.recognize("empanada", _catalog())
-        self.assertEqual(
-            result["encontrados_posibles"],
-            fuzzy_result["encontrados_posibles"],
-        )
+        with self.assertRaises(
+            HybridAuthoritativeCommerceIdMissing
+        ) as ctx:
+            recognizer.recognize("empanada", _catalog())
+        self.assertIn("commerce_id", str(ctx.exception))
         self.assertEqual(recorder.calls, [])
 
     def test_inner_fuzzy_recognizer_invoked_exactly_once(self):
@@ -905,12 +946,18 @@ class TelemetrySurfaceTest(unittest.TestCase):
             recorder=ShadowMetricsRecorder(),
             commerce_id_resolver=_resolver_with_commerce(99),
         )
-        with self.assertLogs("backend.services.shadow_metrics_recorder", level="INFO") as captured:
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
             recognizer.recognize("empanada", _catalog())
-        self.assertEqual(len(captured.records), 1)
-        record = captured.records[0]
-        self.assertEqual(getattr(record, "mode", None), "hybrid_authoritative")
-        self.assertFalse(getattr(record, "hybrid_non_authoritative", True))
+        event = json.loads(stdout.getvalue().strip())
+        self.assertEqual(event["event"], "shadow_product_recognition")
+        self.assertEqual(event["configured_mode"], "hybrid_authoritative")
+        self.assertEqual(event["effective_mode"], "hybrid_authoritative")
+        self.assertEqual(event["authoritative_strategy"], "hybrid")
+        # The hybrid_authoritative call MUST NOT mark ``hybrid_non_authoritative``
+        # (the provisional weights/thresholds are no longer part of the
+        # closed-shape event, but the recorder no longer attaches them at
+        # all so the operator-facing payload stays bounded).
+        self.assertFalse(event.get("hybrid_non_authoritative", False))
 
     def test_recorder_records_filtered_vector_side(self):
         recognizer = HybridAuthoritativeProductRecognizer(
@@ -923,14 +970,18 @@ class TelemetrySurfaceTest(unittest.TestCase):
             recorder=ShadowMetricsRecorder(),
             commerce_id_resolver=_resolver_with_commerce(99),
         )
-        with self.assertLogs("backend.services.shadow_metrics_recorder", level="INFO") as captured:
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
             recognizer.recognize(
                 "empanada",
                 _catalog(),
                 intent_metadata={"catalog_scope": "commerce_dynamic_database"},
             )
-        record = captured.records[0]
-        self.assertEqual(getattr(record, "vector_candidate_count", None), 1)
+        event = json.loads(stdout.getvalue().strip())
+        # Vector candidate count is not part of the closed-shape event;
+        # the closed event only carries the bounded aggregate latencies.
+        self.assertNotIn("vector_candidate_count", event)
+        self.assertIn("vector_latency_ms", event)
+        self.assertIsInstance(event["vector_latency_ms"], int)
 
 
 class DecideHybridHelperTest(unittest.TestCase):
@@ -959,6 +1010,1377 @@ class DecideHybridHelperTest(unittest.TestCase):
             policy=_stub_policy(),
         )
         self.assertEqual(decision, "unique")
+
+
+_PRODUCTION_MODULES = (
+    (
+        "backend.intents.recognizers.quitar_producto_recognizer",
+        quitar_recognizer_module,
+    ),
+    (
+        "backend.intents.recognizers.modificar_producto_recognizer",
+        modificar_recognizer_module,
+    ),
+    (
+        "backend.intents.context.product_selection_context_resolver",
+        selection_resolver_module,
+    ),
+    (
+        "backend.intents.context.product_modification_resolver",
+        modification_resolver_module,
+    ),
+)
+
+
+def _reload_production_module(module_name: str, env: dict[str, str]):
+    """Reload a production module with ``env`` applied so the
+    module-level ``get_product_recognizer(load_settings())`` binding
+    re-resolves against the supplied ``PRODUCT_RECOGNIZER_MODE``.
+    """
+    with mock.patch.dict(os.environ, env, clear=True):
+        fresh = importlib.import_module(module_name)
+        reloaded = importlib.reload(fresh)
+    sys.modules[module_name] = reloaded
+    return reloaded
+
+
+class SharedBoundaryFactoryBindingTest(unittest.TestCase):
+    """Verify each production module binds its recognizer through the
+    shared ``get_product_recognizer(load_settings())`` factory rather
+    than constructing ``FuzzyProductRecognizer`` locally.
+
+    Subphase 4.12B promotes the existing factory to the only selector
+    for ``agregar_producto``, ``quitar_producto``, ``modificar_producto``,
+    pending product selection, and pending modification destination
+    resolution. Every production wrapper must read the same configured
+    mode as the orchestrator's ``agregar_producto_orchestrator``
+    module.
+    """
+
+    def test_default_mode_resolves_to_fuzzy_in_every_module(self):
+        for module_name, module in _PRODUCTION_MODULES:
+            with self.subTest(module_name=module_name):
+                self.assertIsInstance(
+                    module._product_recognizer,  # type: ignore[attr-defined]
+                    FuzzyProductRecognizer,
+                )
+
+    def test_source_files_use_factory_and_drop_local_fuzzy_construction(self):
+        for module_name, module in _PRODUCTION_MODULES:
+            with self.subTest(module_name=module_name):
+                with open(module.__file__, encoding="utf-8") as fh:
+                    source = fh.read()
+                self.assertIn("get_product_recognizer", source)
+                self.assertIn("load_settings", source)
+                self.assertNotIn("FuzzyProductRecognizer()", source)
+
+    def test_recognizer_symbol_is_module_level_bound(self):
+        for module_name, module in _PRODUCTION_MODULES:
+            with self.subTest(module_name=module_name):
+                self.assertTrue(
+                    hasattr(module, "_product_recognizer"),
+                    f"{module_name} must expose a module-level "
+                    "_product_recognizer bound by the factory",
+                )
+
+
+class InvalidModeSafeFuzzyBindingTest(unittest.TestCase):
+    """Verify an unrecognised ``PRODUCT_RECOGNIZER_MODE`` value resolves
+    every production module's recognizer to a safe ``FuzzyProductRecognizer``
+    via the existing factory's invalid-mode fallback.
+    """
+
+    def test_invalid_mode_yields_fuzzy_in_all_modules(self):
+        for module_name, _ in _PRODUCTION_MODULES:
+            with self.subTest(module_name=module_name):
+                reloaded = _reload_production_module(
+                    module_name,
+                    {"PRODUCT_RECOGNIZER_MODE": "hybrid_active"},
+                )
+                try:
+                    self.assertIsInstance(
+                        reloaded._product_recognizer,  # type: ignore[attr-defined]
+                        FuzzyProductRecognizer,
+                    )
+                finally:
+                    _reload_production_module(
+                        module_name, {"PRODUCT_RECOGNIZER_MODE": "fuzzy"}
+                    )
+
+    def test_capitalised_typo_yields_fuzzy_in_all_modules(self):
+        for module_name, _ in _PRODUCTION_MODULES:
+            with self.subTest(module_name=module_name):
+                reloaded = _reload_production_module(
+                    module_name,
+                    {"PRODUCT_RECOGNIZER_MODE": "HybridAuthoritative"},
+                )
+                try:
+                    self.assertIsInstance(
+                        reloaded._product_recognizer,  # type: ignore[attr-defined]
+                        FuzzyProductRecognizer,
+                    )
+                finally:
+                    _reload_production_module(
+                        module_name, {"PRODUCT_RECOGNIZER_MODE": "fuzzy"}
+                    )
+
+
+class HybridAuthoritativeBindingTest(unittest.TestCase):
+    """Verify the hybrid authoritative mode propagates to every
+    production module when the calibrated policy file is eligible.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._policy_payload = {
+            "selected_policy": {
+                "fuzzy_weight": 0.5,
+                "vector_weight": 0.5,
+                "unique_threshold": 0.7,
+                "ambiguous_threshold": 0.4,
+                "minimum_score_gap": 0.05,
+                "vector_top_k": 5,
+            },
+            "eligibility": {"status": "eligible"},
+        }
+        cls._tmpdir = tempfile.TemporaryDirectory()
+        cls._policy_path = cls._write_policy(cls._policy_payload)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmpdir.cleanup()
+        # Reset every production module to fuzzy mode.
+        for module_name, _ in _PRODUCTION_MODULES:
+            _reload_production_module(
+                module_name, {"PRODUCT_RECOGNIZER_MODE": "fuzzy"}
+            )
+
+    @classmethod
+    def _write_policy(cls, payload: dict) -> str:
+        descriptor, path = tempfile.mkstemp(
+            suffix=".json", dir=cls._tmpdir.name, prefix="hybrid_policy_"
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+        return path
+
+    def test_hybrid_mode_binds_hybrid_recognizer_in_every_module(self):
+        env = {
+            "PRODUCT_RECOGNIZER_MODE": "hybrid_authoritative",
+            "HYBRID_AUTHORITATIVE_POLICY_PATH": self._policy_path,
+        }
+        for module_name, _ in _PRODUCTION_MODULES:
+            with self.subTest(module_name=module_name):
+                reloaded = _reload_production_module(module_name, env)
+                try:
+                    self.assertIsInstance(
+                        reloaded._product_recognizer,  # type: ignore[attr-defined]
+                        HybridAuthoritativeProductRecognizer,
+                    )
+                finally:
+                    _reload_production_module(
+                        module_name, {"PRODUCT_RECOGNIZER_MODE": "fuzzy"}
+                    )
+
+
+class QuitarFlowFactoryBoundaryTest(unittest.TestCase):
+    """Verify the quitar_producto wrapper threads its catalog through
+    the factory-bound recognizer and preserves caller-owned catalog
+    construction.
+    """
+
+    def test_quitar_wrapper_invokes_factory_bound_recognizer(self):
+        sentinel = _StubFuzzyRecognizer(
+            decision="unique", encontrados=[1]
+        )
+        original = quitar_recognizer_module._product_recognizer  # type: ignore[attr-defined]
+        quitar_recognizer_module._product_recognizer = sentinel  # type: ignore[attr-defined]
+        try:
+            catalog = [
+                {"producto_presentacion_id": 1, "producto_nombre": "x"}
+            ]
+            result = detectar_productos_quitar("x", catalog)
+        finally:
+            quitar_recognizer_module._product_recognizer = original  # type: ignore[attr-defined]
+        self.assertEqual(sentinel.call_count, 1)
+        self.assertEqual(result["encontrados"][0]["producto_presentacion_id"], 1)
+
+    def test_quitar_wrapper_passes_intent_metadata_through(self):
+        sentinel = _StubFuzzyRecognizer(
+            decision="unique", encontrados=[1]
+        )
+        original = quitar_recognizer_module._product_recognizer  # type: ignore[attr-defined]
+        quitar_recognizer_module._product_recognizer = sentinel  # type: ignore[attr-defined]
+        try:
+            catalog = [
+                {"producto_presentacion_id": 1, "producto_nombre": "x"}
+            ]
+            detectar_productos_quitar(
+                "x",
+                catalog,
+                intent_metadata={  # type: ignore[arg-type]
+                    "catalog_scope": "pending_product_selection_restricted"
+                },
+            )
+        finally:
+            quitar_recognizer_module._product_recognizer = original  # type: ignore[attr-defined]
+        self.assertEqual(
+            sentinel.last_kwargs["intent_metadata"],  # type: ignore[attr-defined]
+            {"catalog_scope": "pending_product_selection_restricted"},
+        )
+
+
+class ModificarFlowFactoryBoundaryTest(unittest.TestCase):
+    """Verify the modificar_producto wrapper threads its source and
+    destination catalogs through the factory-bound recognizer.
+    """
+
+    def test_modificar_wrapper_invokes_factory_bound_recognizer(self):
+        sentinel = _StubFuzzyRecognizer(
+            decision="unique", encontrados=[100]
+        )
+        original = (
+            modificar_recognizer_module._product_recognizer  # type: ignore[attr-defined]
+        )
+        modificar_recognizer_module._product_recognizer = sentinel  # type: ignore[attr-defined]
+        try:
+            catalog = [
+                {"producto_presentacion_id": 100, "producto_nombre": "x"}
+            ]
+            result = detectar_productos_modificar("x", catalog)
+        finally:
+            (
+                modificar_recognizer_module._product_recognizer  # type: ignore[attr-defined]
+            ) = original
+        self.assertEqual(sentinel.call_count, 1)
+        self.assertEqual(
+            result["encontrados"][0]["producto_presentacion_id"], 100
+        )
+
+
+class PendingSelectionFlowFactoryBoundaryTest(unittest.TestCase):
+    """Verify the pending product selection resolver forwards
+    ``catalog_scope=pending_product_selection_restricted`` through the
+    factory-bound recognizer.
+    """
+
+    def test_selection_wrapper_forwards_restricted_catalog_scope(self):
+        sentinel = _StubFuzzyRecognizer(
+            decision="ambiguous", posibles=[1, 2]
+        )
+        original = (
+            selection_resolver_module._product_recognizer  # type: ignore[attr-defined]
+        )
+        selection_resolver_module._product_recognizer = sentinel  # type: ignore[attr-defined]
+        try:
+            detectar_productos_selection(
+                "x",
+                [{"producto_presentacion_id": 1, "producto_nombre": "x"}],
+                intent_metadata={  # type: ignore[arg-type]
+                    "catalog_scope": "pending_product_selection_restricted"
+                },
+            )
+        finally:
+            (
+                selection_resolver_module._product_recognizer  # type: ignore[attr-defined]
+            ) = original
+        self.assertEqual(
+            sentinel.last_kwargs["intent_metadata"],  # type: ignore[attr-defined]
+            {"catalog_scope": "pending_product_selection_restricted"},
+        )
+
+
+class PendingModificationFlowFactoryBoundaryTest(unittest.TestCase):
+    """Verify the pending modification resolver threads its destination
+    catalog through the factory-bound recognizer.
+    """
+
+    def test_modification_wrapper_invokes_factory_bound_recognizer(self):
+        sentinel = _StubFuzzyRecognizer(
+            decision="unique", encontrados=[200]
+        )
+        original = (
+            modification_resolver_module._product_recognizer  # type: ignore[attr-defined]
+        )
+        modification_resolver_module._product_recognizer = sentinel  # type: ignore[attr-defined]
+        try:
+            catalog = [
+                {"producto_presentacion_id": 200, "producto_nombre": "y"}
+            ]
+            result = detectar_productos_modification("y", catalog)
+        finally:
+            (
+                modification_resolver_module._product_recognizer  # type: ignore[attr-defined]
+            ) = original
+        self.assertEqual(sentinel.call_count, 1)
+        self.assertEqual(
+            result["encontrados"][0]["producto_presentacion_id"], 200
+        )
+
+
+class ModeContractAcrossFlowsTest(unittest.TestCase):
+    """Verify the three documented mode contracts apply uniformly to
+    every flow when the recognizer is the factory output.
+    """
+
+    def _patch_recognizer(self, module, recognizer):
+        original = module._product_recognizer  # type: ignore[attr-defined]
+        module._product_recognizer = recognizer  # type: ignore[attr-defined]
+        return original
+
+    def _restore(self, module, original):
+        module._product_recognizer = original  # type: ignore[attr-defined]
+
+    def test_fuzzy_mode_is_authoritative_for_quitar(self):
+        recognizer = _StubFuzzyRecognizer(
+            decision="unique", encontrados=[1]
+        )
+        catalog = [{"producto_presentacion_id": 1, "producto_nombre": "x"}]
+        original = self._patch_recognizer(
+            quitar_recognizer_module, recognizer
+        )
+        try:
+            result = detectar_productos_quitar("x", catalog)
+        finally:
+            self._restore(quitar_recognizer_module, original)
+        self.assertEqual(
+            result["encontrados"][0]["producto_presentacion_id"], 1
+        )
+
+    def test_shadow_mode_keeps_fuzzy_authoritative_for_quitar(self):
+        recognizer = ShadowedProductRecognizer(
+            inner=_StubFuzzyRecognizer(
+                decision="unique", encontrados=[1]
+            ),
+            shadow=mock.MagicMock(),
+            recorder=_StubRecorder(),
+            commerce_id_resolver=None,
+        )
+        catalog = [{"producto_presentacion_id": 1, "producto_nombre": "x"}]
+        original = self._patch_recognizer(
+            quitar_recognizer_module, recognizer
+        )
+        try:
+            result = detectar_productos_quitar("x", catalog)
+        finally:
+            self._restore(quitar_recognizer_module, original)
+        self.assertEqual(
+            result["encontrados"][0]["producto_presentacion_id"], 1
+        )
+
+    def test_hybrid_authoritative_unique_returns_unique_for_quitar(self):
+        recognizer = HybridAuthoritativeProductRecognizer(
+            inner=_StubFuzzyRecognizer(
+                decision="unique", encontrados=[1]
+            ),
+            policy=_stub_policy(),
+            embedding_client=_StubEmbeddingClient(),
+            vector_search_service=(
+                lambda: _StubVectorSearchService(matches=[
+                    _StubVectorMatch(1, 0.9)
+                ])
+            ),
+            recorder=_StubRecorder(),
+            commerce_id_resolver=_resolver_with_commerce(99),
+        )
+        catalog = [{"producto_presentacion_id": 1, "producto_nombre": "x"}]
+        original = self._patch_recognizer(
+            quitar_recognizer_module, recognizer
+        )
+        try:
+            result = detectar_productos_quitar("x", catalog)
+        finally:
+            self._restore(quitar_recognizer_module, original)
+        self.assertEqual(
+            result["encontrados"][0]["producto_presentacion_id"], 1
+        )
+
+    def test_hybrid_authoritative_unique_isolated_to_received_catalog(self):
+        """Hybrid unique must not introduce candidates outside the
+        caller-supplied catalog (commerce-isolation invariant)."""
+        recognizer = HybridAuthoritativeProductRecognizer(
+            inner=_StubFuzzyRecognizer(
+                decision="unique", encontrados=[1]
+            ),
+            policy=_stub_policy(),
+            embedding_client=_StubEmbeddingClient(),
+            vector_search_service=(
+                lambda: _StubVectorSearchService(matches=[
+                    _StubVectorMatch(99, 0.95)
+                ])
+            ),
+            recorder=_StubRecorder(),
+            commerce_id_resolver=_resolver_with_commerce(99),
+        )
+        catalog = [{"producto_presentacion_id": 1, "producto_nombre": "x"}]
+        original = self._patch_recognizer(
+            quitar_recognizer_module, recognizer
+        )
+        try:
+            result = detectar_productos_quitar("x", catalog)
+        finally:
+            self._restore(quitar_recognizer_module, original)
+        ids = [
+            entry["producto_presentacion_id"]
+            for entry in result["encontrados"]
+        ]
+        self.assertEqual(ids, [1])
+        self.assertNotIn(99, ids)
+
+    def test_hybrid_authoritative_unknown_returns_unknown_for_quitar(self):
+        """Hybrid unknown is authoritative; it does NOT fall back to
+        fuzzy. The 4.11.7 guard does not apply because the fuzzy
+        decision is unknown, not unique.
+        """
+        recognizer = HybridAuthoritativeProductRecognizer(
+            inner=_StubFuzzyRecognizer(decision="unknown"),
+            policy=_stub_policy(),
+            embedding_client=_StubEmbeddingClient(),
+            vector_search_service=(
+                lambda: _StubVectorSearchService(matches=[
+                    _StubVectorMatch(99, 0.95)
+                ])
+            ),
+            recorder=_StubRecorder(),
+            commerce_id_resolver=_resolver_with_commerce(99),
+        )
+        catalog = [{"producto_presentacion_id": 1, "producto_nombre": "x"}]
+        original = self._patch_recognizer(
+            quitar_recognizer_module, recognizer
+        )
+        try:
+            result = detectar_productos_quitar("x", catalog)
+        finally:
+            self._restore(quitar_recognizer_module, original)
+        self.assertEqual(result["encontrados"], [])
+        self.assertEqual(len(result["no_encontrados"]), 1)
+
+
+class CommerceIdFlowIntegrationTest(unittest.TestCase):
+    """Real-entry-point integration tests for the Subphase 4.12B
+    commerce-id wiring.
+
+    The tests use a spy recognizer that records the ``intent_metadata``
+    passed to it. Each production wrapper is exercised through its
+    real ``detectar_productos`` alias, and the spy verifies the
+    ``commerce_id`` field arrived at the recognizer.
+    """
+
+    class _SpyRecognizer:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def recognize(
+            self,
+            text: str,
+            catalog: list[dict],
+            *,
+            intent_metadata=None,
+        ):
+            self.calls.append(
+                {
+                    "text": text,
+                    "catalog": catalog,
+                    "intent_metadata": intent_metadata,
+                }
+            )
+            return {
+                "encontrados": [],
+                "encontrados_posibles": [],
+                "encontrados_no_disponibles": [],
+                "no_encontrados": [{"texto_origen": text}],
+            }
+
+    def _patch_module(self, module, recognizer):
+        original = module._product_recognizer  # type: ignore[attr-defined]
+        module._product_recognizer = recognizer  # type: ignore[attr-defined]
+        return original
+
+    def _restore_module(self, module, original):
+        module._product_recognizer = original  # type: ignore[attr-defined]
+
+    def test_agregar_wrapper_threads_commerce_id_via_intent_metadata(self):
+        """``agregar_producto``'s wrapper must forward
+        ``commerce_id`` through ``intent_metadata``.
+        """
+        spy = self._SpyRecognizer()
+        from backend.intents.orchestration import (
+            agregar_producto_orchestrator as orchestrator_module,
+        )
+
+        original = self._patch_module(orchestrator_module, spy)
+        try:
+            catalog = [
+                {"producto_presentacion_id": 1, "producto_nombre": "x"}
+            ]
+            orchestrator_module.detectar_productos(
+                "empanada de carne",
+                catalog,
+                intent_metadata={
+                    "catalog_scope": "commerce_dynamic_database",
+                    "commerce_id": 7,
+                },
+            )
+        finally:
+            self._restore_module(orchestrator_module, original)
+
+        self.assertEqual(len(spy.calls), 1)
+        self.assertEqual(spy.calls[0]["intent_metadata"]["commerce_id"], 7)
+        self.assertEqual(
+            spy.calls[0]["intent_metadata"]["catalog_scope"],
+            "commerce_dynamic_database",
+        )
+
+    def test_quitar_wrapper_threads_commerce_id_via_intent_metadata(self):
+        """``quitar_producto``'s wrapper must forward
+        ``commerce_id`` through ``intent_metadata``.
+        """
+        spy = self._SpyRecognizer()
+        from backend.intents.recognizers import (
+            quitar_producto_recognizer as quitar_module,
+        )
+
+        original = self._patch_module(quitar_module, spy)
+        try:
+            catalog = [
+                {
+                    "producto_presentacion_id": 10,
+                    "producto_nombre": "Empanada",
+                    "pedido_producto_id": 1,
+                }
+            ]
+            quitar_module.detectar_productos(
+                "empanada",
+                catalog,
+                intent_metadata={
+                    "catalog_scope": "commerce_dynamic_database",
+                    "commerce_id": 42,
+                },
+            )
+        finally:
+            self._restore_module(quitar_module, original)
+
+        self.assertEqual(len(spy.calls), 1)
+        self.assertEqual(spy.calls[0]["intent_metadata"]["commerce_id"], 42)
+
+    def test_modificar_wrapper_threads_commerce_id_via_intent_metadata(self):
+        """``modificar_producto``'s wrapper must forward
+        ``commerce_id`` through ``intent_metadata``.
+        """
+        spy = self._SpyRecognizer()
+        from backend.intents.recognizers import (
+            modificar_producto_recognizer as modificar_module,
+        )
+
+        original = self._patch_module(modificar_module, spy)
+        try:
+            catalog = [
+                {"producto_presentacion_id": 200, "producto_nombre": "Pizza"}
+            ]
+            modificar_module.detectar_productos(
+                "pizza",
+                catalog,
+                intent_metadata={
+                    "catalog_scope": "commerce_dynamic_database",
+                    "commerce_id": 99,
+                },
+            )
+        finally:
+            self._restore_module(modificar_module, original)
+
+        self.assertEqual(len(spy.calls), 1)
+        self.assertEqual(spy.calls[0]["intent_metadata"]["commerce_id"], 99)
+
+    def test_selection_resolver_threads_commerce_id_via_intent_metadata(self):
+        """The pending product selection resolver must forward
+        ``commerce_id`` through ``intent_metadata`` when supplied.
+        """
+        spy = self._SpyRecognizer()
+        from backend.intents.context import (
+            product_selection_context_resolver as resolver_module,
+        )
+
+        original = self._patch_module(resolver_module, spy)
+        try:
+            active = ProcessedIntent(
+                intent="agregar_producto",
+                source_text="quiero pizza",
+                status="pending_resolution",
+                recognizer="recognizer_productos",
+                handler="agregar_producto",
+                resolved_data={"cantidad": 1},
+                requirements=[
+                    RequirementState(
+                        name="producto_presentacion_id",
+                        status="pending",
+                        value=None,
+                    )
+                ],
+                candidate_ids=[1, 2],
+            )
+            catalog = [
+                {"producto_presentacion_id": pid, "producto_nombre": f"item-{pid}"}
+                for pid in [1, 2]
+            ]
+            resolver_module.resolve_product_selection(
+                "item-1",
+                active,
+                catalog,
+                commerce_id=99,
+            )
+        finally:
+            self._restore_module(resolver_module, original)
+
+        self.assertEqual(len(spy.calls), 1)
+        self.assertEqual(spy.calls[0]["intent_metadata"]["commerce_id"], 99)
+        self.assertEqual(
+            spy.calls[0]["intent_metadata"]["catalog_scope"],
+            "pending_product_selection_restricted",
+        )
+
+    def test_modification_resolver_threads_commerce_id_via_intent_metadata(self):
+        """The pending modification resolver must forward
+        ``commerce_id`` through ``intent_metadata``.
+        """
+        spy = self._SpyRecognizer()
+        from backend.intents.context import (
+            product_modification_resolver as resolver_module,
+        )
+
+        original = self._patch_module(resolver_module, spy)
+        try:
+            catalog = [{"producto_presentacion_id": 200, "producto_nombre": "y"}]
+            conversation = MagicMock()
+            conversation.id_comercio = 33
+            with patch.object(resolver_module, "ProductoQueryService") as svc:
+                svc.return_value.list_presentaciones_by_ids.return_value = catalog
+                db = MagicMock()
+
+                with patch.object(
+                    resolver_module, "recognize_quitar_producto"
+                ) as qpr:
+                    qpr.return_value = {
+                        "encontrados": [],
+                        "encontrados_posibles": [],
+                        "encontrados_no_disponibles": [],
+                        "no_encontrados": [{"texto_origen": "y"}],
+                    }
+                    resolver_module.resolve_product_modification(
+                        db,
+                        conversation,
+                        "y",
+                        ProcessedIntent(
+                            intent="modificar_producto",
+                            source_text="x",
+                            status="pending_resolution",
+                            recognizer="modificar_producto_recognizer",
+                            handler="modificar_producto",
+                            stage="destination_selection",
+                            resolved_data={
+                                "source_candidate_ids": [1],
+                                "destination_candidate_ids": [200],
+                            },
+                            candidate_ids=[],
+                        ),
+                    )
+        finally:
+            self._restore_module(resolver_module, original)
+
+        self.assertEqual(len(spy.calls), 1)
+        self.assertEqual(spy.calls[0]["intent_metadata"]["commerce_id"], 33)
+
+
+class HybridPipelineCommerceIntegrationTest(unittest.TestCase):
+    """End-to-end integration tests that prove the hybrid pipeline
+    actually runs when the production entry points supply the
+    ``commerce_id`` via ``intent_metadata``."""
+
+    def test_real_hybrid_pipeline_executes_when_commerce_id_is_in_intent_metadata(
+        self,
+    ):
+        """The real ``HybridAuthoritativeProductRecognizer`` runs the
+        embedding + vector pipeline when the entry point supplies a
+        ``commerce_id`` via ``intent_metadata`` and returns the hybrid
+        decision (not the fuzzy result).
+        """
+        from backend.recognizers.fuzzy_product_recognizer import (
+            FuzzyProductRecognizer,
+        )
+        from backend.services.product_recognition_calibration_policy import (
+            HybridDecisionPolicy,
+        )
+
+        vector_service = _StubVectorSearchService(
+            matches=[_StubVectorMatch(1, 0.95)]
+        )
+        recorder = _StubRecorder()
+        recognizer = HybridAuthoritativeProductRecognizer(
+            inner=FuzzyProductRecognizer(),
+            policy=HybridDecisionPolicy(
+                fuzzy_weight=0.5,
+                vector_weight=0.5,
+                unique_threshold=0.7,
+                ambiguous_threshold=0.4,
+                minimum_score_gap=0.05,
+                vector_top_k=5,
+            ),
+            embedding_client=_StubEmbeddingClient(),
+            vector_search_service=lambda: vector_service,
+            recorder=recorder,
+            configured_mode="hybrid_authoritative",
+            effective_mode="hybrid_authoritative",
+        )
+
+        from backend.intents.orchestration import (
+            agregar_producto_orchestrator as orchestrator_module,
+        )
+
+        original = orchestrator_module._product_recognizer  # type: ignore[attr-defined]
+        orchestrator_module._product_recognizer = recognizer  # type: ignore[attr-defined]
+        try:
+            catalog = [
+                {
+                    "producto_presentacion_id": 1,
+                    "producto_nombre": "Empanada de Carne",
+                    "presentacion_codigo": "unidad",
+                    "aliases": {"general_aliases": [], "specific_aliases": []},
+                }
+            ]
+            result = orchestrator_module.detectar_productos(
+                "empanada de carne",
+                catalog,
+                intent_metadata={
+                    "catalog_scope": "commerce_dynamic_database",
+                    "commerce_id": 7,
+                },
+            )
+        finally:
+            orchestrator_module._product_recognizer = original  # type: ignore[attr-defined]
+
+        # The hybrid pipeline ran: the stub vector service was
+        # invoked with the resolved commerce id (7) and the hybrid
+        # decision was returned (not the fuzzy result).
+        self.assertEqual(vector_service.call_count, 1)
+        self.assertEqual(vector_service.last_kwargs["id_comercio"], 7)
+        self.assertEqual(len(result["encontrados"]), 1)
+        self.assertEqual(result["encontrados"][0]["producto_presentacion_id"], 1)
+        # The recorder received the hybrid-evaluative observation.
+        self.assertEqual(len(recorder.calls), 1)
+        self.assertFalse(recorder.calls[0]["comparison"].fallback)
+        self.assertEqual(
+            recorder.calls[0]["authoritative_strategy"], "hybrid"
+        )
+
+    def test_real_hybrid_pipeline_raises_when_commerce_id_missing(self):
+        """Without a ``commerce_id`` in ``intent_metadata`` and
+        without a ``commerce_id_resolver``, the hybrid pipeline
+        refuses to run and raises
+        :class:`HybridAuthoritativeCommerceIdMissing`. Missing
+        commerce id is NOT a fallback category under the OpenSpec
+        contract; the integration bug must surface immediately.
+        """
+        from backend.recognizers.fuzzy_product_recognizer import (
+            FuzzyProductRecognizer,
+        )
+
+        vector_service = _StubVectorSearchService(
+            matches=[_StubVectorMatch(1, 0.99)]
+        )
+        recorder = _StubRecorder()
+        recognizer = HybridAuthoritativeProductRecognizer(
+            inner=FuzzyProductRecognizer(),
+            policy=_stub_policy(),
+            embedding_client=_StubEmbeddingClient(),
+            vector_search_service=lambda: vector_service,
+            recorder=recorder,
+            configured_mode="hybrid_authoritative",
+            effective_mode="hybrid_authoritative",
+        )
+
+        from backend.intents.orchestration import (
+            agregar_producto_orchestrator as orchestrator_module,
+        )
+
+        original = orchestrator_module._product_recognizer  # type: ignore[attr-defined]
+        orchestrator_module._product_recognizer = recognizer  # type: ignore[attr-defined]
+        try:
+            catalog = [
+                {
+                    "producto_presentacion_id": 1,
+                    "producto_nombre": "Empanada de Carne",
+                    "presentacion_codigo": "unidad",
+                }
+            ]
+            with self.assertRaises(HybridAuthoritativeCommerceIdMissing):
+                orchestrator_module.detectar_productos(
+                    "empanada de carne",
+                    catalog,
+                    intent_metadata={
+                        "catalog_scope": "commerce_dynamic_database"
+                    },
+                )
+        finally:
+            orchestrator_module._product_recognizer = original  # type: ignore[attr-defined]
+
+        # The vector lookup must not have happened.
+        self.assertEqual(vector_service.call_count, 0)
+        # No observation record is emitted for the integration bug.
+        self.assertEqual(recorder.calls, [])
+
+
+class ObservabilityPayloadTest(unittest.TestCase):
+    """Observability payload tests for the configured/effective mode,
+    authoritative strategy, fuzzy decision, hybrid decision, fallback
+    boolean, and sanitized fallback category.
+
+    Every mode path emits the documented fields. Sensitive fields
+    (customer text, vectors, credentials, raw exceptions) are
+    never logged.
+    """
+
+    def _safe_extra_keys(self, event: dict) -> set[str]:
+        """Verify the closed-shape event never carries raw sensitive fields.
+
+        Forbidden substrings target raw customer text, raw query
+        embeddings, raw vector scores, and credentials. Operational
+        latency fields named ``vector_latency_ms`` are explicitly
+        allowed; the rest of the closed-shape contract forbids raw
+        vector data, candidate counts, candidate ids and best ids.
+        """
+        forbidden_substrings = (
+            "texto_origen",
+            "raw_query_embedding",
+            "raw_vector_scores",
+            "customer_message",
+            "raw_embedding",
+            "stack_trace",
+            "raw_exception",
+            "credencial",
+            "vector_candidate_count",
+            "vector_best_id",
+            "vector_candidate_ids",
+            "fuzzy_best_id",
+            "fuzzy_candidate",
+            "id_comercio",
+            "intent",
+            "correlation_id",
+            "scores",
+        )
+        keys = {key for key in event if not key.startswith("_")}
+        for key in keys:
+            for forbidden in forbidden_substrings:
+                self.assertNotIn(forbidden, key.lower())
+        return keys
+
+    def test_hybrid_authoritative_successful_unique_records_minimum_fields(self):
+        """A successful hybrid authoritative call records
+        configured_mode, effective_mode, authoritative_strategy,
+        fuzzy_decision (implicit via ranking), hybrid_decision,
+        fallback=False, and fallback_category absent.
+        """
+        recognizer = HybridAuthoritativeProductRecognizer(
+            inner=_StubFuzzyRecognizer(decision="unique", encontrados=[1]),
+            policy=_stub_policy(),
+            embedding_client=_StubEmbeddingClient(),
+            vector_search_service=(
+                lambda: _StubVectorSearchService(matches=[
+                    _StubVectorMatch(1, 0.9)
+                ])
+            ),
+            recorder=ShadowMetricsRecorder(),
+            commerce_id_resolver=_resolver_with_commerce(99),
+            configured_mode="hybrid_authoritative",
+            effective_mode="hybrid_authoritative",
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            recognizer.recognize(
+                "empanada",
+                _catalog(),
+                intent_metadata={
+                    "catalog_scope": "commerce_dynamic_database",
+                    "commerce_id": 99,
+                },
+            )
+
+        event = json.loads(stdout.getvalue().strip())
+        self.assertEqual(event["event"], "shadow_product_recognition")
+        self.assertEqual(event["component"], "product_recognition")
+        self.assertEqual(
+            event["configured_mode"], "hybrid_authoritative"
+        )
+        self.assertEqual(event["effective_mode"], "hybrid_authoritative")
+        self.assertEqual(event["authoritative_strategy"], "hybrid")
+        self.assertEqual(event["hybrid_decision"], "unique")
+        self.assertFalse(event["fallback"])
+        self.assertNotIn("fallback_category", event)
+        self._safe_extra_keys(event)
+
+    def test_hybrid_authoritative_embedding_failure_records_fallback_category(
+        self,
+    ):
+        """An embedding failure records ``fallback=True`` and a
+        sanitized ``fallback_category='embedding_failure'``.
+        """
+
+        class _FailingEmbeddingClient:
+            def embed_query(self, text):
+                raise RuntimeError("embedding down")
+
+            def embed_documents(self, texts):
+                return [[0.0] * 384 for _ in texts]
+
+        recognizer = HybridAuthoritativeProductRecognizer(
+            inner=_StubFuzzyRecognizer(decision="ambiguous", posibles=[1, 2]),
+            policy=_stub_policy(),
+            embedding_client=_FailingEmbeddingClient(),
+            vector_search_service=lambda: _StubVectorSearchService(),
+            recorder=ShadowMetricsRecorder(),
+            commerce_id_resolver=_resolver_with_commerce(99),
+            configured_mode="hybrid_authoritative",
+            effective_mode="hybrid_authoritative",
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            recognizer.recognize(
+                "empanada",
+                _catalog(),
+                intent_metadata={
+                    "catalog_scope": "commerce_dynamic_database",
+                    "commerce_id": 99,
+                },
+            )
+
+        event = json.loads(stdout.getvalue().strip())
+        self.assertEqual(event["effective_mode"], "hybrid_authoritative")
+        self.assertEqual(event["authoritative_strategy"], "hybrid")
+        self.assertTrue(event["fallback"])
+        self.assertEqual(
+            event["fallback_category"], "embedding_failure"
+        )
+        self._safe_extra_keys(event)
+
+    def test_hybrid_authoritative_unknown_decision_does_not_fallback(self):
+        """A semantic hybrid ``unknown`` decision does NOT trigger
+        fallback; the hybrid decision is authoritative.
+        """
+        recognizer = HybridAuthoritativeProductRecognizer(
+            inner=_StubFuzzyRecognizer(decision="unknown"),
+            policy=_stub_policy(),
+            embedding_client=_StubEmbeddingClient(),
+            vector_search_service=(
+                lambda: _StubVectorSearchService(matches=[
+                    _StubVectorMatch(99, 0.95)
+                ])
+            ),
+            recorder=ShadowMetricsRecorder(),
+            commerce_id_resolver=_resolver_with_commerce(99),
+            configured_mode="hybrid_authoritative",
+            effective_mode="hybrid_authoritative",
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            recognizer.recognize(
+                "empanada",
+                _catalog(),
+                intent_metadata={
+                    "catalog_scope": "commerce_dynamic_database",
+                    "commerce_id": 99,
+                },
+            )
+
+        event = json.loads(stdout.getvalue().strip())
+        self.assertEqual(event["hybrid_decision"], "unknown")
+        self.assertFalse(event["fallback"])
+        self.assertNotIn("fallback_category", event)
+        self._safe_extra_keys(event)
+
+    def test_hybrid_authoritative_ambiguous_decision_does_not_fallback(self):
+        """A semantic hybrid ``ambiguous`` decision does NOT trigger
+        fallback.
+        """
+        # Lower the unique_threshold and ambiguous_threshold so that
+        # the fuzzy-ambiguous input + a single weak vector candidate
+        # produces an ambiguous hybrid decision (not unique).
+        from backend.services.product_recognition_calibration_policy import (
+            HybridDecisionPolicy,
+        )
+
+        ambiguous_policy = HybridDecisionPolicy(
+            fuzzy_weight=0.5,
+            vector_weight=0.5,
+            unique_threshold=0.9,
+            ambiguous_threshold=0.4,
+            minimum_score_gap=0.05,
+            vector_top_k=5,
+        )
+        recognizer = HybridAuthoritativeProductRecognizer(
+            inner=_StubFuzzyRecognizer(decision="ambiguous", posibles=[1, 2]),
+            policy=ambiguous_policy,
+            embedding_client=_StubEmbeddingClient(),
+            vector_search_service=(
+                lambda: _StubVectorSearchService(matches=[
+                    _StubVectorMatch(1, 0.3)
+                ])
+            ),
+            recorder=ShadowMetricsRecorder(),
+            commerce_id_resolver=_resolver_with_commerce(99),
+            configured_mode="hybrid_authoritative",
+            effective_mode="hybrid_authoritative",
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            recognizer.recognize(
+                "empanada",
+                _catalog(),
+                intent_metadata={
+                    "catalog_scope": "commerce_dynamic_database",
+                    "commerce_id": 99,
+                },
+            )
+
+        event = json.loads(stdout.getvalue().strip())
+        self.assertEqual(event["hybrid_decision"], "ambiguous")
+        self.assertFalse(event["fallback"])
+        self.assertNotIn("fallback_category", event)
+        self._safe_extra_keys(event)
+
+    def test_hybrid_authoritative_missing_commerce_id_is_not_a_fallback(self):
+        """Missing ``commerce_id`` is NOT a fallback reason under the
+        OpenSpec contract. The hybrid authoritative recognizer must
+        raise :class:`HybridAuthoritativeCommerceIdMissing` instead of
+        silently returning the fuzzy result and tagging the call as a
+        ``no_commerce_id`` fallback.
+        """
+        recognizer = HybridAuthoritativeProductRecognizer(
+            inner=_StubFuzzyRecognizer(decision="ambiguous", posibles=[1, 2]),
+            policy=_stub_policy(),
+            embedding_client=_StubEmbeddingClient(),
+            vector_search_service=lambda: _StubVectorSearchService(),
+            recorder=ShadowMetricsRecorder(),
+            configured_mode="hybrid_authoritative",
+            effective_mode="hybrid_authoritative",
+        )
+
+        with self.assertRaises(
+            HybridAuthoritativeCommerceIdMissing
+        ) as ctx:
+            recognizer.recognize(
+                "empanada",
+                _catalog(),
+                intent_metadata={"catalog_scope": "commerce_dynamic_database"},
+            )
+        self.assertIn("commerce_id", str(ctx.exception))
+        # The exception message must never carry the customer text,
+        # the catalog payload, or any internal exception detail.
+        self.assertNotIn("empanada", str(ctx.exception))
+
+    def test_invalid_mode_resolves_to_fuzzy_with_safe_observability(self):
+        """An unrecognised ``PRODUCT_RECOGNIZER_MODE`` resolves the
+        runtime to ``fuzzy`` and emits the safe-fuzzy fallback
+        warning without invoking any hybrid pipeline.
+        """
+        from backend.services.product_recognition_factory import (
+            get_product_recognizer,
+        )
+
+        env = {"PRODUCT_RECOGNIZER_MODE": "hybrid_active"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertLogs(
+                "backend.config.settings", level="WARNING"
+            ) as settings_log:
+                settings = load_settings()
+            self.assertEqual(settings.product_recognizer_mode, "fuzzy")
+            self.assertEqual(
+                settings.product_recognizer_configured_mode, "hybrid_active"
+            )
+            recognizer = get_product_recognizer(
+                settings,
+                session_provider=_stub_session_provider_any,
+                embedding_client=_StubEmbeddingClient(),
+            )
+            self.assertIsInstance(recognizer, FuzzyProductRecognizer)
+        # The warning carries the safe-fuzzy fallback fields.
+        record = settings_log.records[0]
+        self.assertEqual(record.configured_mode, "hybrid_active")
+        self.assertEqual(record.effective_mode, "fuzzy")
+        self.assertEqual(record.reason, "invalid_mode")
+
+    def test_shadow_mode_records_authoritative_strategy_fuzzy(self):
+        """The shadow service records ``authoritative_strategy='fuzzy'``
+        because the fuzzy result remains authoritative in shadow mode.
+        """
+        from backend.services.product_recognition_shadow_service import (
+            ProductRecognitionShadowService,
+            ShadowedProductRecognizer,
+        )
+
+        service = ProductRecognitionShadowService(
+            embedding_client=_StubEmbeddingClient(),
+            vector_search_service=lambda: _StubVectorSearchService(
+                matches=[_StubVectorMatch(1, 0.9)]
+            ),
+            settings=_settings(product_recognizer_mode="shadow"),
+        )
+        recognizer = ShadowedProductRecognizer(
+            inner=FuzzyProductRecognizer(),
+            shadow=service,
+            recorder=ShadowMetricsRecorder(),
+            commerce_id_resolver=_resolver_with_commerce(99),
+            configured_mode="shadow",
+            effective_mode="shadow",
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            recognizer.recognize(
+                "empanada",
+                _catalog(),
+                intent_metadata={
+                    "catalog_scope": "commerce_dynamic_database",
+                    "commerce_id": 99,
+                },
+            )
+
+        event = json.loads(stdout.getvalue().strip())
+        self.assertEqual(event["event"], "shadow_product_recognition")
+        self.assertEqual(event["configured_mode"], "shadow")
+        self.assertEqual(event["effective_mode"], "shadow")
+        self.assertEqual(event["authoritative_strategy"], "fuzzy")
+        self.assertFalse(event["fallback"])
+        self.assertNotIn("fallback_category", event)
+        self._safe_extra_keys(event)
+
+
+class FuzzyModeObservabilityTest(unittest.TestCase):
+    """Per-request observability tests for the
+    ``ObservedFuzzyProductRecognizer`` decorator.
+
+    The decorator subclasses ``FuzzyProductRecognizer`` so the
+    four-key result contract and catalog-isolation guarantees stay
+    intact. Every ``recognize(...)`` call MUST emit one
+    ``ShadowMetricsRecorder`` record with the documented fields
+    without invoking embedding or vector search.
+    """
+
+    @staticmethod
+    def _safe_extra_keys(test_case, event: dict) -> set[str]:
+        """Verify the closed-shape event never carries raw sensitive fields.
+
+        Forbidden substrings target raw customer text, raw query
+        embeddings, raw vector scores, and credentials. Operational
+        latency fields named ``vector_latency_ms`` are explicitly
+        allowed; the rest of the closed-shape contract forbids raw
+        vector data, candidate counts, candidate ids and best ids.
+        """
+        forbidden_substrings = (
+            "texto_origen",
+            "raw_query_embedding",
+            "raw_vector_scores",
+            "customer_message",
+            "raw_embedding",
+            "stack_trace",
+            "raw_exception",
+            "credencial",
+            "vector_candidate_count",
+            "vector_best_id",
+            "vector_candidate_ids",
+            "fuzzy_best_id",
+            "fuzzy_candidate",
+            "id_comercio",
+            "intent",
+            "correlation_id",
+            "scores",
+        )
+        keys = {key for key in event if not key.startswith("_")}
+        for key in keys:
+            for forbidden in forbidden_substrings:
+                test_case.assertNotIn(forbidden, key.lower())
+        return keys
+
+    def _catalog(self) -> list[dict]:
+        return [
+            {
+                "producto_presentacion_id": 1,
+                "producto_nombre": "Empanada de Carne",
+                "presentacion_codigo": "unidad",
+                "aliases": {"general_aliases": [], "specific_aliases": []},
+            }
+        ]
+
+    def test_observed_fuzzy_recognizer_is_subclass_of_fuzzy(self):
+        from backend.services.product_recognition_factory import (
+            ObservedFuzzyProductRecognizer,
+        )
+
+        recognizer = ObservedFuzzyProductRecognizer(
+            recorder=ShadowMetricsRecorder(),
+            configured_mode="fuzzy",
+            effective_mode="fuzzy",
+        )
+        self.assertIsInstance(recognizer, FuzzyProductRecognizer)
+
+    def test_fuzzy_mode_records_minimum_observability_fields(self):
+        """A fuzzy-mode call records ``configured_mode``,
+        ``effective_mode``, ``authoritative_strategy='fuzzy'``,
+        ``hybrid_decision='not_evaluated'``, ``fallback=False``,
+        and an absent ``fallback_category``.
+        """
+        from backend.services.product_recognition_factory import (
+            ObservedFuzzyProductRecognizer,
+        )
+
+        recognizer = ObservedFuzzyProductRecognizer(
+            recorder=ShadowMetricsRecorder(),
+            configured_mode="fuzzy",
+            effective_mode="fuzzy",
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            recognizer.recognize("empanada de carne", self._catalog())
+
+        event = json.loads(stdout.getvalue().strip())
+        self.assertEqual(event["event"], "shadow_product_recognition")
+        self.assertEqual(event["configured_mode"], "fuzzy")
+        self.assertEqual(event["effective_mode"], "fuzzy")
+        self.assertEqual(event["authoritative_strategy"], "fuzzy")
+        self.assertEqual(event["hybrid_decision"], "not_evaluated")
+        self.assertFalse(event["fallback"])
+        self.assertNotIn("fallback_category", event)
+        FuzzyModeObservabilityTest._safe_extra_keys(self, event)
+
+    def test_fuzzy_mode_preserves_four_key_result_contract(self):
+        """The decorator forwards the four-key
+        ``ProductRecognizerResult`` byte-for-byte unchanged.
+        """
+        from backend.services.product_recognition_factory import (
+            ObservedFuzzyProductRecognizer,
+        )
+
+        recognizer = ObservedFuzzyProductRecognizer(
+            recorder=ShadowMetricsRecorder(),
+            configured_mode="fuzzy",
+            effective_mode="fuzzy",
+        )
+        result = recognizer.recognize("empanada de carne", self._catalog())
+        for key in (
+            "encontrados",
+            "encontrados_posibles",
+            "encontrados_no_disponibles",
+            "no_encontrados",
+        ):
+            self.assertIn(key, result)
+            self.assertIsInstance(result[key], list)
+
+    def test_invalid_mode_records_invalid_mode_category(self):
+        """The decorator sanitizes the configured-mode literal so the
+        per-request record exposes ``configured_mode='invalid_mode'``
+        (the closed sanitized token), ``effective_mode='fuzzy'``,
+        ``authoritative_strategy='fuzzy'``, ``fallback=True``,
+        ``fallback_category='invalid_mode'``, and a non-evaluated
+        ``hybrid_decision``. The ``Settings.load()`` warning is
+        still emitted independently.
+        """
+        from backend.services.product_recognition_factory import (
+            ObservedFuzzyProductRecognizer,
+        )
+
+        recognizer = ObservedFuzzyProductRecognizer(
+            recorder=ShadowMetricsRecorder(),
+            configured_mode="hybrid_active",
+            effective_mode="fuzzy",
+            fallback_category="invalid_mode",
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            recognizer.recognize("empanada de carne", self._catalog())
+
+        event = json.loads(stdout.getvalue().strip())
+        self.assertEqual(event["event"], "shadow_product_recognition")
+        # The recorder sanitizes the raw operator literal to the
+        # closed ``invalid_mode`` token so the closed-shape contract
+        # never reflects operator input verbatim.
+        self.assertEqual(event["configured_mode"], "invalid_mode")
+        self.assertEqual(event["effective_mode"], "fuzzy")
+        self.assertEqual(event["authoritative_strategy"], "fuzzy")
+        self.assertEqual(event["hybrid_decision"], "not_evaluated")
+        self.assertTrue(event["fallback"])
+        self.assertEqual(event["fallback_category"], "invalid_mode")
+        FuzzyModeObservabilityTest._safe_extra_keys(self, event)
+
+
+class HybridAuthoritativeCommerceIdExceptionTest(unittest.TestCase):
+    """Tests for the new ``HybridAuthoritativeCommerceIdMissing``
+    boundary exception.
+
+    The contract: missing ``commerce_id`` is NOT a fallback
+    category. The hybrid authoritative recognizer MUST raise the
+    exception instead of silently returning the fuzzy result, the
+    exception message MUST NOT carry the customer text or the
+    catalog payload, and the recorder MUST NOT emit a fallback
+    observation.
+    """
+
+    def test_exception_message_does_not_carry_customer_text(self):
+        recognizer = HybridAuthoritativeProductRecognizer(
+            inner=_StubFuzzyRecognizer(decision="unique", encontrados=[1]),
+            policy=_stub_policy(),
+            embedding_client=_StubEmbeddingClient(),
+            vector_search_service=lambda: _StubVectorSearchService(),
+            recorder=ShadowMetricsRecorder(),
+            configured_mode="hybrid_authoritative",
+            effective_mode="hybrid_authoritative",
+        )
+
+        # Use distinctive sentinel strings that cannot collide
+        # with the wording of the exception message itself.
+        sentinel_text = "ZZZ-SECRET-CUSTOMER-MESSAGE-ZZZ"
+        sentinel_catalog_id = "ZZZ-999-SECRET-CATALOG-ENTRY-ZZZ"
+        with self.assertRaises(
+            HybridAuthoritativeCommerceIdMissing
+        ) as ctx:
+            recognizer.recognize(
+                sentinel_text,
+                [
+                    {
+                        "producto_presentacion_id": 999,
+                        "producto_nombre": sentinel_catalog_id,
+                    }
+                ],
+                intent_metadata={"catalog_scope": "commerce_dynamic_database"},
+            )
+        message = str(ctx.exception)
+        self.assertNotIn(sentinel_text, message)
+        self.assertNotIn(sentinel_catalog_id, message)
+        # The catalog row's numeric id is intentionally NOT in the
+        # exception; the recognizer must avoid leaking it.
+        self.assertNotIn("999", message)
+        # The exception message must mention the boundary keyword.
+        self.assertIn("commerce_id", message)
+
+    def test_exception_does_not_emit_recorder_observation(self):
+        recognizer = HybridAuthoritativeProductRecognizer(
+            inner=_StubFuzzyRecognizer(decision="ambiguous", posibles=[1, 2]),
+            policy=_stub_policy(),
+            embedding_client=_StubEmbeddingClient(),
+            vector_search_service=lambda: _StubVectorSearchService(),
+            recorder=ShadowMetricsRecorder(),
+            configured_mode="hybrid_authoritative",
+            effective_mode="hybrid_authoritative",
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            with self.assertRaises(HybridAuthoritativeCommerceIdMissing):
+                recognizer.recognize(
+                    "empanada",
+                    _catalog(),
+                    intent_metadata={
+                        "catalog_scope": "commerce_dynamic_database",
+                    },
+                )
+
+        # No observation record was emitted for the integration bug.
+        # The factory boundary is the only safe place to surface it.
+        self.assertEqual(stdout.getvalue(), "")
 
 
 if __name__ == "__main__":

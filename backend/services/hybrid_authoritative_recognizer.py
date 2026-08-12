@@ -58,6 +58,7 @@ from backend.recognizers.product_recognizer_contract import (
     RecognizedProduct,
     UnmatchedFragment,
 )
+from backend.services.exceptions import HybridAuthoritativeCommerceIdMissing
 from backend.services.product_recognition_shadow_comparison import (
     ProductRecognitionHybridObservation,
     ProductRecognitionShadowComparison,
@@ -95,6 +96,8 @@ class HybridAuthoritativeProductRecognizer:
         vector_search_service: Callable[[], ProductPresentationVectorSearchService],
         recorder: ShadowMetricsRecorder,
         commerce_id_resolver: Callable[[list[dict]], int | None] | None = None,
+        configured_mode: str | None = None,
+        effective_mode: str | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._inner = inner
@@ -103,6 +106,16 @@ class HybridAuthoritativeProductRecognizer:
         self._vector_search_service_factory = vector_search_service
         self._recorder = recorder
         self._commerce_id_resolver = commerce_id_resolver
+        self._configured_mode = (
+            configured_mode
+            if configured_mode is not None
+            else "hybrid_authoritative"
+        )
+        self._effective_mode = (
+            effective_mode
+            if effective_mode is not None
+            else "hybrid_authoritative"
+        )
         self._clock = clock
 
     def recognize(
@@ -123,11 +136,20 @@ class HybridAuthoritativeProductRecognizer:
 
         allowed_candidate_ids = _build_allowed_candidate_ids(catalog)
 
-        if self._commerce_id_resolver is None:
-            return fuzzy_result
-        id_comercio = self._commerce_id_resolver(catalog)
+        id_comercio = _resolve_id_comercio(
+            catalog=catalog,
+            intent_metadata=intent_metadata,
+            commerce_id_resolver=self._commerce_id_resolver,
+        )
         if id_comercio is None:
-            return fuzzy_result
+            raise HybridAuthoritativeCommerceIdMissing(
+                "HybridAuthoritativeProductRecognizer requires an "
+                "id_comercio from intent_metadata['commerce_id'] or the "
+                "injected commerce_id_resolver; the production entry "
+                "points (agregar/quitar/modificar/pending selection/"
+                "pending modification) thread the commerce_id "
+                "explicitly via RecognizeContext.commerce_id."
+            )
 
         (
             raw_vector_ids,
@@ -167,6 +189,7 @@ class HybridAuthoritativeProductRecognizer:
                 vector_latency_ms=vector_latency_ms,
                 vector_available=False,
                 failure_category=failure_category,
+                fallback=True,
             )
             self._recorder.record(
                 comparison,
@@ -174,6 +197,10 @@ class HybridAuthoritativeProductRecognizer:
                 id_comercio=id_comercio,
                 intent=None,
                 correlation_id="",
+                configured_mode=self._configured_mode,
+                effective_mode=self._effective_mode,
+                authoritative_strategy="hybrid",
+                fallback_category=failure_category,
                 mode="hybrid_authoritative",
             )
             return fuzzy_result
@@ -233,6 +260,7 @@ class HybridAuthoritativeProductRecognizer:
             vector_latency_ms=vector_latency_ms,
             vector_available=True,
             failure_category=None,
+            fallback=False,
         )
         self._recorder.record(
             comparison,
@@ -240,6 +268,9 @@ class HybridAuthoritativeProductRecognizer:
             id_comercio=id_comercio,
             intent=None,
             correlation_id="",
+            configured_mode=self._configured_mode,
+            effective_mode=self._effective_mode,
+            authoritative_strategy="hybrid",
             mode="hybrid_authoritative",
         )
 
@@ -805,6 +836,41 @@ def _detect_exact_matches(
     return canonical, alias
 
 
+def _resolve_id_comercio(
+    *,
+    catalog: list[dict],
+    intent_metadata: RecognizeContext | None,
+    commerce_id_resolver: Callable[[list[dict]], int | None] | None,
+) -> int | None:
+    """Resolve the ``id_comercio`` the hybrid authoritative recognizer needs
+    to run its vector-search pipeline.
+
+    The runtime boundary prefers the ``commerce_id`` carried in
+    ``intent_metadata`` (added in 4.12B to support
+    ``quitar_producto``, ``modificar_producto``, and pending-context
+    flows whose catalogs are not the full comercio catalog). When
+    the metadata does not carry a commerce id, the resolver
+    injected at factory call time is consulted; when neither yields
+    an ``int`` the caller has violated the documented contract and
+    the recognizer raises :class:`HybridAuthoritativeCommerceIdMissing`
+    so the integration bug surfaces immediately instead of being
+    hidden behind a silent fallback.
+    """
+    if intent_metadata is not None:
+        metadata_commerce_id = intent_metadata.get("commerce_id")
+        if isinstance(metadata_commerce_id, int):
+            return metadata_commerce_id
+    if commerce_id_resolver is None:
+        return None
+    try:
+        resolved = commerce_id_resolver(catalog)
+    except Exception:  # noqa: BLE001 - intentional broad catch
+        return None
+    if isinstance(resolved, int):
+        return resolved
+    return None
+
+
 def _build_comparison(
     *,
     fuzzy_candidate_ids: tuple[int, ...],
@@ -816,6 +882,7 @@ def _build_comparison(
     vector_latency_ms: float,
     vector_available: bool,
     failure_category: str | None,
+    fallback: bool = False,
 ) -> ProductRecognitionShadowComparison:
     fuzzy_best_id = fuzzy_candidate_ids[0] if fuzzy_candidate_ids else None
     vector_best_id = filtered_vector_ids[0] if filtered_vector_ids else None
@@ -856,6 +923,7 @@ def _build_comparison(
         vector_latency_ms=float(vector_latency_ms),
         vector_available=vector_available,
         failure_category=failure_category,
+        fallback=fallback,
     )
 
 

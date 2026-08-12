@@ -253,9 +253,9 @@ class ShadowedProductRecognizer:
     The decorator's ``recognize`` method:
 
     1. Invokes the inner recognizer exactly once, measures its latency.
-    2. Resolves the commerce id through the injected
-       ``commerce_id_resolver`` (skipping shadow work when the resolver
-       is ``None`` or returns ``None``).
+    2. Resolves the commerce id through ``intent_metadata`` first and
+       falls back to the injected ``commerce_id_resolver`` (skipping
+       shadow work when neither yields an ``int``).
     3. Delegates to ``ProductRecognitionShadowService.compare(text,
        catalog, fuzzy_result, fuzzy_latency_ms, id_comercio)`` and
        forwards the comparison and the hybrid observation to the
@@ -270,12 +270,20 @@ class ShadowedProductRecognizer:
         shadow: ProductRecognitionShadowService,
         recorder: ShadowMetricsRecorder,
         commerce_id_resolver: ShoppingCartResolver | None = None,
+        configured_mode: str | None = None,
+        effective_mode: str | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._inner = inner
         self._shadow = shadow
         self._recorder = recorder
         self._commerce_id_resolver = commerce_id_resolver
+        self._configured_mode = (
+            configured_mode if configured_mode is not None else "shadow"
+        )
+        self._effective_mode = (
+            effective_mode if effective_mode is not None else "shadow"
+        )
         self._clock = clock
 
     def recognize(
@@ -289,9 +297,11 @@ class ShadowedProductRecognizer:
         fuzzy_result = self._inner.recognize(text, catalog)
         fuzzy_latency_ms = max(0.0, (self._clock() - started) * 1000.0)
 
-        if self._commerce_id_resolver is None:
-            return fuzzy_result
-        id_comercio = self._commerce_id_resolver(catalog)
+        id_comercio = _resolve_shadow_id_comercio(
+            catalog=catalog,
+            intent_metadata=intent_metadata,
+            commerce_id_resolver=self._commerce_id_resolver,
+        )
         if id_comercio is None:
             return fuzzy_result
 
@@ -308,8 +318,41 @@ class ShadowedProductRecognizer:
             id_comercio=id_comercio,
             intent=None,
             correlation_id="",
+            configured_mode=self._configured_mode,
+            effective_mode=self._effective_mode,
+            authoritative_strategy="fuzzy",
         )
         return fuzzy_result
+
+
+def _resolve_shadow_id_comercio(
+    *,
+    catalog: list[dict],
+    intent_metadata: RecognizeContext | None,
+    commerce_id_resolver: ShoppingCartResolver | None,
+) -> int | None:
+    """Resolve the ``id_comercio`` the shadow service needs.
+
+    The runtime boundary prefers the ``commerce_id`` carried in
+    ``intent_metadata`` (added in 4.12B follow-up to support flows
+    whose catalogs are not the full comercio catalog) and falls back
+    to the resolver the factory injected. The shadow side mirrors
+    the hybrid authoritative resolver semantics so both modes agree
+    on which commerce the comparison payload references.
+    """
+    if intent_metadata is not None:
+        metadata_commerce_id = intent_metadata.get("commerce_id")
+        if isinstance(metadata_commerce_id, int):
+            return metadata_commerce_id
+    if commerce_id_resolver is None:
+        return None
+    try:
+        resolved = commerce_id_resolver(catalog)
+    except Exception:  # noqa: BLE001 - intentional broad catch
+        return None
+    if isinstance(resolved, int):
+        return resolved
+    return None
 
 
 def _collect_fuzzy_candidates(

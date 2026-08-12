@@ -3,9 +3,7 @@
 ## Purpose
 
 Freeze the observable, structural, and behavioral contract that any product recognizer implementation must satisfy. The contract module `backend/recognizers/product_recognizer_contract.py` declares the frozen catalog projection, the exact four-key result shape, the nested structures for found, possible, unavailable, and unknown segments, the quantity and ordering semantics, the protocol surface (`ProductRecognizerProtocol`), and the legacy `detectar_productos` compatibility boundary. The protocol module is infrastructure-free (no SQLAlchemy, HTTP, LLM, or repository imports) so that contract types can be reused in tests, alternative recognizers, and refactors without coupling to transport or persistence concerns.
-
 ## Requirements
-
 ### Requirement: Explicit frozen recognizer types
 
 The system SHALL define static aliases or `TypedDict` types in `backend/recognizers/product_recognizer_contract.py` for the current catalog and result dictionaries without changing runtime values. The documented catalog projection SHALL include `producto_presentacion_id: int`, `producto_id: int`, `presentacion_id: int`, `categoria_id: int`, `producto_nombre: str`, `categoria_nombre: str`, `presentacion_codigo: str`, `presentacion_descripcion: str`, `activo: bool`, `disponible: bool`, and an optional caller-provided collection of applicable normalized product aliases; additional caller-supplied fields SHALL remain permitted and preserved in matched output entries. Alias projection types SHALL remain infrastructure-free and SHALL distinguish product-wide applicability from aliases already filtered to one exact product-presentation without importing SQLAlchemy models.
@@ -107,17 +105,32 @@ The fuzzy contract SHALL preserve these semantics: `cantidad` is a positive inte
 
 ### Requirement: Separate protocol surface
 
-The system SHALL define `ProductRecognizerProtocol` in `backend/recognizers/product_recognizer_contract.py` with `recognize(text: str, catalog: list[dict]) -> ProductRecognizerResult`. The protocol module SHALL not import SQLAlchemy, HTTP, LLM, or repository modules, and SHALL remain separate from the concrete fuzzy implementation where practical.
+The system SHALL define `ProductRecognizerProtocol` in
+`backend/recognizers/product_recognizer_contract.py` with a recognition method
+that accepts the caller-provided catalog and an optional additive recognition
+context, returning `ProductRecognizerResult`. The module SHALL not import
+SQLAlchemy, HTTP, LLM, or repository modules and shall remain separate from
+the concrete fuzzy implementation. The context may carry catalog scope and the
+naturally owned commerce ID, but never authorizes catalog expansion. The
+recognizer SHALL preserve the exact four-key result, candidate ordering, and
+caller-owned transaction boundary.
 
 #### Scenario: Protocol is importable without infrastructure
 
-- **WHEN** a consumer imports `ProductRecognizerProtocol` and the contract types
+- **WHEN** a consumer imports `ProductRecognizerProtocol` and contract types
 - **THEN** the import succeeds without database, HTTP, LLM, or repository dependencies
 
 #### Scenario: Protocol uses the frozen shape
 
 - **WHEN** an implementation is checked against the protocol
 - **THEN** it accepts the caller-provided catalog and returns the exact four-key result contract
+
+#### Scenario: Restricted pending catalog stays authoritative
+
+- **WHEN** a pending product-selection caller invokes the shared protocol with
+  its restricted catalog and context
+- **THEN** any returned candidate belongs to that catalog
+- **AND** the recognizer has not committed, rolled back, or flushed the caller session
 
 ### Requirement: Separate fuzzy implementation delegates unchanged behavior
 
@@ -150,3 +163,4 @@ The system SHALL provide reusable contract tests that accept a recognizer implem
 
 - **WHEN** a future recognizer implementation is supplied with the same catalog fixture
 - **THEN** the same test harness can execute without importing fuzzy-private helpers
+

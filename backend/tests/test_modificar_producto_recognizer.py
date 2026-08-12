@@ -56,7 +56,7 @@ class RecognizeModificarProductoSourceTest(unittest.TestCase):
         catalog_service.list_recognizer_catalog.return_value = []
         catalog_cls.return_value = catalog_service
 
-        def _detector_side_effect(message, catalog):
+        def _detector_side_effect(message, catalog, **kwargs):
             if not catalog:
                 return {
                     "encontrados": [],
@@ -159,7 +159,7 @@ class RecognizeModificarProductoDestinationTest(unittest.TestCase):
         with patch.object(
             recognizer_module, "detectar_productos"
         ) as detector:
-            def _side_effect(message, catalog):
+            def _side_effect(message, catalog, **kwargs):
                 pp_ids_in_catalog = {
                     entry["producto_presentacion_id"] for entry in catalog
                 }
