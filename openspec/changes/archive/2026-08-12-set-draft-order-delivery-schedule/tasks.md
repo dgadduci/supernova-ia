@@ -17,5 +17,5 @@
 ## 3. Validación y handoff
 
 - [x] 3.1 Usuario ejecuta los comandos de `proposal.md` y entrega salida completa.
-- [ ] 3.2 Codex revisa código y salida antes de aprobar.
-- [ ] 3.3 No commit, sync, archive ni deploy sin autorización separada.
+- [x] 3.2 Codex revisa código y salida antes de aprobar.
+- [x] 3.3 Con autorización separada, commit, integración a `main`, deploy y verificación E2E de respuestas; queda diferida la lectura directa de persistencia en producción.
