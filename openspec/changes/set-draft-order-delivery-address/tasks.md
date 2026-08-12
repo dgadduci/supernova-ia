@@ -8,14 +8,14 @@
 
 ## 2. Implementation (after approval)
 
-- [ ] 2.1 Agregar campo nullable y migración desde `b0c1d2e3f4a5`.
-- [ ] 2.2 Agregar handler sin ownership transaccional ni mutaciones ajenas.
-- [ ] 2.3 Agregar branches de dispatcher y mapper con respuesta privada.
-- [ ] 2.4 Agregar tests de persistencia, normalización, aislamiento, mapper y rollback.
-- [ ] 2.5 Revisar scope, migración, privacidad y contratos.
+- [x] 2.1 Agregar campo nullable y migración desde `b0c1d2e3f4a5`.
+- [x] 2.2 Agregar handler sin ownership transaccional ni mutaciones ajenas.
+- [x] 2.3 Agregar branches de dispatcher y mapper con respuesta privada.
+- [x] 2.4 Agregar tests de persistencia, normalización, aislamiento, mapper y rollback.
+- [x] 2.5 Revisar scope, migración, privacidad y contratos.
 
 ## 3. Validation and release
 
-- [ ] 3.1 Usuario ejecuta validaciones locales y entrega salida completa.
+- [x] 3.1 Usuario ejecuta validaciones locales y entrega salida completa.
 - [ ] 3.2 Tras autorización separada, deploy y verificación productiva E2E.
 - [ ] 3.3 Obtener autorización separada antes de sync/archive.

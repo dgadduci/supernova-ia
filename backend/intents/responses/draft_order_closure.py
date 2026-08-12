@@ -351,9 +351,52 @@ def build_set_observacion_pedido_response(
     )
 
 
+_DIRECCION_ENTREGA_SUCCESS_MESSAGE = "Listo, guardé la dirección de entrega."
+_DIRECCION_ENTREGA_REJECTION_MESSAGE = (
+    "No pude guardar la dirección de entrega. Tu pedido no fue modificado."
+)
+
+
+def build_set_direccion_entrega_response(
+    db: DatabaseSession,
+    session: ConversationSession,
+    intent: ProcessedIntent,
+) -> CustomerResponse:
+    if intent.intent != "set_direccion_entrega":
+        return CustomerResponse(
+            message=_FAILED_MESSAGE,
+            intent=intent.intent,
+            status=intent.status,
+        )
+    if intent.status == "rejected":
+        return CustomerResponse(
+            message=_DIRECCION_ENTREGA_REJECTION_MESSAGE,
+            intent="set_direccion_entrega",
+            status="rejected",
+        )
+    if intent.status == "executed":
+        return CustomerResponse(
+            message=_DIRECCION_ENTREGA_SUCCESS_MESSAGE,
+            intent="set_direccion_entrega",
+            status="executed",
+        )
+    if intent.status == "failed":
+        return CustomerResponse(
+            message=_FAILED_MESSAGE,
+            intent="set_direccion_entrega",
+            status="failed",
+        )
+    return CustomerResponse(
+        message=_FAILED_MESSAGE,
+        intent="set_direccion_entrega",
+        status=intent.status,
+    )
+
+
 __all__ = [
     "build_confirmar_pedido_response",
     "build_consultar_resumen_pedido_response",
+    "build_set_direccion_entrega_response",
     "build_set_metodo_de_entrega_response",
     "build_set_metodo_de_pago_response",
     "build_set_observacion_pedido_response",

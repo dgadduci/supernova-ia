@@ -1,20 +1,23 @@
 """Guided draft-order closure orchestrators.
 
 The `consultar_resumen_pedido`, `set_metodo_de_entrega`,
-`set_metodo_de_pago`, `set_observacion_pedido`, and `confirmar_pedido`
-intents all operate exclusively against the conversation session's
-associated `borrador` pedido. Each orchestrator returns a typed
-`ProcessedIntent` whose `status` is one of:
+`set_metodo_de_pago`, `set_observacion_pedido`,
+`set_direccion_entrega`, and `confirmar_pedido` intents all operate
+exclusively against the conversation session's associated `borrador`
+pedido. Each orchestrator returns a typed `ProcessedIntent` whose
+`status` is one of:
 
 - `executed` — a permitted mutation succeeded (or, for summary, a complete
   read was produced). For `confirmar_pedido` this is the single
   `borrador → ingresado` transition. For `set_observacion_pedido` this is
   the single replacement of `pedidos.observaciones` with the normalized
+  in-range text. For `set_direccion_entrega` this is the single
+  replacement of `pedidos.direccion_entrega` with the normalized
   in-range text.
 - `rejected` — a valid business outcome that mutates nothing: missing or
   non-borrador pedido, empty pedido, missing required choice, ambiguous,
   inactive, or commerce-foreign choice, already-confirmed pedido,
-  out-of-range observation text, etc.
+  out-of-range observation text, out-of-range address text, etc.
 - `failed` — reserved for technical exceptions. These propagate to the
   existing transactional owner (`process_incoming_message_transactional`
   or `ProviderInboundMessageCoordinator.process_lease`), which performs
@@ -541,9 +544,127 @@ def process_initial_set_observacion_pedido(
     )
 
 
+_DIRECCION_ENTREGA_MIN_LENGTH = 1
+_DIRECCION_ENTREGA_MAX_LENGTH = 500
+
+
+def _normalize_direccion_entrega(text: str) -> str:
+    """Normalize a concrete delivery address for `set_direccion_entrega`.
+
+    Applies Unicode NFKC normalization to fold compatibility forms
+    (full-width spaces, ligatures, etc.), then strips leading and
+    trailing whitespace (Python's built-in ``str.strip()`` removes every
+    code point classified as whitespace by ``unicodedata.category``),
+    then collapses any internal run of whitespace into a single ASCII
+    space using a Unicode-aware regex.
+
+    The function never truncates, never extracts components, never
+    lowercases, never infers delivery method, never geocodes, never
+    reclassifies, and never alters the codepoints of non-whitespace
+    characters. The returned string's length is measured in code
+    points.
+    """
+    normalized = unicodedata.normalize("NFKC", text)
+    stripped = normalized.strip()
+    return re.sub(r"\s+", " ", stripped, flags=re.UNICODE)
+
+
+def process_initial_set_direccion_entrega(
+    db: DatabaseSession,
+    session: ConversationSession,
+    source_text: str,
+) -> ProcessedIntent:
+    """Replace the borrador pedido's concrete delivery address with the normalized text.
+
+    The orchestrator uses exclusively ``session.id_pedido`` as the target
+    authority. It validates that the session is active, that
+    ``Pedido.id_session == session.id``, and that
+    ``pedido.estado_pedido == BORRADOR`` before staging any write. The
+    text is normalized (NFKC + strip + Unicode whitespace collapse) and
+    accepted only when its length is in the closed interval
+    ``[1, 500]`` code points. A valid value replaces the prior
+    ``pedidos.direccion_entrega`` value (which may be ``NULL`` or a
+    previous accepted text). An empty, whitespace-only, or too-long
+    value is a non-mutating rejection that preserves the prior value.
+
+    The orchestrator never reclassifies, never invokes the LLM, never
+    consults the product recognizer, never reads or writes
+    ``Pedido.observaciones`` or ``PedidoProducto.observaciones``, never
+    infers or assigns a delivery method, never widens or modifies any
+    pending candidate set, never consults payment or scheduling state,
+    and never takes transaction ownership. The ``CustomerResponse`` text
+    never carries the raw or normalized address; ``resolved_data``
+    carries only a stable reason code on rejection and a non-revealing
+    ``accepted_length`` on success.
+    """
+    if session.estado_session != EstadoSession.ACTIVA:
+        return _rejected(
+            "set_direccion_entrega",
+            source_text,
+            "session_not_active",
+            "draft_order_closure",
+            "set_direccion_entrega",
+        )
+    pedido = _load_session_pedido(db, session)
+    if pedido is None:
+        return _rejected(
+            "set_direccion_entrega",
+            source_text,
+            "no_draft",
+            "draft_order_closure",
+            "set_direccion_entrega",
+        )
+    if int(pedido.id_session) != int(session.id):
+        return _rejected(
+            "set_direccion_entrega",
+            source_text,
+            "session_mismatch",
+            "draft_order_closure",
+            "set_direccion_entrega",
+        )
+    if pedido.estado_pedido != EstadoPedido.BORRADOR:
+        return _rejected(
+            "set_direccion_entrega",
+            source_text,
+            "pedido_not_borrador",
+            "draft_order_closure",
+            "set_direccion_entrega",
+        )
+
+    normalized = _normalize_direccion_entrega(source_text)
+    length = len(normalized)
+    if length < _DIRECCION_ENTREGA_MIN_LENGTH:
+        return _rejected(
+            "set_direccion_entrega",
+            source_text,
+            "text_empty",
+            "draft_order_closure",
+            "set_direccion_entrega",
+        )
+    if length > _DIRECCION_ENTREGA_MAX_LENGTH:
+        return _rejected(
+            "set_direccion_entrega",
+            source_text,
+            "text_too_long",
+            "draft_order_closure",
+            "set_direccion_entrega",
+        )
+
+    pedido.direccion_entrega = normalized
+    return ProcessedIntent(
+        intent="set_direccion_entrega",
+        source_text=source_text,
+        status="executed",
+        recognizer="draft_order_closure",
+        handler="set_direccion_entrega",
+        resolved_data={"accepted_length": length},
+    )
+
+
 __all__ = [
     "process_initial_confirmar_pedido",
     "process_initial_consultar_resumen_pedido",
+    "process_initial_set_direccion_entrega",
     "process_initial_set_metodo_de_entrega",
     "process_initial_set_metodo_de_pago",
     "process_initial_set_observacion_pedido",

@@ -2,9 +2,14 @@
 
 These tests cover the narrow social-conversation response mapping
 introduced for the ``add-social-conversation-responses`` OpenSpec
-change. The mapper is the shared translation boundary between the
-initial dispatcher and the staged provider outbox, so the tests
-focus on:
+change, plus the guided-closure branches (observation and delivery
+address) that share the same private-response contract: the rendered
+``CustomerResponse.message`` must not echo the captured free text, and
+the mapper must keep the deterministic fixed message for the local
+endpoint and the staged provider outbox.
+
+The mapper is the shared translation boundary between the initial
+dispatcher and the staged provider outbox, so the tests focus on:
 
 * the deterministic fixed response selected for each of the six
   approved social intents (``saludo``, ``agradecimiento``,
@@ -16,7 +21,13 @@ focus on:
   intent;
 * preservation of the existing ``GENERIC_MESSAGE`` fallback for
   classifier intents outside the approved social set (for example
-  the deferred ``ver_menu``).
+  the deferred ``ver_menu``);
+* the dedicated ``set_observacion_pedido`` branch carries the
+  observation success/rejection message but never the observation
+  text;
+* the dedicated ``set_direccion_entrega`` branch carries the
+  delivery-address success/rejection message but never the address
+  text.
 """
 from __future__ import annotations
 
@@ -24,6 +35,9 @@ import importlib
 import unittest
 from unittest.mock import MagicMock, patch
 
+from backend.intents.responses.draft_order_closure import (
+    build_set_direccion_entrega_response,
+)
 from backend.intents.responses.social_conversation_response import (
     SOCIAL_CONVERSATION_HANDLER,
     build_social_conversation_response,
@@ -37,6 +51,7 @@ from backend.services import outbound_response_mapper as mapper_module
 from backend.services.outbound_response_mapper import (
     GENERIC_MESSAGE,
     build_customer_responses,
+    stage_outbound_rows,
 )
 
 
@@ -289,6 +304,106 @@ class OutboundMapperBoundariesTest(unittest.TestCase):
                 "stage_outbound_rows",
             },
         )
+
+
+class SetDireccionEntregaMapperTest(unittest.TestCase):
+    """The mapper must route ``set_direccion_entrega`` to the dedicated
+    builder so the local endpoint and the staged outbox share the same
+    private deterministic message."""
+
+    def _intent(
+        self,
+        *,
+        status: IntentStatus,
+        reason: str | None = None,
+        length: int | None = None,
+    ) -> ProcessedIntent:
+        resolved: dict = {}
+        if reason is not None:
+            resolved["reason"] = reason
+        if length is not None:
+            resolved["accepted_length"] = length
+        return ProcessedIntent(
+            intent="set_direccion_entrega",
+            source_text="Tilcara 2020",
+            status=status,
+            recognizer="draft_order_closure",
+            handler="set_direccion_entrega",
+            resolved_data=resolved,
+        )
+
+    def test_mapper_local_and_shared_builder_are_equivalent(self) -> None:
+        intent = self._intent(status="executed", length=12)
+        db = MagicMock()
+        session = MagicMock()
+        local = build_set_direccion_entrega_response(db, session, intent)
+        mapped = build_customer_responses(db, session, [intent])[0]
+        self.assertEqual(mapped, local)
+        self.assertNotIn("Tilcara", mapped.message)
+        self.assertNotIn("2020", mapped.message)
+
+    def test_executed_renders_fixed_confirmation(self) -> None:
+        intent = self._intent(status="executed", length=12)
+        mapped = build_customer_responses(MagicMock(), MagicMock(), [intent])[0]
+        self.assertEqual(mapped.status, "executed")
+        self.assertEqual(mapped.intent, "set_direccion_entrega")
+        self.assertIn("dirección", mapped.message.lower())
+        self.assertNotIn("Tilcara", mapped.message)
+        self.assertNotIn("2020", mapped.message)
+
+    def test_rejected_renders_safe_message(self) -> None:
+        for reason in (
+            "text_empty",
+            "text_too_long",
+            "no_draft",
+            "session_mismatch",
+            "session_not_active",
+            "pedido_not_borrador",
+        ):
+            with self.subTest(reason=reason):
+                intent = self._intent(status="rejected", reason=reason)
+                mapped = build_customer_responses(
+                    MagicMock(), MagicMock(), [intent]
+                )[0]
+                self.assertEqual(mapped.status, "rejected")
+                self.assertEqual(mapped.intent, "set_direccion_entrega")
+                self.assertNotIn(reason, mapped.message)
+                self.assertNotIn("Tilcara", mapped.message)
+
+    def test_failed_renders_generic_message(self) -> None:
+        intent = self._intent(status="failed")
+        mapped = build_customer_responses(MagicMock(), MagicMock(), [intent])[0]
+        self.assertEqual(mapped.status, "failed")
+        self.assertIn("técnico", mapped.message.lower())
+        self.assertNotIn("Tilcara", mapped.message)
+
+    def test_outbox_staging_uses_the_same_message(self) -> None:
+        intent = self._intent(status="executed", length=12)
+        db = MagicMock()
+        session = MagicMock()
+        expected = build_customer_responses(db, session, [intent])[0]
+        outbox_repo = MagicMock()
+        staged_row = MagicMock()
+        staged_row.id = 200
+        outbox_repo.stage.return_value = staged_row
+
+        result = stage_outbound_rows(
+            db,
+            session,
+            proveedor="twilio",
+            recepcion_mensaje_proveedor_id=1,
+            destinatario_e164="+5491112345678",
+            intents=[intent],
+            outbox_repo=outbox_repo,
+        )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].customer_response, expected)
+        outbox_repo.stage.assert_called_once()
+        self.assertEqual(
+            outbox_repo.stage.call_args.kwargs["cuerpo"], expected.message
+        )
+        self.assertNotIn("Tilcara", expected.message)
+        self.assertEqual(result[0].sequence, 0)
 
 
 if __name__ == "__main__":

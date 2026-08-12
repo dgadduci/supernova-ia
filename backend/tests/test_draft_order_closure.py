@@ -24,6 +24,7 @@ from backend.intents.orchestration import (
 from backend.intents.orchestration.draft_order_closure import (
     process_initial_confirmar_pedido,
     process_initial_consultar_resumen_pedido,
+    process_initial_set_direccion_entrega,
     process_initial_set_metodo_de_entrega,
     process_initial_set_metodo_de_pago,
 )
@@ -373,6 +374,7 @@ class DraftOrderClosureBoundariesTest(unittest.TestCase):
             [
                 "build_confirmar_pedido_response",
                 "build_consultar_resumen_pedido_response",
+                "build_set_direccion_entrega_response",
                 "build_set_metodo_de_entrega_response",
                 "build_set_metodo_de_pago_response",
                 "build_set_observacion_pedido_response",
@@ -385,6 +387,7 @@ class DraftOrderClosureBoundariesTest(unittest.TestCase):
             [
                 "process_initial_confirmar_pedido",
                 "process_initial_consultar_resumen_pedido",
+                "process_initial_set_direccion_entrega",
                 "process_initial_set_metodo_de_entrega",
                 "process_initial_set_metodo_de_pago",
                 "process_initial_set_observacion_pedido",
@@ -1400,6 +1403,518 @@ class DraftOrderClosureDispatcherRoutingTest(unittest.TestCase):
                             MagicMock(), MagicMock(context_type=None), "x"
                         )
                 self.assertEqual(result, [sentinel])
+
+    def test_dispatcher_routes_set_direccion_entrega_intent(self) -> None:
+        from backend.intents.orchestration import (
+            initial_intent_dispatcher as dispatcher_module,
+        )
+
+        sentinel = ProcessedIntent(
+            intent="set_direccion_entrega",
+            source_text="x",
+            status="rejected",
+            recognizer="draft_order_closure",
+            handler="set_direccion_entrega",
+        )
+        with patch.object(
+            dispatcher_module,
+            "process_initial_set_direccion_entrega",
+            return_value=sentinel,
+        ):
+            with _patched_classifier(IntentName.SET_DIRECCION_ENTREGA):
+                result = dispatch_initial_message(
+                    MagicMock(), MagicMock(context_type=None), "x"
+                )
+        self.assertEqual(result, [sentinel])
+
+
+class SetDireccionEntregaUnitTest(unittest.TestCase):
+    """Pure unit tests for ``process_initial_set_direccion_entrega``."""
+
+    def _session(
+        self,
+        *,
+        session_id: int = 10,
+        pedido_id: int | None = 20,
+        estado_session=EstadoSession.ACTIVA,
+    ):
+        session = MagicMock(
+            id=session_id,
+            id_pedido=pedido_id,
+            estado_session=estado_session,
+        )
+        return session
+
+    def test_no_pedido_associated_rejects_without_lookup(self) -> None:
+        db = MagicMock()
+        result = process_initial_set_direccion_entrega(
+            db, self._session(pedido_id=None), "Tilcara 2020"
+        )
+        self.assertEqual(result.status, "rejected")
+        self.assertEqual(result.resolved_data.get("reason"), "no_draft")
+        db.get.assert_not_called()
+
+    def test_closed_session_rejects_without_reading_pedido(self) -> None:
+        db = MagicMock()
+        result = process_initial_set_direccion_entrega(
+            db,
+            self._session(estado_session=EstadoSession.CERRADA),
+            "Tilcara 2020",
+        )
+        self.assertEqual(result.status, "rejected")
+        self.assertEqual(
+            result.resolved_data.get("reason"), "session_not_active"
+        )
+        db.get.assert_not_called()
+
+    def test_missing_pedido_row_rejects(self) -> None:
+        db = MagicMock()
+        db.get.return_value = None
+        result = process_initial_set_direccion_entrega(
+            db, self._session(), "Tilcara 2020"
+        )
+        self.assertEqual(result.status, "rejected")
+        self.assertEqual(result.resolved_data.get("reason"), "no_draft")
+
+    def test_foreign_session_pedido_rejects(self) -> None:
+        db = MagicMock()
+        pedido = MagicMock(
+            id_session=99,
+            estado_pedido=EstadoPedido.BORRADOR,
+        )
+        db.get.return_value = pedido
+        result = process_initial_set_direccion_entrega(
+            db, self._session(), "Tilcara 2020"
+        )
+        self.assertEqual(result.status, "rejected")
+        self.assertEqual(result.resolved_data.get("reason"), "session_mismatch")
+        pedido.direccion_entrega.assert_not_called()
+
+    def test_non_borrador_pedido_rejects_for_each_state(self) -> None:
+        for state in (
+            EstadoPedido.INGRESADO,
+            EstadoPedido.PREPARACION,
+            EstadoPedido.TERMINADO,
+            EstadoPedido.ENTREGADO,
+            EstadoPedido.CANCELADO,
+        ):
+            with self.subTest(state=state.value):
+                db = MagicMock()
+                pedido = MagicMock(
+                    id_session=10,
+                    estado_pedido=state,
+                )
+                db.get.return_value = pedido
+                result = process_initial_set_direccion_entrega(
+                    db, self._session(), "Tilcara 2020"
+                )
+                self.assertEqual(result.status, "rejected")
+                self.assertEqual(
+                    result.resolved_data.get("reason"),
+                    "pedido_not_borrador",
+                )
+                pedido.direccion_entrega.assert_not_called()
+
+    def test_empty_text_rejects_and_preserves(self) -> None:
+        pedido = MagicMock(
+            id_session=10,
+            estado_pedido=EstadoPedido.BORRADOR,
+        )
+        db = MagicMock()
+        db.get.return_value = pedido
+        for empty in ("", "   ", "\t\n", "\u00a0\u202f\u3000"):
+            with self.subTest(raw=empty):
+                result = process_initial_set_direccion_entrega(
+                    db, self._session(), empty
+                )
+                self.assertEqual(result.status, "rejected")
+                self.assertEqual(
+                    result.resolved_data.get("reason"), "text_empty"
+                )
+        pedido.direccion_entrega.assert_not_called()
+
+    def test_too_long_text_rejects_and_preserves(self) -> None:
+        pedido = MagicMock(
+            id_session=10,
+            estado_pedido=EstadoPedido.BORRADOR,
+        )
+        db = MagicMock()
+        db.get.return_value = pedido
+        too_long = "x" * 501
+        result = process_initial_set_direccion_entrega(
+            db, self._session(), too_long
+        )
+        self.assertEqual(result.status, "rejected")
+        self.assertEqual(
+            result.resolved_data.get("reason"), "text_too_long"
+        )
+        pedido.direccion_entrega.assert_not_called()
+
+    def test_unicode_whitespace_collapses_before_length_check(self) -> None:
+        pedido = MagicMock(
+            id_session=10,
+            estado_pedido=EstadoPedido.BORRADOR,
+        )
+        db = MagicMock()
+        db.get.return_value = pedido
+        weird = (
+            "\u00a0\u00a0Tilcara\u202f2020\u3000Piso\t2\n"
+        )
+        result = process_initial_set_direccion_entrega(
+            db, self._session(), weird
+        )
+        self.assertEqual(result.status, "executed")
+        self.assertEqual(
+            pedido.direccion_entrega, "Tilcara 2020 Piso 2"
+        )
+        self.assertEqual(
+            result.resolved_data.get("accepted_length"),
+            len("Tilcara 2020 Piso 2"),
+        )
+
+    def test_accepted_length_one_is_accepted(self) -> None:
+        pedido = MagicMock(
+            id_session=10,
+            estado_pedido=EstadoPedido.BORRADOR,
+        )
+        db = MagicMock()
+        db.get.return_value = pedido
+        result = process_initial_set_direccion_entrega(
+            db, self._session(), "x"
+        )
+        self.assertEqual(result.status, "executed")
+        self.assertEqual(pedido.direccion_entrega, "x")
+        self.assertEqual(result.resolved_data.get("accepted_length"), 1)
+
+    def test_accepted_length_500_is_accepted(self) -> None:
+        pedido = MagicMock(
+            id_session=10,
+            estado_pedido=EstadoPedido.BORRADOR,
+        )
+        db = MagicMock()
+        db.get.return_value = pedido
+        text = "a" * 500
+        result = process_initial_set_direccion_entrega(
+            db, self._session(), text
+        )
+        self.assertEqual(result.status, "executed")
+        self.assertEqual(pedido.direccion_entrega, text)
+        self.assertEqual(result.resolved_data.get("accepted_length"), 500)
+
+    def test_replacement_overwrites_previous_value(self) -> None:
+        pedido = MagicMock(
+            id_session=10,
+            estado_pedido=EstadoPedido.BORRADOR,
+        )
+        db = MagicMock()
+        db.get.return_value = pedido
+        result = process_initial_set_direccion_entrega(
+            db, self._session(), "Nueva 123"
+        )
+        self.assertEqual(result.status, "executed")
+        self.assertEqual(pedido.direccion_entrega, "Nueva 123")
+
+    def test_does_not_mutate_observaciones(self) -> None:
+        pedido = MagicMock(
+            id_session=10,
+            estado_pedido=EstadoPedido.BORRADOR,
+        )
+        db = MagicMock()
+        db.get.return_value = pedido
+        result = process_initial_set_direccion_entrega(
+            db, self._session(), "Tilcara 2020"
+        )
+        self.assertEqual(result.status, "executed")
+        pedido.observaciones.assert_not_called()
+
+    def test_no_transaction_control_methods_called(self) -> None:
+        db = MagicMock()
+        db.get.return_value = MagicMock(
+            id_session=10,
+            estado_pedido=EstadoPedido.BORRADOR,
+        )
+        process_initial_set_direccion_entrega(db, self._session(), "ok")
+        for method in (
+            "commit",
+            "rollback",
+            "begin",
+            "flush",
+            "refresh",
+            "expire",
+            "close",
+        ):
+            getattr(db, method).assert_not_called()
+
+    def test_does_not_leak_raw_text_into_resolved_data(self) -> None:
+        pedido = MagicMock(
+            id_session=10,
+            estado_pedido=EstadoPedido.BORRADOR,
+        )
+        db = MagicMock()
+        db.get.return_value = pedido
+        secret = "secret-direccion-payload-aaa"
+        result = process_initial_set_direccion_entrega(
+            db, self._session(), secret
+        )
+        self.assertNotIn(secret, result.resolved_data.values())
+        for value in result.resolved_data.values():
+            self.assertNotIn(secret, repr(value))
+
+
+class SetDireccionEntregaIntegrationTest(unittest.TestCase):
+    """PostgreSQL-backed tests for the full orchestrator + mapper chain."""
+
+    def test_successful_replacement_of_null_address_persists(self) -> None:
+        ids = _seed_base()
+        try:
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                result = process_initial_set_direccion_entrega(
+                    db,
+                    session_row,
+                    "  Tilcara  2020  Piso 2 ",
+                )
+                self.assertEqual(result.status, "executed")
+                self.assertEqual(
+                    result.resolved_data.get("accepted_length"),
+                    len("Tilcara 2020 Piso 2"),
+                )
+                db.commit()
+
+            pedido = _load_pedido(ids["pedido_id"])
+            assert pedido is not None
+            self.assertEqual(pedido.direccion_entrega, "Tilcara 2020 Piso 2")
+            self.assertEqual(pedido.estado_pedido, EstadoPedido.BORRADOR)
+        finally:
+            _cleanup(ids)
+
+    def test_successful_replacement_of_existing_address(self) -> None:
+        ids = _seed_base()
+        try:
+            with TestingSessionLocal() as db, db.begin():
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                pedido.direccion_entrega = "valor previo"
+
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                result = process_initial_set_direccion_entrega(
+                    db, session_row, "  nuevo valor "
+                )
+                self.assertEqual(result.status, "executed")
+                db.commit()
+
+            pedido = _load_pedido(ids["pedido_id"])
+            assert pedido is not None
+            self.assertEqual(pedido.direccion_entrega, "nuevo valor")
+            self.assertEqual(pedido.estado_pedido, EstadoPedido.BORRADOR)
+        finally:
+            _cleanup(ids)
+
+    def test_too_long_text_does_not_overwrite_existing(self) -> None:
+        ids = _seed_base()
+        try:
+            with TestingSessionLocal() as db, db.begin():
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                pedido.direccion_entrega = "valor previo"
+
+            text = "x" * 501
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                result = process_initial_set_direccion_entrega(
+                    db, session_row, text
+                )
+                self.assertEqual(result.status, "rejected")
+                self.assertEqual(
+                    result.resolved_data.get("reason"), "text_too_long"
+                )
+                db.commit()
+
+            pedido = _load_pedido(ids["pedido_id"])
+            assert pedido is not None
+            self.assertEqual(pedido.direccion_entrega, "valor previo")
+        finally:
+            _cleanup(ids)
+
+    def test_empty_text_does_not_overwrite_existing(self) -> None:
+        ids = _seed_base()
+        try:
+            with TestingSessionLocal() as db, db.begin():
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                pedido.direccion_entrega = "valor previo"
+
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                result = process_initial_set_direccion_entrega(
+                    db, session_row, "   \u00a0  "
+                )
+                self.assertEqual(result.status, "rejected")
+                self.assertEqual(
+                    result.resolved_data.get("reason"), "text_empty"
+                )
+                db.commit()
+
+            pedido = _load_pedido(ids["pedido_id"])
+            assert pedido is not None
+            self.assertEqual(pedido.direccion_entrega, "valor previo")
+        finally:
+            _cleanup(ids)
+
+    def test_successful_turn_does_not_alter_payment_or_method(self) -> None:
+        ids = _seed_base()
+        try:
+            with TestingSessionLocal() as db, db.begin():
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                pedido.id_medio_pago = ids["medio_pago_id"]
+                pedido.id_metodo_entrega = ids["metodo_entrega_id"]
+                pedido.observaciones = "observacion previa"
+
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                process_initial_set_direccion_entrega(
+                    db, session_row, "Tilcara 2020"
+                )
+                db.commit()
+
+            pedido = _load_pedido(ids["pedido_id"])
+            assert pedido is not None
+            self.assertEqual(
+                pedido.id_medio_pago, ids["medio_pago_id"]
+            )
+            self.assertEqual(
+                pedido.id_metodo_entrega, ids["metodo_entrega_id"]
+            )
+            self.assertEqual(pedido.observaciones, "observacion previa")
+            self.assertEqual(pedido.direccion_entrega, "Tilcara 2020")
+            self.assertEqual(pedido.estado_pedido, EstadoPedido.BORRADOR)
+        finally:
+            _cleanup(ids)
+
+    def test_successful_turn_does_not_change_lines(self) -> None:
+        ids = _seed_base()
+        try:
+            line_id = _seed_line(
+                pedido_id=ids["pedido_id"], pp_id=ids["pp_id"]
+            )
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                process_initial_set_direccion_entrega(
+                    db, session_row, "Tilcara 2020"
+                )
+                db.commit()
+            with TestingSessionLocal() as db:
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                self.assertEqual(pedido.direccion_entrega, "Tilcara 2020")
+                lines = db.execute(
+                    select(PedidoProducto).where(
+                        PedidoProducto.id_pedido == ids["pedido_id"]
+                    )
+                ).scalars().all()
+                self.assertEqual([line.id for line in lines], [line_id])
+                self.assertEqual(lines[0].cantidad, 1)
+        finally:
+            _cleanup(ids)
+
+    def test_successful_turn_does_not_alter_pending_state(self) -> None:
+        ids = _seed_base()
+        try:
+            with TestingSessionLocal() as db, db.begin():
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                session_row.pending_intents = {
+                    "active": {
+                        "intent": "vaciar_pedido",
+                        "status": "pending_resolution",
+                        "source_text": "vaciar",
+                        "recognizer": "vaciar_pedido",
+                        "handler": "vaciar_pedido",
+                        "resolved_data": {"pedido_id": ids["pedido_id"]},
+                        "requirements": [
+                            {
+                                "name": "confirmacion",
+                                "status": "pending",
+                                "value": None,
+                            }
+                        ],
+                        "candidate_ids": [],
+                    },
+                    "queue": [],
+                }
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                process_initial_set_direccion_entrega(
+                    db, session_row, "Tilcara 2020"
+                )
+                db.commit()
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                self.assertIsNotNone(session_row.pending_intents)
+                self.assertEqual(
+                    session_row.pending_intents["active"]["intent"],
+                    "vaciar_pedido",
+                )
+        finally:
+            _cleanup(ids)
+
+    def test_technical_failure_after_staging_rolls_back_entire_turn(
+        self,
+    ) -> None:
+        ids = _seed_base()
+        try:
+            with TestingSessionLocal() as db, db.begin():
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                pedido.direccion_entrega = "valor previo"
+
+            class _BoomOnCommit(Exception):
+                pass
+
+            class _ExplodingSession:
+                def __init__(self, real) -> None:
+                    self._real = real
+
+                def get(self, *args, **kwargs):
+                    return self._real.get(*args, **kwargs)
+
+                def commit(self):
+                    raise _BoomOnCommit("simulated technical failure")
+
+                def rollback(self):
+                    self._real.rollback()
+
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                wrapped = _ExplodingSession(db)
+                process_initial_set_direccion_entrega(
+                    wrapped, session_row, "Tilcara 2020"
+                )
+                with self.assertRaises(_BoomOnCommit):
+                    wrapped.commit()
+                wrapped.rollback()
+
+            pedido = _load_pedido(ids["pedido_id"])
+            assert pedido is not None
+            self.assertEqual(pedido.direccion_entrega, "valor previo")
+        finally:
+            _cleanup(ids)
+
+
+def _load_pedido(pedido_id: int) -> Pedido | None:
+    with TestingSessionLocal() as db:
+        return db.get(Pedido, pedido_id)
 
 
 if __name__ == "__main__":

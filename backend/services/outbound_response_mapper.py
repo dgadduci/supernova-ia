@@ -6,9 +6,10 @@ performs three narrow responsibilities:
 
 1. ``build_customer_responses`` — translates processed intents into
    rendered ``CustomerResponse`` values using the existing
-   ``agregar`` / ``quitar`` / ``modificar`` builders, the four
+   ``agregar`` / ``quitar`` / ``modificar`` builders, the five
    guided-closure builders (``consultar_resumen_pedido``,
    ``set_metodo_de_pago``, ``set_metodo_de_entrega``,
+   ``set_observacion_pedido``, ``set_direccion_entrega``,
    ``confirmar_pedido``), the ``iniciar_pedido`` builder, the
    ``vaciar_pedido`` builder, and the generic fallback message.
 2. ``stage_outbound_rows`` — renders the same responses and stages
@@ -48,6 +49,7 @@ from backend.intents.responses.consecutive_add_product_coalescer import (
 from backend.intents.responses.draft_order_closure import (
     build_confirmar_pedido_response,
     build_consultar_resumen_pedido_response,
+    build_set_direccion_entrega_response,
     build_set_metodo_de_entrega_response,
     build_set_metodo_de_pago_response,
     build_set_observacion_pedido_response,
@@ -165,6 +167,10 @@ def build_customer_responses(
         elif intent.intent == "set_observacion_pedido":
             responses.append(
                 build_set_observacion_pedido_response(db, session, intent)
+            )
+        elif intent.intent == "set_direccion_entrega":
+            responses.append(
+                build_set_direccion_entrega_response(db, session, intent)
             )
         elif is_informational_commerce_intent(intent.intent):
             responses.append(
