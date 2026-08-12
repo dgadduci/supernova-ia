@@ -24,11 +24,11 @@
 
 ## 3. Validation and controlled production check
 
-- [ ] 3.1 User runs the focused pytest, Ruff, compileall, shell syntax,
+- [x] 3.1 User runs the focused pytest, Ruff, compileall, shell syntax,
   strict OpenSpec validation, and diff check commands from the proposal and
   provides complete output.
-- [ ] 3.2 After separate authorization, deploy the approved change to Railway
+- [x] 3.2 After separate authorization, deploy the approved change to Railway
   production and verify safe migration lifecycle records, `alembic current`,
   and `/health` in that order.
-- [ ] 3.3 Review production evidence and rollback readiness; obtain separate
+- [x] 3.3 Review production evidence and rollback readiness; obtain separate
   authorization before sync/archive.
