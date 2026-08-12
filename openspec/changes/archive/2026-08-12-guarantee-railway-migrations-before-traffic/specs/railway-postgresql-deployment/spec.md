@@ -21,12 +21,26 @@ pre-deploy migration command.
   `head` before starting Tailscale or the FastAPI web process
 - **AND** only a successful migration permits the web process to serve traffic
 
+#### Scenario: Release reaches the current database revision
+
+- **WHEN** Railway deploys a release with a valid referenced PostgreSQL URL
+- **THEN** the web-service entrypoint upgrades the database through the
+  existing Alembic chain before the new web process serves traffic
+- **AND** the web process starts the existing FastAPI application using
+  Railway's assigned port
+
 #### Scenario: Migration failure fails closed
 
 - **WHEN** the referenced database URL is absent or the Alembic upgrade fails
 - **THEN** the entrypoint exits non-zero before Tailscale or Uvicorn starts
 - **AND** the service SHALL NOT serve traffic, select the local
   `supernova_test` fallback, or silently skip/retry the migration in-process
+
+#### Scenario: Missing database configuration fails closed
+
+- **WHEN** the Railway deployment lacks a valid production database URL
+- **THEN** it SHALL fail before serving production traffic
+- **AND** it SHALL NOT select the local `supernova_test` fallback
 
 #### Scenario: Restart against an already-current schema remains safe
 
