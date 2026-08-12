@@ -19,6 +19,23 @@ signed URLs, provider payloads and raw exception messages.
 This work followed `harden-provider-outbound-delivery`, which preserved the
 durable outbox and introduced its initial safe outbound diagnostics.
 
+## Post-activation product-recognition observation window
+
+**Status:** Deferred — execute only after real recognition traffic is expected
+and an operator explicitly authorizes one bounded read-only window.
+
+Production verification confirmed the `hybrid_authoritative` deploy, eligible
+policy, factory and health, but the approved bounded
+`shadow_product_recognition` queries returned zero events. That result is
+inconclusive and does not justify synthetic traffic, a mode change or rollback.
+
+The archived OpenSpec `2026-08-12-add-post-activation-recognition-monitoring`
+defines the only permitted follow-up: use the existing
+`query_production_logs` CLI with explicit target, time bound and finite limit;
+retain only closed aggregate counts and bounded latency summaries. A technical
+fallback, parsing failure or unsafe output requires a separately authorized
+investigation; business `unique`, `ambiguous` and `unknown` outcomes do not.
+
 ## Durable provider-message retention and safe purge
 
 **Status:** Deferred — not an immediate product need; separate OpenSpec
