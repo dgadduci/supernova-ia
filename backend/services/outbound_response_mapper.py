@@ -60,6 +60,9 @@ from backend.intents.responses.modificar_producto_response import (
 from backend.intents.responses.new_order_after_confirmation import (
     build_iniciar_pedido_response,
 )
+from backend.intents.responses.order_status_query import (
+    build_order_status_query_response,
+)
 from backend.intents.responses.quitar_producto_response import (
     build_quitar_producto_response,
 )
@@ -145,6 +148,10 @@ def build_customer_responses(
         elif intent.intent == "confirmar_pedido":
             responses.append(
                 build_confirmar_pedido_response(db, session, intent)
+            )
+        elif intent.intent == "consultar_estado_pedido":
+            responses.append(
+                build_order_status_query_response(db, session, intent)
             )
         elif intent.intent == "iniciar_pedido":
             responses.append(

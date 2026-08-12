@@ -219,12 +219,35 @@ class BuildCustomerResponsesOrderingTest(unittest.TestCase):
         self.assertEqual(responses[1].intent, "saludo")
         self.assertEqual(responses[1].status, "executed")
         self.assertEqual(responses[2].intent, "consultar_estado_pedido")
-        self.assertEqual(responses[2].message, GENERIC_MESSAGE)
+        self.assertEqual(
+            responses[2].message,
+            "No tenés un pedido activo para consultar.",
+        )
         self.assertEqual(responses[2].status, "rejected")
 
 
 class BuildCustomerResponsesGenericFallbackTest(unittest.TestCase):
     def test_deferred_intent_keeps_generic_message(self) -> None:
+        responses = build_customer_responses(
+            _db(),
+            _session(),
+            [
+                ProcessedIntent(
+                    intent="__futuro_deferred_intent__",
+                    source_text="x",
+                    status="rejected",
+                    handler="__futuro_deferred_intent__",
+                    recognizer="intent_classifier",
+                ),
+            ],
+        )
+
+        self.assertEqual(len(responses), 1)
+        self.assertEqual(responses[0].message, GENERIC_MESSAGE)
+        self.assertEqual(responses[0].intent, "__futuro_deferred_intent__")
+        self.assertEqual(responses[0].status, "rejected")
+
+    def test_consultar_estado_pedido_routes_to_dedicated_builder(self) -> None:
         responses = build_customer_responses(
             _db(),
             _session(),
@@ -240,7 +263,10 @@ class BuildCustomerResponsesGenericFallbackTest(unittest.TestCase):
         )
 
         self.assertEqual(len(responses), 1)
-        self.assertEqual(responses[0].message, GENERIC_MESSAGE)
+        self.assertEqual(
+            responses[0].message,
+            "No tenés un pedido activo para consultar.",
+        )
         self.assertEqual(responses[0].intent, "consultar_estado_pedido")
         self.assertEqual(responses[0].status, "rejected")
 

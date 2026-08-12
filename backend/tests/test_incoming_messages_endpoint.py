@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import backend.routers.incoming_messages as router_module
-from backend.dependencies import get_session
+from backend.dependencies import get_session, require_admin_token
 from backend.intents.orchestration.incoming_message_response_orchestrator import (
     GENERIC_MESSAGE,
     process_incoming_message_with_responses,
@@ -26,7 +26,12 @@ def override_get_session():
     return db
 
 
+def override_require_admin_token():
+    return None
+
+
 app.dependency_overrides[get_session] = override_get_session
+app.dependency_overrides[require_admin_token] = override_require_admin_token
 client = TestClient(app)
 error_client = TestClient(app, raise_server_exceptions=False)
 

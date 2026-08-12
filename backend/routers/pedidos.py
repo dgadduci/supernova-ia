@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from backend.dependencies import get_session
+from backend.dependencies import get_session, require_admin_token
 from backend.models import EstadoPedido
 from backend.schemas.pedido import (
     PedidoCreate,
@@ -25,7 +25,11 @@ from backend.services.exceptions import (
 )
 from backend.services.pedido_service import PedidoService
 
-router = APIRouter(prefix="/pedidos", tags=["pedidos"])
+router = APIRouter(
+    prefix="/pedidos",
+    tags=["pedidos"],
+    dependencies=[Depends(require_admin_token)],
+)
 
 
 def _service(session: Session = Depends(get_session)) -> PedidoService:

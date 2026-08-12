@@ -30,14 +30,12 @@
   validation commands from the proposal.
 - [x] 3.5 Perform one controlled `query_production_logs --event
   outbound_attempt_outcome` after deployment and record only its safe
-  aggregate outcome. (Defer until the CLI fix lands in production:
-  the CLI previously forwarded `--event` as Railway's `--filter`,
-  which is a text search on the envelope `message` field that is
-  empty for our structured events and therefore always returned zero
-  matches. The CLI now applies `--event` only as a local filter on
-  the parsed events; a controlled production query must confirm the
-  bounded array is non-empty for `outbound_attempt_outcome` after
-  deploy.)
+  aggregate outcome. Production commit `a906a28` deployed successfully;
+  the controlled inbound returned HTTP 200, the query returned an
+  `accepted` event for outbox id 71, and the customer confirmed receipt.
+  A subsequent controlled query after the local `--event` filter correction
+  returned a bounded safe aggregate of 33 matching events; no raw event
+  lines were retained.
 
 ## 4. Deferred
 
