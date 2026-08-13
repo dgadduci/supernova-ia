@@ -120,6 +120,78 @@ def _supported_context_kind(context_type: str | None) -> str | None:
     return None
 
 
+def _invalid_state_event_kind(context_type: str | None) -> str:
+    """Resolve the closed ``context_kind`` for an inconsistent pending state.
+
+    The dispatcher never invents a context: it surfaces the persisted
+    ``session.context_type`` when it is a supported kind and falls back
+    to the closed sentinels only when the persisted value is empty or
+    outside the supported allowlist.
+
+    * ``context_type is None``: the ``none`` sentinel.
+    * ``context_type`` is one of the four supported kinds: the actual
+      kind (for example ``product_selection``) is preserved so the
+      operator still sees which flow was being cleared.
+    * ``context_type`` is non-null and not supported: the
+      ``unsupported`` sentinel.
+    """
+    if context_type is None:
+        return "none"
+    if context_type in _SUPPORTED_CONTEXT_KINDS:
+        return context_type
+    return "unsupported"
+
+
+def _recover_invalid_pending_state(
+    *,
+    session: ConversationSession,
+    active: ProcessedIntent | None,
+    context_type: str | None,
+) -> ProcessedIntent:
+    """Recover from an inconsistent pending state and return one
+    ``rejected`` outcome.
+
+    The recovery is performed in-memory only and never invokes the
+    classifier, resolver, LLM, product handler, catalog or any
+    transaction-control method. The pending JSON is cleared,
+    ``session.context_type`` is reset to ``None`` and a single closed
+    ``pending_context_transition`` event with outcome
+    ``invalid_state_cleared`` is emitted. The next normal message
+    reaches initial dispatch because both the pending state and the
+    context type are now empty.
+    """
+    event_kind = _invalid_state_event_kind(context_type)
+    pre_status = active.status if active is not None else "none"
+    pre_candidate_count = (
+        len(active.candidate_ids or []) if active is not None else 0
+    )
+    clear_pending_state(session)
+    session.context_type = None
+    post_state = load_pending_state(session)
+    _emit_pending_snapshot(
+        NoopDiagnosticSink(), session, post_state, "after_invalid_recovery"
+    )
+    _emit_pending_transition(
+        outcome="invalid_state_cleared",
+        context_kind=event_kind,
+        status_before=pre_status,
+        status_after="rejected",
+        candidate_count_before=pre_candidate_count,
+        candidate_count_after=0,
+        context_cleared=True,
+    )
+    return ProcessedIntent(
+        intent="agregar_producto",
+        source_text="",
+        status="rejected",
+        recognizer="recognizer_productos",
+        handler="agregar_producto",
+        resolved_data={},
+        requirements=[],
+        candidate_ids=[],
+    )
+
+
 def _run_supported_resolver(
     *,
     db: DatabaseSession,
@@ -242,22 +314,24 @@ def dispatch_pending_context(
     context_kind = _supported_context_kind(session.context_type)
     _emit_pending_snapshot(diagnostic_sink, session, state, "before_resolver")
 
-    if active is None:
-        return [ProcessedIntent(
-            intent="agregar_producto",
-            source_text=message,
-            status="rejected",
-            recognizer="recognizer_productos",
-            handler="agregar_producto",
-            resolved_data={},
-            requirements=[],
-            candidate_ids=[],
-        )]
-
     if (
-        context_kind is not None
-        and is_explicit_order_status_query(message)
+        active is None
+        or session.context_type is None
+        or context_kind is None
     ):
+        recovered = _recover_invalid_pending_state(
+            session=session,
+            active=active,
+            context_type=session.context_type,
+        )
+        return [recovered]
+
+
+    assert active is not None
+    assert session.context_type is not None
+    assert context_kind is not None
+
+    if is_explicit_order_status_query(message):
         status_intent = process_initial_order_status_query(db, session, message)
         pre_candidate_count = _candidate_count(active)
         _emit_pending_transition(
@@ -270,12 +344,6 @@ def dispatch_pending_context(
             context_cleared=False,
         )
         return [status_intent]
-
-    if session.context_type is None:
-        return [_rejected_copy(active)]
-
-    if context_kind is None:
-        return [_rejected_copy(active)]
 
     result = _run_supported_resolver(
         db=db,
