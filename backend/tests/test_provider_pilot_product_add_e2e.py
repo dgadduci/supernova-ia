@@ -825,6 +825,174 @@ class ProviderCoordinatorProductAddPricePresentEndToEndTest(unittest.TestCase):
         )
 
 
+    def test_first_turn_without_quantity_uses_contract_default(self) -> None:
+        """Amendment II through the real coordinator, two receipts/leases.
+
+        The first turn's product recognizer is replaced with a
+        hybrid-style ambiguous result that omits ``cantidad``; the second
+        turn keeps the real restricted resolver. The durable pending
+        intent must already carry the completed contract default ``1``,
+        and ``Grande`` must produce one default-quantity line, a
+        successful outbound response and the closed pending/product-add
+        events.
+        """
+        from backend.models import (
+            MensajeProveedorSaliente,
+            RecepcionMensajeProveedor,
+        )
+        from backend.observability.events import EVENT_PENDING_CONTEXT_TRANSITION
+
+        captured: list[dict] = []
+
+        def _capture(**kwargs):
+            captured.append(kwargs)
+            return True
+
+        ambiguous_without_quantity = {
+            "encontrados": [],
+            "encontrados_posibles": [
+                {
+                    "texto_origen": "pizza de mozzarella",
+                    "productos": [
+                        {"producto_presentacion_id": self.catalog["pp_grande_id"]},
+                        {"producto_presentacion_id": self.catalog["pp_chica_id"]},
+                    ],
+                }
+            ],
+            "encontrados_no_disponibles": [],
+            "no_encontrados": [],
+        }
+
+        s1 = _suffix()
+        s2 = _suffix()
+
+        with _patched_classifier("pizza de mozzarella"), patch(
+            "backend.intents.handlers.agregar_producto_handler.emit_event",
+            side_effect=_capture,
+        ), patch(
+            "backend.intents.orchestration.pending_context_dispatcher.emit_event",
+            side_effect=_capture,
+        ):
+            with patch(
+                "backend.intents.orchestration.agregar_producto_orchestrator"
+                ".detectar_productos",
+                return_value=ambiguous_without_quantity,
+            ):
+                self._accept_and_process(
+                    identificador=f"SM-{s1}",
+                    mensaje="pizza de mozzarella",
+                    event_sink=captured,
+                )
+
+            with TestingSessionLocal() as db:
+                session_row = db.execute(
+                    select(SessionModel).where(
+                        SessionModel.id_comercio == self.comercio_id
+                    )
+                ).scalar_one()
+                self.assertEqual(session_row.context_type, "product_selection")
+                active = (session_row.pending_intents or {}).get("active")
+                assert active is not None
+                self.assertEqual(active.get("status"), "pending_resolution")
+                self.assertEqual(
+                    sorted(active.get("candidate_ids") or []),
+                    sorted(
+                        [
+                            self.catalog["pp_grande_id"],
+                            self.catalog["pp_chica_id"],
+                        ]
+                    ),
+                )
+                self.assertEqual(
+                    (active.get("resolved_data") or {}).get("cantidad"), 1
+                )
+                cantidad_req = next(
+                    req
+                    for req in active.get("requirements") or []
+                    if req.get("name") == "cantidad"
+                )
+                self.assertEqual(cantidad_req.get("status"), "completed")
+                self.assertEqual(cantidad_req.get("value"), 1)
+
+            self._accept_and_process(
+                identificador=f"SM-{s2}",
+                mensaje="Grande",
+                event_sink=captured,
+            )
+
+        with TestingSessionLocal() as db:
+            session_row = db.execute(
+                select(SessionModel).where(
+                    SessionModel.id_comercio == self.comercio_id
+                )
+            ).scalar_one()
+            pedido_id = int(session_row.id_pedido)
+            lines = (
+                db.execute(
+                    select(PedidoProducto).where(
+                        PedidoProducto.id_pedido == pedido_id
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            self.assertEqual(len(lines), 1)
+            self.assertEqual(
+                int(lines[0].id_producto_presentacion),
+                self.catalog["pp_grande_id"],
+            )
+            self.assertEqual(int(lines[0].cantidad), 1)
+            self.assertIsNone(session_row.context_type)
+            pending = session_row.pending_intents or {}
+            self.assertIsNone(pending.get("active"))
+            self.assertEqual(pending.get("queue"), [])
+
+            outbox_messages = [
+                row.cuerpo
+                for row in db.execute(
+                    select(MensajeProveedorSaliente)
+                    .where(
+                        MensajeProveedorSaliente.recepcion_mensaje_proveedor_id.in_(
+                            select(RecepcionMensajeProveedor.id).where(
+                                RecepcionMensajeProveedor.comercio_id
+                                == self.comercio_id
+                            )
+                        )
+                    )
+                    .order_by(MensajeProveedorSaliente.id)
+                )
+                .scalars()
+                .all()
+            ]
+
+        self.assertGreaterEqual(len(outbox_messages), 2, outbox_messages)
+        self.assertIn("Elegí entre:", outbox_messages[0])
+        self.assertNotIn("No pude procesar tu pedido", outbox_messages[1])
+        self.assertIn("Listo,", outbox_messages[1])
+
+        transition_events = [
+            kwargs
+            for kwargs in captured
+            if kwargs.get("event") == EVENT_PENDING_CONTEXT_TRANSITION
+        ]
+        self.assertIn(
+            "ready_executed",
+            [kwargs.get("outcome") for kwargs in transition_events],
+        )
+
+        product_add_events = [
+            kwargs
+            for kwargs in captured
+            if kwargs.get("event") == EVENT_PRODUCT_ADD_EXECUTION
+        ]
+        self.assertEqual(len(product_add_events), 1, product_add_events)
+        self.assertEqual(product_add_events[0].get("outcome"), "created")
+        self.assertEqual(
+            product_add_events[0].get("component"),
+            COMPONENT_PRODUCT_ADD_EXECUTION,
+        )
+
+
 class ProviderCoordinatorProductAddPriceUnavailableEndToEndTest(unittest.TestCase):
     """Real provider coordinator E2E for the price-unavailable path:
 

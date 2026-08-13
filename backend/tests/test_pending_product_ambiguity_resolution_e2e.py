@@ -713,6 +713,153 @@ class MozzarellaGrandeEndToEndTest(unittest.TestCase):
             _cleanup_two_presentation(ids)
 
 
+class MozzarellaAmbiguityWithoutQuantityEndToEndTest(unittest.TestCase):
+    """Amendment II: recognition omits ``cantidad`` on the first turn.
+
+    Only the first-turn product recognizer is replaced with a
+    hybrid-style ambiguous result carrying two candidate presentations
+    and no quantity. The durable pending intent must already hold the
+    contract default quantity ``1`` as a completed requirement, so the
+    real restricted resolver reaching ``Grande`` turns the intent
+    ``ready``, executes exactly one default-quantity line and clears the
+    context. The second turn keeps the real resolver path.
+    """
+
+    @staticmethod
+    def _ambiguous_without_quantity(pp_a_id: int, pp_b_id: int) -> dict:
+        return {
+            "encontrados": [],
+            "encontrados_posibles": [
+                {
+                    "texto_origen": "pizza de mozzarella",
+                    "productos": [
+                        {"producto_presentacion_id": pp_a_id},
+                        {"producto_presentacion_id": pp_b_id},
+                    ],
+                }
+            ],
+            "encontrados_no_disponibles": [],
+            "no_encontrados": [],
+        }
+
+    def test_two_candidates_without_quantity_resolve_to_default_one(self) -> None:
+        ids = _seed_two_presentation_comercio(
+            nombre="Pizza Mozzarella",
+            codigo_a="GRANDE",
+            codigo_b="CHICA",
+        )
+        try:
+            recognized = self._ambiguous_without_quantity(
+                ids["pp_a_id"], ids["pp_b_id"]
+            )
+            with _patched_classifier("pizza de mozzarella"), patch(
+                "backend.intents.orchestration.agregar_producto_orchestrator"
+                ".detectar_productos",
+                return_value=recognized,
+            ):
+                with TestingSessionLocal() as db:
+                    session_row = db.get(SessionModel, ids["session_id"])
+                    assert session_row is not None
+                    initial = process_incoming_message(
+                        db, session_row, "pizza de mozzarella"
+                    )
+                    assert len(initial) == 1
+                    self.assertEqual(initial[0].status, "pending_resolution")
+                    self.assertEqual(initial[0].resolved_data.get("cantidad"), 1)
+                    pending_names = {
+                        req.name
+                        for req in initial[0].requirements
+                        if req.status == "pending"
+                    }
+                    self.assertEqual(
+                        pending_names, {"producto_presentacion_id"}
+                    )
+                    db.commit()
+
+            # Durable pending state between turns: exactly the two
+            # restricted candidates with the completed default quantity.
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                self.assertEqual(session_row.context_type, "product_selection")
+                active = (session_row.pending_intents or {}).get("active")
+                assert active is not None
+                self.assertEqual(active.get("status"), "pending_resolution")
+                self.assertEqual(
+                    sorted(active.get("candidate_ids") or []),
+                    sorted([ids["pp_a_id"], ids["pp_b_id"]]),
+                )
+                self.assertEqual(
+                    (active.get("resolved_data") or {}).get("cantidad"), 1
+                )
+                cantidad_req = next(
+                    req
+                    for req in active.get("requirements") or []
+                    if req.get("name") == "cantidad"
+                )
+                self.assertEqual(cantidad_req.get("status"), "completed")
+                self.assertEqual(cantidad_req.get("value"), 1)
+
+            captured: list[dict] = []
+
+            def _capture(**kwargs):
+                captured.append(kwargs)
+                return True
+
+            with patch(
+                "backend.intents.orchestration.pending_context_dispatcher.emit_event",
+                side_effect=_capture,
+            ), patch(
+                "backend.intents.handlers.agregar_producto_handler.emit_event",
+                side_effect=_capture,
+            ):
+                with TestingSessionLocal() as db:
+                    session_row = db.get(SessionModel, ids["session_id"])
+                    assert session_row is not None
+                    outcomes = dispatch_pending_context(db, session_row, "Grande")
+                    self.assertGreaterEqual(len(outcomes), 1)
+                    self.assertEqual(outcomes[0].status, "executed")
+                    self.assertEqual(
+                        outcomes[0].resolved_data.get("producto_presentacion_id"),
+                        ids["pp_a_id"],
+                    )
+                    self.assertEqual(
+                        outcomes[0].resolved_data.get("cantidad"), 1
+                    )
+                    db.commit()
+
+            _assert_executed_for_pp(
+                session_id=ids["session_id"],
+                pedido_id=ids["pedido_id"],
+                expected_pp_id=ids["pp_a_id"],
+                expected_cantidad=1,
+            )
+
+            transition = next(
+                kwargs
+                for kwargs in captured
+                if kwargs.get("event") == EVENT_PENDING_CONTEXT_TRANSITION
+            )
+            self.assertEqual(transition["outcome"], "ready_executed")
+            self.assertEqual(transition["status_after"], "executed")
+            self.assertTrue(transition["context_cleared"])
+            self.assertEqual(transition["candidate_count_before"], 2)
+            self.assertEqual(transition["candidate_count_after"], 0)
+
+            add_events = [
+                kwargs
+                for kwargs in captured
+                if kwargs.get("event") == EVENT_PRODUCT_ADD_EXECUTION
+            ]
+            self.assertEqual(len(add_events), 1)
+            self.assertEqual(add_events[0].get("outcome"), "created")
+            self.assertEqual(
+                add_events[0].get("component"), COMPONENT_PRODUCT_ADD_EXECUTION
+            )
+        finally:
+            _cleanup_two_presentation(ids)
+
+
 class StatusInterruptionPreservesMozzarellaEndToEndTest(unittest.TestCase):
     """The closed deterministic status predicate must interrupt the
     pending Mozzarella Grande context without mutating the active

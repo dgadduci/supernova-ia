@@ -4,10 +4,13 @@ from backend.intents.schemas.requirement_state import RequirementState
 
 
 def process_agregar_producto(source_text: str, normalized_result: dict) -> ProcessedIntent:
-    resolved_data = normalized_result.get("resolved_data") or {}
     candidate_ids = list(normalized_result.get("candidate_ids") or [])
 
     contract_requirements = AGREGAR_PRODUCTO_CONTRACT["requirements"]
+
+    resolved_data = dict(normalized_result.get("resolved_data") or {})
+    if "cantidad" not in resolved_data:
+        resolved_data["cantidad"] = contract_requirements["cantidad"]["default"]
 
     requirements: list[RequirementState] = []
     for name, config in contract_requirements.items():

@@ -78,3 +78,24 @@
   measure latency impact of the closed-event emission under realistic
   load before deciding whether to keep the `invalid_state_cleared` event
   on every invalid-state turn or downgrade it to a sampling variant.
+
+## 6. Regression amendment — default quantity completion
+
+- [x] 6.1 Make the existing `agregar_producto` contract default quantity `1`
+  completed at initial intent construction when recognition omits quantity;
+  preserve explicit valid quantities and current invalid/technical behavior.
+- [x] 6.2 Add focused processor and restricted product-selection coverage for
+  two persisted candidates with no quantity: `Grande` must become `ready`,
+  execute one default-quantity add and clear context without candidate
+  widening or LLM authority.
+- [x] 6.3 Strengthen provider-coordinator E2E across two receipts/leases with
+  a first-turn hybrid-style ambiguous result that omits quantity; assert the
+  durable default before selection, success outbound response and closed
+  pending/product-add events after selection. Update the directly affected
+  legacy smoke expectation.
+- [x] 6.4 Run the focused pytest, Ruff, compileall and strict OpenSpec
+  validation commands in `proposal.md` locally; report complete output.
+- [ ] 6.5 After approved deploy, repeat the controlled ambiguity → `Grande`
+  WhatsApp sequence with a new clean session/pedido and verify one successful
+  response and line in the pilot panel. Only then resume gates 4.1–4.3; do not
+  archive any active change.

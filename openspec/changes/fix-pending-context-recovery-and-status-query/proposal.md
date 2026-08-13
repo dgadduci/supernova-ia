@@ -25,9 +25,10 @@ The customer text `No pude procesar tu pedido, ¿podrías reformularlo?` is
 emitted only by the `agregar_producto` response builder. It therefore proves
 an `agregar_producto` outcome reached a rejected/invalid pending form; it
 does not prove that the order-status implementation or its response mapper
-was invoked. The current dispatcher leaves a resolver-produced `rejected`
-intent active because it calls pending execution only for `ready`; the next
-message can consequently remain captured by that failed context.
+was invoked. The deployed dispatcher already clears a resolver-produced
+`rejected` intent and reconciles inconsistent active/context combinations;
+the production regression below instead concerns a valid pending selection
+that remains pending after its candidates have been consumed.
 
 ## Scope
 
@@ -148,3 +149,74 @@ After those checks succeed, resume
 test. Only after that resumed change passes and the user explicitly approves
 may the observation change be archived. Completion of this corrective change
 is not permission to archive either change.
+
+## Production-regression amendment II: default quantity completion
+
+The controlled production turn at `2026-08-13T19:38:49.395377Z` recorded a
+valid `product_selection` transition with `candidate_count_before=2`,
+`candidate_count_after=0`, `status_after=pending_resolution` and
+`context_cleared=false`. The preceding hybrid decision was `unknown`; this is
+not a product-price, transaction, inactive-session or missing-pending-state
+failure. It proves that the local presentation selection consumed the two
+persisted candidates but did not make the intent ready. The generic customer
+response follows because a pending `agregar_producto` intent with no candidates
+cannot render a clarification.
+
+The `agregar_producto` contract declares `cantidad` as required with default
+`1`, but `process_agregar_producto` currently records an omitted quantity as
+pending. When the initial hybrid ambiguity supplies candidate presentations
+without a quantity, resolving `Grande` completes only
+`producto_presentacion_id`; it intentionally clears candidates, yet leaves
+`cantidad` pending. This is the direct cause of the failed production gate.
+
+This amendment changes only that contract interpretation: for
+`agregar_producto`, an absent `cantidad` SHALL be deterministically completed
+with its existing declared default integer `1` while the initial intent is
+built. An explicit recognized positive quantity remains authoritative and is
+never replaced. No LLM, hybrid/fuzzy decision, resolver, candidate set,
+catalog, price or order history may choose or infer a different quantity.
+
+As a result, an initial ambiguity lacking an explicit quantity retains the
+restricted candidates but already has completed quantity `1`; a later unique
+presentation selection becomes `ready`, uses the existing caller-owned add
+path, clears its context under current rules, and produces the existing
+success response. A missing/invalid product selection, a zero/invalid explicit
+quantity and unexpected technical failure retain their current safe outcomes.
+
+## Scope of amendment II
+
+- Correct the initial `agregar_producto` processor's treatment of its
+  contract-declared default quantity only.
+- Update the directly affected legacy smoke expectation and add focused unit,
+  pending-selection and provider-coordinator tests for a two-candidate
+  hybrid-style recognition result with no supplied quantity.
+- Assert a selection that identifies one restricted presentation cannot remain
+  `pending_resolution` with an empty candidate set solely because its default
+  quantity was omitted.
+
+## Non-goals of amendment II
+
+- No change to any other intent contract or default, explicit-quantity parsing,
+  hybrid/fuzzy configuration or scoring, aliases, candidate widening,
+  recognizer fallback, LLM authority, catalog or price data, handler/service
+  transaction boundary, response wording, router, worker, webhook, migration,
+  panel, deploy, sync or archive.
+- No automatic repair of previously persisted malformed pending intents. The
+  existing invalid-state cleanup remains the bounded recovery path for those
+  states.
+
+## Focused validation for amendment II
+
+Run locally after implementation:
+
+```text
+PYTHONPATH=. venv/bin/python -m pytest backend/tests/test_agregar_producto_processor.py backend/tests/test_product_selection_context_resolver.py backend/tests/test_pending_product_ambiguity_resolution_e2e.py backend/tests/test_provider_pilot_product_add_e2e.py backend/tests/test_pending_context_dispatcher.py backend/tests/test_production_observability.py backend/tests/test_query_production_logs.py -q
+PYTHONPATH=. venv/bin/python -m ruff check backend/intents/processor.py backend/tests/test_agregar_producto_processor.py backend/tests/test_product_selection_context_resolver.py backend/tests/test_pending_product_ambiguity_resolution_e2e.py backend/tests/test_provider_pilot_product_add_e2e.py backend/tests/api_smoke.py
+PYTHONPATH=. venv/bin/python -m compileall -q backend/intents/processor.py
+openspec validate fix-pending-context-recovery-and-status-query --strict
+```
+
+The production gate remains failed. Do not archive this change, the product-add
+change or the observation change. The current diagnostic session must remain
+untouched until the user explicitly chooses its closure after this evidence is
+recorded.
