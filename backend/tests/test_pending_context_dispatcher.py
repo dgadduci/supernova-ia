@@ -9,6 +9,10 @@ from backend.intents.orchestration.pending_context_dispatcher import (
 )
 from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.intents.schemas.requirement_state import RequirementState
+from backend.observability.events import (
+    COMPONENT_PENDING_CONTEXT,
+    EVENT_PENDING_CONTEXT_TRANSITION,
+)
 from backend.sessions.enums.context_type import ContextType
 
 
@@ -373,6 +377,719 @@ class DispatchPendingContextAmbiguousRefinementTest(unittest.TestCase):
 
         self.assertEqual(len(captured_queue), 1)
         self.assertEqual(captured_queue[0].candidate_ids, [11])
+
+
+class DispatchPendingContextRejectedCleanupTest(unittest.TestCase):
+    """1.2 / 2.1: a resolver-produced `rejected` result clears the
+    active pending state and `session.context_type` within the existing
+    caller-owned transaction and returns the rejected outcome once."""
+
+    @patch.object(dispatcher_module, "execute_ready_pending_context")
+    @patch.object(dispatcher_module, "ProductSelectionContextService")
+    @patch.object(dispatcher_module, "set_active")
+    @patch.object(dispatcher_module, "load_pending_state")
+    @patch.object(dispatcher_module, "clear_pending_state", create=True)
+    def test_product_selection_rejected_clears_active_state_and_context(
+        self, clear_pending, load_state, set_active, resolver_cls, exec_fn
+    ):
+        active = _pending_intent(candidate_ids=[101, 102])
+        rejected = active.model_copy(update={"status": "rejected"})
+        load_state.return_value = _FakeState(active=active)
+        resolver = MagicMock()
+        resolver.resolve.return_value = rejected
+        resolver_cls.return_value = resolver
+
+        db = MagicMock(name="DatabaseSession")
+        session = MagicMock()
+        session.context_type = ContextType.PRODUCT_SELECTION.value
+
+        result = dispatch_pending_context(db, session, "xyz")
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].status, "rejected")
+        clear_pending.assert_called_once_with(session)
+        set_active.assert_not_called()
+        self.assertIsNone(session.context_type)
+        exec_fn.assert_not_called()
+
+    @patch.object(dispatcher_module, "execute_ready_pending_context")
+    @patch.object(dispatcher_module, "ProductSelectionContextService")
+    @patch.object(dispatcher_module, "set_active")
+    @patch.object(dispatcher_module, "load_pending_state")
+    @patch.object(dispatcher_module, "clear_pending_state", create=True)
+    def test_rejected_does_not_persist_active_intent(
+        self, clear_pending, load_state, set_active, resolver_cls, exec_fn
+    ):
+        active = _pending_intent(candidate_ids=[101, 102])
+        rejected = active.model_copy(update={"status": "rejected"})
+        load_state.return_value = _FakeState(active=active)
+        resolver = MagicMock()
+        resolver.resolve.return_value = rejected
+        resolver_cls.return_value = resolver
+
+        db = MagicMock(name="DatabaseSession")
+        session = MagicMock()
+        session.context_type = ContextType.PRODUCT_SELECTION.value
+
+        dispatch_pending_context(db, session, "xyz")
+
+        set_active.assert_not_called()
+        clear_pending.assert_called_once_with(session)
+        self.assertIsNone(session.context_type)
+
+    @patch.object(dispatcher_module, "execute_ready_pending_context")
+    @patch.object(dispatcher_module, "ProductSelectionContextService")
+    @patch.object(dispatcher_module, "set_active")
+    @patch.object(dispatcher_module, "load_pending_state")
+    @patch.object(dispatcher_module, "clear_pending_state", create=True)
+    def test_failed_resolution_does_not_clear_pending_state(
+        self, clear_pending, load_state, set_active, resolver_cls, exec_fn
+    ):
+        active = _pending_intent(candidate_ids=[101, 102])
+        failed = active.model_copy(update={"status": "failed"})
+        load_state.return_value = _FakeState(active=active)
+        resolver = MagicMock()
+        resolver.resolve.return_value = failed
+        resolver_cls.return_value = resolver
+
+        db = MagicMock(name="DatabaseSession")
+        session = MagicMock()
+        session.context_type = ContextType.PRODUCT_SELECTION.value
+
+        result = dispatch_pending_context(db, session, "unknown")
+
+        clear_pending.assert_not_called()
+        set_active.assert_called_once_with(session, failed)
+        self.assertEqual(
+            session.context_type, ContextType.PRODUCT_SELECTION.value
+        )
+        exec_fn.assert_not_called()
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].status, "failed")
+
+
+class DispatchPendingContextStatusInterruptionTest(unittest.TestCase):
+    """1.1: a closed deterministic status query interrupts the supported
+    pending context read-only, preserving pending state exactly."""
+
+    @patch.object(dispatcher_module, "execute_ready_pending_context")
+    @patch.object(dispatcher_module, "ProductSelectionContextService")
+    @patch.object(dispatcher_module, "set_active")
+    @patch.object(dispatcher_module, "load_pending_state")
+    @patch.object(dispatcher_module, "process_initial_order_status_query")
+    @patch.object(dispatcher_module, "clear_pending_state", create=True)
+    def test_explicit_status_query_with_product_selection_preserves_context(
+        self, clear_pending, status_query, load_state, set_active,
+        resolver_cls, exec_fn,
+    ):
+        active = _pending_intent(candidate_ids=[101, 102])
+        load_state.return_value = _FakeState(active=active)
+        status_intent = ProcessedIntent(
+            intent="consultar_estado_pedido",
+            source_text="Cuál es el estado de mi pedido",
+            status="executed",
+            recognizer="order_status_query",
+            handler="consultar_estado_pedido",
+            resolved_data={"estado_pedido": "preparacion"},
+        )
+        status_query.return_value = status_intent
+
+        db = MagicMock(name="DatabaseSession")
+        session = MagicMock()
+        session.context_type = ContextType.PRODUCT_SELECTION.value
+        session.id_pedido = 99
+
+        result = dispatch_pending_context(db, session, "Cuál es el estado de mi pedido")
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].intent, "consultar_estado_pedido")
+        self.assertEqual(result[0].status, "executed")
+        status_query.assert_called_once_with(db, session, "Cuál es el estado de mi pedido")
+        resolver_cls.assert_not_called()
+        set_active.assert_not_called()
+        clear_pending.assert_not_called()
+        self.assertEqual(
+            session.context_type, ContextType.PRODUCT_SELECTION.value
+        )
+        exec_fn.assert_not_called()
+        post_state = load_state.return_value
+        self.assertEqual(post_state.active.candidate_ids, [101, 102])
+
+    @patch.object(dispatcher_module, "execute_ready_pending_context")
+    @patch.object(dispatcher_module, "set_active")
+    @patch.object(dispatcher_module, "load_pending_state")
+    @patch.object(dispatcher_module, "resolve_order_line_selection")
+    @patch.object(dispatcher_module, "process_initial_order_status_query")
+    @patch.object(dispatcher_module, "clear_pending_state", create=True)
+    def test_explicit_status_query_with_order_line_selection_preserves_context(
+        self, clear_pending, status_query, resolve_line, load_state,
+        set_active, exec_fn,
+    ):
+        active = _pending_intent(
+            intent_name="quitar_producto",
+            candidate_ids=[201, 202],
+            handler="quitar_producto",
+        )
+        load_state.return_value = _FakeState(active=active)
+        rejected_status = ProcessedIntent(
+            intent="consultar_estado_pedido",
+            source_text="estado de mi pedido",
+            status="rejected",
+            recognizer="order_status_query",
+            handler="consultar_estado_pedido",
+            resolved_data={"reason": "no_pedido_asociado"},
+        )
+        status_query.return_value = rejected_status
+
+        db = MagicMock(name="DatabaseSession")
+        session = MagicMock()
+        session.context_type = ContextType.ORDER_LINE_SELECTION.value
+        session.id_pedido = None
+
+        result = dispatch_pending_context(db, session, "estado de mi pedido")
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].status, "rejected")
+        resolve_line.assert_not_called()
+        set_active.assert_not_called()
+        clear_pending.assert_not_called()
+        self.assertEqual(
+            session.context_type, ContextType.ORDER_LINE_SELECTION.value
+        )
+        exec_fn.assert_not_called()
+        post_state = load_state.return_value
+        self.assertEqual(post_state.active.candidate_ids, [201, 202])
+
+    @patch.object(dispatcher_module, "execute_ready_pending_context")
+    @patch.object(dispatcher_module, "ProductSelectionContextService")
+    @patch.object(dispatcher_module, "set_active")
+    @patch.object(dispatcher_module, "load_pending_state")
+    @patch.object(dispatcher_module, "process_initial_order_status_query")
+    @patch.object(dispatcher_module, "clear_pending_state", create=True)
+    def test_ordinary_clarification_is_not_interrupted_by_status_predicate(
+        self, clear_pending, status_query, load_state, set_active,
+        resolver_cls, exec_fn,
+    ):
+        active = _pending_intent(candidate_ids=[301, 302])
+        refined = active.model_copy(update={"candidate_ids": [301]})
+        load_state.return_value = _FakeState(active=active)
+        resolver = MagicMock()
+        resolver.resolve.return_value = refined
+        resolver_cls.return_value = resolver
+
+        db = MagicMock(name="DatabaseSession")
+        session = MagicMock()
+        session.context_type = ContextType.PRODUCT_SELECTION.value
+
+        result = dispatch_pending_context(db, session, "Grande")
+
+        status_query.assert_not_called()
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].candidate_ids, [301])
+        self.assertEqual(result[0].status, "pending_resolution")
+        clear_pending.assert_not_called()
+        self.assertEqual(
+            session.context_type, ContextType.PRODUCT_SELECTION.value
+        )
+
+    @patch.object(dispatcher_module, "execute_ready_pending_context")
+    @patch.object(dispatcher_module, "ProductSelectionContextService")
+    @patch.object(dispatcher_module, "set_active")
+    @patch.object(dispatcher_module, "load_pending_state")
+    @patch.object(dispatcher_module, "process_initial_order_status_query")
+    @patch.object(dispatcher_module, "clear_pending_state", create=True)
+    def test_status_query_after_rejection_uses_initial_dispatch_path(
+        self, clear_pending, status_query, load_state, set_active,
+        resolver_cls, exec_fn,
+    ):
+        """After a definitive rejection, ``session.context_type`` is
+        ``None`` and ``load_pending_state`` returns no active intent, so
+        the next call returns the empty-state rejected outcome without
+        invoking the resolver or the status predicate."""
+        active = _pending_intent(candidate_ids=[401])
+        rejected = active.model_copy(update={"status": "rejected"})
+
+        def _first_load(_session):
+            return _FakeState(active=active)
+
+        load_state.side_effect = [
+            _FakeState(active=active),
+            _FakeState(active=None),
+            _FakeState(active=None),
+        ]
+
+        resolver = MagicMock()
+        resolver.resolve.return_value = rejected
+        resolver_cls.return_value = resolver
+
+        db = MagicMock(name="DatabaseSession")
+        session = MagicMock()
+        session.context_type = ContextType.PRODUCT_SELECTION.value
+
+        first = dispatch_pending_context(db, session, "xyz")
+        self.assertEqual(len(first), 1)
+        self.assertEqual(first[0].status, "rejected")
+        self.assertIsNone(session.context_type)
+        status_query.assert_not_called()
+
+        clear_pending.assert_called_once_with(session)
+        status_query.reset_mock()
+        second = dispatch_pending_context(db, session, "estado de mi pedido")
+        self.assertEqual(len(second), 1)
+        self.assertEqual(second[0].status, "rejected")
+        status_query.assert_not_called()
+
+    def test_no_transaction_control_methods_are_invoked_on_rejected(self):
+        db = MagicMock(name="DatabaseSession")
+        session = MagicMock()
+        session.context_type = ContextType.PRODUCT_SELECTION.value
+        active = _pending_intent(candidate_ids=[501])
+        rejected = active.model_copy(update={"status": "rejected"})
+
+        with patch.object(
+            dispatcher_module, "load_pending_state",
+            return_value=_FakeState(active=active),
+        ), patch.object(
+            dispatcher_module, "set_active",
+        ), patch.object(
+            dispatcher_module, "ProductSelectionContextService",
+        ) as resolver_cls, patch.object(
+            dispatcher_module, "clear_pending_state", create=True,
+        ), patch.object(
+            dispatcher_module, "execute_ready_pending_context",
+        ):
+            resolver = MagicMock()
+            resolver.resolve.return_value = rejected
+            resolver_cls.return_value = resolver
+
+            dispatch_pending_context(db, session, "xyz")
+
+        for method in (
+            "commit", "rollback", "begin", "flush", "refresh", "expire", "close",
+        ):
+            getattr(db, method).assert_not_called()
+
+
+class DispatchPendingContextTransitionEmissionTest(unittest.TestCase):
+    """2.1 / 2.2: the dispatcher emits privacy-safe closed
+    ``pending_context_transition`` events for each business outcome."""
+
+    def _capture_emit(self):
+        captured: list[dict] = []
+
+        def _fake_emit(**kwargs):
+            captured.append(kwargs)
+            return True
+
+        return captured, _fake_emit
+
+    @patch.object(dispatcher_module, "execute_ready_pending_context")
+    @patch.object(dispatcher_module, "ProductSelectionContextService")
+    @patch.object(dispatcher_module, "set_active")
+    @patch.object(dispatcher_module, "load_pending_state")
+    def test_pending_preserved_event_emitted_with_candidate_counts(
+        self, load_state, set_active, resolver_cls, exec_fn
+    ):
+        active = _pending_intent(candidate_ids=[11, 12, 13])
+        refined = active.model_copy(update={"candidate_ids": [11, 12]})
+        load_state.return_value = _FakeState(active=active)
+        resolver = MagicMock()
+        resolver.resolve.return_value = refined
+        resolver_cls.return_value = resolver
+
+        db = MagicMock(name="DatabaseSession")
+        session = MagicMock()
+        session.context_type = ContextType.PRODUCT_SELECTION.value
+
+        captured, fake_emit = self._capture_emit()
+        with patch.object(dispatcher_module, "emit_event", side_effect=fake_emit):
+            dispatch_pending_context(db, session, "no se cual")
+
+        self.assertEqual(len(captured), 1)
+        kwargs = captured[0]
+        self.assertEqual(kwargs["event"], EVENT_PENDING_CONTEXT_TRANSITION)
+        self.assertEqual(kwargs["component"], COMPONENT_PENDING_CONTEXT)
+        self.assertEqual(kwargs["outcome"], "pending_preserved")
+        self.assertEqual(kwargs["context_kind"], "product_selection")
+        self.assertEqual(kwargs["candidate_count_before"], 3)
+        self.assertEqual(kwargs["candidate_count_after"], 2)
+        self.assertFalse(kwargs["context_cleared"])
+
+    @patch.object(dispatcher_module, "execute_ready_pending_context")
+    @patch.object(dispatcher_module, "ProductSelectionContextService")
+    @patch.object(dispatcher_module, "set_active")
+    @patch.object(dispatcher_module, "load_pending_state")
+    @patch.object(dispatcher_module, "clear_pending_state", create=True)
+    def test_rejected_cleared_event_emitted_with_context_cleared_true(
+        self, clear_pending, load_state, set_active, resolver_cls, exec_fn
+    ):
+        active = _pending_intent(candidate_ids=[21, 22])
+        rejected = active.model_copy(update={"status": "rejected"})
+        load_state.return_value = _FakeState(active=active)
+        resolver = MagicMock()
+        resolver.resolve.return_value = rejected
+        resolver_cls.return_value = resolver
+
+        db = MagicMock(name="DatabaseSession")
+        session = MagicMock()
+        session.context_type = ContextType.PRODUCT_SELECTION.value
+
+        captured, fake_emit = self._capture_emit()
+        with patch.object(dispatcher_module, "emit_event", side_effect=fake_emit):
+            dispatch_pending_context(db, session, "xyz")
+
+        kwargs = captured[0]
+        self.assertEqual(kwargs["outcome"], "rejected_cleared")
+        self.assertTrue(kwargs["context_cleared"])
+        self.assertEqual(kwargs["status_after"], "rejected")
+        self.assertEqual(kwargs["candidate_count_before"], 2)
+        self.assertEqual(kwargs["candidate_count_after"], 2)
+
+    @patch.object(dispatcher_module, "execute_ready_pending_context")
+    @patch.object(dispatcher_module, "ProductSelectionContextService")
+    @patch.object(dispatcher_module, "set_active")
+    @patch.object(dispatcher_module, "load_pending_state")
+    @patch.object(dispatcher_module, "process_initial_order_status_query")
+    def test_status_interrupted_event_emitted_with_no_context_change(
+        self, status_query, load_state, set_active, resolver_cls, exec_fn,
+    ):
+        active = _pending_intent(candidate_ids=[31, 32])
+        load_state.return_value = _FakeState(active=active)
+        status_intent = ProcessedIntent(
+            intent="consultar_estado_pedido",
+            source_text="cuál es el estado de mi pedido",
+            status="executed",
+            recognizer="order_status_query",
+            handler="consultar_estado_pedido",
+            resolved_data={"estado_pedido": "preparacion"},
+        )
+        status_query.return_value = status_intent
+
+        db = MagicMock(name="DatabaseSession")
+        session = MagicMock()
+        session.context_type = ContextType.PRODUCT_SELECTION.value
+
+        captured, fake_emit = self._capture_emit()
+        with patch.object(dispatcher_module, "emit_event", side_effect=fake_emit):
+            dispatch_pending_context(
+                db, session, "cuál es el estado de mi pedido"
+            )
+
+        kwargs = captured[0]
+        self.assertEqual(kwargs["outcome"], "status_interrupted")
+        self.assertFalse(kwargs["context_cleared"])
+        self.assertEqual(kwargs["candidate_count_before"], 2)
+        self.assertEqual(kwargs["candidate_count_after"], 2)
+        self.assertEqual(kwargs["status_after"], "executed")
+
+    @patch.object(dispatcher_module, "execute_ready_pending_context")
+    @patch.object(dispatcher_module, "ProductSelectionContextService")
+    @patch.object(dispatcher_module, "set_active")
+    @patch.object(dispatcher_module, "load_pending_state")
+    def test_emit_event_failure_leaves_business_outcome_unchanged(
+        self, load_state, set_active, resolver_cls, exec_fn
+    ):
+        active = _pending_intent(candidate_ids=[41, 42])
+        ready = active.model_copy(
+            update={
+                "status": "ready",
+                "resolved_data": {"producto_presentacion_id": 41},
+                "candidate_ids": [],
+            }
+        )
+        load_state.return_value = _FakeState(active=active)
+        resolver = MagicMock()
+        resolver.resolve.return_value = ready
+        resolver_cls.return_value = resolver
+        executed = ready.model_copy(update={"status": "executed"})
+        exec_fn.return_value = [executed]
+
+        db = MagicMock(name="DatabaseSession")
+        session = MagicMock()
+        session.context_type = ContextType.PRODUCT_SELECTION.value
+
+        def _exploding_emit(**kwargs):
+            raise RuntimeError("observability sink boom")
+
+        with patch.object(dispatcher_module, "emit_event", side_effect=_exploding_emit):
+            result = dispatch_pending_context(db, session, "grande")
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].status, "executed")
+        exec_fn.assert_called_once()
+
+
+class DispatchPendingContextPostExecutionTraceTest(unittest.TestCase):
+    """The trace emitted after ``execute_ready_pending_context`` must
+    reflect the actual executed outcome and the effective persisted
+    session/pending state, never an invented ``status_after=ready`` /
+    ``context_cleared=False`` triple for a ready-execution branch."""
+
+    @patch.object(dispatcher_module, "execute_ready_pending_context")
+    @patch.object(dispatcher_module, "ProductSelectionContextService")
+    @patch.object(dispatcher_module, "set_active")
+    @patch.object(dispatcher_module, "load_pending_state")
+    def test_ready_executed_records_executed_and_context_cleared(
+        self, load_state, set_active, resolver_cls, exec_fn
+    ):
+        active = _pending_intent(candidate_ids=[71, 72])
+        ready = active.model_copy(
+            update={
+                "status": "ready",
+                "resolved_data": {"producto_presentacion_id": 71},
+                "candidate_ids": [],
+            }
+        )
+        executed_intent = ready.model_copy(update={"status": "executed"})
+        load_state.side_effect = [
+            _FakeState(active=active),
+            _FakeState(active=ready),
+            _FakeState(active=None),
+        ]
+        resolver = MagicMock()
+        resolver.resolve.return_value = ready
+        resolver_cls.return_value = resolver
+
+        def _post_execute_clear(db, session):
+            session.context_type = None
+            return [executed_intent]
+
+        exec_fn.side_effect = _post_execute_clear
+
+        db = MagicMock(name="DatabaseSession")
+        session = MagicMock()
+        session.context_type = ContextType.PRODUCT_SELECTION.value
+
+        captured: list[dict] = []
+
+        def _capture(**kwargs):
+            captured.append(kwargs)
+            return True
+
+        with patch.object(dispatcher_module, "emit_event", side_effect=_capture):
+            result = dispatch_pending_context(db, session, "Grande")
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].status, "executed")
+        self.assertEqual(len(captured), 1)
+        kwargs = captured[0]
+        self.assertEqual(kwargs["outcome"], "ready_executed")
+        self.assertEqual(kwargs["status_before"], "pending_resolution")
+        self.assertEqual(kwargs["status_after"], "executed")
+        self.assertTrue(kwargs["context_cleared"])
+        self.assertEqual(kwargs["candidate_count_before"], 2)
+        self.assertEqual(kwargs["candidate_count_after"], 0)
+        self.assertIsNone(session.context_type)
+        exec_fn.assert_called_once()
+
+    @patch.object(dispatcher_module, "execute_ready_pending_context")
+    @patch.object(dispatcher_module, "ProductSelectionContextService")
+    @patch.object(dispatcher_module, "set_active")
+    @patch.object(dispatcher_module, "load_pending_state")
+    def test_ready_executed_promoting_pending_records_pending_preserved(
+        self, load_state, set_active, resolver_cls, exec_fn
+    ):
+        queued = _pending_intent(candidate_ids=[201, 202], source_text="queued")
+        active = _pending_intent(candidate_ids=[71, 72])
+        ready = active.model_copy(
+            update={
+                "status": "ready",
+                "resolved_data": {"producto_presentacion_id": 71},
+                "candidate_ids": [],
+            }
+        )
+        executed_intent = ready.model_copy(update={"status": "executed"})
+
+        class _State:
+            def __init__(self, active, queue=None):
+                self.active = active
+                self.queue = queue or []
+
+        load_state.side_effect = [
+            _State(active=active, queue=[queued]),
+            _State(active=ready, queue=[queued]),
+            _State(active=queued, queue=[]),
+        ]
+        resolver = MagicMock()
+        resolver.resolve.return_value = ready
+        resolver_cls.return_value = resolver
+
+        def _promote(db, session):
+            return [executed_intent, queued.model_copy()]
+
+        exec_fn.side_effect = _promote
+
+        db = MagicMock(name="DatabaseSession")
+        session = MagicMock()
+        session.context_type = ContextType.PRODUCT_SELECTION.value
+
+        captured: list[dict] = []
+
+        def _capture(**kwargs):
+            captured.append(kwargs)
+            return True
+
+        with patch.object(dispatcher_module, "emit_event", side_effect=_capture):
+            result = dispatch_pending_context(db, session, "Grande")
+
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0].status, "executed")
+        self.assertEqual(result[1].status, "pending_resolution")
+        kwargs = captured[0]
+        self.assertEqual(kwargs["outcome"], "pending_preserved")
+        self.assertEqual(kwargs["status_after"], "pending_resolution")
+        self.assertFalse(kwargs["context_cleared"])
+        self.assertEqual(kwargs["candidate_count_after"], 2)
+        self.assertEqual(
+            session.context_type, ContextType.PRODUCT_SELECTION.value
+        )
+
+    @patch.object(dispatcher_module, "execute_ready_pending_context")
+    @patch.object(dispatcher_module, "ProductSelectionContextService")
+    @patch.object(dispatcher_module, "set_active")
+    @patch.object(dispatcher_module, "load_pending_state")
+    def test_ready_execution_rejected_records_rejected_cleared(
+        self, load_state, set_active, resolver_cls, exec_fn
+    ):
+        active = _pending_intent(candidate_ids=[81, 82])
+        ready = active.model_copy(
+            update={
+                "status": "ready",
+                "resolved_data": {"producto_presentacion_id": 81},
+                "candidate_ids": [],
+            }
+        )
+        rejected_intent = ready.model_copy(update={"status": "rejected"})
+        load_state.side_effect = [
+            _FakeState(active=active),
+            _FakeState(active=ready),
+            _FakeState(active=None),
+        ]
+        resolver = MagicMock()
+        resolver.resolve.return_value = ready
+        resolver_cls.return_value = resolver
+
+        def _rejected_execute(db, session):
+            session.context_type = None
+            return [rejected_intent]
+
+        exec_fn.side_effect = _rejected_execute
+
+        db = MagicMock(name="DatabaseSession")
+        session = MagicMock()
+        session.context_type = ContextType.PRODUCT_SELECTION.value
+
+        captured: list[dict] = []
+
+        def _capture(**kwargs):
+            captured.append(kwargs)
+            return True
+
+        with patch.object(dispatcher_module, "emit_event", side_effect=_capture):
+            result = dispatch_pending_context(db, session, "Grande")
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].status, "rejected")
+        kwargs = captured[0]
+        self.assertEqual(kwargs["outcome"], "rejected_cleared")
+        self.assertEqual(kwargs["status_after"], "rejected")
+        self.assertTrue(kwargs["context_cleared"])
+        self.assertIsNone(session.context_type)
+
+    @patch.object(dispatcher_module, "execute_ready_pending_context")
+    @patch.object(dispatcher_module, "ProductSelectionContextService")
+    @patch.object(dispatcher_module, "set_active")
+    @patch.object(dispatcher_module, "load_pending_state")
+    def test_ready_execution_failed_records_pending_preserved(
+        self, load_state, set_active, resolver_cls, exec_fn
+    ):
+        active = _pending_intent(candidate_ids=[91, 92])
+        ready = active.model_copy(
+            update={
+                "status": "ready",
+                "resolved_data": {"producto_presentacion_id": 91},
+                "candidate_ids": [],
+            }
+        )
+        failed_intent = ready.model_copy(update={"status": "failed"})
+        load_state.side_effect = [
+            _FakeState(active=active),
+            _FakeState(active=ready),
+            _FakeState(active=ready),
+        ]
+        resolver = MagicMock()
+        resolver.resolve.return_value = ready
+        resolver_cls.return_value = resolver
+        exec_fn.return_value = [failed_intent]
+
+        db = MagicMock(name="DatabaseSession")
+        session = MagicMock()
+        session.context_type = ContextType.PRODUCT_SELECTION.value
+
+        captured: list[dict] = []
+
+        def _capture(**kwargs):
+            captured.append(kwargs)
+            return True
+
+        with patch.object(dispatcher_module, "emit_event", side_effect=_capture):
+            result = dispatch_pending_context(db, session, "Grande")
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].status, "failed")
+        kwargs = captured[0]
+        self.assertEqual(kwargs["outcome"], "pending_preserved")
+        self.assertEqual(kwargs["status_after"], "failed")
+        self.assertFalse(kwargs["context_cleared"])
+        self.assertEqual(
+            session.context_type, ContextType.PRODUCT_SELECTION.value
+        )
+
+    @patch.object(dispatcher_module, "execute_ready_pending_context")
+    @patch.object(dispatcher_module, "ProductSelectionContextService")
+    @patch.object(dispatcher_module, "set_active")
+    @patch.object(dispatcher_module, "load_pending_state")
+    def test_ready_execution_emit_failure_preserves_business_outcome(
+        self, load_state, set_active, resolver_cls, exec_fn
+    ):
+        active = _pending_intent(candidate_ids=[101, 102])
+        ready = active.model_copy(
+            update={
+                "status": "ready",
+                "resolved_data": {"producto_presentacion_id": 101},
+                "candidate_ids": [],
+            }
+        )
+        executed_intent = ready.model_copy(update={"status": "executed"})
+        load_state.side_effect = [
+            _FakeState(active=active),
+            _FakeState(active=ready),
+            _FakeState(active=None),
+        ]
+        resolver = MagicMock()
+        resolver.resolve.return_value = ready
+        resolver_cls.return_value = resolver
+
+        def _executed_clear(db, session):
+            session.context_type = None
+            return [executed_intent]
+
+        exec_fn.side_effect = _executed_clear
+
+        db = MagicMock(name="DatabaseSession")
+        session = MagicMock()
+        session.context_type = ContextType.PRODUCT_SELECTION.value
+
+        def _exploding_emit(**kwargs):
+            raise RuntimeError("observability sink boom")
+
+        with patch.object(dispatcher_module, "emit_event", side_effect=_exploding_emit):
+            result = dispatch_pending_context(db, session, "Grande")
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].status, "executed")
+        self.assertIsNone(session.context_type)
+        exec_fn.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -33,6 +33,7 @@ from backend.observability import (
     COMPONENT_EMBEDDING,
     COMPONENT_LLM,
     COMPONENT_OUTBOUND,
+    COMPONENT_PENDING_CONTEXT,
     COMPONENT_PRODUCT_RECOGNITION,
     COMPONENT_WORKER,
     EVENT_CALLBACK_OUTCOME,
@@ -40,6 +41,7 @@ from backend.observability import (
     EVENT_EMBEDDING_REQUEST,
     EVENT_LLM_REQUEST,
     EVENT_OUTBOUND_OUTCOME,
+    EVENT_PENDING_CONTEXT_TRANSITION,
     EVENT_SHADOW_PRODUCT_RECOGNITION,
     EVENT_WORKER_CYCLE,
     EVENT_WORKER_DISABLED,
@@ -1156,6 +1158,410 @@ class RecognitionEventContractTest(unittest.TestCase):
             _EVENT_CATALOGUE[EVENT_SHADOW_PRODUCT_RECOGNITION],
             COMPONENT_PRODUCT_RECOGNITION,
         )
+
+
+class PendingContextTransitionEventTest(unittest.TestCase):
+    """2.1 / 2.2: ``pending_context_transition`` is a closed privacy-safe
+    event with component ``pending_context`` and exactly the documented
+    outcome / context_kind / status_before / status_after /
+    candidate_count_before / candidate_count_after / context_cleared
+    fields. Every other field or value is rejected by the catalogue."""
+
+    _SAFE_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "event",
+            "schema_version",
+            "component",
+            "timestamp",
+            "outcome",
+            "context_kind",
+            "status_before",
+            "status_after",
+            "candidate_count_before",
+            "candidate_count_after",
+            "context_cleared",
+        }
+    )
+
+    _ACCEPTED_OUTCOMES: ClassVar[tuple[str, ...]] = (
+        "pending_preserved",
+        "ready_executed",
+        "rejected_cleared",
+        "status_interrupted",
+    )
+
+    _ACCEPTED_STATUSES: ClassVar[tuple[str, ...]] = (
+        "pending_resolution",
+        "ready",
+        "executed",
+        "rejected",
+        "failed",
+    )
+
+    _ACCEPTED_KINDS: ClassVar[tuple[str, ...]] = (
+        "product_selection",
+        "order_line_selection",
+        "product_modification",
+        "order_clear_confirmation",
+    )
+
+    def _base_kwargs(
+        self,
+        *,
+        outcome: str = "pending_preserved",
+        status_before: str = "pending_resolution",
+        status_after: str = "pending_resolution",
+        candidate_count_before: int = 2,
+        candidate_count_after: int = 1,
+        context_cleared: bool = False,
+        context_kind: str = "product_selection",
+    ) -> dict:
+        return {
+            "event": EVENT_PENDING_CONTEXT_TRANSITION,
+            "component": COMPONENT_PENDING_CONTEXT,
+            "outcome": outcome,
+            "context_kind": context_kind,
+            "status_before": status_before,
+            "status_after": status_after,
+            "candidate_count_before": candidate_count_before,
+            "candidate_count_after": candidate_count_after,
+            "context_cleared": context_cleared,
+        }
+
+    def test_event_is_catalogue_mapped_to_pending_context_component(self):
+        from backend.observability.events import _EVENT_CATALOGUE
+
+        self.assertEqual(
+            _EVENT_CATALOGUE[EVENT_PENDING_CONTEXT_TRANSITION],
+            COMPONENT_PENDING_CONTEXT,
+        )
+
+    def test_each_outcome_round_trips_through_catalogue(self):
+        for outcome in self._ACCEPTED_OUTCOMES:
+            with self.subTest(outcome=outcome):
+                kwargs = self._base_kwargs(
+                    outcome=outcome,
+                    status_before="pending_resolution",
+                    status_after="pending_resolution",
+                    candidate_count_before=2,
+                    candidate_count_after=1,
+                )
+                payload = build_event(**kwargs)
+                self.assertEqual(payload["event"], EVENT_PENDING_CONTEXT_TRANSITION)
+                self.assertEqual(payload["component"], COMPONENT_PENDING_CONTEXT)
+                self.assertEqual(payload["outcome"], outcome)
+                line = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+                parsed = parse_event(line)
+                self.assertEqual(parsed, payload)
+
+    def test_unknown_outcome_is_rejected(self):
+        with self.assertRaises(EventValidationError):
+            build_event(**self._base_kwargs(outcome="completed"))
+
+    def test_outcome_must_be_present(self):
+        kwargs = self._base_kwargs()
+        kwargs.pop("outcome")
+        with self.assertRaises(EventValidationError):
+            build_event(**kwargs)
+
+    def test_component_mismatch_is_rejected(self):
+        kwargs = self._base_kwargs()
+        kwargs["component"] = COMPONENT_OUTBOUND
+        with self.assertRaises(EventValidationError):
+            build_event(**kwargs)
+
+    def test_negative_candidate_count_is_rejected(self):
+        with self.assertRaises(EventValidationError):
+            build_event(**self._base_kwargs(candidate_count_before=-1))
+
+    def test_candidate_count_above_allowlist_is_rejected(self):
+        with self.assertRaises(EventValidationError):
+            build_event(**self._base_kwargs(candidate_count_after=201))
+
+    def test_candidate_count_must_be_integer(self):
+        with self.assertRaises(EventValidationError):
+            build_event(
+                **self._base_kwargs(candidate_count_before="2")  # type: ignore[arg-type]
+            )
+
+    def test_context_cleared_must_be_boolean(self):
+        with self.assertRaises(EventValidationError):
+            build_event(
+                **self._base_kwargs(context_cleared="yes")  # type: ignore[arg-type]
+            )
+
+    def test_context_kind_required(self):
+        kwargs = self._base_kwargs()
+        kwargs.pop("context_kind")
+        with self.assertRaises(EventValidationError):
+            build_event(**kwargs)
+
+    def test_context_kind_none_rejected(self):
+        kwargs = self._base_kwargs()
+        kwargs["context_kind"] = None
+        with self.assertRaises(EventValidationError):
+            build_event(**kwargs)
+
+    def test_context_kind_unknown_value_rejected(self):
+        for kind in (
+            "unsupported_context",
+            "Agregar_producto",
+            "",
+            "PENDING",
+            "product selection",
+        ):
+            with self.subTest(kind=kind):
+                with self.assertRaises(EventValidationError):
+                    build_event(**self._base_kwargs(context_kind=kind))
+
+    def test_status_before_required(self):
+        kwargs = self._base_kwargs()
+        kwargs.pop("status_before")
+        with self.assertRaises(EventValidationError):
+            build_event(**kwargs)
+
+    def test_status_before_none_rejected(self):
+        kwargs = self._base_kwargs()
+        kwargs["status_before"] = None
+        with self.assertRaises(EventValidationError):
+            build_event(**kwargs)
+
+    def test_status_before_outside_allowlist_rejected(self):
+        for forbidden_status in (
+            "unknown",
+            "completed",
+            "executed ",
+            "ready!",
+            "",
+            "PendingResolution",
+        ):
+            with self.subTest(status=forbidden_status):
+                with self.assertRaises(EventValidationError):
+                    build_event(**self._base_kwargs(status_before=forbidden_status))
+
+    def test_status_after_required(self):
+        kwargs = self._base_kwargs()
+        kwargs.pop("status_after")
+        with self.assertRaises(EventValidationError):
+            build_event(**kwargs)
+
+    def test_status_after_none_rejected(self):
+        kwargs = self._base_kwargs()
+        kwargs["status_after"] = None
+        with self.assertRaises(EventValidationError):
+            build_event(**kwargs)
+
+    def test_status_after_outside_allowlist_rejected(self):
+        for forbidden_status in (
+            "completed",
+            "executed!",
+            "status_interrupted",
+            "pending",
+            "",
+        ):
+            with self.subTest(status=forbidden_status):
+                with self.assertRaises(EventValidationError):
+                    build_event(**self._base_kwargs(status_after=forbidden_status))
+
+    def test_candidate_counts_required(self):
+        kwargs = self._base_kwargs()
+        kwargs.pop("candidate_count_before")
+        with self.assertRaises(EventValidationError):
+            build_event(**kwargs)
+        kwargs = self._base_kwargs()
+        kwargs.pop("candidate_count_after")
+        with self.assertRaises(EventValidationError):
+            build_event(**kwargs)
+
+    def test_context_cleared_required(self):
+        kwargs = self._base_kwargs()
+        kwargs.pop("context_cleared")
+        with self.assertRaises(EventValidationError):
+            build_event(**kwargs)
+
+    def test_context_cleared_none_rejected(self):
+        kwargs = self._base_kwargs()
+        kwargs["context_cleared"] = None
+        with self.assertRaises(EventValidationError):
+            build_event(**kwargs)
+
+    def test_unknown_optional_field_is_rejected(self):
+        for unknown_field, value in (
+            ("correlation_id", "corr-abc"),
+            ("outbox_id", 1),
+            ("exception_type", "ValueError"),
+            ("elapsed_ms", 12),
+        ):
+            with self.subTest(field=unknown_field):
+                kwargs = self._base_kwargs()
+                kwargs[unknown_field] = value  # type: ignore[arg-type]
+                with self.assertRaises(EventValidationError):
+                    build_event(**kwargs)
+
+    def test_parse_event_rejects_unknown_keys(self):
+        with self.assertRaises(EventValidationError):
+            parse_event(
+                json.dumps(
+                    {
+                        "event": EVENT_PENDING_CONTEXT_TRANSITION,
+                        "schema_version": 1,
+                        "component": COMPONENT_PENDING_CONTEXT,
+                        "timestamp": "2026-08-13T00:00:00+00:00",
+                        "outcome": "pending_preserved",
+                        "context_kind": "product_selection",
+                        "status_before": "pending_resolution",
+                        "status_after": "pending_resolution",
+                        "candidate_count_before": 2,
+                        "candidate_count_after": 2,
+                        "context_cleared": False,
+                        "customer_message": "secret",
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+
+    def test_parse_event_rejects_missing_required_field(self):
+        for removed in (
+            "context_kind",
+            "status_before",
+            "status_after",
+            "candidate_count_before",
+            "candidate_count_after",
+            "context_cleared",
+        ):
+            payload = {
+                "event": EVENT_PENDING_CONTEXT_TRANSITION,
+                "schema_version": 1,
+                "component": COMPONENT_PENDING_CONTEXT,
+                "timestamp": "2026-08-13T00:00:00+00:00",
+                "outcome": "pending_preserved",
+                "context_kind": "product_selection",
+                "status_before": "pending_resolution",
+                "status_after": "pending_resolution",
+                "candidate_count_before": 2,
+                "candidate_count_after": 2,
+                "context_cleared": False,
+            }
+            payload.pop(removed)
+            with self.subTest(missing=removed):
+                with self.assertRaises(EventValidationError):
+                    parse_event(
+                        json.dumps(
+                            payload, sort_keys=True, separators=(",", ":")
+                        )
+                    )
+
+    def test_parse_event_rejects_unknown_context_kind(self):
+        payload = {
+            "event": EVENT_PENDING_CONTEXT_TRANSITION,
+            "schema_version": 1,
+            "component": COMPONENT_PENDING_CONTEXT,
+            "timestamp": "2026-08-13T00:00:00+00:00",
+            "outcome": "pending_preserved",
+            "context_kind": "legacy_kind",
+            "status_before": "pending_resolution",
+            "status_after": "pending_resolution",
+            "candidate_count_before": 2,
+            "candidate_count_after": 2,
+            "context_cleared": False,
+        }
+        with self.assertRaises(EventValidationError):
+            parse_event(
+                json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            )
+
+    def test_parse_event_rejects_unknown_status(self):
+        payload = {
+            "event": EVENT_PENDING_CONTEXT_TRANSITION,
+            "schema_version": 1,
+            "component": COMPONENT_PENDING_CONTEXT,
+            "timestamp": "2026-08-13T00:00:00+00:00",
+            "outcome": "pending_preserved",
+            "context_kind": "product_selection",
+            "status_before": "completed",
+            "status_after": "pending_resolution",
+            "candidate_count_before": 2,
+            "candidate_count_after": 2,
+            "context_cleared": False,
+        }
+        with self.assertRaises(EventValidationError):
+            parse_event(
+                json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            )
+
+    def test_emit_event_emits_only_allowed_keys(self):
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_PENDING_CONTEXT_TRANSITION,
+            component=COMPONENT_PENDING_CONTEXT,
+            outcome="rejected_cleared",
+            context_kind="order_line_selection",
+            status_before="pending_resolution",
+            status_after="rejected",
+            candidate_count_before=4,
+            candidate_count_after=4,
+            context_cleared=True,
+            stream=sink,
+        )
+        self.assertTrue(ok)
+        parsed = json.loads(sink.getvalue().strip())
+        self.assertEqual(set(parsed.keys()), self._SAFE_FIELDS)
+
+    def test_no_sensitive_content_in_emitted_payload(self):
+        sink = io.StringIO()
+        emit_event(
+            event=EVENT_PENDING_CONTEXT_TRANSITION,
+            component=COMPONENT_PENDING_CONTEXT,
+            outcome="status_interrupted",
+            context_kind="product_selection",
+            status_before="pending_resolution",
+            status_after="executed",
+            candidate_count_before=3,
+            candidate_count_after=3,
+            context_cleared=False,
+            stream=sink,
+        )
+        line = sink.getvalue()
+        for token in SENTINELS:
+            if token in (
+                EVENT_PENDING_CONTEXT_TRANSITION,
+                COMPONENT_PENDING_CONTEXT,
+                "pending_preserved",
+                "ready_executed",
+                "rejected_cleared",
+                "status_interrupted",
+                "product_selection",
+                "order_line_selection",
+                "product_modification",
+                "order_clear_confirmation",
+            ):
+                continue
+            self.assertNotIn(token, line)
+
+    def test_candidate_count_200_is_accepted(self):
+        payload = build_event(
+            **self._base_kwargs(
+                candidate_count_before=200, candidate_count_after=200
+            )
+        )
+        self.assertEqual(payload["candidate_count_before"], 200)
+        self.assertEqual(payload["candidate_count_after"], 200)
+
+    def test_each_supported_context_kind_is_accepted(self):
+        for kind in self._ACCEPTED_KINDS:
+            with self.subTest(kind=kind):
+                payload = build_event(**self._base_kwargs(context_kind=kind))
+                self.assertEqual(payload["context_kind"], kind)
+
+    def test_each_processed_intent_status_is_accepted(self):
+        for status in self._ACCEPTED_STATUSES:
+            with self.subTest(status=status):
+                payload = build_event(
+                    **self._base_kwargs(status_before=status, status_after=status)
+                )
+                self.assertEqual(payload["status_before"], status)
+                self.assertEqual(payload["status_after"], status)
 
 
 if __name__ == "__main__":

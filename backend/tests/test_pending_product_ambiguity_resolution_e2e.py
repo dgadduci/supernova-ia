@@ -29,6 +29,7 @@ from backend.intents.orchestration.incoming_message_orchestrator import (
 )
 from backend.intents.orchestration.pending_context_dispatcher import (
     dispatch_pending_context,
+    emit_event,
 )
 from backend.intents.schemas.intent_classification import (
     ClassifiedIntent,
@@ -50,6 +51,7 @@ from backend.models import (
 )
 from backend.models import Session as SessionModel
 from backend.models.session import EstadoSession
+from backend.observability.events import EVENT_PENDING_CONTEXT_TRANSITION
 
 TEST_URL = "postgresql+psycopg:///supernova_test"
 engine = create_engine(TEST_URL)
@@ -596,6 +598,334 @@ class VagueAnswerAmbiguousEndToEndTest(unittest.TestCase):
             )
         finally:
             _cleanup(ids)
+
+
+class MozzarellaGrandeEndToEndTest(unittest.TestCase):
+    """Reproduces the WhatsApp sequence from the proposal:
+
+    1. ``Quiero una pizza de mozzarella`` opens a pending context with
+       the two persisted candidates (Mozzarella Grande and Mozzarella
+       Chica).
+    2. The customer replies ``Grande`` which the resolver narrows to a
+       single ready candidate through the existing restricted
+       ``Mozzarella Grande`` candidate set.
+    3. The existing ready-execution path adds the product and clears
+       ``session.context_type`` and the pending state.
+    4. The dispatcher emits a ``pending_context_transition`` event
+       carrying ``status_after="executed"`` and ``context_cleared=True``.
+
+    The test pins the exact expected candidates and proves no
+    candidate widening or catalog-only lookup occurs during the
+    clarification turn.
+    """
+
+    def test_mozzarella_grande_conversation(self) -> None:
+        ids = _seed_two_presentation_comercio(
+            nombre="Pizza Mozzarella",
+            codigo_a="GRANDE",
+            codigo_b="CHICA",
+        )
+        try:
+            with _patched_classifier("quiero una pizza de mozzarella"):
+                with TestingSessionLocal() as db:
+                    session_row = db.get(SessionModel, ids["session_id"])
+                    assert session_row is not None
+                    initial = process_incoming_message(
+                        db, session_row, "quiero una pizza de mozzarella"
+                    )
+                    assert len(initial) == 1
+                    assert initial[0].status == "pending_resolution"
+                    assert sorted(initial[0].candidate_ids) == sorted(
+                        [ids["pp_a_id"], ids["pp_b_id"]]
+                    )
+                    assert session_row.context_type == "product_selection"
+                    db.commit()
+
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                outcomes = dispatch_pending_context(db, session_row, "Grande")
+                assert len(outcomes) >= 1
+                assert outcomes[0].status == "executed"
+                assert outcomes[0].resolved_data.get("producto_presentacion_id") == ids["pp_a_id"]
+                db.commit()
+
+            _assert_executed_for_pp(
+                session_id=ids["session_id"],
+                pedido_id=ids["pedido_id"],
+                expected_pp_id=ids["pp_a_id"],
+                expected_cantidad=1,
+            )
+        finally:
+            _cleanup_two_presentation(ids)
+
+    def test_mozzarella_grande_trace_records_executed_and_context_cleared(
+        self,
+    ) -> None:
+        ids = _seed_two_presentation_comercio(
+            nombre="Pizza Mozzarella",
+            codigo_a="GRANDE",
+            codigo_b="CHICA",
+        )
+        try:
+            with _patched_classifier("quiero una pizza de mozzarella"):
+                with TestingSessionLocal() as db:
+                    session_row = db.get(SessionModel, ids["session_id"])
+                    assert session_row is not None
+                    process_incoming_message(
+                        db, session_row, "quiero una pizza de mozzarella"
+                    )
+                    db.commit()
+
+            captured: list[dict] = []
+
+            def _capture(**kwargs):
+                captured.append(kwargs)
+                return True
+
+            with patch(
+                "backend.intents.orchestration.pending_context_dispatcher.emit_event",
+                side_effect=_capture,
+            ):
+                with TestingSessionLocal() as db:
+                    session_row = db.get(SessionModel, ids["session_id"])
+                    assert session_row is not None
+                    outcomes = dispatch_pending_context(db, session_row, "Grande")
+                    assert outcomes[0].status == "executed"
+                    db.commit()
+
+            transition = next(
+                kwargs
+                for kwargs in captured
+                if kwargs.get("event") == EVENT_PENDING_CONTEXT_TRANSITION
+            )
+            self.assertEqual(transition["outcome"], "ready_executed")
+            self.assertEqual(transition["context_kind"], "product_selection")
+            self.assertEqual(transition["status_before"], "pending_resolution")
+            self.assertEqual(transition["status_after"], "executed")
+            self.assertTrue(transition["context_cleared"])
+            self.assertEqual(transition["candidate_count_before"], 2)
+            self.assertEqual(transition["candidate_count_after"], 0)
+        finally:
+            _cleanup_two_presentation(ids)
+
+
+class StatusInterruptionPreservesMozzarellaEndToEndTest(unittest.TestCase):
+    """The closed deterministic status predicate must interrupt the
+    pending Mozzarella Grande context without mutating the active
+    candidate set, queue, or context type."""
+
+    def test_status_query_during_pending_mozzarella_preserves_context(self) -> None:
+        ids = _seed_two_presentation_comercio(
+            nombre="Pizza Mozzarella",
+            codigo_a="GRANDE",
+            codigo_b="CHICA",
+        )
+        try:
+            with _patched_classifier("quiero una pizza de mozzarella"):
+                with TestingSessionLocal() as db:
+                    session_row = db.get(SessionModel, ids["session_id"])
+                    assert session_row is not None
+                    process_incoming_message(
+                        db, session_row, "quiero una pizza de mozzarella"
+                    )
+                    db.commit()
+
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                outcomes = dispatch_pending_context(
+                    db, session_row, "Cuál es el estado de mi pedido"
+                )
+                assert len(outcomes) == 1
+                assert outcomes[0].intent == "consultar_estado_pedido"
+                db.commit()
+
+            _assert_pending_preserved(
+                session_id=ids["session_id"],
+                pedido_id=ids["pedido_id"],
+                expected_candidate_ids=sorted(
+                    [ids["pp_a_id"], ids["pp_b_id"]]
+                ),
+            )
+        finally:
+            _cleanup_two_presentation(ids)
+
+
+def _seed_two_presentation_comercio(
+    *,
+    nombre: str,
+    codigo_a: str,
+    codigo_b: str,
+) -> dict[str, Any]:
+    """Seed one comercio with one product exposed through two
+    presentations (``codigo_a`` / ``codigo_b``). Returns the same id
+    map shape as ``_seed_two_product_comercio`` so the existing helpers
+    can run unchanged."""
+    s = _suffix()
+    estado_id = _estado_id_activo()
+
+    with TestingSessionLocal() as db, db.begin():
+        comercio = Comercio(
+            nombre_fantasia=f"Moz {s}",
+            nombre_corto=f"Moz {s}",
+            razon_social=f"Moz SRL {s}",
+            cuit=f"30-{s[:8]}-{s[8]}",
+            whatsapp=f"+5493{s[:8]}",
+            calle="Av. Moz",
+            numero="1",
+            piso_departamento=None,
+            localidad="CABA",
+            provincia="BA",
+            codigo_postal="C1000",
+            slug=f"moz-{s}",
+            estado_id=estado_id,
+        )
+        db.add(comercio)
+        db.flush()
+
+        cliente = Cliente(
+            whatsapp=f"+5493{int(s, 16) % 100000000:08d}",
+            nombre=None,
+            domicilio=None,
+            activo=True,
+        )
+        db.add(cliente)
+        db.flush()
+
+        session_row = SessionModel(
+            id_comercio=comercio.id,
+            id_cliente=cliente.id,
+            id_pedido=None,
+            estado_session=EstadoSession.ACTIVA,
+            pending_intents={},
+            context_type=None,
+        )
+        db.add(session_row)
+        db.flush()
+
+        pedido = Pedido(
+            id_session=session_row.id,
+            id_medio_pago=None,
+            id_metodo_entrega=None,
+            datetime_entrega_programada=None,
+            estado_pedido=EstadoPedido.BORRADOR,
+        )
+        db.add(pedido)
+        db.flush()
+        session_row.id_pedido = pedido.id
+        db.flush()
+
+        categoria = CategoriaProducto(
+            id_comercio=comercio.id,
+            descripcion=f"Moz Cat {s}",
+            activo=True,
+            orden=0,
+        )
+        db.add(categoria)
+        db.flush()
+
+        producto = Producto(
+            id_categoria_producto=categoria.id,
+            nombre=nombre,
+            descripcion=None,
+            activo=True,
+            disponible=True,
+            orden=0,
+        )
+        db.add(producto)
+        db.flush()
+
+        presentacion_a = Presentacion(
+            id_comercio=comercio.id,
+            codigo=f"{codigo_a}_{s[:4]}",
+            descripcion=f"Grande {s}",
+            activo=True,
+            orden=0,
+        )
+        db.add(presentacion_a)
+        db.flush()
+
+        presentacion_b = Presentacion(
+            id_comercio=comercio.id,
+            codigo=f"{codigo_b}_{s[:4]}",
+            descripcion=f"Chica {s}",
+            activo=True,
+            orden=1,
+        )
+        db.add(presentacion_b)
+        db.flush()
+
+        assoc_a = ProductoPresentacion(
+            id_producto=producto.id,
+            id_presentacion=presentacion_a.id,
+            activo=True,
+            orden=0,
+        )
+        db.add(assoc_a)
+        db.flush()
+
+        assoc_b = ProductoPresentacion(
+            id_producto=producto.id,
+            id_presentacion=presentacion_b.id,
+            activo=True,
+            orden=1,
+        )
+        db.add(assoc_b)
+        db.flush()
+
+        db.add(Precio(id_producto_presentacion=assoc_a.id, precio=Decimal("12500.00")))
+        db.add(Precio(id_producto_presentacion=assoc_b.id, precio=Decimal("8500.00")))
+        db.flush()
+
+        return {
+            "comercio_id": comercio.id,
+            "cliente_id": cliente.id,
+            "session_id": session_row.id,
+            "pedido_id": pedido.id,
+            "producto_id": producto.id,
+            "presentacion_a_id": presentacion_a.id,
+            "presentacion_b_id": presentacion_b.id,
+            "pp_a_id": assoc_a.id,
+            "pp_b_id": assoc_b.id,
+            "producto_ids": [producto.id],
+            "presentacion_ids": [presentacion_a.id, presentacion_b.id],
+            "categoria_id": categoria.id,
+        }
+
+
+def _cleanup_two_presentation(ids: dict[str, Any]) -> None:
+    with TestingSessionLocal() as db, db.begin():
+        sess_row = db.get(SessionModel, ids["session_id"])
+        if sess_row is not None:
+            sess_row.id_pedido = None
+            db.flush()
+        db.execute(
+            delete(PedidoProducto).where(
+                PedidoProducto.id_pedido == ids["pedido_id"]
+            )
+        )
+        db.execute(
+            delete(Precio).where(
+                Precio.id_producto_presentacion.in_(
+                    select(ProductoPresentacion.id).where(
+                        ProductoPresentacion.id_producto.in_(ids["producto_ids"])
+                    )
+                )
+            )
+        )
+        db.execute(
+            delete(ProductoPresentacion).where(
+                ProductoPresentacion.id_producto.in_(ids["producto_ids"])
+            )
+        )
+        db.execute(delete(Producto).where(Producto.id.in_(ids["producto_ids"])))
+        db.execute(delete(CategoriaProducto).where(CategoriaProducto.id == ids["categoria_id"]))
+        db.execute(delete(Presentacion).where(Presentacion.id.in_(ids["presentacion_ids"])))
+        db.execute(delete(Pedido).where(Pedido.id == ids["pedido_id"]))
+        db.execute(delete(SessionModel).where(SessionModel.id == ids["session_id"]))
+        db.execute(delete(Cliente).where(Cliente.id == ids["cliente_id"]))
+        db.execute(delete(Comercio).where(Comercio.id == ids["comercio_id"]))
 
 
 if __name__ == "__main__":

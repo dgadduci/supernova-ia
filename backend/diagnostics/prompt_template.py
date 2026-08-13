@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import hashlib
 
-PROMPT_TEMPLATE_VERSION = "intent-classifier/v1.3.0"
+PROMPT_TEMPLATE_VERSION = "intent-classifier/v1.4.0"
 
 _INTRO = (
     "\n"
@@ -55,7 +55,7 @@ _INTENT_CATALOG = """
 * Si establece, cambia o elimina la fecha u hora programada del pedido = `set_fecha_hora_entrega`
 * Si establece o cambia el medio de pago = `set_metodo_de_pago`
 * Si quiere confirmar y enviar definitivamente el pedido = `confirmar_pedido`
-* Si consulta el estado de un pedido ya confirmado = `consultar_estado_pedido`
+* Si consulta el estado del pedido actual del cliente, tanto si está en borrador como si ya fue confirmado = `consultar_estado_pedido`
 * Si quiere cancelar un pedido ya confirmado = `cancelar_pedido`
 * Si el mensaje no puede interpretarse con suficiente seguridad = `desconocida`
 

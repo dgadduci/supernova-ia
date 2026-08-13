@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from backend.intents.schemas.intent_classification import IntentName
 
-CORPUS_VERSION = "intent-corpus/v1.2.0"
+CORPUS_VERSION = "intent-corpus/v1.3.0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,6 +271,14 @@ CONTROLLED_INTENT_CORPUS: tuple[IntentFixture, ...] = (
         "F-CONSULTAR_ESTADO_PEDIDO",
         "Asks about the status of an existing order",
         "Cómo va mi pedido?",
+        (IntentName.CONSULTAR_ESTADO_PEDIDO,),
+    ),
+    _fixture(
+        "F-CONSULTAR_ESTADO_PEDIDO-CUAL_ES",
+        "Asks about the order status using the explicit 'cual es el "
+        "estado de mi pedido' phrasing (covers the closed draft / "
+        "confirmed phrasing used by the pending-context interruption)",
+        "Cuál es el estado de mi pedido",
         (IntentName.CONSULTAR_ESTADO_PEDIDO,),
     ),
     _fixture(

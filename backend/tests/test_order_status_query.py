@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import MagicMock
 
 from backend.intents.orchestration.order_status_query import (
+    is_explicit_order_status_query,
     process_initial_order_status_query,
 )
 from backend.intents.responses.order_status_query import (
@@ -143,6 +144,54 @@ class OrderStatusQueryTest(unittest.TestCase):
         call_kwargs = outbox_repo.stage.call_args.kwargs
         self.assertEqual(call_kwargs["cuerpo"], expected.message)
         self.assertEqual(call_kwargs["sequence"], 0)
+
+
+class IsExplicitOrderStatusQueryTest(unittest.TestCase):
+    """1.1 / 2.1: the deterministic status predicate matches only the
+    four canonical Spanish forms after normalization and rejects every
+    other phrase (clarifications, product names, free-form text)."""
+
+    def test_closed_forms_are_accepted(self):
+        accepted = (
+            "estado de mi pedido",
+            "Cuál es el estado de mi pedido",
+            "Cómo va mi pedido?",
+            "¿Dónde está mi pedido?",
+            "CUAL ES EL ESTADO DE MI PEDIDO",
+            "  estado de mi pedido  ",
+        )
+        for text in accepted:
+            with self.subTest(text=text):
+                self.assertTrue(is_explicit_order_status_query(text))
+
+    def test_non_status_clarification_is_rejected(self):
+        rejected = (
+            "Grande",
+            "la grande",
+            "pizza de muzzarella",
+            "agregá una pizza",
+            "sacame la pizza",
+            "estado del envío",
+            "cómo va mi pedido ahora",
+            "estado de mi cuenta",
+            "estado de mi pedido por favor",
+            "Hola",
+            "",
+            "como va mi pedido mañana",
+            "donde esta mi pedido ahora",
+        )
+        for text in rejected:
+            with self.subTest(text=text):
+                self.assertFalse(is_explicit_order_status_query(text))
+
+    def test_non_string_input_returns_false(self):
+        self.assertFalse(is_explicit_order_status_query(None))  # type: ignore[arg-type]
+        self.assertFalse(is_explicit_order_status_query(123))  # type: ignore[arg-type]
+        self.assertFalse(is_explicit_order_status_query([]))  # type: ignore[arg-type]
+
+    def test_predicate_is_pure(self):
+        self.assertTrue(is_explicit_order_status_query("Cuál es el estado de mi pedido"))
+        self.assertTrue(is_explicit_order_status_query("Cuál es el estado de mi pedido"))
 
 
 if __name__ == "__main__":
