@@ -22,11 +22,16 @@ from sqlalchemy.orm import Session as SqlSession
 from sqlalchemy.orm import joinedload
 
 from backend.models import (
+    CategoriaProducto,
+    Comercio,
     EstadoPedido,
     EstadoSession,
     MensajeProveedorSaliente,
     Pedido,
     PedidoProducto,
+    Precio,
+    Presentacion,
+    Producto,
     ProductoPresentacion,
     RecepcionMensajeProveedor,
 )
@@ -223,6 +228,63 @@ class ProviderHistoryView:
 
 
 @dataclass(frozen=True)
+class CatalogPriceRow:
+    """One row of the read-only commerce catalog price-availability
+    view exposed by the pilot operations panel.
+
+    The view surfaces only the data the operator needs to diagnose
+    why a product add was rejected with
+    ``rejected_price_unavailable``: the escaped product and
+    presentation labels and the boolean price-availability state.
+    It intentionally omits every identifier (no
+    ``producto_presentacion_id``, ``producto_id``, ``presentacion_id``
+    or ``precio`` numeric value), every customer/session/Pedido
+    field, every provider message body and every transactional
+    detail so the diagnostic surface cannot become a leak.
+    """
+
+    producto_nombre: str
+    presentacion_descripcion: str | None
+    price_available: bool
+
+
+@dataclass(frozen=True)
+class CommerceCatalogPriceAvailabilityView:
+    """Read-only projection of one commerce's active
+    product/presentation rows plus a boolean price-availability flag
+    per row.
+
+    A row reports ``price_available=True`` only when the underlying
+    ``ProductoPresentacion`` has *exactly one* current ``Precio``
+    row; ``False`` covers both the zero-price and multiple-price
+    cases so the operator cannot infer the cardinality from the
+    boolean alone.
+    """
+
+    comercio_id: int
+    rows: list[CatalogPriceRow]
+
+
+def parse_comercio_id(raw_value: str) -> int:
+    """Validate and return a positive integer comercio id for the
+    catalog price-availability route.
+
+    The helper relies on :class:`InvalidComercioId` which is defined
+    later in this module alongside the other view-layer errors so
+    all the sentinel exceptions live in one place.
+    """
+    try:
+        parsed = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise InvalidComercioId(
+            "comercio_id must be a positive integer"
+        ) from exc
+    if parsed < 1:
+        raise InvalidComercioId("comercio_id must be a positive integer")
+    return parsed
+
+
+@dataclass(frozen=True)
 class OrderListRow:
     pedido: OrderSummary
     session: SessionSummary
@@ -248,6 +310,16 @@ class InvalidListFilter(PilotOrderOperationsViewError):
 
 class InvalidPedidoId(PilotOrderOperationsViewError):
     """Raised when ``pedido_id`` is not a positive integer."""
+
+
+class InvalidComercioId(PilotOrderOperationsViewError):
+    """Raised when the catalog view receives a non-positive
+    ``comercio_id``."""
+
+
+class CommerceNotFound(PilotOrderOperationsViewError):
+    """Raised when the catalog view requests a commerce that does
+    not exist."""
 
 
 @dataclass(frozen=True)
@@ -576,6 +648,106 @@ class PilotOrderOperationsViewService:
             entries=entries,
         )
 
+    def get_commerce_catalog_price_availability(
+        self,
+        comercio_id: int,
+    ) -> CommerceCatalogPriceAvailabilityView | None:
+        """Return the read-only catalog price-availability view for
+        a single commerce.
+
+        The view lists every active ``ProductoPresentacion`` whose
+        parent ``Producto``, ``CategoriaProducto`` and
+        ``Presentacion`` all belong to ``comercio_id`` and are
+        themselves active. The list is commerce-isolated in two
+        independent dimensions:
+
+        * ``Presentacion.id_comercio == comercio_id`` excludes every
+          presentation that points at a foreign commerce;
+        * ``CategoriaProducto.id_comercio == comercio_id`` and
+          ``CategoriaProducto.activo`` excludes every product whose
+          category is owned by another commerce, even if an
+          inconsistent ``ProductoPresentacion`` row tried to link
+          such a product to one of this commerce's presentations.
+
+        For each surviving row the view computes ``price_available``
+        as ``True`` only when the presentation has *exactly one*
+        current ``Precio`` row; ``False`` covers both the zero-price
+        and the multiple-price cases so the operator cannot infer
+        the cardinality from the boolean alone. The projection
+        deliberately omits every identifier, every numeric price,
+        every customer / session / Pedido / provider message and
+        every transactional detail so the diagnostic surface
+        cannot become a leak.
+
+        The service never commits, rolls back, flushes, refreshes,
+        begins or closes the session; the request-level dependency
+        remains the transaction owner. The service does not mutate
+        any row.
+        """
+        comercio = self._session.get(Comercio, comercio_id)
+        if comercio is None:
+            return None
+
+        stmt = (
+            select(ProductoPresentacion)
+            .join(Producto, ProductoPresentacion.id_producto == Producto.id)
+            .join(
+                CategoriaProducto,
+                Producto.id_categoria_producto == CategoriaProducto.id,
+            )
+            .join(
+                Presentacion,
+                ProductoPresentacion.id_presentacion == Presentacion.id,
+            )
+            .where(ProductoPresentacion.activo.is_(True))
+            .where(Producto.activo.is_(True))
+            .where(Producto.disponible.is_(True))
+            .where(CategoriaProducto.activo.is_(True))
+            .where(CategoriaProducto.id_comercio == comercio_id)
+            .where(Presentacion.activo.is_(True))
+            .where(Presentacion.id_comercio == comercio_id)
+            .order_by(
+                CategoriaProducto.orden.asc(),
+                CategoriaProducto.id.asc(),
+                Presentacion.orden.asc(),
+                Presentacion.id.asc(),
+                Producto.orden.asc(),
+                Producto.id.asc(),
+                ProductoPresentacion.id.asc(),
+            )
+        )
+        presentaciones = list(
+            self._session.execute(stmt).scalars().unique().all()
+        )
+        if not presentaciones:
+            return CommerceCatalogPriceAvailabilityView(
+                comercio_id=comercio_id, rows=[]
+            )
+
+        precio_counts_by_pp: dict[int, int] = {pp.id: 0 for pp in presentaciones}
+        precio_stmt = (
+            select(Precio.id_producto_presentacion, func.count())
+            .where(
+                Precio.id_producto_presentacion.in_(precio_counts_by_pp.keys())
+            )
+            .group_by(Precio.id_producto_presentacion)
+        )
+        for pp_id, count in self._session.execute(precio_stmt).all():
+            precio_counts_by_pp[int(pp_id)] = int(count)
+
+        rows: list[CatalogPriceRow] = []
+        for pp in presentaciones:
+            rows.append(
+                CatalogPriceRow(
+                    producto_nombre=pp.producto.nombre,
+                    presentacion_descripcion=pp.presentacion.descripcion,
+                    price_available=precio_counts_by_pp.get(pp.id, 0) == 1,
+                )
+            )
+        return CommerceCatalogPriceAvailabilityView(
+            comercio_id=comercio_id, rows=rows
+        )
+
     def _row_from_pedido(self, pedido: Pedido) -> OrderListRow:
         session = pedido.session
         zona_horaria = session.comercio.zona_horaria
@@ -680,9 +852,13 @@ __all__ = [
     "FALLBACK_ZONE_LABEL",
     "MAX_DATE_RANGE_DAYS",
     "MAX_PAGE_SIZE",
+    "CatalogPriceRow",
     "ClientSummary",
+    "CommerceCatalogPriceAvailabilityView",
+    "CommerceNotFound",
     "CommerceSummary",
     "DeliveryMethodView",
+    "InvalidComercioId",
     "InvalidListFilter",
     "InvalidPedidoId",
     "ListFilters",
@@ -702,6 +878,7 @@ __all__ = [
     "SessionSummary",
     "format_local_datetime",
     "format_local_datetime_optional",
+    "parse_comercio_id",
     "parse_list_filters",
     "parse_pedido_id",
 ]

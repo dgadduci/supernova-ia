@@ -10,6 +10,7 @@ from backend.models import (
     Precio,
     ProductoPresentacion,
 )
+from backend.models import Session as SessionModel
 from backend.services.exceptions import PedidoProductoNotFound
 
 
@@ -60,12 +61,99 @@ class PedidoProductoRepository:
     def pedido(self, pedido_id: int) -> Pedido | None:
         return self._session.get(Pedido, pedido_id)
 
+    def session(self, session_id: int) -> SessionModel | None:
+        """Return the ``Session`` row for ``session_id`` or
+        ``None`` when no row exists.
+
+        Used by the modern ``agregar_producto`` seam to validate
+        that the conversation session exists and is in
+        ``EstadoSession.ACTIVA`` before staging a price-snapshotted
+        line. The repository never calls ``commit`` / ``rollback``
+        / ``flush`` / ``refresh`` / ``begin`` / ``close`` /
+        ``expire``; the caller's outer transaction remains the only
+        owner of full-turn atomicity.
+        """
+        return self._session.get(SessionModel, session_id)
+
     def producto_presentacion_exists(self, id_producto_presentacion: int) -> bool:
         return self._session.get(ProductoPresentacion, id_producto_presentacion) is not None
 
     def current_precio(self, id_producto_presentacion: int) -> Precio | None:
         stmt = select(Precio).where(Precio.id_producto_presentacion == id_producto_presentacion)
         return self._session.execute(stmt).scalar_one_or_none()
+
+    def current_precio_count(self, id_producto_presentacion: int) -> int:
+        """Return the number of ``Precio`` rows for the given
+        ``ProductoPresentacion``.
+
+        Used by the modern ``agregar_producto`` seam to require
+        *exactly one* current price before staging a price-snapshotted
+        line. The count is computed via ``select(Precio)`` so it never
+        triggers an ORM flush, and the helper never calls
+        ``commit`` / ``rollback`` / ``flush`` / ``refresh`` / ``begin``
+        / ``close``; the caller's outer transaction remains the only
+        owner of atomicity.
+        """
+        stmt = select(Precio).where(
+            Precio.id_producto_presentacion == id_producto_presentacion
+        )
+        return len(list(self._session.execute(stmt).scalars().all()))
+
+    def stage_increment_existing_line(
+        self,
+        pedido_id: int,
+        id_producto_presentacion: int,
+        cantidad: int,
+    ) -> PedidoProducto | None:
+        """Increment an existing ``PedidoProducto`` row in place
+        without owning transaction control.
+
+        Returns the staged row, or ``None`` when no line exists yet
+        for ``(pedido_id, id_producto_presentacion)``. The repository
+        never calls ``commit`` / ``rollback`` / ``flush`` /
+        ``refresh`` / ``expire`` / ``begin`` / ``close``; the
+        caller's outer transaction is the only owner of the full-turn
+        atomicity guarantee. The repository never reads the commerce
+        catalog and never inspects the session's pedidos beyond the
+        single row fetch.
+        """
+        existing = self.get_by_pedido_and_producto_presentacion(
+            pedido_id, id_producto_presentacion
+        )
+        if existing is None:
+            return None
+        existing.cantidad = existing.cantidad + cantidad
+        return existing
+
+    def stage_create_with_price_snapshot_no_flush(
+        self,
+        *,
+        id_pedido: int,
+        id_producto_presentacion: int,
+        cantidad: int,
+        precio_unitario: Decimal,
+    ) -> PedidoProducto:
+        """Stage a new ``PedidoProducto`` row with a price snapshot
+        without owning transaction control.
+
+        The repository performs only ``session.add(row)`` so the
+        caller's outer transaction remains the only owner of the
+        full-turn atomicity guarantee. The repository never calls
+        ``commit`` / ``rollback`` / ``flush`` / ``refresh`` /
+        ``expire`` / ``begin`` / ``close``; the row identifier is
+        assigned by the database when the caller commits. The
+        repository never reads the commerce catalog and never
+        inspects the session's pedidos beyond the single insert.
+        """
+        row = PedidoProducto(
+            id_pedido=id_pedido,
+            id_producto_presentacion=id_producto_presentacion,
+            cantidad=cantidad,
+            precio_unitario=precio_unitario,
+            observaciones=None,
+        )
+        self._session.add(row)
+        return row
 
     def create(
         self,

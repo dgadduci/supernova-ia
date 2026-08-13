@@ -29,7 +29,6 @@ from backend.intents.orchestration.incoming_message_orchestrator import (
 )
 from backend.intents.orchestration.pending_context_dispatcher import (
     dispatch_pending_context,
-    emit_event,
 )
 from backend.intents.schemas.intent_classification import (
     ClassifiedIntent,
@@ -51,7 +50,11 @@ from backend.models import (
 )
 from backend.models import Session as SessionModel
 from backend.models.session import EstadoSession
-from backend.observability.events import EVENT_PENDING_CONTEXT_TRANSITION
+from backend.observability.events import (
+    COMPONENT_PRODUCT_ADD_EXECUTION,
+    EVENT_PENDING_CONTEXT_TRANSITION,
+    EVENT_PRODUCT_ADD_EXECUTION,
+)
 
 TEST_URL = "postgresql+psycopg:///supernova_test"
 engine = create_engine(TEST_URL)
@@ -926,6 +929,478 @@ def _cleanup_two_presentation(ids: dict[str, Any]) -> None:
         db.execute(delete(SessionModel).where(SessionModel.id == ids["session_id"]))
         db.execute(delete(Cliente).where(Cliente.id == ids["cliente_id"]))
         db.execute(delete(Comercio).where(Comercio.id == ids["comercio_id"]))
+
+
+class _TwoPresentationNoPriceSeededHelper:
+    """Seed helpers for the no-price E2E scenarios."""
+
+
+def _seed_two_presentation_comercio_no_price(
+    *,
+    nombre: str,
+    codigo_a: str,
+    codigo_b: str,
+) -> dict[str, Any]:
+    """Seed one comercio with one product exposed through two
+    presentations and NO prices for either presentation. Used to
+    prove the modern seam rejects ``Grande`` with the closed
+    ``rejected_price_unavailable`` outcome and never stages a
+    line."""
+    s = _suffix()
+    estado_id = _estado_id_activo()
+
+    with TestingSessionLocal() as db, db.begin():
+        comercio = Comercio(
+            nombre_fantasia=f"MozNP {s}",
+            nombre_corto=f"MozNP {s}",
+            razon_social=f"MozNP SRL {s}",
+            cuit=f"30-{s[:8]}-{s[8]}",
+            whatsapp=f"+5494{s[:8]}",
+            calle="Av. MozNP",
+            numero="1",
+            piso_departamento=None,
+            localidad="CABA",
+            provincia="BA",
+            codigo_postal="C1000",
+            slug=f"moznp-{s}",
+            estado_id=estado_id,
+        )
+        db.add(comercio)
+        db.flush()
+
+        cliente = Cliente(
+            whatsapp=f"+5494{int(s, 16) % 100000000:08d}",
+            nombre=None,
+            domicilio=None,
+            activo=True,
+        )
+        db.add(cliente)
+        db.flush()
+
+        session_row = SessionModel(
+            id_comercio=comercio.id,
+            id_cliente=cliente.id,
+            id_pedido=None,
+            estado_session=EstadoSession.ACTIVA,
+            pending_intents={},
+            context_type=None,
+        )
+        db.add(session_row)
+        db.flush()
+
+        pedido = Pedido(
+            id_session=session_row.id,
+            id_medio_pago=None,
+            id_metodo_entrega=None,
+            datetime_entrega_programada=None,
+            estado_pedido=EstadoPedido.BORRADOR,
+        )
+        db.add(pedido)
+        db.flush()
+        session_row.id_pedido = pedido.id
+        db.flush()
+
+        categoria = CategoriaProducto(
+            id_comercio=comercio.id,
+            descripcion=f"MozNP Cat {s}",
+            activo=True,
+            orden=0,
+        )
+        db.add(categoria)
+        db.flush()
+
+        producto = Producto(
+            id_categoria_producto=categoria.id,
+            nombre=nombre,
+            descripcion=None,
+            activo=True,
+            disponible=True,
+            orden=0,
+        )
+        db.add(producto)
+        db.flush()
+
+        presentacion_a = Presentacion(
+            id_comercio=comercio.id,
+            codigo=f"NPA_{s[:4]}",
+            descripcion=f"Grande {s}",
+            activo=True,
+            orden=0,
+        )
+        db.add(presentacion_a)
+        db.flush()
+
+        presentacion_b = Presentacion(
+            id_comercio=comercio.id,
+            codigo=f"NPB_{s[:4]}",
+            descripcion=f"Chica {s}",
+            activo=True,
+            orden=1,
+        )
+        db.add(presentacion_b)
+        db.flush()
+
+        assoc_a = ProductoPresentacion(
+            id_producto=producto.id,
+            id_presentacion=presentacion_a.id,
+            activo=True,
+            orden=0,
+        )
+        db.add(assoc_a)
+        db.flush()
+
+        assoc_b = ProductoPresentacion(
+            id_producto=producto.id,
+            id_presentacion=presentacion_b.id,
+            activo=True,
+            orden=1,
+        )
+        db.add(assoc_b)
+        db.flush()
+
+        return {
+            "comercio_id": comercio.id,
+            "cliente_id": cliente.id,
+            "session_id": session_row.id,
+            "pedido_id": pedido.id,
+            "producto_id": producto.id,
+            "presentacion_a_id": presentacion_a.id,
+            "presentacion_b_id": presentacion_b.id,
+            "pp_a_id": assoc_a.id,
+            "pp_b_id": assoc_b.id,
+            "producto_ids": [producto.id],
+            "presentacion_ids": [presentacion_a.id, presentacion_b.id],
+            "categoria_id": categoria.id,
+        }
+
+
+def _cleanup_two_presentation_no_price(ids: dict[str, Any]) -> None:
+    with TestingSessionLocal() as db, db.begin():
+        sess_row = db.get(SessionModel, ids["session_id"])
+        if sess_row is not None:
+            sess_row.id_pedido = None
+            db.flush()
+        db.execute(
+            delete(PedidoProducto).where(
+                PedidoProducto.id_pedido == ids["pedido_id"]
+            )
+        )
+        db.execute(
+            delete(ProductoPresentacion).where(
+                ProductoPresentacion.id_producto.in_(ids["producto_ids"])
+            )
+        )
+        db.execute(delete(Producto).where(Producto.id.in_(ids["producto_ids"])))
+        db.execute(
+            delete(CategoriaProducto).where(
+                CategoriaProducto.id == ids["categoria_id"]
+            )
+        )
+        db.execute(
+            delete(Presentacion).where(
+                Presentacion.id.in_(ids["presentacion_ids"])
+            )
+        )
+        db.execute(delete(Pedido).where(Pedido.id == ids["pedido_id"]))
+        db.execute(delete(SessionModel).where(SessionModel.id == ids["session_id"]))
+        db.execute(delete(Cliente).where(Cliente.id == ids["cliente_id"]))
+        db.execute(delete(Comercio).where(Comercio.id == ids["comercio_id"]))
+
+
+class MozzarellaGrandeProviderPricePresentEndToEndTest(unittest.TestCase):
+    """Provider-coordinator end-to-end coverage of the new
+    ``stage_add_or_increment_for_session`` seam.
+
+    The test exercises the exact WhatsApp sequence from the
+    proposal:
+
+    1. ``Quiero una pizza de mozzarella`` → opens a pending context
+       with two persisted candidates.
+    2. ``Grande`` → the resolver narrows to a single priced
+       candidate, the modern handler runs the new seam and stages
+       exactly one ``PedidoProducto`` row.
+    3. The provider coordinator commits once.
+    4. The pending context is cleared.
+    5. Exactly one ``product_add_execution`` event with the closed
+       ``created`` outcome is emitted.
+    """
+
+    def test_mozzarella_grande_provider_flow_emits_created_event(self) -> None:
+        ids = _seed_two_presentation_comercio(
+            nombre="Pizza Mozzarella",
+            codigo_a="GRANDE",
+            codigo_b="CHICA",
+        )
+        try:
+            captured: list[dict] = []
+
+            def _capture(**kwargs):
+                captured.append(kwargs)
+                return True
+
+            with _patched_classifier("quiero una pizza de mozzarella"), patch(
+                "backend.intents.handlers.agregar_producto_handler.emit_event",
+                side_effect=_capture,
+            ):
+                with TestingSessionLocal() as db:
+                    session_row = db.get(SessionModel, ids["session_id"])
+                    assert session_row is not None
+                    initial = process_incoming_message(
+                        db, session_row, "quiero una pizza de mozzarella"
+                    )
+                    assert len(initial) == 1
+                    assert initial[0].status == "pending_resolution"
+                    db.commit()
+
+                with TestingSessionLocal() as db:
+                    session_row = db.get(SessionModel, ids["session_id"])
+                    assert session_row is not None
+                    outcomes = dispatch_pending_context(
+                        db, session_row, "Grande"
+                    )
+                    assert len(outcomes) >= 1
+                    assert outcomes[0].status == "executed"
+                    db.commit()
+
+            _assert_executed_for_pp(
+                session_id=ids["session_id"],
+                pedido_id=ids["pedido_id"],
+                expected_pp_id=ids["pp_a_id"],
+                expected_cantidad=1,
+            )
+
+            product_add_events = [
+                kwargs
+                for kwargs in captured
+                if kwargs.get("event") == EVENT_PRODUCT_ADD_EXECUTION
+            ]
+            self.assertEqual(
+                len(product_add_events),
+                1,
+                f"expected exactly one product_add_execution event; got {len(product_add_events)}: {captured}",
+            )
+            event_kwargs = product_add_events[0]
+            self.assertEqual(
+                event_kwargs.get("component"), COMPONENT_PRODUCT_ADD_EXECUTION
+            )
+            self.assertEqual(event_kwargs.get("outcome"), "created")
+
+            forbidden_keys = {
+                "outbox_id",
+                "correlation_id",
+                "attempt",
+                "durable_state",
+                "provider_code",
+                "http_status",
+                "exception_type",
+                "elapsed_ms",
+                "context_kind",
+                "status_before",
+                "status_after",
+                "candidate_count_before",
+                "candidate_count_after",
+                "context_cleared",
+            }
+            for forbidden in forbidden_keys:
+                self.assertNotIn(forbidden, event_kwargs)
+        finally:
+            _cleanup_two_presentation(ids)
+
+
+class MozzarellaGrandeProviderPriceUnavailableEndToEndTest(unittest.TestCase):
+    """The same conversation with NO prices must reject the
+    ``Grande`` clarification turn with the closed
+    ``rejected_price_unavailable`` outcome, leave zero
+    ``PedidoProducto`` rows behind and clear the pending context.
+
+    The test runs against the real ``supernova_test`` database
+    so it covers the actual ``PedidoProductoRepository
+    .current_precio_count`` cardinality guard.
+    """
+
+    def test_mozzarella_grande_without_price_rejects_with_closed_event(
+        self,
+    ) -> None:
+        ids = _seed_two_presentation_comercio_no_price(
+            nombre="Pizza Mozzarella",
+            codigo_a="GRANDE",
+            codigo_b="CHICA",
+        )
+        try:
+            captured: list[dict] = []
+
+            def _capture(**kwargs):
+                captured.append(kwargs)
+                return True
+
+            with _patched_classifier("quiero una pizza de mozzarella"), patch(
+                "backend.intents.handlers.agregar_producto_handler.emit_event",
+                side_effect=_capture,
+            ):
+                with TestingSessionLocal() as db:
+                    session_row = db.get(SessionModel, ids["session_id"])
+                    assert session_row is not None
+                    initial = process_incoming_message(
+                        db, session_row, "quiero una pizza de mozzarella"
+                    )
+                    assert len(initial) == 1
+                    assert initial[0].status == "pending_resolution"
+                    db.commit()
+
+                with TestingSessionLocal() as db:
+                    session_row = db.get(SessionModel, ids["session_id"])
+                    assert session_row is not None
+                    outcomes = dispatch_pending_context(
+                        db, session_row, "Grande"
+                    )
+                    assert len(outcomes) >= 1
+                    assert outcomes[0].status == "rejected"
+                    db.commit()
+
+            with TestingSessionLocal() as db:
+                lines = (
+                    db.execute(
+                        select(PedidoProducto).where(
+                            PedidoProducto.id_pedido == ids["pedido_id"]
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                self.assertEqual(
+                    len(lines),
+                    0,
+                    f"expected 0 PedidoProducto rows; got {len(lines)}",
+                )
+                session_row = db.get(SessionModel, ids["session_id"])
+                assert session_row is not None
+                self.assertIsNone(
+                    session_row.context_type,
+                    f"context_type should be cleared; got {session_row.context_type!r}",
+                )
+                pending = session_row.pending_intents or {}
+                self.assertIsNone(
+                    pending.get("active"),
+                    f"active intent should be cleared; got {pending.get('active')!r}",
+                )
+                self.assertEqual(
+                    pending.get("queue"),
+                    [],
+                    f"queue should be empty; got {pending.get('queue')!r}",
+                )
+
+            product_add_events = [
+                kwargs
+                for kwargs in captured
+                if kwargs.get("event") == EVENT_PRODUCT_ADD_EXECUTION
+            ]
+            self.assertEqual(
+                len(product_add_events),
+                1,
+                f"expected exactly one product_add_execution event; got {len(product_add_events)}: {captured}",
+            )
+            event_kwargs = product_add_events[0]
+            self.assertEqual(
+                event_kwargs.get("outcome"), "rejected_price_unavailable"
+            )
+            self.assertEqual(
+                event_kwargs.get("component"), COMPONENT_PRODUCT_ADD_EXECUTION
+            )
+        finally:
+            _cleanup_two_presentation_no_price(ids)
+
+
+class UnexpectedDbFailureRollsBackEndToEndTest(unittest.TestCase):
+    """An unexpected DB failure during the modern seam must
+    propagate so the outer provider coordinator owns the
+    rollback. The handler MUST NOT emit a ``product_add_execution``
+    business outcome for a technical failure — the event is
+    reserved for executed or typed business rejections.
+    """
+
+    def test_unexpected_failure_rolls_back_via_coordinator(self) -> None:
+        ids = _seed_two_presentation_comercio(
+            nombre="Pizza Mozzarella",
+            codigo_a="GRANDE",
+            codigo_b="CHICA",
+        )
+        try:
+            captured: list[dict] = []
+
+            def _capture(**kwargs):
+                captured.append(kwargs)
+                return True
+
+            def _force_failure(
+                *,
+                session_id: int,
+                pedido_id: int,
+                id_producto_presentacion: int,
+                cantidad: int,
+            ):
+                raise RuntimeError("forced db failure")
+
+            with _patched_classifier("quiero una pizza de mozzarella"), patch(
+                "backend.intents.handlers.agregar_producto_handler.emit_event",
+                side_effect=_capture,
+            ), patch(
+                "backend.services.pedido_producto_service.PedidoProductoService.stage_add_or_increment_for_session",
+                side_effect=_force_failure,
+            ):
+                with TestingSessionLocal() as db:
+                    session_row = db.get(SessionModel, ids["session_id"])
+                    assert session_row is not None
+                    initial = process_incoming_message(
+                        db, session_row, "quiero una pizza de mozzarella"
+                    )
+                    assert len(initial) == 1
+                    assert initial[0].status == "pending_resolution"
+                    db.commit()
+
+                raised = False
+                try:
+                    with TestingSessionLocal() as db:
+                        session_row = db.get(
+                            SessionModel, ids["session_id"]
+                        )
+                        assert session_row is not None
+                        dispatch_pending_context(db, session_row, "Grande")
+                        db.commit()
+                except RuntimeError:
+                    raised = True
+                self.assertTrue(
+                    raised,
+                    "expected the coordinator to propagate the seam failure",
+                )
+
+            with TestingSessionLocal() as db:
+                lines = (
+                    db.execute(
+                        select(PedidoProducto).where(
+                            PedidoProducto.id_pedido == ids["pedido_id"]
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                self.assertEqual(
+                    len(lines),
+                    0,
+                    f"outer rollback must leave 0 PedidoProducto rows; got {len(lines)}",
+                )
+
+            product_add_events = [
+                kwargs
+                for kwargs in captured
+                if kwargs.get("event") == EVENT_PRODUCT_ADD_EXECUTION
+            ]
+            self.assertEqual(
+                len(product_add_events),
+                0,
+                "handler MUST NOT emit a business outcome for a technical failure",
+            )
+        finally:
+            _cleanup_two_presentation(ids)
 
 
 if __name__ == "__main__":

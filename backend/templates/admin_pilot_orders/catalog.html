@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Catálogo del comercio{% endblock %}
+{% block crumb %}<span class="crumb"> · Catálogo del comercio</span>{% endblock %}
+{% block body %}
+<h1>Catálogo del comercio</h1>
+<p class="muted">Solo lectura. Diagnóstico de disponibilidad de precios para el operador piloto. No muestra IDs, precios numéricos, clientes, sesiones, pedidos ni datos del proveedor.</p>
+
+{% if catalog_view.rows %}
+<table>
+  <thead>
+    <tr>
+      <th>Producto</th>
+      <th>Presentación</th>
+      <th>Precio disponible</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in catalog_view.rows %}
+    <tr>
+      <td>{{ row.producto_nombre }}</td>
+      <td>
+        {% if row.presentacion_descripcion %}
+          {{ row.presentacion_descripcion }}
+        {% else %}
+          <span class="muted">(sin descripción)</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if row.price_available %}
+          <span class="muted">Sí</span>
+        {% else %}
+          <span class="warn">No</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty">El comercio no tiene presentaciones activas.</div>
+{% endif %}
+{% endblock %}
