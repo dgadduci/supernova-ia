@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}Pedido no encontrado — Panel piloto{% endblock %}
+{% block body %}
+<h1>Pedido no encontrado</h1>
+<p>El identificador <code>{{ raw_id }}</code> no corresponde a un pedido existente o no es válido.</p>
+<p class="muted">El panel no busca pedidos alternativos por sesión, cliente, comercio o mensajes.</p>
+<p><a href="/admin/pilot/orders">Volver al listado</a></p>
+{% endblock %}

@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Listado de pedidos — Panel piloto{% endblock %}
+{% block crumb %}<span class="crumb"> · Listado</span>{% endblock %}
+{% block body %}
+<h1>Listado de pedidos</h1>
+<p class="muted">Pedidos en el rango seleccionado, más recientes primero. Solo lectura.</p>
+
+<form class="filters" method="get" action="/admin/pilot/orders">
+  <label>Desde
+    <input type="date" name="from" value="{{ filters.from_date.isoformat() }}">
+  </label>
+  <label>Hasta
+    <input type="date" name="to" value="{{ filters.to_date.isoformat() }}">
+  </label>
+  <label>Comercio (id exacto)
+    <input type="number" name="comercio_id" min="1" step="1"
+           value="{{ filters.comercio_id if filters.comercio_id is not none else '' }}">
+  </label>
+  <label>Estado
+    <select name="estado">
+      <option value="">(cualquiera)</option>
+      {% for value in estado_choices %}
+        <option value="{{ value }}" {% if filters.estado and filters.estado.value == value %}selected{% endif %}>{{ value }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Tamaño de página
+    <select name="page_size">
+      {% for size in page_size_choices %}
+        <option value="{{ size }}" {% if filters.page_size == size %}selected{% endif %}>{{ size }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Página
+    <input type="number" name="page" min="1" step="1" value="{{ filters.page }}">
+  </label>
+  <p><button type="submit">Aplicar filtros</button></p>
+  <p class="muted">Rango por defecto: últimos 7 días. Rango máximo permitido: 31 días. Filtros <code>from</code>/<code>to</code> interpretados en <strong>UTC</strong>.</p>
+</form>
+
+{% if list_view.rows %}
+<table>
+  <thead>
+    <tr>
+      <th>Pedido</th>
+      <th>Sesión</th>
+      <th>Comercio</th>
+      <th>Cliente</th>
+      <th>Creado (zona del comercio)</th>
+      <th>Última actualización (zona del comercio)</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in list_view.rows %}
+    <tr>
+      <td>
+        <a href="/admin/pilot/orders/{{ row.pedido.id }}">#{{ row.pedido.id }}</a>
+        <br><span class="muted">Estado: {{ row.pedido.estado_pedido.value }}</span>
+      </td>
+      <td>
+        #{{ row.session.id }}
+        <br><span class="muted">Estado: {{ row.session.estado_session.value }}</span>
+      </td>
+      <td>
+        #{{ row.commerce.id }} — {{ row.commerce.nombre_fantasia }}
+        <br><span class="muted">{{ row.commerce.nombre_corto }}</span>
+      </td>
+      <td>
+        #{{ row.client.id }}
+        {% if row.client.nombre %}
+          <br>{{ row.client.nombre }}
+        {% endif %}
+        <br><span class="muted">WhatsApp: {{ row.client.whatsapp }}</span>
+      </td>
+      <td>{{ row.pedido.fecha_alta_local.iso }}<br><span class="muted">{{ row.pedido.fecha_alta_local.zone_label }}</span></td>
+      <td>{{ row.pedido.fecha_ultima_modificacion_local.iso }}<br><span class="muted">{{ row.pedido.fecha_ultima_modificacion_local.zone_label }}</span></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div class="pager">
+  {% if list_view.page > 1 %}
+    <a href="{{ paginator_url(list_view.page - 1) }}">« Anterior</a>
+  {% endif %}
+  <span class="current">Página {{ list_view.page }}</span>
+  {% if list_view.page < total_pages %}
+    <a href="{{ paginator_url(list_view.page + 1) }}">Siguiente »</a>
+  {% endif %}
+  <span class="muted">Total: {{ list_view.total }} pedidos</span>
+</div>
+{% else %}
+<div class="empty">No hay pedidos en el rango seleccionado.</div>
+{% endif %}
+{% endblock %}
