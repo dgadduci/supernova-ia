@@ -1507,6 +1507,252 @@ class DraftOrderClosureDispatcherRoutingTest(unittest.TestCase):
         handler.assert_not_called()
 
 
+class DraftOrderClosureSourcePreservationTest(unittest.TestCase):
+    """Regression coverage for subphase 4: ``classified.mensaje`` may be a
+    substring of the original turn, so the dispatcher must hand the
+    full original message to the schedule handler while every other
+    branch keeps receiving ``classified.mensaje``.
+    """
+
+    @staticmethod
+    def _make_classifier(
+        *,
+        intent: IntentName,
+        substring: str,
+    ):
+        """Build a stub classifier that returns one classified intent
+        whose ``mensaje`` is a substring (deliberately shorter than the
+        original turn), simulating the production regression.
+        """
+
+        class _StubClassifier:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            def query(self, message, **kwargs):
+                return IntentClassificationResult(
+                    intents=[
+                        ClassifiedIntent(
+                            intent=intent, mensaje=substring
+                        ),
+                    ],
+                    mensaje=message,
+                )
+
+        return _StubClassifier()
+
+    def test_set_fecha_hora_entrega_handler_receives_original_message(
+        self,
+    ) -> None:
+        from backend.intents.orchestration import (
+            initial_intent_dispatcher as dispatcher_module,
+        )
+
+        original_message = (
+            "Quiero que me lo envíes mañana a las 8 de la noche"
+        )
+        substring = "a las 8"
+        captured: dict[str, str] = {}
+
+        def _capture(db, session, source_text, **kwargs):
+            captured["source_text"] = source_text
+            return ProcessedIntent(
+                intent="set_fecha_hora_entrega",
+                source_text=source_text,
+                status="executed",
+                recognizer="draft_order_closure",
+                handler="set_fecha_hora_entrega",
+                resolved_data={"accepted_format": "spanish_relative"},
+            )
+
+        with patch.object(
+            dispatcher_module,
+            "IntentClassifier",
+            lambda *a, **k: self._make_classifier(
+                intent=IntentName.SET_FECHA_HORA_ENTREGA,
+                substring=substring,
+            ),
+        ):
+            with patch.object(
+                dispatcher_module,
+                "process_initial_set_fecha_hora_entrega",
+                side_effect=_capture,
+            ):
+                dispatch_initial_message(
+                    MagicMock(),
+                    MagicMock(context_type=None),
+                    original_message,
+                )
+
+        self.assertEqual(captured["source_text"], original_message)
+
+    def test_other_intent_handler_still_receives_classified_substring(
+        self,
+    ) -> None:
+        from backend.intents.orchestration import (
+            initial_intent_dispatcher as dispatcher_module,
+        )
+
+        original_message = "Por favor consultar el resumen de mi pedido"
+        substring = "resumen"
+        captured: dict[str, str] = {}
+
+        def _capture(db, session, source_text):
+            captured["source_text"] = source_text
+            return ProcessedIntent(
+                intent="consultar_resumen_pedido",
+                source_text=source_text,
+                status="executed",
+                recognizer="draft_order_closure",
+                handler="consultar_resumen_pedido",
+                resolved_data={},
+            )
+
+        with patch.object(
+            dispatcher_module,
+            "IntentClassifier",
+            lambda *a, **k: self._make_classifier(
+                intent=IntentName.CONSULTAR_RESUMEN_PEDIDO,
+                substring=substring,
+            ),
+        ):
+            with patch.object(
+                dispatcher_module,
+                "process_initial_consultar_resumen_pedido",
+                side_effect=_capture,
+            ):
+                dispatch_initial_message(
+                    MagicMock(),
+                    MagicMock(context_type=None),
+                    original_message,
+                )
+
+        self.assertEqual(captured["source_text"], substring)
+        self.assertNotEqual(captured["source_text"], original_message)
+
+    def test_original_message_with_two_temporal_fragments_does_not_persist(
+        self,
+    ) -> None:
+        from backend.intents.orchestration import (
+            initial_intent_dispatcher as dispatcher_module,
+        )
+
+        original_message = (
+            "Si, hoy a las 9 de la noche, mañana a las 8 de la mañana"
+        )
+        previous = datetime(
+            2026, 8, 13, 10, 0,
+            tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"),
+        )
+        ids = _seed_base()
+        try:
+            with TestingSessionLocal() as db, db.begin():
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
+                pedido.datetime_entrega_programada = previous
+
+            with patch.object(
+                dispatcher_module,
+                "IntentClassifier",
+                lambda *a, **k: self._make_classifier(
+                    intent=IntentName.SET_FECHA_HORA_ENTREGA,
+                    substring="hoy a las 9 de la noche",
+                ),
+            ):
+                with patch.object(
+                    closure_module, "datetime", wraps=datetime
+                ) as mock_dt:
+                    mock_dt.now.return_value = datetime(
+                        2026, 8, 12, 6, 0,
+                        tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"),
+                    )
+                    with TestingSessionLocal() as db:
+                        session_row = db.get(
+                            SessionModel, ids["session_id"]
+                        )
+                        assert session_row is not None
+                        result = dispatch_initial_message(
+                            db, session_row, original_message
+                        )
+                        db.commit()
+
+            self.assertEqual(len(result), 1)
+            intent = result[0]
+            self.assertEqual(intent.intent, "set_fecha_hora_entrega")
+            self.assertEqual(intent.status, "rejected")
+            self.assertEqual(
+                intent.resolved_data.get("reason"), "invalid_format"
+            )
+
+            pedido = _load_pedido(ids["pedido_id"])
+            assert pedido is not None
+            self.assertEqual(
+                pedido.datetime_entrega_programada, previous
+            )
+        finally:
+            _cleanup(ids)
+
+    def test_source_preservation_does_not_leak_text_into_resolved_data(
+        self,
+    ) -> None:
+        from backend.intents.orchestration import (
+            initial_intent_dispatcher as dispatcher_module,
+        )
+
+        original_message = (
+            "Quiero que me lo envíes mañana a las 8 de la noche"
+        )
+        substring = "a las 8"
+        ids = _seed_base()
+        try:
+            with patch.object(
+                dispatcher_module,
+                "IntentClassifier",
+                lambda *a, **k: self._make_classifier(
+                    intent=IntentName.SET_FECHA_HORA_ENTREGA,
+                    substring=substring,
+                ),
+            ):
+                with patch.object(
+                    closure_module, "datetime", wraps=datetime
+                ) as mock_dt:
+                    mock_dt.now.return_value = datetime(
+                        2026, 8, 12, 6, 0,
+                        tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"),
+                    )
+                    with TestingSessionLocal() as db:
+                        session_row = db.get(
+                            SessionModel, ids["session_id"]
+                        )
+                        assert session_row is not None
+                        result = dispatch_initial_message(
+                            db, session_row, original_message
+                        )
+                        db.commit()
+
+            self.assertEqual(len(result), 1)
+            intent = result[0]
+            self.assertEqual(intent.status, "executed")
+            self.assertEqual(
+                intent.source_text, original_message
+            )
+            self.assertNotIn(substring, str(intent.resolved_data))
+            for value in intent.resolved_data.values():
+                self.assertNotIn(original_message, repr(value))
+                self.assertNotIn("a las 8", repr(value))
+            pedido = _load_pedido(ids["pedido_id"])
+            assert pedido is not None
+            self.assertEqual(
+                pedido.datetime_entrega_programada,
+                datetime(
+                    2026, 8, 13, 20, 0,
+                    tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"),
+                ),
+            )
+        finally:
+            _cleanup(ids)
+
+
 class SetFechaHoraEntregaUnitTest(unittest.TestCase):
     @staticmethod
     def _session(

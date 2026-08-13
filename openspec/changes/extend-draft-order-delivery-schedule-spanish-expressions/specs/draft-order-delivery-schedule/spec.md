@@ -41,3 +41,20 @@ El dispatcher y mapper existentes SHALL seguir usando el handler y builder del i
 - **WHEN** cualquiera de los outcomes temporales se renderiza localmente o para el outbox
 - **THEN** ambas rutas generan el mismo mensaje fijo del builder
 - **AND** ninguna incluye el texto recibido ni el datetime completo
+
+### Requirement: Preservar la expresión temporal completa al despachar
+
+Cuando el clasificador existente devuelve `set_fecha_hora_entrega`, el dispatcher SHALL entregar al handler el mensaje original completo del turno. SHALL NOT usar un `ClassifiedIntent.mensaje` parcial como fuente de parseo temporal. La clasificación, el orden y el comportamiento de los demás intents SHALL permanecer sin cambios.
+
+#### Scenario: Substring temporal incompleto no pierde día ni calificador
+
+- **WHEN** el clasificador devuelve `set_fecha_hora_entrega` con `mensaje` igual a `a las 8`
+- **AND** el mensaje original es `Quiero que me lo envíes mañana a las 8 de la noche`
+- **THEN** el handler recibe el mensaje original completo y puede resolver la programación contratada
+- **AND** no se modifica prompt, corpus ni el resultado de clasificación
+
+#### Scenario: Dos expresiones temporales siguen siendo seguras
+
+- **WHEN** un mensaje original contiene más de un fragmento temporal reconocido
+- **THEN** el handler devuelve `rejected` con `invalid_format`
+- **AND** no persiste programación

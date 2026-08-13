@@ -19,3 +19,11 @@
 - [ ] 3.1 Usuario ejecuta los comandos locales exactos de `proposal.md` y comparte salida completa.
 - [ ] 3.2 Codex revisa código, salida, alcance y estado de tareas.
 - [ ] 3.3 Sólo con autorización separada: commit, integración/sync, archive o deploy.
+
+## 4. Regresión de fuente temporal detectada en producción
+
+- [x] 4.1 Diagnosticar que `ClassifiedIntent.mensaje` puede ser substring y que el dispatcher lo entrega al handler temporal.
+- [x] 4.2 Revisar este change activo con el contrato acotado de preservar el mensaje original sólo para `set_fecha_hora_entrega`.
+- [x] 4.3 Obtener aprobación explícita antes de modificar dispatcher o pruebas.
+- [x] 4.4 Implementar el branch focalizado y pruebas de substring temporal, aislamiento de otros intents y múltiples fragmentos.
+- [ ] 4.5 Usuario ejecuta validación local, Codex revisa la salida completa y se repite la prueba E2E antes de archivar.

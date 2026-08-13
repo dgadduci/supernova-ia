@@ -191,7 +191,7 @@ def dispatch_initial_message(
         if classified_intent == IntentName.SET_FECHA_HORA_ENTREGA:
             processed.append(
                 process_initial_set_fecha_hora_entrega(
-                    db, session, classified.mensaje
+                    db, session, message
                 )
             )
             continue

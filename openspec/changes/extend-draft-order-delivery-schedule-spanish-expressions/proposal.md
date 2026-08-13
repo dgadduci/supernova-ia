@@ -71,3 +71,40 @@ git diff --check
 ```
 
 Revertir el cambio vuelve al parser absoluto previo sin migración. Los datetimes ya persistidos permanecen y no se modifica ningún esquema. Quedan diferidos lenguaje relativo adicional, ventanas, rangos, duración, recurrencia y el flujo conversacional con contexto de aclaración.
+
+## Subfase de regresión: preservar expresión temporal completa
+
+### Evidencia y objetivo
+
+En producción, el mensaje `Quiero que me lo envíes mañana a las 8 de la noche` recibió el rechazo de formato. El parser determinista admite ese texto completo. La causa verificada es de boundary: `IntentClassifier` permite que cada `ClassifiedIntent.mensaje` sea sólo un substring literal, y el dispatcher entrega ese substring al handler. Si el modelo devuelve `a las 8`, el handler pierde `mañana` y `de la noche` y lo rechaza correctamente como ambiguo.
+
+El objetivo de esta subfase es que el handler de programación reciba el mensaje original completo del turno, para que su parser determinista pueda extraer el único fragmento temporal contratado.
+
+### Scope y contrato de corrección
+
+Únicamente el branch `SET_FECHA_HORA_ENTREGA` de `initial_intent_dispatcher` SHALL invocar `process_initial_set_fecha_hora_entrega` con el argumento `message` original de `dispatch_initial_message`, no con `classified.mensaje`. No se cambia la clasificación ni la secuencia de intents; el `ProcessedIntent.source_text` resultante será el mensaje original completo en este intent.
+
+El parser ya exige a lo sumo un fragmento temporal permitido y rechaza múltiples fragmentos; por ello reutilizar el mensaje completo no autoriza inferencia ni amplía el contrato temporal. Si un turno contiene dos expresiones temporales, ambos procesamientos de programación se rechazan con `invalid_format`, sin escritura. Los demás intents mantienen `classified.mensaje` como entrada, sin cambios.
+
+### No-goals y límites
+
+No se modifica prompt, corpus, schema de clasificación, LLM, Fuzzy, parser temporal, respuestas, mapper, transacciones, endpoints, migraciones ni observabilidad. No se intenta reconstruir ni complementar substrings del modelo. No se cambia la prioridad de contextos pendientes.
+
+### Archivos y pruebas adicionales
+
+- `backend/intents/orchestration/initial_intent_dispatcher.py`
+- `backend/tests/test_draft_order_closure.py` o un test focalizado del dispatcher existente
+
+Las pruebas SHALL simular un `SET_FECHA_HORA_ENTREGA` cuyo `classified.mensaje` sea el substring ambiguo `a las 8`, con `dispatch_initial_message(..., message="Quiero que me lo envíes mañana a las 8 de la noche")`, y verificar que el handler recibe el mensaje original completo. También SHALL verificar que otro intent continúa recibiendo su substring clasificado y que dos fragmentos temporales no persisten programación.
+
+La validación local adicional será:
+
+```bash
+PYTHONPATH=. venv/bin/python -m pytest backend/tests/test_draft_order_closure.py backend/tests/test_intent_classifier.py backend/tests/test_transactional_message_processor.py -q
+PYTHONPATH=. venv/bin/python -m ruff check backend/intents/orchestration/initial_intent_dispatcher.py backend/tests/test_draft_order_closure.py backend/tests/test_intent_classifier.py backend/tests/test_transactional_message_processor.py
+PYTHONPATH=. venv/bin/python -m compileall -q backend/intents/orchestration/initial_intent_dispatcher.py
+openspec validate extend-draft-order-delivery-schedule-spanish-expressions --strict
+git diff --check
+```
+
+Revertir el único branch de dispatcher restablece el comportamiento previo sin modificar datos ni schema. La corrección se implementará sólo tras nueva aprobación explícita.

@@ -31,3 +31,18 @@ Las respuestas fijas se seleccionan por `reason`: `needs_date` pide una fecha co
 | Error técnico de DB/código | excepción propagada | Owner exterior hace rollback |
 
 El cambio no crea pending context: la aclaración es una respuesta terminal del turno. Por ello una respuesta siguiente con fecha/hora completa se volverá a clasificar por la ruta normal; esa es una limitación explícitamente diferida, no una segunda pipeline.
+
+## Subfase de regresión: boundary de fuente clasificada
+
+```mermaid
+flowchart LR
+  M["mensaje original completo"] --> C["IntentClassifier"]
+  C --> S["intent + substring clasificado"]
+  S -->|"set_fecha_hora_entrega"| M
+  M --> H["parser temporal determinista"]
+  S -->|"otros intents"| O["handlers existentes"]
+```
+
+`ClassifiedIntent.mensaje` tiene el propósito de segmentar acciones y sólo se obliga a ser un substring literal. Para programación temporal, esa segmentación puede cortar datos necesarios de una expresión compuesta. El dispatcher conserva clasificación y orden, pero para este único intent cambia el payload entregado al handler por el `message` original ya validado al inicio del turno.
+
+No se reconstituye texto ni se consulta LLM por segunda vez. El handler sigue siendo la autoridad de parseo y continúa rechazando cero o más de un fragmento temporal. En los demás branches, `classified.mensaje` se mantiene idéntico; así no se crea una pipeline paralela ni se altera la semántica de productos, dirección u observaciones.
