@@ -42,6 +42,7 @@ COMPONENT_EMBEDDING = "embedding_client"
 COMPONENT_DATABASE = "database_technical_boundary"
 COMPONENT_PRODUCT_RECOGNITION = "product_recognition"
 COMPONENT_OBSERVABILITY = "observability_helper"
+COMPONENT_PENDING_CONTEXT = "pending_context"
 
 
 EVENT_OUTBOUND_OUTCOME = "outbound_attempt_outcome"
@@ -55,6 +56,7 @@ EVENT_EMBEDDING_REQUEST = "embedding_request"
 EVENT_DATABASE_TECHNICAL_FAILURE = "database_technical_failure"
 EVENT_SHADOW_PRODUCT_RECOGNITION = "shadow_product_recognition"
 EVENT_OBSERVABILITY_EMIT_FAILED = "observability_emit_failed"
+EVENT_PENDING_CONTEXT_TRANSITION = "pending_context_transition"
 
 
 _EVENT_CATALOGUE: dict[str, str] = {
@@ -69,7 +71,45 @@ _EVENT_CATALOGUE: dict[str, str] = {
     EVENT_DATABASE_TECHNICAL_FAILURE: COMPONENT_DATABASE,
     EVENT_SHADOW_PRODUCT_RECOGNITION: COMPONENT_PRODUCT_RECOGNITION,
     EVENT_OBSERVABILITY_EMIT_FAILED: COMPONENT_OBSERVABILITY,
+    EVENT_PENDING_CONTEXT_TRANSITION: COMPONENT_PENDING_CONTEXT,
 }
+
+
+# Pending-context observation allowlists (closed, sanitized). Every
+# ``pending_context_transition`` event MUST declare exactly the six
+# documented fields; ``context_kind`` and the ``status_before`` /
+# ``status_after`` pair are restricted to closed allowlists derived
+# from the supported pending contexts and the
+# ``ProcessedIntent.status`` literal type. The candidate counts are
+# bounded non-negative integers (0..200) and ``context_cleared`` is a
+# strict boolean. The contract intentionally forbids free-form
+# identifiers, IDs, names, labels, prompt or model payloads,
+# exceptions or correlation fields.
+_PENDING_CONTEXT_KINDS: frozenset[str] = frozenset(
+    {
+        "product_selection",
+        "order_line_selection",
+        "product_modification",
+        "order_clear_confirmation",
+    }
+)
+_PENDING_CONTEXT_STATUSES: frozenset[str] = frozenset(
+    {
+        "pending_resolution",
+        "ready",
+        "executed",
+        "rejected",
+        "failed",
+    }
+)
+_PENDING_CONTEXT_OUTCOMES: frozenset[str] = frozenset(
+    {
+        "pending_preserved",
+        "ready_executed",
+        "rejected_cleared",
+        "status_interrupted",
+    }
+)
 
 
 _OUTCOMES_BY_EVENT: dict[str, frozenset[str]] = {
@@ -86,6 +126,7 @@ _OUTCOMES_BY_EVENT: dict[str, frozenset[str]] = {
     EVENT_WORKER_DISABLED: frozenset({"disabled"}),
     EVENT_LLM_REQUEST: frozenset({"started", "completed"}),
     EVENT_EMBEDDING_REQUEST: frozenset({"started", "completed"}),
+    EVENT_PENDING_CONTEXT_TRANSITION: _PENDING_CONTEXT_OUTCOMES,
 }
 
 
@@ -151,6 +192,9 @@ _EVENTS_WITHOUT_OUTCOME_OR_FAILURE: frozenset[str] = frozenset(
 _EVENTS_WITH_RECOGNITION_FIELDS: frozenset[str] = frozenset(
     {EVENT_SHADOW_PRODUCT_RECOGNITION}
 )
+_EVENTS_WITH_PENDING_CONTEXT_FIELDS: frozenset[str] = frozenset(
+    {EVENT_PENDING_CONTEXT_TRANSITION}
+)
 
 
 _OPTIONAL_FIELDS_BY_EVENT: dict[str, frozenset[str]] = {
@@ -168,6 +212,7 @@ _OPTIONAL_FIELDS_BY_EVENT: dict[str, frozenset[str]] = {
     ),
     EVENT_DATABASE_TECHNICAL_FAILURE: frozenset({"exception_type"}),
     EVENT_OBSERVABILITY_EMIT_FAILED: frozenset({"exception_type"}),
+    EVENT_PENDING_CONTEXT_TRANSITION: frozenset(),
 }
 
 
@@ -196,6 +241,12 @@ _ALLOWED_PAYLOAD_KEYS: frozenset[str] = frozenset(
         "fuzzy_latency_ms",
         "embedding_latency_ms",
         "vector_latency_ms",
+        "context_kind",
+        "status_before",
+        "status_after",
+        "candidate_count_before",
+        "candidate_count_after",
+        "context_cleared",
     }
 )
 
@@ -210,6 +261,9 @@ _MAX_COMPONENT = 64
 _MAX_OUTCOME = 32
 _MAX_FAILURE_CATEGORY = 32
 _MAX_ELAPSED_MS = 24 * 60 * 60 * 1000
+_MAX_PENDING_CONTEXT_KIND = 32
+_MAX_PENDING_CONTEXT_STATUS = 32
+_MAX_PENDING_CONTEXT_CANDIDATE_COUNT = 200
 
 
 class EventValidationError(ValueError):
@@ -456,6 +510,107 @@ def _validate_recognition_event_fields(
     return fields
 
 
+def _validate_pending_context_event_fields(
+    *,
+    context_kind: Any,
+    status_before: Any,
+    status_after: Any,
+    candidate_count_before: Any,
+    candidate_count_after: Any,
+    context_cleared: Any,
+) -> dict[str, Any]:
+    """Validate the closed pending-context observation fields.
+
+    Every ``pending_context_transition`` event MUST carry exactly the
+    six documented fields. ``context_kind`` must be one of the four
+    closed context kinds, ``status_before`` and ``status_after`` must
+    come from the closed ``ProcessedIntent.status`` literal allowlist,
+    ``candidate_count_before`` / ``candidate_count_after`` must be
+    integers in ``[0, 200]``, and ``context_cleared`` must be a strict
+    boolean. The contract intentionally forbids free-form identifiers,
+    customer text, labels, prompt or model payloads, exceptions or
+    correlation fields; any of those will fail this validator.
+    """
+    fields: dict[str, Any] = {}
+
+    if not isinstance(context_kind, str) or not context_kind:
+        raise EventValidationError(
+            "context_kind is required for pending_context_transition "
+            f"and must be a non-empty string (got {context_kind!r})"
+        )
+    if context_kind not in _PENDING_CONTEXT_KINDS:
+        raise EventValidationError(
+            f"context_kind {context_kind!r} not in pending-context allowlist "
+            f"{sorted(_PENDING_CONTEXT_KINDS)}"
+        )
+    fields["context_kind"] = context_kind
+
+    if not isinstance(status_before, str) or not status_before:
+        raise EventValidationError(
+            "status_before is required for pending_context_transition "
+            f"and must be a non-empty string (got {status_before!r})"
+        )
+    if status_before not in _PENDING_CONTEXT_STATUSES:
+        raise EventValidationError(
+            f"status_before {status_before!r} not in ProcessedIntent.status "
+            f"allowlist {sorted(_PENDING_CONTEXT_STATUSES)}"
+        )
+    fields["status_before"] = status_before
+
+    if not isinstance(status_after, str) or not status_after:
+        raise EventValidationError(
+            "status_after is required for pending_context_transition "
+            f"and must be a non-empty string (got {status_after!r})"
+        )
+    if status_after not in _PENDING_CONTEXT_STATUSES:
+        raise EventValidationError(
+            f"status_after {status_after!r} not in ProcessedIntent.status "
+            f"allowlist {sorted(_PENDING_CONTEXT_STATUSES)}"
+        )
+    fields["status_after"] = status_after
+
+    if isinstance(candidate_count_before, bool) or not isinstance(
+        candidate_count_before, int
+    ):
+        raise EventValidationError(
+            "candidate_count_before is required for pending_context_transition "
+            "and must be an integer in [0, 200] "
+            f"(got {type(candidate_count_before).__name__}: {candidate_count_before!r})"
+        )
+    if not 0 <= candidate_count_before <= _MAX_PENDING_CONTEXT_CANDIDATE_COUNT:
+        raise EventValidationError(
+            "candidate_count_before must be in [0, "
+            f"{_MAX_PENDING_CONTEXT_CANDIDATE_COUNT}] "
+            f"(got {candidate_count_before!r})"
+        )
+    fields["candidate_count_before"] = candidate_count_before
+
+    if isinstance(candidate_count_after, bool) or not isinstance(
+        candidate_count_after, int
+    ):
+        raise EventValidationError(
+            "candidate_count_after is required for pending_context_transition "
+            "and must be an integer in [0, 200] "
+            f"(got {type(candidate_count_after).__name__}: {candidate_count_after!r})"
+        )
+    if not 0 <= candidate_count_after <= _MAX_PENDING_CONTEXT_CANDIDATE_COUNT:
+        raise EventValidationError(
+            "candidate_count_after must be in [0, "
+            f"{_MAX_PENDING_CONTEXT_CANDIDATE_COUNT}] "
+            f"(got {candidate_count_after!r})"
+        )
+    fields["candidate_count_after"] = candidate_count_after
+
+    if not isinstance(context_cleared, bool):
+        raise EventValidationError(
+            "context_cleared is required for pending_context_transition "
+            f"and must be a boolean (got {type(context_cleared).__name__})"
+        )
+    fields["context_cleared"] = context_cleared
+
+    return fields
+
+
 def build_event(
     *,
     event: str,
@@ -480,6 +635,12 @@ def build_event(
     fuzzy_latency_ms: int | None = None,
     embedding_latency_ms: int | None = None,
     vector_latency_ms: int | None = None,
+    context_kind: str | None = None,
+    status_before: str | None = None,
+    status_after: str | None = None,
+    candidate_count_before: int | None = None,
+    candidate_count_after: int | None = None,
+    context_cleared: bool | None = None,
 ) -> dict[str, Any]:
     """Validate the input and return the JSON-ready payload.
 
@@ -577,6 +738,52 @@ def build_event(
             raise EventValidationError(
                 f"event {event!r} does not accept recognition fields"
             )
+
+    is_pending_context_event = event in _EVENTS_WITH_PENDING_CONTEXT_FIELDS
+
+    if is_pending_context_event:
+        if any(
+            value is not None
+            for value in (
+                outbox_id,
+                correlation_id,
+                attempt,
+                durable_state,
+                provider_code,
+                http_status,
+                exception_type,
+                elapsed_ms,
+            )
+        ):
+            raise EventValidationError(
+                f"event {event!r} does not accept optional fields; only the "
+                "closed pending-context payload is allowed"
+            )
+        pending_context_fields = _validate_pending_context_event_fields(
+            context_kind=context_kind,
+            status_before=status_before,
+            status_after=status_after,
+            candidate_count_before=candidate_count_before,
+            candidate_count_after=candidate_count_after,
+            context_cleared=context_cleared,
+        )
+        payload.update(pending_context_fields)
+        return payload
+
+    if any(
+        value is not None
+        for value in (
+            context_kind,
+            status_before,
+            status_after,
+            candidate_count_before,
+            candidate_count_after,
+            context_cleared,
+        )
+    ):
+        raise EventValidationError(
+            f"event {event!r} does not accept pending-context fields"
+        )
 
     allowed_optional = _OPTIONAL_FIELDS_BY_EVENT.get(event, frozenset())
     optional_values: dict[str, Any] = {
@@ -684,6 +891,12 @@ def parse_event(line: str) -> dict[str, Any]:
         fuzzy_latency_ms=decoded.get("fuzzy_latency_ms"),
         embedding_latency_ms=decoded.get("embedding_latency_ms"),
         vector_latency_ms=decoded.get("vector_latency_ms"),
+        context_kind=decoded.get("context_kind"),
+        status_before=decoded.get("status_before"),
+        status_after=decoded.get("status_after"),
+        candidate_count_before=decoded.get("candidate_count_before"),
+        candidate_count_after=decoded.get("candidate_count_after"),
+        context_cleared=decoded.get("context_cleared"),
     )
 
 
@@ -740,6 +953,12 @@ def emit_event(
     fuzzy_latency_ms: int | None = None,
     embedding_latency_ms: int | None = None,
     vector_latency_ms: int | None = None,
+    context_kind: str | None = None,
+    status_before: str | None = None,
+    status_after: str | None = None,
+    candidate_count_before: int | None = None,
+    candidate_count_after: int | None = None,
+    context_cleared: bool | None = None,
     stream: Any = None,
 ) -> bool:
     """Build and emit a single JSON event line to the supplied stream.
@@ -780,6 +999,12 @@ def emit_event(
             fuzzy_latency_ms=fuzzy_latency_ms,
             embedding_latency_ms=embedding_latency_ms,
             vector_latency_ms=vector_latency_ms,
+            context_kind=context_kind,
+            status_before=status_before,
+            status_after=status_after,
+            candidate_count_before=candidate_count_before,
+            candidate_count_after=candidate_count_after,
+            context_cleared=context_cleared,
         )
     except EventValidationError as exc:
         try:
@@ -820,6 +1045,7 @@ __all__ = [
     "COMPONENT_LLM",
     "COMPONENT_OBSERVABILITY",
     "COMPONENT_OUTBOUND",
+    "COMPONENT_PENDING_CONTEXT",
     "COMPONENT_PRODUCT_RECOGNITION",
     "COMPONENT_WORKER",
     "EVENT_CALLBACK_OUTCOME",
@@ -828,6 +1054,7 @@ __all__ = [
     "EVENT_LLM_REQUEST",
     "EVENT_OBSERVABILITY_EMIT_FAILED",
     "EVENT_OUTBOUND_OUTCOME",
+    "EVENT_PENDING_CONTEXT_TRANSITION",
     "EVENT_SHADOW_PRODUCT_RECOGNITION",
     "EVENT_WORKER_CYCLE",
     "EVENT_WORKER_DISABLED",

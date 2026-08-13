@@ -34,3 +34,13 @@
 - [ ] 4.1 Do not broaden natural-language clear extraction, add pedido-level
   observations, alter legacy service transaction behavior, change the
   classifier/prompt, or touch temporal-delivery scheduling.
+
+## 5. Mandatory production gate before archive
+
+- [ ] 5.1 Wait for `fix-pending-context-recovery-and-status-query` to be
+  completed, reviewed, deployed, and verified with real WhatsApp messages.
+- [ ] 5.2 Resume this change only then; run its own production-message test
+  against a controlled draft pedido and record the result without customer
+  content or identifiers.
+- [ ] 5.3 Request explicit user approval before archiving this change. Passing
+  focused tests or merging code is not archive authorization.
