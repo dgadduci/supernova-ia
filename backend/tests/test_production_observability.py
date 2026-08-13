@@ -34,14 +34,17 @@ from backend.observability import (
     COMPONENT_LLM,
     COMPONENT_OUTBOUND,
     COMPONENT_PENDING_CONTEXT,
+    COMPONENT_PRODUCT_ADD_EXECUTION,
     COMPONENT_PRODUCT_RECOGNITION,
     COMPONENT_WORKER,
     EVENT_CALLBACK_OUTCOME,
     EVENT_DATABASE_TECHNICAL_FAILURE,
     EVENT_EMBEDDING_REQUEST,
     EVENT_LLM_REQUEST,
+    EVENT_OBSERVABILITY_EMIT_FAILED,
     EVENT_OUTBOUND_OUTCOME,
     EVENT_PENDING_CONTEXT_TRANSITION,
+    EVENT_PRODUCT_ADD_EXECUTION,
     EVENT_SHADOW_PRODUCT_RECOGNITION,
     EVENT_WORKER_CYCLE,
     EVENT_WORKER_DISABLED,
@@ -1562,6 +1565,225 @@ class PendingContextTransitionEventTest(unittest.TestCase):
                 )
                 self.assertEqual(payload["status_before"], status)
                 self.assertEqual(payload["status_after"], status)
+
+
+class ProductAddExecutionEventTest(unittest.TestCase):
+    """The ``product_add_execution`` event is a privacy-safe
+    observation with a closed allowlist of outcomes and NO
+    identifiers, text, labels, quantities, prices, customer/session/
+    Pedido data or optional fields.
+
+    These tests pin the catalogue contract for the event so the
+    bounded production-log CLI and the handler share the same
+    closed vocabulary.
+    """
+
+    _ACCEPTED_OUTCOMES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "created",
+            "incremented",
+            "rejected_invalid_input",
+            "rejected_session_or_pedido",
+            "rejected_not_editable",
+            "rejected_missing_presentation",
+            "rejected_price_unavailable",
+        }
+    )
+
+    def test_event_is_catalogue_mapped_to_product_add_component(self) -> None:
+        payload = build_event(
+            event=EVENT_PRODUCT_ADD_EXECUTION,
+            component=COMPONENT_PRODUCT_ADD_EXECUTION,
+            outcome="created",
+        )
+        self.assertEqual(payload["event"], EVENT_PRODUCT_ADD_EXECUTION)
+        self.assertEqual(
+            payload["component"], COMPONENT_PRODUCT_ADD_EXECUTION
+        )
+        self.assertEqual(payload["outcome"], "created")
+        self.assertEqual(set(payload.keys()), {
+            "event",
+            "schema_version",
+            "component",
+            "timestamp",
+            "outcome",
+        })
+
+    def test_each_outcome_round_trips_through_catalogue(self) -> None:
+        for outcome in self._ACCEPTED_OUTCOMES:
+            with self.subTest(outcome=outcome):
+                payload = build_event(
+                    event=EVENT_PRODUCT_ADD_EXECUTION,
+                    component=COMPONENT_PRODUCT_ADD_EXECUTION,
+                    outcome=outcome,
+                )
+                self.assertEqual(payload["outcome"], outcome)
+
+    def test_unknown_outcome_is_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PRODUCT_ADD_EXECUTION,
+                component=COMPONENT_PRODUCT_ADD_EXECUTION,
+                outcome="totally_unknown",
+            )
+
+    def test_component_mismatch_is_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PRODUCT_ADD_EXECUTION,
+                component=COMPONENT_WORKER,
+                outcome="created",
+            )
+
+    def test_outcome_required(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PRODUCT_ADD_EXECUTION,
+                component=COMPONENT_PRODUCT_ADD_EXECUTION,
+            )
+
+    def test_no_optional_fields_are_accepted(self) -> None:
+        """Every documented optional field MUST be rejected so the
+        privacy contract stays strict."""
+        forbidden_payloads: list[dict[str, object]] = [
+            {"outbox_id": 1},
+            {"correlation_id": "abc"},
+            {"attempt": 1},
+            {"durable_state": "committed"},
+            {"provider_code": "twilio"},
+            {"http_status": 200},
+            {"exception_type": "RuntimeError"},
+            {"elapsed_ms": 12},
+            {"context_kind": "product_selection"},
+            {"status_before": "ready"},
+            {"status_after": "executed"},
+            {"candidate_count_before": 1},
+            {"candidate_count_after": 0},
+            {"context_cleared": True},
+            {"configured_mode": "fuzzy"},
+            {"effective_mode": "fuzzy"},
+            {"authoritative_strategy": "fuzzy"},
+            {"hybrid_decision": "unique"},
+            {"fallback": False},
+            {"fallback_category": "embedding_failure"},
+        ]
+        for extras in forbidden_payloads:
+            with self.subTest(extras=extras):
+                kwargs = dict(extras)
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=EVENT_PRODUCT_ADD_EXECUTION,
+                        component=COMPONENT_PRODUCT_ADD_EXECUTION,
+                        outcome="created",
+                        **kwargs,
+                    )
+
+    def test_parse_event_round_trips_each_outcome(self) -> None:
+        for outcome in self._ACCEPTED_OUTCOMES:
+            with self.subTest(outcome=outcome):
+                payload = build_event(
+                    event=EVENT_PRODUCT_ADD_EXECUTION,
+                    component=COMPONENT_PRODUCT_ADD_EXECUTION,
+                    outcome=outcome,
+                )
+                serialized = json.dumps(
+                    payload, sort_keys=True, separators=(",", ":")
+                )
+                parsed = parse_event(serialized)
+                self.assertEqual(parsed["outcome"], outcome)
+                self.assertEqual(parsed["event"], EVENT_PRODUCT_ADD_EXECUTION)
+
+    def test_parse_event_rejects_unknown_outcome(self) -> None:
+        payload = build_event(
+            event=EVENT_PRODUCT_ADD_EXECUTION,
+            component=COMPONENT_PRODUCT_ADD_EXECUTION,
+            outcome="created",
+        )
+        payload["outcome"] = "leaked_price_unavailable"
+        with self.assertRaises(EventValidationError):
+            parse_event(
+                json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            )
+
+    def test_parse_event_rejects_unknown_keys(self) -> None:
+        payload = build_event(
+            event=EVENT_PRODUCT_ADD_EXECUTION,
+            component=COMPONENT_PRODUCT_ADD_EXECUTION,
+            outcome="created",
+        )
+        payload["producto_id"] = 1
+        payload["precio_unitario"] = 1500
+        with self.assertRaises(EventValidationError):
+            parse_event(
+                json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            )
+
+    def test_parse_event_rejects_sensitive_field_claim(self) -> None:
+        payload = build_event(
+            event=EVENT_PRODUCT_ADD_EXECUTION,
+            component=COMPONENT_PRODUCT_ADD_EXECUTION,
+            outcome="created",
+        )
+        payload["whatsapp"] = "+5491100000001"
+        payload["pedido_id"] = 42
+        payload["producto_presentacion_id"] = 99
+        payload["cantidad"] = 1
+        payload["precio_unitario"] = "1500.00"
+        with self.assertRaises(EventValidationError):
+            parse_event(
+                json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            )
+
+    def test_emit_event_emits_only_allowed_keys(self) -> None:
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_PRODUCT_ADD_EXECUTION,
+            component=COMPONENT_PRODUCT_ADD_EXECUTION,
+            outcome="rejected_price_unavailable",
+            stream=sink,
+        )
+        self.assertTrue(ok)
+        serialized = sink.getvalue().strip()
+        parsed = json.loads(serialized)
+        self.assertEqual(
+            set(parsed.keys()),
+            {
+                "event",
+                "schema_version",
+                "component",
+                "timestamp",
+                "outcome",
+            },
+        )
+        self.assertEqual(parsed["outcome"], "rejected_price_unavailable")
+
+    def test_emit_event_sink_failure_does_not_raise(self) -> None:
+        class _BrokenSink:
+            def write(self, _data: str) -> int:
+                raise OSError("sink broken")
+
+        ok = emit_event(
+            event=EVENT_PRODUCT_ADD_EXECUTION,
+            component=COMPONENT_PRODUCT_ADD_EXECUTION,
+            outcome="created",
+            stream=_BrokenSink(),
+        )
+        self.assertFalse(ok)
+
+    def test_emit_event_validation_failure_emits_degraded_event(self) -> None:
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_PRODUCT_ADD_EXECUTION,
+            component=COMPONENT_PRODUCT_ADD_EXECUTION,
+            outcome="unknown_outcome",
+            stream=sink,
+        )
+        self.assertFalse(ok)
+        serialized = sink.getvalue().strip()
+        parsed = json.loads(serialized)
+        self.assertEqual(
+            parsed["event"], EVENT_OBSERVABILITY_EMIT_FAILED
+        )
 
 
 if __name__ == "__main__":

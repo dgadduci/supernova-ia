@@ -43,6 +43,7 @@ COMPONENT_DATABASE = "database_technical_boundary"
 COMPONENT_PRODUCT_RECOGNITION = "product_recognition"
 COMPONENT_OBSERVABILITY = "observability_helper"
 COMPONENT_PENDING_CONTEXT = "pending_context"
+COMPONENT_PRODUCT_ADD_EXECUTION = "product_add_execution"
 
 
 EVENT_OUTBOUND_OUTCOME = "outbound_attempt_outcome"
@@ -57,6 +58,7 @@ EVENT_DATABASE_TECHNICAL_FAILURE = "database_technical_failure"
 EVENT_SHADOW_PRODUCT_RECOGNITION = "shadow_product_recognition"
 EVENT_OBSERVABILITY_EMIT_FAILED = "observability_emit_failed"
 EVENT_PENDING_CONTEXT_TRANSITION = "pending_context_transition"
+EVENT_PRODUCT_ADD_EXECUTION = "product_add_execution"
 
 
 _EVENT_CATALOGUE: dict[str, str] = {
@@ -72,6 +74,7 @@ _EVENT_CATALOGUE: dict[str, str] = {
     EVENT_SHADOW_PRODUCT_RECOGNITION: COMPONENT_PRODUCT_RECOGNITION,
     EVENT_OBSERVABILITY_EMIT_FAILED: COMPONENT_OBSERVABILITY,
     EVENT_PENDING_CONTEXT_TRANSITION: COMPONENT_PENDING_CONTEXT,
+    EVENT_PRODUCT_ADD_EXECUTION: COMPONENT_PRODUCT_ADD_EXECUTION,
 }
 
 
@@ -127,6 +130,17 @@ _OUTCOMES_BY_EVENT: dict[str, frozenset[str]] = {
     EVENT_LLM_REQUEST: frozenset({"started", "completed"}),
     EVENT_EMBEDDING_REQUEST: frozenset({"started", "completed"}),
     EVENT_PENDING_CONTEXT_TRANSITION: _PENDING_CONTEXT_OUTCOMES,
+    EVENT_PRODUCT_ADD_EXECUTION: frozenset(
+        {
+            "created",
+            "incremented",
+            "rejected_invalid_input",
+            "rejected_session_or_pedido",
+            "rejected_not_editable",
+            "rejected_missing_presentation",
+            "rejected_price_unavailable",
+        }
+    ),
 }
 
 
@@ -195,6 +209,9 @@ _EVENTS_WITH_RECOGNITION_FIELDS: frozenset[str] = frozenset(
 _EVENTS_WITH_PENDING_CONTEXT_FIELDS: frozenset[str] = frozenset(
     {EVENT_PENDING_CONTEXT_TRANSITION}
 )
+_EVENTS_WITH_PRODUCT_ADD_FIELDS: frozenset[str] = frozenset(
+    {EVENT_PRODUCT_ADD_EXECUTION}
+)
 
 
 _OPTIONAL_FIELDS_BY_EVENT: dict[str, frozenset[str]] = {
@@ -213,6 +230,7 @@ _OPTIONAL_FIELDS_BY_EVENT: dict[str, frozenset[str]] = {
     EVENT_DATABASE_TECHNICAL_FAILURE: frozenset({"exception_type"}),
     EVENT_OBSERVABILITY_EMIT_FAILED: frozenset({"exception_type"}),
     EVENT_PENDING_CONTEXT_TRANSITION: frozenset(),
+    EVENT_PRODUCT_ADD_EXECUTION: frozenset(),
 }
 
 
@@ -770,6 +788,34 @@ def build_event(
         payload.update(pending_context_fields)
         return payload
 
+    is_product_add_event = event in _EVENTS_WITH_PRODUCT_ADD_FIELDS
+
+    if is_product_add_event:
+        if any(
+            value is not None
+            for value in (
+                outbox_id,
+                correlation_id,
+                attempt,
+                durable_state,
+                provider_code,
+                http_status,
+                exception_type,
+                elapsed_ms,
+                context_kind,
+                status_before,
+                status_after,
+                candidate_count_before,
+                candidate_count_after,
+                context_cleared,
+            )
+        ):
+            raise EventValidationError(
+                f"event {event!r} does not accept optional fields; only the "
+                "closed product-add outcome is allowed"
+            )
+        return payload
+
     if any(
         value is not None
         for value in (
@@ -1046,6 +1092,7 @@ __all__ = [
     "COMPONENT_OBSERVABILITY",
     "COMPONENT_OUTBOUND",
     "COMPONENT_PENDING_CONTEXT",
+    "COMPONENT_PRODUCT_ADD_EXECUTION",
     "COMPONENT_PRODUCT_RECOGNITION",
     "COMPONENT_WORKER",
     "EVENT_CALLBACK_OUTCOME",
@@ -1055,6 +1102,7 @@ __all__ = [
     "EVENT_OBSERVABILITY_EMIT_FAILED",
     "EVENT_OUTBOUND_OUTCOME",
     "EVENT_PENDING_CONTEXT_TRANSITION",
+    "EVENT_PRODUCT_ADD_EXECUTION",
     "EVENT_SHADOW_PRODUCT_RECOGNITION",
     "EVENT_WORKER_CYCLE",
     "EVENT_WORKER_DISABLED",

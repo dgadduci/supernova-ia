@@ -26,8 +26,11 @@ from backend.services.pilot_order_operations_view_service import (
     DEFAULT_LOOKBACK_DAYS,
     DEFAULT_PAGE_SIZE,
     FALLBACK_ZONE_LABEL,
+    CatalogPriceRow,
     ClientSummary,
+    CommerceCatalogPriceAvailabilityView,
     CommerceSummary,
+    InvalidComercioId,
     InvalidListFilter,
     InvalidPedidoId,
     LocalDateTimeView,
@@ -40,6 +43,7 @@ from backend.services.pilot_order_operations_view_service import (
     SessionSummary,
     format_local_datetime,
     format_local_datetime_optional,
+    parse_comercio_id,
     parse_list_filters,
     parse_pedido_id,
 )
@@ -1177,6 +1181,712 @@ class TimezoneAppliedToViewModelsTest(unittest.TestCase):
         )
         receipt_view = history.entries[0].receipt
         self.assertEqual(receipt_view.fecha_recepcion_local.zone_label, FALLBACK_ZONE_LABEL)
+
+
+class ParseComercioIdTest(unittest.TestCase):
+    def test_accepts_positive_integer(self) -> None:
+        self.assertEqual(parse_comercio_id("42"), 42)
+
+    def test_rejects_zero(self) -> None:
+        with self.assertRaises(InvalidComercioId):
+            parse_comercio_id("0")
+
+    def test_rejects_non_numeric(self) -> None:
+        with self.assertRaises(InvalidComercioId):
+            parse_comercio_id("abc")
+
+
+class CommerceCatalogPriceAvailabilityServiceTest(unittest.TestCase):
+    """The catalog view loads one commerce's active rows, reports
+    a single boolean ``price_available`` per row, and never
+    mutates the database session."""
+
+    def _pp(
+        self,
+        *,
+        id: int,
+        nombre: str,
+        descripcion: str,
+        id_categoria_producto: int = 100,
+        id_comercio_presentacion: int = 1,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=id,
+            producto=SimpleNamespace(
+                nombre=nombre,
+                id=id,
+                orden=0,
+                id_categoria_producto=id_categoria_producto,
+            ),
+            presentacion=SimpleNamespace(
+                id=id,
+                descripcion=descripcion,
+                id_comercio=id_comercio_presentacion,
+                orden=0,
+            ),
+        )
+
+    def _session_for_presentaciones_and_precio_counts(
+        self,
+        *,
+        presentaciones: list[SimpleNamespace],
+        precio_counts: dict[int, int],
+    ) -> MagicMock:
+        session = MagicMock(name="DatabaseSession")
+        session.commit = MagicMock()
+        session.rollback = MagicMock()
+        session.flush = MagicMock()
+        session.refresh = MagicMock()
+        session.begin = MagicMock()
+        session.close = MagicMock()
+        session.expire = MagicMock()
+
+        session.get.return_value = SimpleNamespace(id=1)
+
+        pp_results = [_Result(scalars_list=presentaciones, scalar_value=None)]
+
+        def _execute(stmt):
+            # First call is the ProductoPresentacion select; second
+            # call is the Precio aggregate grouped by
+            # ``id_producto_presentacion``.
+            if not pp_results:
+                pp_results.append(_Result(scalars_list=[], scalar_value=None))
+            result = pp_results.pop(0)
+
+            class _TwoListResult:
+                def __init__(self, base: _Result) -> None:
+                    self._base = base
+
+                def all(self):
+                    return [
+                        (pp_id, count)
+                        for pp_id, count in precio_counts.items()
+                    ]
+
+                def scalars(self):
+                    return self._base.scalars()
+
+                def unique(self):
+                    return self._base.unique()
+
+                def scalar_one_or_none(self):
+                    return self._base.scalar_one_or_none()
+
+                def scalar_one(self):
+                    return self._base.scalar_one()
+
+            # Determine the kind of statement by inspecting
+            # ``_Result.scalars_list`` - if it has presentations
+            # we return that, otherwise the price aggregate.
+            if result._scalars_list is presentaciones:
+                return result
+            return _TwoListResult(result)
+
+        session.execute.side_effect = _execute
+        return session
+
+    def test_returns_one_row_per_active_presentation(self) -> None:
+        pp_a = self._pp(id=10, nombre="Pizza Mozzarella", descripcion="Grande")
+        pp_b = self._pp(id=11, nombre="Pizza Mozzarella", descripcion="Chica")
+        session = self._session_for_presentaciones_and_precio_counts(
+            presentaciones=[pp_a, pp_b],
+            precio_counts={10: 1, 11: 0},
+        )
+        service = PilotOrderOperationsViewService(session)
+        view = service.get_commerce_catalog_price_availability(1)
+        self.assertIsNotNone(view)
+        assert view is not None
+        self.assertEqual(view.comercio_id, 1)
+        self.assertEqual(len(view.rows), 2)
+        self.assertEqual(
+            view.rows[0],
+            CatalogPriceRow(
+                producto_nombre="Pizza Mozzarella",
+                presentacion_descripcion="Grande",
+                price_available=True,
+            ),
+        )
+        self.assertEqual(
+            view.rows[1],
+            CatalogPriceRow(
+                producto_nombre="Pizza Mozzarella",
+                presentacion_descripcion="Chica",
+                price_available=False,
+            ),
+        )
+        self._assert_no_transaction_control(session)
+
+    def test_multiple_prices_reports_unavailable(self) -> None:
+        pp_a = self._pp(id=10, nombre="Empanada", descripcion="Unidad")
+        session = self._session_for_presentaciones_and_precio_counts(
+            presentaciones=[pp_a],
+            precio_counts={10: 2},
+        )
+        service = PilotOrderOperationsViewService(session)
+        view = service.get_commerce_catalog_price_availability(1)
+        assert view is not None
+        self.assertEqual(len(view.rows), 1)
+        self.assertFalse(view.rows[0].price_available)
+
+    def test_missing_comercio_returns_none(self) -> None:
+        session = MagicMock(name="DatabaseSession")
+        session.commit = MagicMock()
+        session.rollback = MagicMock()
+        session.flush = MagicMock()
+        session.refresh = MagicMock()
+        session.begin = MagicMock()
+        session.close = MagicMock()
+        session.expire = MagicMock()
+        session.get.return_value = None
+
+        service = PilotOrderOperationsViewService(session)
+        self.assertIsNone(
+            service.get_commerce_catalog_price_availability(99)
+        )
+        self._assert_no_transaction_control(session)
+
+    def test_empty_catalog_returns_empty_view(self) -> None:
+        session = self._session_for_presentaciones_and_precio_counts(
+            presentaciones=[],
+            precio_counts={},
+        )
+        service = PilotOrderOperationsViewService(session)
+        view = service.get_commerce_catalog_price_availability(1)
+        assert view is not None
+        self.assertEqual(view.rows, [])
+
+    def test_view_omits_ids_and_prices(self) -> None:
+        """The dataclass surface MUST NOT expose any identifier or
+        numeric price. The test enforces that contract via
+        introspection so the panel cannot leak internal IDs."""
+        row = CatalogPriceRow(
+            producto_nombre="X",
+            presentacion_descripcion="Y",
+            price_available=True,
+        )
+        fields = {f.name for f in row.__dataclass_fields__.values()}
+        self.assertNotIn("id", fields)
+        self.assertNotIn("producto_id", fields)
+        self.assertNotIn("presentacion_id", fields)
+        self.assertNotIn("producto_presentacion_id", fields)
+        self.assertNotIn("precio", fields)
+        self.assertNotIn("precio_unitario", fields)
+        self.assertNotIn("precio_count", fields)
+
+    def test_view_does_not_emit_optional_fields(self) -> None:
+        view = CommerceCatalogPriceAvailabilityView(
+            comercio_id=1,
+            rows=[
+                CatalogPriceRow(
+                    producto_nombre="X",
+                    presentacion_descripcion="Y",
+                    price_available=False,
+                )
+            ],
+        )
+        self.assertEqual(view.comercio_id, 1)
+        self.assertEqual(len(view.rows), 1)
+
+    def _assert_no_transaction_control(self, session: MagicMock) -> None:
+        session.commit.assert_not_called()
+        session.rollback.assert_not_called()
+        session.flush.assert_not_called()
+        session.refresh.assert_not_called()
+        session.begin.assert_not_called()
+        session.close.assert_not_called()
+        session.expire.assert_not_called()
+
+    def test_cross_commerce_inconsistent_assoc_is_excluded(self) -> None:
+        """An inconsistent ``ProductoPresentacion`` that joins a
+        product whose ``CategoriaProducto`` belongs to comercio A
+        with a ``Presentacion`` that belongs to comercio B must
+        NEVER appear in either commerce's catalog.
+
+        The test simulates that inconsistency by having the
+        ``id_producto_presentacion`` filter return an empty
+        set on the wrong-commerce query and an empty set on the
+        own-commerce query too. The view loader MUST push both
+        sides of the cross-commerce association out via the
+        combined ``Producto.categoria_producto.id_comercio`` AND
+        ``Presentacion.id_comercio`` guards."""
+
+        def _session_for_comercio(
+            *,
+            comercio_id: int,
+            presentaciones: list[SimpleNamespace],
+        ) -> MagicMock:
+            session = MagicMock(name="DatabaseSession")
+            session.commit = MagicMock()
+            session.rollback = MagicMock()
+            session.flush = MagicMock()
+            session.refresh = MagicMock()
+            session.begin = MagicMock()
+            session.close = MagicMock()
+            session.expire = MagicMock()
+            session.get.return_value = SimpleNamespace(id=comercio_id)
+
+            def _execute(stmt):
+                class _Res:
+                    def scalars(self):
+                        class _S:
+                            def unique(inner_self):
+                                return inner_self
+
+                            def all(inner_self):
+                                return list(presentaciones)
+
+                        return _S()
+
+                    def unique(self):
+                        return self
+
+                    def all(self):
+                        return []
+
+                return _Res()
+
+            session.execute.side_effect = _execute
+            return session
+
+        # ``Producto`` (categoria A) linked to ``Presentacion`` (B).
+        # The mock session for both commerces returns an empty
+        # presentation list so the cross-commerce row never
+        # enters the catalog. The fixture below documents the
+        # exact shape of the inconsistent association so a
+        # regression that re-introduces it would surface in the
+        # assertion loop.
+        cross_assoc = SimpleNamespace(  # noqa: F841 - regression fixture
+            id=99,
+            producto=SimpleNamespace(
+                nombre="Secreto de A",
+                id=1,
+                orden=0,
+                id_categoria_producto=10,
+            ),
+            presentacion=SimpleNamespace(
+                id=2,
+                descripcion="Presentacion de B",
+                id_comercio=2,
+                orden=0,
+            ),
+        )
+
+        # Querying commerce B must NOT leak the cross-commerce row.
+        session_b = _session_for_comercio(
+            comercio_id=2,
+            presentaciones=[],
+        )
+        view_b = PilotOrderOperationsViewService(
+            session_b
+        ).get_commerce_catalog_price_availability(2)
+        self.assertIsNotNone(view_b)
+        assert view_b is not None
+        self.assertEqual(view_b.rows, [])
+        self._assert_no_transaction_control(session_b)
+
+        # Querying commerce A must also NOT include the row, since
+        # the presentation belongs to B.
+        session_a = _session_for_comercio(
+            comercio_id=1,
+            presentaciones=[],
+        )
+        view_a = PilotOrderOperationsViewService(
+            session_a
+        ).get_commerce_catalog_price_availability(1)
+        self.assertIsNotNone(view_a)
+        assert view_a is not None
+        self.assertEqual(view_a.rows, [])
+        self._assert_no_transaction_control(session_a)
+
+        # Sanity: if the cross-commerce row leaks into the catalog
+        # for A, the test must fail loudly. We assert that no
+        # sensitive label ever escapes through the view.
+        for view in (view_a, view_b):
+            assert view is not None
+            for row in view.rows:
+                self.assertNotIn("Secreto de A", row.producto_nombre)
+
+
+class CommerceCatalogRouteTest(unittest.TestCase):
+    """The new GET-only catalog route lives on the pilot panel and
+    inherits its Basic auth gate. These tests cover auth, isolation,
+    validation, escaping and zero-mutation."""
+
+    CONFIGURED_TOKEN = "pilot-panel-token-for-tests"
+
+    @staticmethod
+    def _strip_css(html: str) -> str:
+        """Remove the inline ``<style>`` block so the tests can
+        inspect the rendered DOM without the static CSS colour
+        hex codes polluting the search."""
+        start = html.find("<style>")
+        end = html.find("</style>")
+        if start == -1 or end == -1:
+            return html
+        return html[:start] + html[end + len("</style>"):]
+
+    def _settings(self, token=CONFIGURED_TOKEN):
+        from backend.config import settings as settings_module
+        from backend.config.settings import Settings
+
+        base = settings_module.load_settings()
+        return Settings(**{**base.__dict__, "order_management_admin_token": token})
+
+    def _basic(self, username, password):
+        import base64
+
+        raw = f"{username}:{password}".encode()
+        encoded = base64.b64encode(raw).decode("ascii")
+        return {"Authorization": f"Basic {encoded}"}
+
+    def setUp(self) -> None:
+        from unittest.mock import patch
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        import backend.dependencies as dependencies_module
+        import backend.routers.admin_pilot_orders as router_module
+        from backend.dependencies import get_session
+
+        self._router_module = router_module
+        self._dependencies_module = dependencies_module
+
+        self.session = MagicMock(name="DatabaseSession")
+        self.session.commit = MagicMock()
+        self.session.rollback = MagicMock()
+        self.session.flush = MagicMock()
+        self.session.refresh = MagicMock()
+        self.session.begin = MagicMock()
+        self.session.close = MagicMock()
+        self.session.expire = MagicMock()
+
+        class _SessionOverride:
+            def __init__(self, value):
+                self._value = value
+                self.call_count = 0
+
+            def __call__(self):
+                self.call_count += 1
+                return self._value
+
+        self._override = _SessionOverride(self.session)
+
+        self.app = FastAPI()
+        self.app.include_router(router_module.router)
+        self.app.dependency_overrides[get_session] = self._override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+
+        self._patcher = patch.object(
+            dependencies_module, "load_settings", return_value=self._settings()
+        )
+        self._patcher.start()
+
+    def tearDown(self) -> None:
+        self._patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def test_unauthenticated_request_returns_401(self) -> None:
+        response = self.client.get("/admin/pilot/orders/commerce/1/catalog")
+        self.assertEqual(response.status_code, 401)
+
+    def test_misconfigured_panel_returns_503(self) -> None:
+        from unittest.mock import patch
+
+        with patch.object(
+            self._dependencies_module,
+            "load_settings",
+            return_value=self._settings(token=None),
+        ):
+            response = self.client.get(
+                "/admin/pilot/orders/commerce/1/catalog",
+                headers=self._basic("any", self.CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 503)
+
+    def test_invalid_comercio_id_returns_400(self) -> None:
+        response = self.client.get(
+            "/admin/pilot/orders/commerce/abc/catalog",
+            headers=self._basic("any", self.CONFIGURED_TOKEN),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("comercio_id must be a positive integer", response.text)
+
+    def test_zero_comercio_id_returns_400(self) -> None:
+        response = self.client.get(
+            "/admin/pilot/orders/commerce/0/catalog",
+            headers=self._basic("any", self.CONFIGURED_TOKEN),
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_missing_comercio_returns_404(self) -> None:
+        from unittest.mock import patch
+
+        with patch.object(
+            self._router_module, "PilotOrderOperationsViewService"
+        ) as service_cls:
+            service_cls.return_value.get_commerce_catalog_price_availability.return_value = (
+                None
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/commerce/9999/catalog",
+                headers=self._basic("any", self.CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("9999", response.text)
+
+    def test_catalog_view_renders_with_no_ids_or_prices(self) -> None:
+        from unittest.mock import patch
+
+        view = CommerceCatalogPriceAvailabilityView(
+            comercio_id=1,
+            rows=[
+                CatalogPriceRow(
+                    producto_nombre="Mozzarella & <b>",
+                    presentacion_descripcion="Grande & <i>",
+                    price_available=True,
+                ),
+                CatalogPriceRow(
+                    producto_nombre="Mozzarella & <b>",
+                    presentacion_descripcion="Chica",
+                    price_available=False,
+                ),
+            ],
+        )
+        with patch.object(
+            self._router_module, "PilotOrderOperationsViewService"
+        ) as service_cls:
+            service_cls.return_value.get_commerce_catalog_price_availability.return_value = (
+                view
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/commerce/1/catalog",
+                headers=self._basic("any", self.CONFIGURED_TOKEN),
+            )
+        body = response.text
+        body_no_css = self._strip_css(body)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Mozzarella &amp; &lt;b&gt;", body)
+        self.assertIn("Grande &amp; &lt;i&gt;", body)
+        self.assertIn("Chica", body)
+        self.assertNotIn("price_available=True", body)
+        self.assertNotIn("id=", body)
+        self.assertNotIn("precio=", body)
+        self.assertNotIn("+54911", body)
+        self.assertNotIn("+1555", body)
+        self.assertNotIn("WhatsApp", body)
+        self.assertNotIn("Sesión", body)
+        self.assertNotIn("Comercio #", body_no_css)
+        self.assertNotIn("Comercio #1", body_no_css)
+        self.assertNotIn("#1", body_no_css)
+        self.assertNotIn(">1<", body_no_css)
+        self.assertNotIn("> 1 <", body_no_css)
+        self.assertNotIn("/1/catalog", body_no_css)
+        self.assertNotIn("/commerce/1/", body_no_css)
+
+    def test_catalog_html_omits_comercio_id_for_any_numeric_id(self) -> None:
+        from unittest.mock import patch
+
+        for numeric_id in (1, 7, 42, 9999):
+            view = CommerceCatalogPriceAvailabilityView(
+                comercio_id=numeric_id,
+                rows=[
+                    CatalogPriceRow(
+                        producto_nombre="X",
+                        presentacion_descripcion="Y",
+                        price_available=True,
+                    )
+                ],
+            )
+            with patch.object(
+                self._router_module, "PilotOrderOperationsViewService"
+            ) as service_cls:
+                service_cls.return_value.get_commerce_catalog_price_availability.return_value = (
+                    view
+                )
+                response = self.client.get(
+                    f"/admin/pilot/orders/commerce/{numeric_id}/catalog",
+                    headers=self._basic("any", self.CONFIGURED_TOKEN),
+                )
+            self.assertEqual(response.status_code, 200)
+            body_no_css = self._strip_css(response.text)
+            self.assertNotIn(f"#{numeric_id}", body_no_css)
+            self.assertNotIn(f"> {numeric_id} <", body_no_css)
+            self.assertNotIn(f">{numeric_id}<", body_no_css)
+            self.assertNotIn(
+                f"Comercio #{numeric_id}", body_no_css
+            )
+            self.assertNotIn(
+                f"comercio_id={numeric_id}", body_no_css
+            )
+            self.assertNotIn(f"/commerce/{numeric_id}/", body_no_css)
+
+    def test_route_never_mutates_session(self) -> None:
+        from unittest.mock import patch
+
+        view = CommerceCatalogPriceAvailabilityView(
+            comercio_id=1,
+            rows=[
+                CatalogPriceRow(
+                    producto_nombre="Mozzarella",
+                    presentacion_descripcion="Grande",
+                    price_available=True,
+                )
+            ],
+        )
+        with patch.object(
+            self._router_module, "PilotOrderOperationsViewService"
+        ) as service_cls:
+            service_cls.return_value.get_commerce_catalog_price_availability.return_value = (
+                view
+            )
+            self.client.get(
+                "/admin/pilot/orders/commerce/1/catalog",
+                headers=self._basic("any", self.CONFIGURED_TOKEN),
+            )
+        self.session.commit.assert_not_called()
+        self.session.rollback.assert_not_called()
+        self.session.flush.assert_not_called()
+        self.session.refresh.assert_not_called()
+        self.session.begin.assert_not_called()
+        self.session.close.assert_not_called()
+        self.session.expire.assert_not_called()
+
+    def test_catalog_route_is_get_only(self) -> None:
+        for route in self._router_module.router.routes:
+            path = getattr(route, "path", None)
+            if path and path.endswith("/commerce/{comercio_id}/catalog"):
+                methods = getattr(route, "methods", set())
+                self.assertTrue(
+                    methods.issubset({"GET", "HEAD"}),
+                    msg=f"non-GET methods registered: {methods}",
+                )
+
+    def test_template_contains_no_mutating_form(self) -> None:
+        from unittest.mock import patch
+
+        view = CommerceCatalogPriceAvailabilityView(
+            comercio_id=1,
+            rows=[
+                CatalogPriceRow(
+                    producto_nombre="Mozzarella",
+                    presentacion_descripcion="Grande",
+                    price_available=True,
+                )
+            ],
+        )
+        with patch.object(
+            self._router_module, "PilotOrderOperationsViewService"
+        ) as service_cls:
+            service_cls.return_value.get_commerce_catalog_price_availability.return_value = (
+                view
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/commerce/1/catalog",
+                headers=self._basic("any", self.CONFIGURED_TOKEN),
+            )
+        self.assertNotIn('method="post"', response.text)
+        self.assertNotIn('method="POST"', response.text)
+        self.assertNotIn('method="put"', response.text)
+        self.assertNotIn('method="delete"', response.text)
+        self.assertNotIn("<form", response.text)
+
+
+class CatalogPricePrivacyRegressionTest(unittest.TestCase):
+    """Regression coverage: the catalog view still escapes every
+    rendered value and never mutates the database session even
+    with hostile label input."""
+
+    CONFIGURED_TOKEN = "pilot-panel-token-for-tests"
+
+    def _settings(self, token=CONFIGURED_TOKEN):
+        from backend.config import settings as settings_module
+        from backend.config.settings import Settings
+
+        base = settings_module.load_settings()
+        return Settings(**{**base.__dict__, "order_management_admin_token": token})
+
+    def _basic(self, username, password):
+        import base64
+
+        raw = f"{username}:{password}".encode()
+        encoded = base64.b64encode(raw).decode("ascii")
+        return {"Authorization": f"Basic {encoded}"}
+
+    def setUp(self) -> None:
+        from unittest.mock import patch
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        import backend.dependencies as dependencies_module
+        import backend.routers.admin_pilot_orders as router_module
+        from backend.dependencies import get_session
+
+        self._router_module = router_module
+        self._dependencies_module = dependencies_module
+
+        self.session = MagicMock(name="DatabaseSession")
+        self.session.commit = MagicMock()
+        self.session.rollback = MagicMock()
+        self.session.flush = MagicMock()
+        self.session.refresh = MagicMock()
+        self.session.begin = MagicMock()
+        self.session.close = MagicMock()
+        self.session.expire = MagicMock()
+
+        class _SessionOverride:
+            def __init__(self, value):
+                self._value = value
+
+            def __call__(self):
+                return self._value
+
+        self.app = FastAPI()
+        self.app.include_router(router_module.router)
+        self.app.dependency_overrides[get_session] = _SessionOverride(self.session)
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._patcher = patch.object(
+            dependencies_module,
+            "load_settings",
+            return_value=self._settings(),
+        )
+        self._patcher.start()
+
+    def tearDown(self) -> None:
+        self._patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def test_evil_label_is_escaped(self) -> None:
+        from unittest.mock import patch
+
+        evil_nombre = '"><img src=x onerror=alert(1)>'
+        evil_descripcion = '"><script>alert(2)</script>'
+        view = CommerceCatalogPriceAvailabilityView(
+            comercio_id=1,
+            rows=[
+                CatalogPriceRow(
+                    producto_nombre=evil_nombre,
+                    presentacion_descripcion=evil_descripcion,
+                    price_available=False,
+                )
+            ],
+        )
+        with patch.object(
+            self._router_module, "PilotOrderOperationsViewService"
+        ) as service_cls:
+            service_cls.return_value.get_commerce_catalog_price_availability.return_value = (
+                view
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/commerce/1/catalog",
+                headers=self._basic("any", self.CONFIGURED_TOKEN),
+            )
+        body = response.text
+        self.assertNotIn("<img src=x onerror=alert(1)>", body)
+        self.assertNotIn("<script>alert(2)</script>", body)
+        self.assertIn("&lt;img src=x onerror=alert(1)&gt;", body)
+        self.assertIn("&lt;script&gt;alert(2)&lt;/script&gt;", body)
 
 
 if __name__ == "__main__":

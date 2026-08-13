@@ -27,10 +27,12 @@ from backend.dependencies import get_session, require_admin_pilot_basic
 from backend.models import EstadoPedido
 from backend.services.pilot_order_operations_view_service import (
     ALLOWED_PAGE_SIZES,
+    InvalidComercioId,
     InvalidListFilter,
     InvalidPedidoId,
     ListFilters,
     PilotOrderOperationsViewService,
+    parse_comercio_id,
     parse_list_filters,
     parse_pedido_id,
 )
@@ -186,6 +188,40 @@ def detail_order(
             "detail": detail,
             "history": history,
         },
+    )
+
+
+@router.get("/commerce/{comercio_id}/catalog", response_class=HTMLResponse)
+def commerce_catalog(
+    request: Request,
+    comercio_id: Annotated[str, Path()],
+    service: Annotated[PilotOrderOperationsViewService, Depends(_service)],
+) -> Response:
+    try:
+        parsed_comercio_id = parse_comercio_id(comercio_id)
+    except InvalidComercioId:
+        return _templates.TemplateResponse(
+            request=request,
+            name="bad_request.html",
+            context={"message": "comercio_id must be a positive integer"},
+            status_code=400,
+        )
+
+    catalog_view = service.get_commerce_catalog_price_availability(
+        parsed_comercio_id
+    )
+    if catalog_view is None:
+        return _templates.TemplateResponse(
+            request=request,
+            name="not_found.html",
+            context={"raw_id": comercio_id},
+            status_code=404,
+        )
+
+    return _render(
+        request,
+        "catalog.html",
+        {"catalog_view": catalog_view},
     )
 
 
