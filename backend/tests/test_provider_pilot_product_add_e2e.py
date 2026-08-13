@@ -600,36 +600,168 @@ class ProviderCoordinatorProductAddPricePresentEndToEndTest(unittest.TestCase):
             self.assertIsNone(pending.get("active"))
             self.assertEqual(pending.get("queue"), [])
 
-            # Outbox should contain the success message.
-            from backend.models import MensajeProveedorSaliente
+    def test_full_provider_flow_emits_pending_and_add_events_and_avoids_apology(
+        self,
+    ) -> None:
+        """5.4: the WhatsApp sequence through the real
+        ``ProviderInboundMessageCoordinator`` must:
 
-            outbox_rows = (
+        * first turn creates the Mozzarella ambiguity and the
+          ``Elegí entre:`` outgoing clarification;
+        * before the second turn the durable session holds
+          ``context_type == product_selection`` and exactly the two
+          restricted candidates;
+        * ``Grande`` with a present price produces one
+          ``PedidoProducto`` row, clears the pending context and
+          generates a successful confirmation;
+        * the second outgoing message is NOT the
+          ``No pude procesar tu pedido…`` apology;
+        * the closed ``pending_context_transition`` and
+          ``product_add_execution`` events are both observed.
+        """
+
+        def _capture(**kwargs):
+            captured.append(kwargs)
+            return True
+
+        captured: list[dict] = []
+
+        with _patched_classifier(
+            "quiero una pizza de mozzarella"
+        ), patch(
+            "backend.intents.handlers.agregar_producto_handler.emit_event",
+            side_effect=_capture,
+        ), patch(
+            "backend.intents.orchestration.pending_context_dispatcher.emit_event",
+            side_effect=_capture,
+        ):
+            s1 = _suffix()
+            s2 = _suffix()
+            self._accept_and_process(
+                identificador=f"SM-{s1}",
+                mensaje="quiero una pizza de mozzarella",
+                event_sink=captured,
+            )
+
+            with TestingSessionLocal() as db:
+                session_row = db.execute(
+                    select(SessionModel).where(
+                        SessionModel.id_comercio == self.comercio_id
+                    )
+                ).scalar_one()
+                assert session_row.context_type == "product_selection", (
+                    f"expected product_selection context after first turn; "
+                    f"got {session_row.context_type!r}"
+                )
+                pending = session_row.pending_intents or {}
+                active = pending.get("active")
+                assert active is not None
+                self.assertEqual(active.get("status"), "pending_resolution")
+                self.assertEqual(
+                    sorted(active.get("candidate_ids") or []),
+                    sorted(
+                        [
+                            self.catalog["pp_grande_id"],
+                            self.catalog["pp_chica_id"],
+                        ]
+                    ),
+                    f"expected exactly the two restricted candidates; "
+                    f"got {active.get('candidate_ids')!r}"
+                )
+
+            self._accept_and_process(
+                identificador=f"SM-{s2}",
+                mensaje="Grande",
+                event_sink=captured,
+            )
+
+        with TestingSessionLocal() as db:
+            session_row = db.execute(
+                select(SessionModel).where(
+                    SessionModel.id_comercio == self.comercio_id
+                )
+            ).scalar_one()
+            pedido_id = int(session_row.id_pedido)
+
+            lines = (
                 db.execute(
-                    select(MensajeProveedorSaliente).where(
-                        MensajeProveedorSaliente.recepcion_mensaje_proveedor_id.in_(
-                            select(
-                                __import__(
-                                    "backend.models",
-                                    fromlist=["RecepcionMensajeProveedor"],
-                                ).RecepcionMensajeProveedor.id
-                            ).where(
-                                __import__(
-                                    "backend.models",
-                                    fromlist=[
-                                        "RecepcionMensajeProveedor"
-                                    ],
-                                ).RecepcionMensajeProveedor.comercio_id
-                                == self.comercio_id
-                            )
-                        )
+                    select(PedidoProducto).where(
+                        PedidoProducto.id_pedido == pedido_id
                     )
                 )
                 .scalars()
                 .all()
             )
-            self.assertGreaterEqual(
-                len(outbox_rows), 1, "expected at least one outbox row"
+            self.assertEqual(
+                len(lines),
+                1,
+                f"expected exactly one PedidoProducto; got {len(lines)}",
             )
+            self.assertEqual(
+                int(lines[0].id_producto_presentacion),
+                self.catalog["pp_grande_id"],
+            )
+            self.assertEqual(int(lines[0].cantidad), 1)
+            self.assertIsNone(
+                session_row.context_type,
+                f"context_type should be cleared; got {session_row.context_type!r}",
+            )
+            pending = session_row.pending_intents or {}
+            self.assertIsNone(pending.get("active"))
+            self.assertEqual(pending.get("queue"), [])
+
+        from backend.models import MensajeProveedorSaliente
+
+        outbox_rows = (
+            TestingSessionLocal()
+            .execute(
+                select(MensajeProveedorSaliente).where(
+                    MensajeProveedorSaliente.recepcion_mensaje_proveedor_id.in_(
+                        select(
+                            __import__(
+                                "backend.models",
+                                fromlist=["RecepcionMensajeProveedor"],
+                            ).RecepcionMensajeProveedor.id
+                        ).where(
+                            __import__(
+                                "backend.models",
+                                fromlist=["RecepcionMensajeProveedor"],
+                            ).RecepcionMensajeProveedor.comercio_id
+                            == self.comercio_id
+                        )
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        outbox_messages = [row.cuerpo for row in outbox_rows]
+        self.assertGreaterEqual(
+            len(outbox_messages),
+            2,
+            f"expected at least two outbox messages (one per turn); "
+            f"got {len(outbox_messages)}: {outbox_messages}",
+        )
+        first_message = outbox_messages[0]
+        self.assertIn(
+            "Elegí entre:",
+            first_message,
+            f"first outgoing message must carry the ambiguity prompt; "
+            f"got {first_message!r}",
+        )
+        second_message = outbox_messages[1]
+        self.assertNotIn(
+            "No pude procesar tu pedido",
+            second_message,
+            f"second outgoing message must NOT be the apology; "
+            f"got {second_message!r}",
+        )
+        self.assertIn(
+            "Listo,",
+            second_message,
+            f"second outgoing message must be the success confirmation; "
+            f"got {second_message!r}",
+        )
 
         product_add_events = [
             kwargs
@@ -639,11 +771,54 @@ class ProviderCoordinatorProductAddPricePresentEndToEndTest(unittest.TestCase):
         self.assertEqual(
             len(product_add_events),
             1,
-            f"expected exactly one product_add_execution event; got {captured}",
+            f"expected exactly one product_add_execution event; "
+            f"got {len(product_add_events)}: {captured}",
         )
         self.assertEqual(
-            product_add_events[0].get("outcome"), "created"
+            product_add_events[0].get("outcome"),
+            "created",
         )
+        self.assertEqual(
+            product_add_events[0].get("component"),
+            COMPONENT_PRODUCT_ADD_EXECUTION,
+        )
+
+        from backend.observability.events import EVENT_PENDING_CONTEXT_TRANSITION
+
+        transition_events = [
+            kwargs
+            for kwargs in captured
+            if kwargs.get("event") == EVENT_PENDING_CONTEXT_TRANSITION
+        ]
+        self.assertGreaterEqual(
+            len(transition_events),
+            1,
+            f"expected at least one pending_context_transition event "
+            f"from the second turn dispatch; got {len(transition_events)}: "
+            f"{transition_events}",
+        )
+        outcomes = [
+            kwargs.get("outcome") for kwargs in transition_events
+        ]
+        self.assertIn("ready_executed", outcomes)
+        for event in transition_events:
+            self.assertEqual(event.get("component"), "pending_context")
+            self.assertEqual(event.get("context_kind"), "product_selection")
+            self.assertEqual(event.get("status_after"), "executed")
+            self.assertTrue(event.get("context_cleared"))
+
+        product_add_events = [
+            kwargs
+            for kwargs in captured
+            if kwargs.get("event") == EVENT_PRODUCT_ADD_EXECUTION
+        ]
+        self.assertEqual(
+            len(product_add_events),
+            1,
+            f"expected exactly one product_add_execution event; "
+            f"got {len(product_add_events)}: {captured}",
+        )
+        self.assertEqual(product_add_events[0].get("outcome"), "created")
         self.assertEqual(
             product_add_events[0].get("component"),
             COMPONENT_PRODUCT_ADD_EXECUTION,

@@ -616,6 +616,7 @@ class DispatchPendingContextStatusInterruptionTest(unittest.TestCase):
             _FakeState(active=active),
             _FakeState(active=None),
             _FakeState(active=None),
+            _FakeState(active=None),
         ]
 
         resolver = MagicMock()
@@ -1090,6 +1091,380 @@ class DispatchPendingContextPostExecutionTraceTest(unittest.TestCase):
         self.assertEqual(result[0].status, "executed")
         self.assertIsNone(session.context_type)
         exec_fn.assert_called_once()
+
+
+class DispatchPendingContextInvalidStateRecoveryTest(unittest.TestCase):
+    """5.1 / 5.2 / 5.3: the dispatcher recognises three inconsistent
+    pending-state shapes and recovers them without invoking the
+    classifier, resolver, LLM, product handler, catalog or
+    transaction-control methods.
+
+    For each shape it MUST:
+
+    * return exactly one ``rejected`` outcome;
+    * clear the pending state and set ``session.context_type`` to
+      ``None``;
+    * emit a single closed ``pending_context_transition`` event with
+      ``outcome=invalid_state_cleared`` and ``context_cleared=true``;
+    * let the next ordinary message reach initial dispatch.
+    """
+
+    _FORBIDDEN_DURING_RECOVERY = (
+        "IntentClassifier",
+        "ProductSelectionContextService",
+        "resolve_order_line_selection",
+        "resolve_product_modification",
+        "resolve_order_clear_confirmation",
+        "execute_ready_pending_context",
+        "process_initial_order_status_query",
+        "execute_agregar_producto",
+        "execute_modificar_producto",
+        "execute_quitar_producto",
+        "execute_set_observacion_producto",
+        "execute_vaciar_pedido",
+    )
+
+    def _capture_emit(self):
+        captured: list[dict] = []
+
+        def _fake_emit(**kwargs):
+            captured.append(kwargs)
+            return True
+
+        return captured, _fake_emit
+
+    def _assert_no_forbidden_calls(self, mocks: dict) -> None:
+        for name in self._FORBIDDEN_DURING_RECOVERY:
+            self.assertFalse(
+                mocks[name].called,
+                f"forbidden call {name!r} invoked during recovery",
+            )
+
+    def _assert_no_transaction_control(self, db) -> None:
+        for method in (
+            "commit",
+            "rollback",
+            "begin",
+            "flush",
+            "refresh",
+            "expire",
+            "close",
+        ):
+            self.assertFalse(
+                getattr(db, method).called,
+                f"forbidden db.{method}() invoked during recovery",
+            )
+
+    def _assert_invalid_state_cleared_event(
+        self,
+        captured: list[dict],
+        *,
+        expected_context_kind: str,
+        expected_candidate_count_before: int,
+        expected_status_before: str,
+    ) -> dict:
+        invalid_events = [
+            kwargs for kwargs in captured
+            if kwargs.get("outcome") == "invalid_state_cleared"
+        ]
+        self.assertEqual(
+            len(invalid_events),
+            1,
+            f"expected exactly one invalid_state_cleared event; "
+            f"got {len(invalid_events)}: {captured}",
+        )
+        event = invalid_events[0]
+        self.assertEqual(event["event"], EVENT_PENDING_CONTEXT_TRANSITION)
+        self.assertEqual(event["component"], COMPONENT_PENDING_CONTEXT)
+        self.assertTrue(event["context_cleared"])
+        self.assertEqual(
+            event["candidate_count_before"], expected_candidate_count_before
+        )
+        self.assertEqual(event["candidate_count_after"], 0)
+        self.assertEqual(event["status_after"], "rejected")
+        self.assertEqual(event["context_kind"], expected_context_kind)
+        self.assertEqual(event["status_before"], expected_status_before)
+        return event
+
+    @patch.object(dispatcher_module, "execute_ready_pending_context")
+    @patch.object(dispatcher_module, "ProductSelectionContextService")
+    @patch.object(dispatcher_module, "resolve_order_clear_confirmation")
+    @patch.object(dispatcher_module, "resolve_product_modification")
+    @patch.object(dispatcher_module, "resolve_order_line_selection")
+    @patch.object(dispatcher_module, "process_initial_order_status_query")
+    @patch.object(dispatcher_module, "set_active")
+    @patch.object(dispatcher_module, "clear_pending_state", create=True)
+    @patch.object(dispatcher_module, "load_pending_state")
+    def test_no_active_with_non_null_context_type_clears_state_and_emits_event(
+        self, load_state, clear_pending, set_active, status_query,
+        resolve_line, resolve_mod, resolve_clear, resolver_cls, exec_fn,
+    ):
+        """``active is None`` with a non-null supported context type
+        MUST surface the actual supported kind (``product_selection``)
+        so the operator can still tell which flow was being cleared,
+        and the persisted ``status_before`` is the closed ``none``
+        sentinel because no active intent was loaded."""
+        load_state.return_value = _FakeState(active=None)
+        captured, fake_emit = self._capture_emit()
+
+        db = MagicMock(name="DatabaseSession")
+        session = MagicMock()
+        session.context_type = ContextType.PRODUCT_SELECTION.value
+
+        with patch.object(dispatcher_module, "emit_event", side_effect=fake_emit):
+            result = dispatch_pending_context(db, session, "Grande")
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].status, "rejected")
+        clear_pending.assert_called_once_with(session)
+        self.assertIsNone(session.context_type)
+        set_active.assert_not_called()
+        exec_fn.assert_not_called()
+        status_query.assert_not_called()
+        resolver_cls.assert_not_called()
+        self._assert_invalid_state_cleared_event(
+            captured,
+            expected_context_kind=ContextType.PRODUCT_SELECTION.value,
+            expected_candidate_count_before=0,
+            expected_status_before="none",
+        )
+        self._assert_no_transaction_control(db)
+        self._assert_no_forbidden_calls({
+            "IntentClassifier": MagicMock(),
+            "ProductSelectionContextService": resolver_cls,
+            "resolve_order_line_selection": resolve_line,
+            "resolve_product_modification": resolve_mod,
+            "resolve_order_clear_confirmation": resolve_clear,
+            "execute_ready_pending_context": exec_fn,
+            "process_initial_order_status_query": status_query,
+            "execute_agregar_producto": MagicMock(),
+            "execute_modificar_producto": MagicMock(),
+            "execute_quitar_producto": MagicMock(),
+            "execute_set_observacion_producto": MagicMock(),
+            "execute_vaciar_pedido": MagicMock(),
+        })
+
+    @patch.object(dispatcher_module, "execute_ready_pending_context")
+    @patch.object(dispatcher_module, "ProductSelectionContextService")
+    @patch.object(dispatcher_module, "resolve_order_clear_confirmation")
+    @patch.object(dispatcher_module, "resolve_product_modification")
+    @patch.object(dispatcher_module, "resolve_order_line_selection")
+    @patch.object(dispatcher_module, "process_initial_order_status_query")
+    @patch.object(dispatcher_module, "set_active")
+    @patch.object(dispatcher_module, "clear_pending_state", create=True)
+    @patch.object(dispatcher_module, "load_pending_state")
+    def test_active_with_null_context_type_clears_state_and_emits_event(
+        self, load_state, clear_pending, set_active, status_query,
+        resolve_line, resolve_mod, resolve_clear, resolver_cls, exec_fn,
+    ):
+        """``active`` present with ``context_type is None`` MUST surface
+        the closed ``none`` sentinel and report the real
+        ``candidate_count_before`` from the loaded active intent so the
+        operator can tell a candidate set was discarded versus an empty
+        pending state."""
+        active = _pending_intent(candidate_ids=[501, 502])
+        load_state.return_value = _FakeState(active=active)
+        captured, fake_emit = self._capture_emit()
+
+        db = MagicMock(name="DatabaseSession")
+        session = MagicMock()
+        session.context_type = None
+
+        with patch.object(dispatcher_module, "emit_event", side_effect=fake_emit):
+            result = dispatch_pending_context(db, session, "Grande")
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].status, "rejected")
+        clear_pending.assert_called_once_with(session)
+        self.assertIsNone(session.context_type)
+        set_active.assert_not_called()
+        exec_fn.assert_not_called()
+        status_query.assert_not_called()
+        resolver_cls.assert_not_called()
+        self._assert_invalid_state_cleared_event(
+            captured,
+            expected_context_kind="none",
+            expected_candidate_count_before=2,
+            expected_status_before="pending_resolution",
+        )
+        self._assert_no_transaction_control(db)
+
+    @patch.object(dispatcher_module, "execute_ready_pending_context")
+    @patch.object(dispatcher_module, "ProductSelectionContextService")
+    @patch.object(dispatcher_module, "resolve_order_clear_confirmation")
+    @patch.object(dispatcher_module, "resolve_product_modification")
+    @patch.object(dispatcher_module, "resolve_order_line_selection")
+    @patch.object(dispatcher_module, "process_initial_order_status_query")
+    @patch.object(dispatcher_module, "set_active")
+    @patch.object(dispatcher_module, "clear_pending_state", create=True)
+    @patch.object(dispatcher_module, "load_pending_state")
+    def test_active_with_unsupported_context_type_clears_state_and_emits_event(
+        self, load_state, clear_pending, set_active, status_query,
+        resolve_line, resolve_mod, resolve_clear, resolver_cls, exec_fn,
+    ):
+        """``active`` present with a non-null, non-supported
+        ``context_type`` MUST surface the closed ``unsupported`` sentinel
+        and report the real ``candidate_count_before``."""
+        active = _pending_intent(candidate_ids=[601, 602])
+        load_state.return_value = _FakeState(active=active)
+        captured, fake_emit = self._capture_emit()
+
+        db = MagicMock(name="DatabaseSession")
+        session = MagicMock()
+        session.context_type = "future_context_kind"
+
+        with patch.object(dispatcher_module, "emit_event", side_effect=fake_emit):
+            result = dispatch_pending_context(db, session, "Grande")
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].status, "rejected")
+        clear_pending.assert_called_once_with(session)
+        self.assertIsNone(session.context_type)
+        set_active.assert_not_called()
+        exec_fn.assert_not_called()
+        status_query.assert_not_called()
+        resolver_cls.assert_not_called()
+        self._assert_invalid_state_cleared_event(
+            captured,
+            expected_context_kind="unsupported",
+            expected_candidate_count_before=2,
+            expected_status_before="pending_resolution",
+        )
+        self._assert_no_transaction_control(db)
+
+    @patch.object(dispatcher_module, "execute_ready_pending_context")
+    @patch.object(dispatcher_module, "ProductSelectionContextService")
+    @patch.object(dispatcher_module, "resolve_order_clear_confirmation")
+    @patch.object(dispatcher_module, "resolve_product_modification")
+    @patch.object(dispatcher_module, "resolve_order_line_selection")
+    @patch.object(dispatcher_module, "process_initial_order_status_query")
+    @patch.object(dispatcher_module, "set_active")
+    @patch.object(dispatcher_module, "clear_pending_state", create=True)
+    @patch.object(dispatcher_module, "load_pending_state")
+    def test_recovery_then_process_incoming_message_reaches_initial_dispatch(
+        self, load_state, clear_pending, set_active, status_query,
+        resolve_line, resolve_mod, resolve_clear, resolver_cls, exec_fn,
+    ):
+        """5.4: the second turn MUST really reach initial dispatch.
+
+        Turn 1 drives ``dispatch_pending_context`` from an inconsistent
+        state (active present, ``context_type`` is unsupported). The
+        recovery clears pending JSON, sets ``session.context_type``
+        back to ``None`` and emits exactly one closed
+        ``invalid_state_cleared`` event.
+
+        Turn 2 calls ``process_incoming_message`` - the same entry point
+        used by the provider coordinator - with a fresh message. The
+        second message MUST reach the initial dispatcher (proven by
+        ``IntentClassifier`` being instantiated and queried) and MUST
+        NOT touch any pending resolver, status interruption, ready
+        execution or product handler.
+        """
+        from backend.intents.orchestration import (
+            initial_intent_dispatcher as initial_module,
+        )
+        from backend.intents.orchestration.incoming_message_orchestrator import (
+            process_incoming_message,
+        )
+        from backend.intents.schemas.intent_classification import (
+            ClassifiedIntent,
+            IntentClassificationResult,
+            IntentName,
+        )
+
+        active = _pending_intent(candidate_ids=[801, 802, 803])
+        load_state.return_value = _FakeState(active=active)
+        captured, fake_emit = self._capture_emit()
+
+        db = MagicMock(name="DatabaseSession")
+        session = MagicMock()
+        session.context_type = "future_context_kind"
+
+        with patch.object(dispatcher_module, "emit_event", side_effect=fake_emit):
+            first = dispatch_pending_context(db, session, "Grande")
+
+        self.assertEqual(len(first), 1)
+        self.assertEqual(first[0].status, "rejected")
+        self.assertIsNone(session.context_type)
+        clear_pending.assert_called_once_with(session)
+        self._assert_invalid_state_cleared_event(
+            captured,
+            expected_context_kind="unsupported",
+            expected_candidate_count_before=3,
+            expected_status_before="pending_resolution",
+        )
+
+        clear_pending.reset_mock()
+        set_active.reset_mock()
+        exec_fn.reset_mock()
+        status_query.reset_mock()
+        resolve_line.reset_mock()
+        resolve_mod.reset_mock()
+        resolve_clear.reset_mock()
+        resolver_cls.reset_mock()
+
+        classifier_constructor_calls: list = []
+        classifier_query_calls: list = []
+
+        class _ClassifierProbe:
+            def __init__(self, *args, **kwargs):
+                classifier_constructor_calls.append((args, kwargs))
+
+            def query(self, message):
+                classifier_query_calls.append(message)
+                return IntentClassificationResult(
+                    intents=[
+                        ClassifiedIntent(
+                            intent=IntentName.CONSULTAR_ESTADO_PEDIDO,
+                            mensaje=message,
+                        )
+                    ],
+                    mensaje=message,
+                )
+
+        with patch.object(
+            initial_module, "IntentClassifier", _ClassifierProbe
+        ), patch.object(
+            dispatcher_module, "ProductSelectionContextService"
+        ) as second_resolver_cls, patch.object(
+            dispatcher_module, "resolve_order_line_selection"
+        ) as second_resolve_line, patch.object(
+            dispatcher_module, "resolve_product_modification"
+        ) as second_resolve_mod, patch.object(
+            dispatcher_module, "resolve_order_clear_confirmation"
+        ) as second_resolve_clear, patch.object(
+            dispatcher_module, "execute_ready_pending_context"
+        ) as second_exec_fn, patch.object(
+            dispatcher_module, "process_initial_order_status_query"
+        ) as second_status_query, patch.object(
+            dispatcher_module, "emit_event"
+        ):
+            second = process_incoming_message(
+                db, session, "Cuál es el estado de mi pedido"
+            )
+
+        self.assertEqual(len(classifier_constructor_calls), 1)
+        self.assertEqual(
+            classifier_query_calls, ["Cuál es el estado de mi pedido"]
+        )
+        second_resolver_cls.assert_not_called()
+        second_resolve_line.assert_not_called()
+        second_resolve_mod.assert_not_called()
+        second_resolve_clear.assert_not_called()
+        second_exec_fn.assert_not_called()
+        second_status_query.assert_not_called()
+        self.assertGreaterEqual(len(second), 1)
+        self.assertEqual(second[0].intent, "consultar_estado_pedido")
+        for method in (
+            "commit",
+            "rollback",
+            "begin",
+            "flush",
+            "refresh",
+            "expire",
+            "close",
+        ):
+            self.assertFalse(getattr(db, method).called)
 
 
 if __name__ == "__main__":

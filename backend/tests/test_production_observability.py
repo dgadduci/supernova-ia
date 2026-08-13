@@ -1566,6 +1566,230 @@ class PendingContextTransitionEventTest(unittest.TestCase):
                 self.assertEqual(payload["status_before"], status)
                 self.assertEqual(payload["status_after"], status)
 
+    def test_invalid_state_cleared_outcome_is_accepted(self):
+        payload = build_event(
+            **self._base_kwargs(
+                outcome="invalid_state_cleared",
+                status_before="pending_resolution",
+                status_after="rejected",
+                candidate_count_before=0,
+                candidate_count_after=0,
+                context_cleared=True,
+            )
+        )
+        self.assertEqual(payload["outcome"], "invalid_state_cleared")
+        self.assertEqual(payload["status_after"], "rejected")
+        self.assertTrue(payload["context_cleared"])
+        self.assertEqual(payload["candidate_count_before"], 0)
+        self.assertEqual(payload["candidate_count_after"], 0)
+
+    def test_invalid_state_cleared_accepts_none_kind(self):
+        payload = build_event(
+            **self._base_kwargs(
+                outcome="invalid_state_cleared",
+                context_kind="none",
+                status_before="none",
+                status_after="rejected",
+                candidate_count_before=0,
+                candidate_count_after=0,
+                context_cleared=True,
+            )
+        )
+        self.assertEqual(payload["context_kind"], "none")
+        self.assertEqual(payload["status_before"], "none")
+
+    def test_invalid_state_cleared_accepts_unsupported_kind(self):
+        payload = build_event(
+            **self._base_kwargs(
+                outcome="invalid_state_cleared",
+                context_kind="unsupported",
+                status_before="pending_resolution",
+                status_after="rejected",
+                candidate_count_before=0,
+                candidate_count_after=0,
+                context_cleared=True,
+            )
+        )
+        self.assertEqual(payload["context_kind"], "unsupported")
+
+    def test_invalid_state_cleared_status_after_must_be_rejected(self):
+        """The ``invalid_state_cleared`` outcome pins ``status_after``
+        to exactly ``rejected``. Any other ``ProcessedIntent.status``
+        value, including the closed ``none`` sentinel, MUST be rejected
+        by the catalogue so a future emitter cannot relax this
+        contract."""
+        for forbidden in (
+            "pending_resolution",
+            "ready",
+            "executed",
+            "failed",
+            "none",
+            "completed",
+            "",
+        ):
+            with self.subTest(status_after=forbidden):
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        **self._base_kwargs(
+                            outcome="invalid_state_cleared",
+                            status_before="pending_resolution",
+                            status_after=forbidden,
+                            candidate_count_before=0,
+                            candidate_count_after=0,
+                            context_cleared=True,
+                        )
+                    )
+
+    def test_invalid_state_cleared_accepts_supported_context_kind(self):
+        """When the persisted ``context_type`` is a supported kind, the
+        dispatcher surfaces that kind verbatim (``product_selection``,
+        ``order_line_selection``, ``product_modification`` or
+        ``order_clear_confirmation``) instead of the ``none`` or
+        ``unsupported`` sentinels."""
+        for kind in (
+            "product_selection",
+            "order_line_selection",
+            "product_modification",
+            "order_clear_confirmation",
+        ):
+            with self.subTest(kind=kind):
+                payload = build_event(
+                    **self._base_kwargs(
+                        outcome="invalid_state_cleared",
+                        context_kind=kind,
+                        status_before="pending_resolution",
+                        status_after="rejected",
+                        candidate_count_before=2,
+                        candidate_count_after=0,
+                        context_cleared=True,
+                    )
+                )
+                self.assertEqual(payload["context_kind"], kind)
+
+    def test_invalid_state_cleared_rejects_unknown_context_kind(self):
+        """Even with the wider ``invalid_state_cleared`` allowlist,
+        ``context_kind`` MUST remain a closed enum - arbitrary strings
+        are still rejected so the catalogue cannot be poisoned."""
+        for forbidden_kind in (
+            "future_context_kind",
+            "Agregar_producto",
+            "product selection",
+            "None",
+            "UNSUPPORTED",
+        ):
+            with self.subTest(kind=forbidden_kind):
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        **self._base_kwargs(
+                            outcome="invalid_state_cleared",
+                            context_kind=forbidden_kind,
+                            status_before="pending_resolution",
+                            status_after="rejected",
+                            candidate_count_before=0,
+                            candidate_count_after=0,
+                            context_cleared=True,
+                        )
+                    )
+
+    def test_other_outcomes_reject_none_sentinels(self):
+        """The ``none`` / ``unsupported`` sentinels are reserved for the
+        ``invalid_state_cleared`` outcome. Other outcomes keep the
+        previous narrower allowlists so no operator-facing payload can
+        leak a closed sentinel under a different closed outcome."""
+        for outcome in (
+            "pending_preserved",
+            "ready_executed",
+            "rejected_cleared",
+            "status_interrupted",
+        ):
+            with self.subTest(outcome=outcome):
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        **self._base_kwargs(
+                            outcome=outcome,
+                            context_kind="none",
+                            status_before="pending_resolution",
+                            status_after="pending_resolution",
+                            candidate_count_before=2,
+                            candidate_count_after=2,
+                            context_cleared=False,
+                        )
+                    )
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        **self._base_kwargs(
+                            outcome=outcome,
+                            context_kind="product_selection",
+                            status_before="none",
+                            status_after="pending_resolution",
+                            candidate_count_before=2,
+                            candidate_count_after=2,
+                            context_cleared=False,
+                        )
+                    )
+
+    def test_invalid_state_cleared_round_trips_through_parse(self):
+        payload = build_event(
+            **self._base_kwargs(
+                outcome="invalid_state_cleared",
+                context_kind="none",
+                status_before="none",
+                status_after="rejected",
+                candidate_count_before=0,
+                candidate_count_after=0,
+                context_cleared=True,
+            )
+        )
+        line = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        parsed = parse_event(line)
+        self.assertEqual(parsed, payload)
+        self.assertEqual(parsed["outcome"], "invalid_state_cleared")
+
+    def test_invalid_state_cleared_does_not_leak_pii(self):
+        sink = io.StringIO()
+        emit_event(
+            event=EVENT_PENDING_CONTEXT_TRANSITION,
+            component=COMPONENT_PENDING_CONTEXT,
+            outcome="invalid_state_cleared",
+            context_kind="unsupported",
+            status_before="pending_resolution",
+            status_after="rejected",
+            candidate_count_before=0,
+            candidate_count_after=0,
+            context_cleared=True,
+            stream=sink,
+        )
+        line = sink.getvalue()
+        for token in SENTINELS:
+            if token in (
+                EVENT_PENDING_CONTEXT_TRANSITION,
+                COMPONENT_PENDING_CONTEXT,
+                "invalid_state_cleared",
+                "unsupported",
+                "none",
+                "pending_resolution",
+                "rejected",
+            ):
+                continue
+            self.assertNotIn(token, line)
+        parsed = json.loads(line.strip())
+        self.assertEqual(
+            set(parsed.keys()),
+            {
+                "event",
+                "schema_version",
+                "component",
+                "timestamp",
+                "outcome",
+                "context_kind",
+                "status_before",
+                "status_after",
+                "candidate_count_before",
+                "candidate_count_after",
+                "context_cleared",
+            },
+        )
+
 
 class ProductAddExecutionEventTest(unittest.TestCase):
     """The ``product_add_execution`` event is a privacy-safe

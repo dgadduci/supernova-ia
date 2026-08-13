@@ -111,8 +111,23 @@ _PENDING_CONTEXT_OUTCOMES: frozenset[str] = frozenset(
         "ready_executed",
         "rejected_cleared",
         "status_interrupted",
+        "invalid_state_cleared",
     }
 )
+
+# Per-outcome constraints for ``invalid_state_cleared``: the dispatcher
+# surfaces the persisted ``context_type`` when it is a supported kind,
+# admits the ``none`` / ``unsupported`` sentinels only when the
+# persisted value is empty or unknown, and pins ``status_after`` to
+# ``rejected``. Other outcomes retain the previous, narrower allowlists
+# (no ``none`` / ``unsupported`` sentinels).
+_INVALID_STATE_CLEARED_CONTEXT_KINDS: frozenset[str] = frozenset(
+    _PENDING_CONTEXT_KINDS | {"none", "unsupported"}
+)
+_INVALID_STATE_CLEARED_STATUS_BEFORE: frozenset[str] = frozenset(
+    _PENDING_CONTEXT_STATUSES | {"none"}
+)
+_INVALID_STATE_CLEARED_STATUS_AFTER: frozenset[str] = frozenset({"rejected"})
 
 
 _OUTCOMES_BY_EVENT: dict[str, frozenset[str]] = {
@@ -530,6 +545,7 @@ def _validate_recognition_event_fields(
 
 def _validate_pending_context_event_fields(
     *,
+    outcome: Any,
     context_kind: Any,
     status_before: Any,
     status_after: Any,
@@ -548,18 +564,33 @@ def _validate_pending_context_event_fields(
     boolean. The contract intentionally forbids free-form identifiers,
     customer text, labels, prompt or model payloads, exceptions or
     correlation fields; any of those will fail this validator.
+
+    The ``invalid_state_cleared`` outcome admits a wider allowlist for
+    ``context_kind`` and ``status_before`` (so the closed ``none`` and
+    ``unsupported`` sentinels are surfaced) but pins ``status_after``
+    to exactly ``rejected`` so the recovery contract stays closed.
+    All other outcomes keep the original narrower allowlists.
     """
     fields: dict[str, Any] = {}
+
+    if outcome == "invalid_state_cleared":
+        allowed_kinds = _INVALID_STATE_CLEARED_CONTEXT_KINDS
+        allowed_status_before = _INVALID_STATE_CLEARED_STATUS_BEFORE
+        allowed_status_after = _INVALID_STATE_CLEARED_STATUS_AFTER
+    else:
+        allowed_kinds = _PENDING_CONTEXT_KINDS
+        allowed_status_before = _PENDING_CONTEXT_STATUSES
+        allowed_status_after = _PENDING_CONTEXT_STATUSES
 
     if not isinstance(context_kind, str) or not context_kind:
         raise EventValidationError(
             "context_kind is required for pending_context_transition "
             f"and must be a non-empty string (got {context_kind!r})"
         )
-    if context_kind not in _PENDING_CONTEXT_KINDS:
+    if context_kind not in allowed_kinds:
         raise EventValidationError(
             f"context_kind {context_kind!r} not in pending-context allowlist "
-            f"{sorted(_PENDING_CONTEXT_KINDS)}"
+            f"{sorted(allowed_kinds)}"
         )
     fields["context_kind"] = context_kind
 
@@ -568,10 +599,10 @@ def _validate_pending_context_event_fields(
             "status_before is required for pending_context_transition "
             f"and must be a non-empty string (got {status_before!r})"
         )
-    if status_before not in _PENDING_CONTEXT_STATUSES:
+    if status_before not in allowed_status_before:
         raise EventValidationError(
-            f"status_before {status_before!r} not in ProcessedIntent.status "
-            f"allowlist {sorted(_PENDING_CONTEXT_STATUSES)}"
+            f"status_before {status_before!r} not in pending-context status "
+            f"allowlist {sorted(allowed_status_before)}"
         )
     fields["status_before"] = status_before
 
@@ -580,10 +611,10 @@ def _validate_pending_context_event_fields(
             "status_after is required for pending_context_transition "
             f"and must be a non-empty string (got {status_after!r})"
         )
-    if status_after not in _PENDING_CONTEXT_STATUSES:
+    if status_after not in allowed_status_after:
         raise EventValidationError(
-            f"status_after {status_after!r} not in ProcessedIntent.status "
-            f"allowlist {sorted(_PENDING_CONTEXT_STATUSES)}"
+            f"status_after {status_after!r} not in pending-context status "
+            f"allowlist {sorted(allowed_status_after)}"
         )
     fields["status_after"] = status_after
 
@@ -778,6 +809,7 @@ def build_event(
                 "closed pending-context payload is allowed"
             )
         pending_context_fields = _validate_pending_context_event_fields(
+            outcome=outcome,
             context_kind=context_kind,
             status_before=status_before,
             status_after=status_after,
