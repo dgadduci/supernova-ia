@@ -70,6 +70,9 @@ from backend.intents.responses.order_status_query import (
 from backend.intents.responses.quitar_producto_response import (
     build_quitar_producto_response,
 )
+from backend.intents.responses.set_observacion_producto_response import (
+    build_set_observacion_producto_response,
+)
 from backend.intents.responses.social_conversation_response import (
     build_social_conversation_response,
     is_social_conversation_intent,
@@ -132,6 +135,10 @@ def build_customer_responses(
         elif intent.intent == "quitar_producto":
             responses.append(
                 build_quitar_producto_response(db, session, intent)
+            )
+        elif intent.intent == "set_observacion_producto":
+            responses.append(
+                build_set_observacion_producto_response(db, session, intent)
             )
         elif intent.intent == "modificar_producto":
             responses.append(

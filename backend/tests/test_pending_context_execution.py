@@ -273,6 +273,132 @@ class ExecuteReadyPendingContextBoundariesTest(unittest.TestCase):
         )
 
 
+class ExecuteReadyPendingContextSetObservacionProductoTest(unittest.TestCase):
+    """Execute-ready pending-context branch for the dedicated
+    `set_observacion_producto` handler."""
+
+    def _active(self) -> ProcessedIntent:
+        return ProcessedIntent(
+            intent="set_observacion_producto",
+            source_text="La pizza es sin aceitunas",
+            status="ready",
+            recognizer="recognizer_set_observacion_producto",
+            handler="set_observacion_producto",
+            resolved_data={
+                "pedido_producto_id": 10,
+                "observation_action": "set",
+                "observation_text": "La pizza es sin aceitunas",
+            },
+            requirements=[
+                RequirementState(
+                    name="pedido_producto_id",
+                    status="completed",
+                    value=10,
+                ),
+                RequirementState(
+                    name="observacion",
+                    status="completed",
+                    value="set",
+                ),
+            ],
+            candidate_ids=[],
+        )
+
+    def _session(self) -> MagicMock:
+        s = MagicMock(name="ConversationSession")
+        s.context_type = "order_line_selection"
+        s.pending_intents = {
+            "version": 1,
+            "active": {
+                "intent": "set_observacion_producto",
+                "source_text": "La pizza es sin aceitunas",
+                "status": "ready",
+                "recognizer": "recognizer_set_observacion_producto",
+                "handler": "set_observacion_producto",
+                "resolved_data": {
+                    "pedido_producto_id": 10,
+                    "observation_action": "set",
+                    "observation_text": "La pizza es sin aceitunas",
+                },
+                "requirements": [
+                    {"name": "pedido_producto_id", "status": "completed", "value": 10},
+                    {"name": "observacion", "status": "completed", "value": "set"},
+                ],
+                "candidate_ids": [],
+            },
+            "queue": [],
+        }
+        return s
+
+    @patch.object(execution_module, "clear_pending_context")
+    @patch.object(execution_module, "execute_set_observacion_producto")
+    def test_executed_clears_pending_context(self, handler, clear_pending):
+        handler.return_value = ProcessedIntent(
+            intent="set_observacion_producto",
+            source_text="La pizza es sin aceitunas",
+            status="executed",
+            recognizer="recognizer_set_observacion_producto",
+            handler="set_observacion_producto",
+            resolved_data={},
+            requirements=[],
+            candidate_ids=[],
+        )
+        db = MagicMock(name="DatabaseSession")
+        session = self._session()
+
+        result = execute_ready_pending_context(db, session)
+
+        handler.assert_called_once()
+        clear_pending.assert_called_once_with(session)
+        self.assertIsNone(session.context_type)
+        self.assertEqual(result[0].status, "executed")
+
+    @patch.object(execution_module, "clear_pending_context")
+    @patch.object(execution_module, "execute_set_observacion_producto")
+    def test_rejected_clears_pending_context(self, handler, clear_pending):
+        handler.return_value = ProcessedIntent(
+            intent="set_observacion_producto",
+            source_text="La pizza es sin aceitunas",
+            status="rejected",
+            recognizer="recognizer_set_observacion_producto",
+            handler="set_observacion_producto",
+            resolved_data={},
+            requirements=[],
+            candidate_ids=[],
+        )
+        db = MagicMock(name="DatabaseSession")
+        session = self._session()
+
+        result = execute_ready_pending_context(db, session)
+
+        handler.assert_called_once()
+        clear_pending.assert_called_once_with(session)
+        self.assertIsNone(session.context_type)
+        self.assertEqual(result[0].status, "rejected")
+
+    @patch.object(execution_module, "clear_pending_context")
+    @patch.object(execution_module, "execute_set_observacion_producto")
+    def test_failed_keeps_context_active(self, handler, clear_pending):
+        handler.return_value = ProcessedIntent(
+            intent="set_observacion_producto",
+            source_text="La pizza es sin aceitunas",
+            status="failed",
+            recognizer="recognizer_set_observacion_producto",
+            handler="set_observacion_producto",
+            resolved_data={},
+            requirements=[],
+            candidate_ids=[],
+        )
+        db = MagicMock(name="DatabaseSession")
+        session = self._session()
+
+        result = execute_ready_pending_context(db, session)
+
+        clear_pending.assert_not_called()
+        self.assertEqual(session.context_type, "order_line_selection")
+        self.assertEqual(result[0].status, "failed")
+
+
 class ExecuteReadyPendingContextPromotionTest(unittest.TestCase):
     """FIFO promotion + ready draining + context-type restoration cases
     for the `pending-context-execution` capability.

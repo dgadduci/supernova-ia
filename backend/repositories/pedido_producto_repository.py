@@ -1,9 +1,15 @@
 from decimal import Decimal
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session as SqlSession, joinedload
+from sqlalchemy.orm import Session as SqlSession
+from sqlalchemy.orm import joinedload
 
-from backend.models import Pedido, PedidoProducto, Precio, Presentacion, ProductoPresentacion
+from backend.models import (
+    Pedido,
+    PedidoProducto,
+    Precio,
+    ProductoPresentacion,
+)
 from backend.services.exceptions import PedidoProductoNotFound
 
 
@@ -79,6 +85,34 @@ class PedidoProductoRepository:
         self._session.add(row)
         self._session.flush()
         return row
+
+    def set_observacion(
+        self,
+        *,
+        pedido_id: int,
+        pedido_producto_id: int,
+        observacion: str | None,
+    ) -> PedidoProducto | None:
+        """Assign ``observaciones`` to a single ``PedidoProducto`` of the
+        given ``pedido_id`` without owning transaction control.
+
+        The repository performs only the lookup and the attribute assignment.
+        It returns ``None`` when the row does not exist or does not belong
+        to ``pedido_id``; the caller is responsible for translating that
+        into a domain rejection. The repository NEVER calls ``commit``,
+        ``rollback``, ``flush``, ``refresh``, ``expire``, ``begin``, or
+        ``close``; the caller's outer transaction is the only owner of
+        full-turn atomicity. The repository never reads the commerce
+        catalog and never inspects the session's pedidos beyond the
+        single row fetch.
+        """
+        item = self._session.get(PedidoProducto, pedido_producto_id)
+        if item is None:
+            return None
+        if item.id_pedido != pedido_id:
+            return None
+        item.observaciones = observacion
+        return item
 
     def update(
         self,

@@ -1,3 +1,4 @@
+from pydantic import ValidationError
 from sqlalchemy.orm import Session as DatabaseSession
 
 from backend.diagnostics import NoopDiagnosticSink, PendingStateSnapshot
@@ -30,6 +31,9 @@ from backend.intents.orchestration.order_status_query import (
 from backend.intents.orchestration.quitar_producto_initial import (
     process_initial_quitar_producto,
 )
+from backend.intents.orchestration.set_observacion_producto_initial import (
+    process_initial_set_observacion_producto,
+)
 from backend.intents.orchestration.vaciar_pedido_initial import (
     process_initial_vaciar_pedido,
 )
@@ -59,7 +63,7 @@ def dispatch_initial_message(
         state = load_pending_state(session)
         active_intent = state.active
         queued_count = len(state.queue)
-    except Exception:
+    except ValidationError:
         state = None
         active_intent = None
         queued_count = 0
@@ -175,6 +179,14 @@ def dispatch_initial_message(
         if classified_intent == IntentName.SET_OBSERVACION_PEDIDO:
             processed.append(
                 process_initial_set_observacion_pedido(
+                    db, session, classified.mensaje
+                )
+            )
+            continue
+
+        if classified_intent == IntentName.SET_OBSERVACION_PRODUCTO:
+            processed.append(
+                process_initial_set_observacion_producto(
                     db, session, classified.mensaje
                 )
             )

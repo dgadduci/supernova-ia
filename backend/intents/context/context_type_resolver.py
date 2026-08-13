@@ -1,4 +1,8 @@
-from backend.diagnostics import NoopDiagnosticSink, ResolverCallCompleted, ResolverCallStarted
+from backend.diagnostics import (
+    NoopDiagnosticSink,
+    ResolverCallCompleted,
+    ResolverCallStarted,
+)
 from backend.diagnostics.sink import DiagnosticSink
 from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.sessions.enums.context_type import ContextType
@@ -40,6 +44,8 @@ def resolve_context_type(
         if not intent.candidate_ids:
             return None
         if intent.intent == "quitar_producto":
+            return ContextType.ORDER_LINE_SELECTION
+        if intent.intent == "set_observacion_producto":
             return ContextType.ORDER_LINE_SELECTION
         has_pending_pp = any(
             req.name == "producto_presentacion_id" and req.status == "pending"

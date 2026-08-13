@@ -231,6 +231,69 @@ class DispatchInitialMessageRejectionTest(unittest.TestCase):
         agregar_orch.assert_not_called()
         self.assertEqual(result, [sentinel])
 
+    @patch.object(dispatcher_module, "process_initial_set_observacion_producto")
+    @patch.object(dispatcher_module, "IntentClassifier")
+    def test_set_observacion_producto_calls_orchestrator_with_classified_message(
+        self, classifier_cls, orchestrator
+    ):
+        sentinel = ProcessedIntent(
+            intent="set_observacion_producto",
+            source_text="La pizza es sin aceitunas",
+            status="executed",
+            recognizer="recognizer_set_observacion_producto",
+            handler="set_observacion_producto",
+        )
+        orchestrator.return_value = sentinel
+        classifier_instance = MagicMock()
+        classifier_instance.query.return_value = _build_result(
+            (IntentName.SET_OBSERVACION_PRODUCTO, "La pizza es sin aceitunas")
+        )
+        classifier_cls.return_value = classifier_instance
+
+        db = MagicMock(name="DatabaseSession")
+        session = _session(context_type=None)
+
+        result = dispatch_initial_message(
+            db, session, "La pizza es sin aceitunas"
+        )
+
+        classifier_instance.query.assert_called_once_with(
+            "La pizza es sin aceitunas"
+        )
+        orchestrator.assert_called_once_with(
+            db, session, "La pizza es sin aceitunas"
+        )
+        self.assertEqual(result, [sentinel])
+
+    @patch.object(dispatcher_module, "process_initial_set_observacion_producto")
+    @patch.object(dispatcher_module, "IntentClassifier")
+    def test_set_observacion_producto_pending_resolution_returned_unchanged(
+        self, classifier_cls, orchestrator
+    ):
+        sentinel = ProcessedIntent(
+            intent="set_observacion_producto",
+            source_text="La pizza es sin aceitunas",
+            status="pending_resolution",
+            recognizer="recognizer_set_observacion_producto",
+            handler="set_observacion_producto",
+            candidate_ids=[10, 11],
+        )
+        orchestrator.return_value = sentinel
+        classifier_instance = MagicMock()
+        classifier_instance.query.return_value = _build_result(
+            (IntentName.SET_OBSERVACION_PRODUCTO, "La pizza es sin aceitunas")
+        )
+        classifier_cls.return_value = classifier_instance
+
+        db = MagicMock(name="DatabaseSession")
+        session = _session(context_type=None)
+
+        result = dispatch_initial_message(
+            db, session, "La pizza es sin aceitunas"
+        )
+
+        self.assertEqual(result, [sentinel])
+
 
 class DispatchInitialMessageGuardTest(unittest.TestCase):
     @patch.object(dispatcher_module, "process_initial_agregar_producto")

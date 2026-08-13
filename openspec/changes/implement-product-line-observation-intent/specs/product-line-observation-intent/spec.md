@@ -6,7 +6,7 @@ Execute the existing `set_observacion_producto` intent against exactly one
 line of the active conversation session's own draft Pedido, without expanding
 the order-line candidate boundary or changing transaction ownership.
 
-## Requirements
+## ADDED Requirements
 
 ### Requirement: Only an active session's own draft line is mutable
 
