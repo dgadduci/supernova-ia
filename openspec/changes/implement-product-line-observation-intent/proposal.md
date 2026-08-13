@@ -135,3 +135,15 @@ unsupported deletion phrasings become a set action or a business rejection
 rather than deleting data. Rich structured observation extraction, editing
 pedido-level observations, and a broader natural-language clear grammar are
 deferred to separately approved work.
+
+## Hold and archive gate
+
+This change is intentionally **not ready to archive**. The separate active
+change `fix-pending-context-recovery-and-status-query` MUST first be
+implemented, locally validated, reviewed, deployed through the normal
+approved path, and verified in production with real WhatsApp messages. Only
+after that production verification demonstrates both a successful product
+selection and recovery/status behavior may this observation change be resumed
+for its own production-message test. Archive is permitted only after that
+resumed test succeeds and the user explicitly approves archiving; neither
+change may be archived merely because its code or focused tests pass.
