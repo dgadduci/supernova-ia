@@ -7,6 +7,9 @@ from backend.intents.handlers.modificar_producto_handler import (
     execute_modificar_producto,
 )
 from backend.intents.handlers.quitar_producto_handler import execute_quitar_producto
+from backend.intents.handlers.set_observacion_producto_handler import (
+    execute_set_observacion_producto,
+)
 from backend.intents.handlers.vaciar_pedido_handler import execute_vaciar_pedido
 from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.intents.services.pending_intent_service import load as load_pending_state
@@ -50,6 +53,8 @@ def execute_ready_pending_context(
             result = execute_agregar_producto(db, session, active)
         elif active.handler == "quitar_producto":
             result = execute_quitar_producto(db, session, active)
+        elif active.handler == "set_observacion_producto":
+            result = execute_set_observacion_producto(db, session, active)
         elif active.handler == "modificar_producto":
             result = execute_modificar_producto(db, session, active)
         elif active.handler == "vaciar_pedido":

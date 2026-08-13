@@ -158,5 +158,121 @@ class ResolveOrderLineSelectionBoundariesTest(unittest.TestCase):
         )
 
 
+class ResolveOrderLineSelectionSetObservacionTest(unittest.TestCase):
+    """The same resolver narrows `set_observacion_producto` pending
+    intents without rewriting the original action or text."""
+
+    def _active(self, candidate_ids: list[int]) -> ProcessedIntent:
+        return ProcessedIntent(
+            intent="set_observacion_producto",
+            source_text="La pizza es sin aceitunas",
+            status="pending_resolution",
+            recognizer="recognizer_set_observacion_producto",
+            handler="set_observacion_producto",
+            resolved_data={
+                "observation_action": "set",
+                "observation_text": "La pizza es sin aceitunas",
+            },
+            requirements=[
+                RequirementState(
+                    name="pedido_producto_id", status="pending", value=None
+                ),
+                RequirementState(
+                    name="observacion",
+                    status="completed",
+                    value="set",
+                ),
+            ],
+            candidate_ids=list(candidate_ids),
+        )
+
+    @patch.object(resolver_module, "recognize_quitar_producto")
+    def test_clarification_preserves_set_action_and_text(self, recognize):
+        recognize.return_value = {
+            "encontrados": [{"pedido_producto_id": 11}],
+            "encontrados_posibles": [],
+            "encontrados_no_disponibles": [],
+            "no_encontrados": [],
+            "cantidad": None,
+        }
+        active = self._active(candidate_ids=[10, 11])
+
+        db = MagicMock(spec=DatabaseSession)
+        session = MagicMock(spec=ConversationSession)
+        result = resolve_order_line_selection(db, session, "la grande", active)
+
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(result.intent, "set_observacion_producto")
+        self.assertEqual(result.handler, "set_observacion_producto")
+        self.assertEqual(result.candidate_ids, [])
+        self.assertEqual(result.resolved_data["pedido_producto_id"], 11)
+        self.assertEqual(result.resolved_data["observation_action"], "set")
+        self.assertEqual(
+            result.resolved_data["observation_text"],
+            "La pizza es sin aceitunas",
+        )
+        req_names = {r.name: r.status for r in result.requirements}
+        self.assertEqual(req_names.get("pedido_producto_id"), "completed")
+        self.assertEqual(req_names.get("observacion"), "completed")
+
+    @patch.object(resolver_module, "recognize_quitar_producto")
+    def test_clarification_preserves_clear_action(self, recognize):
+        recognize.return_value = {
+            "encontrados": [{"pedido_producto_id": 11}],
+            "encontrados_posibles": [],
+            "encontrados_no_disponibles": [],
+            "no_encontrados": [],
+            "cantidad": None,
+        }
+        active = ProcessedIntent(
+            intent="set_observacion_producto",
+            source_text="Quitar la aclaración de la pizza",
+            status="pending_resolution",
+            recognizer="recognizer_set_observacion_producto",
+            handler="set_observacion_producto",
+            resolved_data={"observation_action": "clear"},
+            requirements=[
+                RequirementState(
+                    name="pedido_producto_id", status="pending", value=None
+                ),
+                RequirementState(
+                    name="observacion",
+                    status="completed",
+                    value="clear",
+                ),
+            ],
+            candidate_ids=[10, 11],
+        )
+
+        db = MagicMock(spec=DatabaseSession)
+        session = MagicMock(spec=ConversationSession)
+        result = resolve_order_line_selection(db, session, "la grande", active)
+
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(result.resolved_data["observation_action"], "clear")
+        self.assertNotIn(
+            "Quitar la aclaración de la pizza",
+            result.resolved_data.get("observation_text", ""),
+        )
+
+    @patch.object(resolver_module, "recognize_quitar_producto")
+    def test_clarification_outside_set_keeps_rejected(self, recognize):
+        recognize.return_value = {
+            "encontrados": [{"pedido_producto_id": 99}],
+            "encontrados_posibles": [],
+            "encontrados_no_disponibles": [],
+            "no_encontrados": [],
+            "cantidad": None,
+        }
+        active = self._active(candidate_ids=[10, 11])
+
+        db = MagicMock(spec=DatabaseSession)
+        session = MagicMock(spec=ConversationSession)
+        result = resolve_order_line_selection(db, session, "x", active)
+
+        self.assertEqual(result.status, "rejected")
+        self.assertEqual(result.candidate_ids, [10, 11])
+
+
 if __name__ == "__main__":
     unittest.main()

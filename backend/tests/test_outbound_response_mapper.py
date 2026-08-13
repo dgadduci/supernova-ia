@@ -307,6 +307,108 @@ class OutboundMapperBoundariesTest(unittest.TestCase):
         )
 
 
+class SetObservacionProductoMapperTest(unittest.TestCase):
+    """The mapper must route ``set_observacion_producto`` to the dedicated
+    builder so the local endpoint and the staged outbox share the same
+    private deterministic message."""
+
+    def _intent(
+        self,
+        *,
+        status: IntentStatus,
+        observation_action: str | None = "set",
+        producto_nombre: str | None = "Pizza Mozzarella",
+        presentacion_codigo: str | None = "grande",
+        observation_text: str | None = "obs-secret",
+        candidate_ids: list[int] | None = None,
+    ) -> ProcessedIntent:
+        resolved: dict = {
+            "observation_action": observation_action,
+        }
+        if observation_text is not None:
+            resolved["observation_text"] = observation_text
+        if producto_nombre is not None:
+            resolved["producto_nombre"] = producto_nombre
+        if presentacion_codigo is not None:
+            resolved["presentacion_codigo"] = presentacion_codigo
+        return ProcessedIntent(
+            intent="set_observacion_producto",
+            source_text="La pizza es sin aceitunas",
+            status=status,
+            recognizer="recognizer_set_observacion_producto",
+            handler="set_observacion_producto",
+            resolved_data=resolved,
+            candidate_ids=list(candidate_ids) if candidate_ids is not None else [],
+        )
+
+    def test_set_executed_renders_confirmation_without_text(self) -> None:
+        intent = self._intent(status="executed")
+        mapped = build_customer_responses(
+            MagicMock(), MagicMock(), [intent]
+        )[0]
+        self.assertEqual(mapped.status, "executed")
+        self.assertEqual(mapped.intent, "set_observacion_producto")
+        self.assertIn("Actualicé", mapped.message)
+        self.assertNotIn("obs-secret", mapped.message)
+
+    def test_clear_executed_renders_removal_message(self) -> None:
+        intent = self._intent(
+            status="executed",
+            observation_action="clear",
+            observation_text=None,
+        )
+        mapped = build_customer_responses(
+            MagicMock(), MagicMock(), [intent]
+        )[0]
+        self.assertEqual(mapped.status, "executed")
+        self.assertIn("Eliminé", mapped.message)
+
+    def test_rejected_renders_safe_message(self) -> None:
+        intent = self._intent(status="rejected")
+        mapped = build_customer_responses(
+            MagicMock(), MagicMock(), [intent]
+        )[0]
+        self.assertEqual(mapped.status, "rejected")
+        self.assertEqual(mapped.intent, "set_observacion_producto")
+        self.assertNotIn("obs-secret", mapped.message)
+
+    def test_failed_renders_generic_message(self) -> None:
+        intent = self._intent(status="failed")
+        mapped = build_customer_responses(
+            MagicMock(), MagicMock(), [intent]
+        )[0]
+        self.assertEqual(mapped.status, "failed")
+        self.assertIn("Intentá de nuevo", mapped.message)
+
+    def test_outbox_staging_uses_the_same_message(self) -> None:
+        intent = self._intent(status="executed")
+        db = MagicMock()
+        session = MagicMock()
+        expected = build_customer_responses(db, session, [intent])[0]
+        outbox_repo = MagicMock()
+        staged_row = MagicMock()
+        staged_row.id = 500
+        outbox_repo.stage.return_value = staged_row
+
+        result = stage_outbound_rows(
+            db,
+            session,
+            proveedor="twilio",
+            recepcion_mensaje_proveedor_id=1,
+            destinatario_e164="+5491112345678",
+            intents=[intent],
+            outbox_repo=outbox_repo,
+        )
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].customer_response, expected)
+        outbox_repo.stage.assert_called_once()
+        self.assertEqual(
+            outbox_repo.stage.call_args.kwargs["cuerpo"], expected.message
+        )
+        self.assertNotIn("obs-secret", expected.message)
+
+
 class SetDireccionEntregaMapperTest(unittest.TestCase):
     """The mapper must route ``set_direccion_entrega`` to the dedicated
     builder so the local endpoint and the staged outbox share the same

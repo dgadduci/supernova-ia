@@ -1,18 +1,27 @@
 """Order-line selection resolver.
 
-Refines an active `quitar_producto` `pending_resolution` intent when the
-customer replies with a more specific order-line identifier (size, product
-name, etc.). Restricts the refinement strictly to the current
-`candidate_ids` (no broadening back to the commerce catalog) and never
-mutates `session`, the pedido, or any persisted state.
+Refines an active order-line ``pending_resolution`` intent when the
+customer replies with a more specific order-line identifier (size,
+product name, etc.). Today this is used by both ``quitar_producto``
+and ``set_observacion_producto`` pending intents; the resolver is
+generic over the intent name and only the deterministic
+``pedido_producto_id`` narrowing.
+
+The resolver restricts the refinement strictly to the current
+``candidate_ids`` (no broadening back to the commerce catalog) and
+never mutates ``session``, the pedido, or any persisted state. The
+resolver preserves each pending intent's existing ``resolved_data``
+(``observation_action``, ``observation_text``, ``cantidad``, etc.) so a
+follow-up clarification does not reclassify or rewrite the original
+intent.
 
 When the refinement narrows to exactly one candidate, populates
-`resolved_data["pedido_producto_id"]`, sets `status="ready"`, and lets the
-existing ready-execution path dispatch the handler. When the refinement
-yields several candidates, sets `status="pending_resolution"` with the
-reduced `candidate_ids`. When the message resolves to a `pedido_producto_id`
-not in the current candidate set, returns `rejected` without mutating the
-pedido.
+``resolved_data["pedido_producto_id"]``, sets ``status="ready"``, and
+lets the existing ready-execution path dispatch the handler. When the
+refinement yields several candidates, sets ``status="pending_resolution"``
+with the reduced ``candidate_ids``. When the message resolves to a
+``pedido_producto_id`` not in the current candidate set, returns
+``rejected`` without mutating the pedido.
 """
 from sqlalchemy.orm import Session as DatabaseSession
 
@@ -50,7 +59,7 @@ def _build_ready_intent(
     active_intent: ProcessedIntent,
     pedido_producto_id: int,
 ) -> ProcessedIntent:
-    new_requirements = [
+    new_requirements: list[RequirementState] = [
         RequirementState(
             name="pedido_producto_id",
             status="completed",
@@ -62,6 +71,11 @@ def _build_ready_intent(
         RequirementState(name="cantidad", status="pending", value=None),
     )
     new_requirements.append(req_cant)
+
+    for req in active_intent.requirements:
+        if req.name in ("pedido_producto_id", "cantidad"):
+            continue
+        new_requirements.append(req)
 
     resolved_data = {
         **active_intent.resolved_data,
@@ -90,7 +104,15 @@ def resolve_order_line_selection(
     *,
     sink: DiagnosticSink | None = None,
 ) -> ProcessedIntent:
-    """Refine an active `quitar_producto` pending_resolution intent."""
+    """Refine an active order-line ``pending_resolution`` intent.
+
+    Both ``quitar_producto`` and ``set_observacion_producto`` share this
+    seam: the resolver narrows by ``pedido_producto_id`` against the
+    active ``candidate_ids`` and forwards the original
+    ``resolved_data`` (``observation_action`` /
+    ``observation_text`` / ``cantidad``) unchanged so the ready intent
+    preserves the original action and value.
+    """
     diagnostic_sink: DiagnosticSink = sink if sink is not None else NoopDiagnosticSink()
     started = ResolverCallStarted(
         resolver_class=type(active_intent).__name__,
