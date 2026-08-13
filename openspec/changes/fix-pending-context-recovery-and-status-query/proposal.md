@@ -122,19 +122,20 @@ telemetry, dashboards, alerting, and production log inspection are deferred.
 
 ## Operational pause
 
-Production-message verification for this change is paused while the separate
-`add-pilot-order-operations-panel` change supplies a usable, authenticated
-read-only view of pilot orders, sessions, and durable provider history. This
-pause does not alter the completed source scope, authorize an archive, or
-permit a manual database reset. After the panel is approved, implemented and
-deployed, resume the production sequence below before considering this change
-for closure.
+Production-message verification for this change remains paused. The separate
+`add-pilot-order-operations-panel` is now deployed, but the observed
+`Grande` turn revealed a second active corrective gate:
+`fix-pilot-product-add-execution`. This pause does not alter the completed
+source scope, authorize an archive, or permit a manual database reset. Resume
+the production sequence below only after that corrective change has been
+approved, implemented, deployed and passed its catalog/WhatsApp gate.
 
 ## Handoff and archive gate
 
 Once this correction is implemented and locally validated, it MUST be reviewed
 and deployed through the normal approved path, then verified with controlled
-real WhatsApp messages. The required production sequence is:
+real WhatsApp messages after `fix-pilot-product-add-execution` has passed its
+own production gate. The required production sequence is:
 
 1. initial ambiguity → `Grande` → successful add;
 2. a deliberate invalid clarification → one rejection and then a normal new
