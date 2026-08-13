@@ -67,3 +67,21 @@ unchanged for both `executed` and business `rejected` status outcomes.
 
 - **WHEN** `product_selection` is pending and the customer sends `Grande`
 - **THEN** only the existing restricted product resolver is invoked
+
+### Requirement: Default quantity lets a unique presentation complete
+
+For `agregar_producto`, a persisted product-selection intent whose quantity
+was omitted in the initial message SHALL already carry its contract default
+quantity as completed. When a reply resolves exactly one ID from the stored
+candidate set, the resulting intent SHALL be `ready`; it SHALL NOT remain
+`pending_resolution` with an empty candidate set solely because quantity was
+omitted. The dispatcher SHALL then use the existing ready-pending execution
+path without a classifier, LLM, full-catalog lookup or candidate introduction.
+
+#### Scenario: Hybrid-style ambiguity without quantity resolves Grande
+
+- **WHEN** an initial product ambiguity has exactly the persisted Mozzarella
+  Grande/Chica candidates and no recognizer-supplied quantity
+- **AND** the customer replies `Grande`
+- **THEN** the existing restricted resolver selects only Mozzarella Grande,
+  the ready-pending path executes it with quantity `1`, and the context clears

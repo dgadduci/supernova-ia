@@ -764,6 +764,95 @@ class ResolveProductSelectionTamanioOnlyRefinementTest(unittest.TestCase):
         self.assertEqual(result.status, "pending_resolution")
 
 
+class ResolveProductSelectionDefaultQuantityTest(unittest.TestCase):
+    """Two persisted candidates whose quantity came from the contract default.
+
+    The initial intent is pending only for ``producto_presentacion_id``; the
+    ``cantidad`` requirement is already completed with the contract default
+    ``1``. Selecting ``Grande`` must therefore reach ``ready`` with the default
+    quantity intact and without widening the persisted candidate set.
+    """
+
+    def _default_quantity_intent(self, candidate_ids: list[int]) -> ProcessedIntent:
+        return ProcessedIntent(
+            intent="agregar_producto",
+            source_text="quiero una pizza de muzzarella",
+            status="pending_resolution",
+            recognizer="recognizer_productos",
+            handler="agregar_producto",
+            resolved_data={"cantidad": 1},
+            requirements=[
+                RequirementState(
+                    name="producto_presentacion_id", status="pending", value=None
+                ),
+                RequirementState(name="cantidad", status="completed", value=1),
+            ],
+            candidate_ids=list(candidate_ids),
+        )
+
+    @patch.object(resolver_module, "detectar_productos")
+    def test_grande_resolves_two_candidates_to_ready_with_default_quantity(
+        self, detectar
+    ):
+        detectar.return_value = _resultado()
+        active = self._default_quantity_intent(candidate_ids=[1, 2])
+
+        result = resolve_product_selection(
+            "grande", active, CATALOG_WITH_PRESENTACIONES
+        )
+
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(result.candidate_ids, [])
+        self.assertEqual(
+            result.resolved_data,
+            {"producto_presentacion_id": 2, "cantidad": 1},
+        )
+        req_status = {req.name: req.status for req in result.requirements}
+        self.assertEqual(req_status["producto_presentacion_id"], "completed")
+        self.assertEqual(req_status["cantidad"], "completed")
+        cantidad = next(req for req in result.requirements if req.name == "cantidad")
+        self.assertEqual(cantidad.value, 1)
+
+    @patch.object(resolver_module, "detectar_productos")
+    def test_selection_does_not_widen_persisted_candidates(self, detectar):
+        detectar.return_value = _resultado(
+            encontrados_posibles=[
+                {
+                    "texto_origen": "grande",
+                    "productos": [
+                        {"producto_presentacion_id": 2},
+                        {"producto_presentacion_id": 4},
+                    ],
+                }
+            ]
+        )
+        active = self._default_quantity_intent(candidate_ids=[1, 2])
+
+        result = resolve_product_selection(
+            "grande", active, CATALOG_WITH_PRESENTACIONES
+        )
+
+        self.assertNotIn(4, result.candidate_ids)
+        self.assertEqual(active.candidate_ids, [1, 2])
+        self.assertEqual(active.resolved_data, {"cantidad": 1})
+
+    @patch.object(resolver_module, "detectar_productos")
+    def test_ambiguous_reply_keeps_default_quantity_pending_state(self, detectar):
+        detectar.return_value = _resultado()
+        active = self._default_quantity_intent(candidate_ids=[1, 2])
+
+        result = resolve_product_selection(
+            "familiar", active, CATALOG_WITH_PRESENTACIONES
+        )
+
+        self.assertIs(result, active)
+        self.assertEqual(result.status, "pending_resolution")
+        self.assertEqual(result.candidate_ids, [1, 2])
+        cantidad = next(req for req in result.requirements if req.name == "cantidad")
+        self.assertEqual(cantidad.status, "completed")
+        self.assertEqual(cantidad.value, 1)
+
+
 class ResolveProductSelectionBoundariesTest(unittest.TestCase):
     def test_module_does_not_import_disallowed_side_effects(self):
         importlib.reload(resolver_module)

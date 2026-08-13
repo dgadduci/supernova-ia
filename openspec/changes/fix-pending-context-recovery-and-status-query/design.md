@@ -67,9 +67,9 @@ the standard event envelope:
 
 | Field | Closed values / bounds |
 |---|---|
-| `outcome` | `pending_preserved`, `ready_executed`, `rejected_cleared`, `status_interrupted` |
-| `context_kind` | `product_selection`, `order_line_selection`, `product_modification`, `order_clear_confirmation` |
-| `status_before`, `status_after` | processed-intent statuses from a fixed allowlist |
+| `outcome` | `pending_preserved`, `ready_executed`, `rejected_cleared`, `status_interrupted`, `invalid_state_cleared` |
+| `context_kind` | supported context kinds; `none` / `unsupported` only for `invalid_state_cleared` |
+| `status_before`, `status_after` | processed-intent statuses; `none` only as `status_before` for `invalid_state_cleared`, whose `status_after` is `rejected` |
 | `candidate_count_before`, `candidate_count_after` | integer 0–200 |
 | `context_cleared` | boolean |
 
@@ -99,3 +99,36 @@ Tests shall cover:
 No production traffic or test execution is authorized by this design. The
 post-merge production verification remains the explicit user-controlled gate
 in `proposal.md`.
+
+## Production-regression amendment II: authoritative default quantity
+
+`AGREGAR_PRODUCTO_CONTRACT` already declares `cantidad` required with default
+`1`. The processor SHALL treat this non-null default as an authoritative,
+deterministic business value when the recognizer omits quantity: it creates a
+completed `RequirementState` with value `1` and retains that value in
+`resolved_data`. A supplied quantity remains authoritative only when it is a
+positive non-boolean integer; the existing validation/handler outcome governs
+invalid supplied data and technical failures.
+
+This happens at initial intent construction, before pending state is persisted.
+It is therefore not a pending-resolver fallback and has no access to the
+catalog, session, pedido, line, price, LLM, embeddings or hybrid score. The
+processor owns no transaction method. Only the already-declared default is
+used; no implicit quantity is introduced for other intent contracts.
+
+```text
+hybrid ambiguity with two restricted candidates, no quantity
+  -> initial agregar_producto intent: cantidad=1 completed; presentation pending
+  -> `Grande` resolves exactly one persisted candidate
+  -> all required fields completed: ready
+  -> existing pending execution and caller-owned product-add seam
+```
+
+The provider E2E shall patch only the product recognizer's first-turn result
+to mimic the production shape (two candidate IDs, no `cantidad`) and leave the
+second-turn resolver on its normal restricted catalog path. It must assert the
+durable pending intent has completed quantity `1` before `Grande`; then assert
+one line, a `Listo,` outbound response, a `ready_executed` pending event and a
+`created` product-add event. Complementary unit tests shall pin explicit
+quantity preservation and the directly affected smoke assertion shall no
+longer claim that omitted default quantity is pending.

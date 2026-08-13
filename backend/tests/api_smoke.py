@@ -3110,7 +3110,11 @@ def test_process_agregar_producto_processor() -> None:
     qty_state = next(r for r in missing_qty.requirements if r.name == "cantidad")
     record(
         "processor_missing_cantidad_default_one",
-        missing_qty.status == "pending_resolution" and qty_state.status == "pending" and qty_state.value == 1,
+        missing_qty.status == "ready"
+        and qty_state.status == "completed"
+        and qty_state.value == 1
+        and missing_qty.resolved_data.get("cantidad") == 1,
+        f"status={missing_qty.status} qty_state.status={qty_state.status} "
         f"qty_state.value={qty_state.value}",
     )
 
