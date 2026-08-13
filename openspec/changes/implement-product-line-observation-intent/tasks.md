@@ -37,7 +37,8 @@
 
 ## 5. Mandatory production gate before archive
 
-- [ ] 5.1 Wait for `fix-pending-context-recovery-and-status-query` to be
+- [ ] 5.1 PAUSED — wait for `add-pilot-order-operations-panel`, then for
+  `fix-pending-context-recovery-and-status-query` to be
   completed, reviewed, deployed, and verified with real WhatsApp messages.
 - [ ] 5.2 Resume this change only then; run its own production-message test
   against a controlled draft pedido and record the result without customer

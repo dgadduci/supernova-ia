@@ -120,6 +120,16 @@ stored schema or records. Broader conversational interruption, automatic
 context expiry, recovery of corrupted pending JSON, detailed business-reason
 telemetry, dashboards, alerting, and production log inspection are deferred.
 
+## Operational pause
+
+Production-message verification for this change is paused while the separate
+`add-pilot-order-operations-panel` change supplies a usable, authenticated
+read-only view of pilot orders, sessions, and durable provider history. This
+pause does not alter the completed source scope, authorize an archive, or
+permit a manual database reset. After the panel is approved, implemented and
+deployed, resume the production sequence below before considering this change
+for closure.
+
 ## Handoff and archive gate
 
 Once this correction is implemented and locally validated, it MUST be reviewed

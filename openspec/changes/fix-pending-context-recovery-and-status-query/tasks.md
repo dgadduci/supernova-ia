@@ -28,7 +28,8 @@
 
 ## 4. Production gate and dependent change
 
-- [ ] 4.1 After review and approved deployment, run the three controlled
+- [ ] 4.1 PAUSED — after `add-pilot-order-operations-panel` is approved,
+  implemented and deployed, run the three controlled
   WhatsApp message sequences in `proposal.md`; record only outcomes and
   timestamps, never customer content or identifiers.
 - [ ] 4.2 Resume `implement-product-line-observation-intent` only after 4.1

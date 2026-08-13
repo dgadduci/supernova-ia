@@ -138,6 +138,14 @@ deferred to separately approved work.
 
 ## Hold and archive gate
 
+## Operational pause
+
+This change remains paused. Its production-message test must not begin until
+the corrective change has resumed and passed its own production gate after
+the separately proposed `add-pilot-order-operations-panel` is approved,
+implemented and deployed. This is a pause only: it neither archives this
+change nor authorizes any implementation or manual data operation.
+
 This change is intentionally **not ready to archive**. The separate active
 change `fix-pending-context-recovery-and-status-query` MUST first be
 implemented, locally validated, reviewed, deployed through the normal
