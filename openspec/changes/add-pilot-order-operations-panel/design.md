@@ -199,3 +199,76 @@ or observability events.
   session;
 - all existing GET list/detail/catalog routes remain read-only and their
   authentication, commerce isolation and timezone contracts continue to pass.
+
+## Console-refresh amendment (2026-08-14)
+
+### Fixed transcript viewport
+
+The transcript remains a browser-lifetime DOM node, but its CSS uses one fixed
+block height with `overflow-y: auto`. It does not use content-driven height or
+an expanding min/max range. Long operator/customer text continues to wrap and
+the existing append operation scrolls that viewport to its bottom; it does not
+resize the grid row, detail column or execution-state column.
+
+### Updated execution-state response
+
+The successful existing local-test boundary gains one typed closed
+`execution_state` member alongside its mapped customer `responses`:
+
+```text
+validated exact draft Session + Pedido (pre-turn loader keeps borrador gate)
+  -> existing transactional response orchestration commits the turn
+  -> reload exact Pedido/Session identity (post-turn loader, no borrador gate)
+  -> project PendingContextDebugView for that same Session only
+  -> return mapped responses + closed execution_state
+  -> append escaped transcript lines and replace state-cell textContent
+```
+
+The pre-turn loader keeps the ``borrador``-only eligibility contract — a
+pedido that arrives in ``ingresado`` (or any other non-draft state) MUST be
+rejected before the processor is invoked. The post-turn loader is a separate
+helper that enforces identity by ``session.id`` AND
+``session.id_pedido == pedido_id`` only and explicitly does NOT re-check
+``borrador``: a legitimate confirm-order turn legitimately leaves the pedido
+in ``ingresado`` and the panel MUST still surface the refreshed snapshot. The
+post-turn loader MUST NOT search for a successor session or another active
+session for the same cliente/comercio; if the exact identity is gone it
+returns ``None`` so the route can emit the documented generic rejection
+without leaking which invariant failed.
+
+`execution_state` has the exact closed fields of `PendingContextDebugView`:
+context type, pending encoding, active intent, active status, candidate count,
+pending/completed requirement counts, queue length, optional valid schema
+version, and consistency. It is not a raw serialization of the Session or its
+JSON. The router does not call `commit`, `rollback`, `flush`, `refresh`,
+`begin`, `close` or `expire`; the pre-existing message processor remains the
+only owner of the transaction.
+
+The browser updates only nodes identified for the pre-existing execution
+state. It uses `textContent`, including for the absent-schema-version display,
+and never uses `innerHTML`. On a non-2xx response, malformed response or
+network failure it leaves those state nodes unchanged; the existing generic
+status/error message remains the fallback.
+
+### Focused tests
+
+- CSS/source rendering proves the transcript has a fixed viewport with scroll
+  and cannot grow from appended turns;
+- successful local-test route responses contain the current closed
+  `execution_state` for the exact target and no raw pending payload;
+- a successful turn that legitimately flips the pedido from ``borrador`` to
+  ``ingresado`` still returns 200 with the mapped responses and a closed
+  execution-state snapshot, without searching for a successor session and
+  without any router-side transactional control;
+- template JavaScript updates every execution-state cell from that response
+  using text APIs only, retaining the transcript;
+- the post-turn snapshot loader returns ``None`` ONLY when the exact
+  Pedido/Session identity is gone (session deleted or re-pointed to another
+  pedido); a pedido that is now ``ingresado`` is NOT treated as a rejection;
+- rejected, malformed and technical client-side responses do not overwrite
+  the existing state cells;
+- pre-turn loader rejection (including ``pedido already not in borrador``)
+  emits the documented generic rejection without consulting the post-turn
+  snapshot loader or the processor;
+- existing Basic authentication, same-origin, exact-target, no-provider and
+  transaction-ownership contracts remain unchanged.

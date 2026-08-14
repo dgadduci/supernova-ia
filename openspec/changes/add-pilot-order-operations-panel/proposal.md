@@ -220,3 +220,81 @@ PYTHONPATH=. venv/bin/python -m ruff check backend/routers/admin_pilot_orders.py
 PYTHONPATH=. venv/bin/python -m compileall -q backend/routers/admin_pilot_orders.py backend/services/pilot_order_operations_view_service.py
 openspec validate add-pilot-order-operations-panel --strict
 ```
+
+## Console-refresh amendment (2026-08-14)
+
+The deployed local-test console is sufficient to reproduce the pending
+selection defect, but two presentation gaps make repeated diagnosis slower:
+the volatile transcript can grow before reaching its maximum height, and the
+safe execution-state column remains a snapshot from the initial page render
+after a successful local turn changes ordinary business state.
+
+### Objective and scope
+
+- Keep the transcript viewport at one fixed, responsive height. Additional
+  turns scroll only inside that viewport; the chat column and the surrounding
+  three-column layout MUST NOT grow because of transcript content.
+- After every successful local-test turn, update the existing execution-state
+  values in place from a newly projected, typed, privacy-bounded snapshot for
+  the exact selected Session. The browser keeps the volatile transcript and
+  does not need a full-page reload.
+- Reuse `PendingContextDebugView` and the existing local-test route. A narrow
+  typed response model is allowed if it makes the returned snapshot explicit
+  rather than returning an untyped raw dictionary.
+
+### Boundary, privacy and fallback
+
+The route continues to process only the exact active Session and its own draft
+Pedido through `process_incoming_message_with_responses`; that processor
+remains the sole transaction owner. The pre-turn loader keeps the
+``borrador``-only eligibility contract — a pedido that is already
+``ingresado`` (or any other non-draft state) MUST be rejected before the
+processor is invoked. Only after the processor returns normally may the
+route project the updated safe execution-state summary, using a separate
+post-turn loader that enforces identity by ``session.id`` AND
+``session.id_pedido == pedido_id`` only — it MUST NOT re-check
+``borrador``, because a legitimate confirm-order turn legitimately
+leaves the pedido in ``ingresado``. The post-turn loader MUST NOT search
+for a successor session, another active session for the same
+cliente/comercio, or any fallback target. The response SHALL contain
+closed values already permitted in `PendingContextDebugView`; it SHALL
+NOT contain raw `pending_intents`, source text, resolved values,
+candidate IDs, queue entries, diagnostics, exception detail,
+configuration, credentials or provider data.
+
+The browser updates only the existing state cells with text APIs. It must not
+render response data as HTML, save it in browser storage, poll, add a general
+state endpoint, or silently reload the page. A rejected local submission or a
+technical failure keeps the existing displayed snapshot and uses the current
+generic error behavior; it must not claim a new snapshot was applied.
+
+### Non-goals
+
+This amendment does **not** add cancel/reset/close/create-session controls,
+manual context edits, a new lifecycle endpoint, changes to Pedido or Session
+business rules, provider/outbox/worker/Twilio behavior, durable chat storage,
+polling, migrations, or changes to the paused production gates. It does not
+correct the size-only order-line-selection defect.
+
+### Expected files and focused validation
+
+Implementation is limited to the existing panel router and base/detail
+templates as needed for the typed response and in-place update, plus their
+focused tests. The existing view service may be touched only to reuse or
+serialize the already-approved closed execution-state contract. No generic
+incoming-message endpoint, provider component, business handler, resolver,
+model, migration or new router family may change.
+
+Run in the user's local terminal:
+
+```text
+PYTHONPATH=. venv/bin/python -m pytest backend/tests/test_admin_pilot_orders_panel.py backend/tests/test_pilot_order_operations_view_service.py backend/tests/test_incoming_message_response_orchestrator.py backend/tests/test_remaining_fastapi_surface_security.py -q
+PYTHONPATH=. venv/bin/python -m ruff check backend/routers/admin_pilot_orders.py backend/services/pilot_order_operations_view_service.py backend/tests/test_admin_pilot_orders_panel.py backend/tests/test_pilot_order_operations_view_service.py backend/tests/test_remaining_fastapi_surface_security.py
+PYTHONPATH=. venv/bin/python -m compileall -q backend/routers/admin_pilot_orders.py backend/services/pilot_order_operations_view_service.py
+openspec validate add-pilot-order-operations-panel --strict
+git diff --check
+```
+
+The amendment is source-only and reversible by reverting the local-test
+response/UI changes; it does not alter durable state beyond the ordinary
+business mutation already performed by a valid local test message.

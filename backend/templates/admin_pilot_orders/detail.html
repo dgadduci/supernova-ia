@@ -209,7 +209,7 @@
       <dt>Requirements completados</dt><dd data-debug-requirements-completed>{{ detail.pending_debug.requirements_completed_count }}</dd>
       <dt>Cola</dt><dd data-debug-queue-length>{{ detail.pending_debug.queue_length }}</dd>
       <dt>Versión del pending</dt>
-      <dd>
+      <dd data-debug-schema-version>
         {% if detail.pending_debug.schema_version is not none %}
           {{ detail.pending_debug.schema_version }}
         {% else %}

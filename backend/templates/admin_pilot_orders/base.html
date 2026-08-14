@@ -149,8 +149,7 @@
   }
   .debug-column h2 { margin-top: 0; }
   .debug-transcript {
-    min-height: 8rem;
-    max-height: 24rem;
+    height: 24rem;
     overflow-y: auto;
     border: 1px solid var(--border);
     background: #fafafa;
@@ -159,6 +158,7 @@
     font-size: 0.9rem;
     white-space: pre-wrap;
     word-break: break-word;
+    box-sizing: border-box;
   }
   .debug-transcript .turn-operator { color: var(--accent); }
   .debug-transcript .turn-customer { color: var(--fg); }
@@ -219,6 +219,47 @@
 <script>
 (function () {
   "use strict";
+  var STATE_FIELDS = [
+    { key: "context_type", attr: "data-debug-context" },
+    { key: "pending_encoding", attr: "data-debug-encoding" },
+    { key: "active_intent", attr: "data-debug-active-intent" },
+    { key: "active_status", attr: "data-debug-active-status" },
+    { key: "candidate_count", attr: "data-debug-candidate-count" },
+    { key: "requirements_pending_count", attr: "data-debug-requirements-pending" },
+    { key: "requirements_completed_count", attr: "data-debug-requirements-completed" },
+    { key: "queue_length", attr: "data-debug-queue-length" },
+    { key: "schema_version", attr: "data-debug-schema-version" },
+    { key: "consistency", attr: "data-debug-consistency" }
+  ];
+
+  function updateExecutionState(state) {
+    if (!state || typeof state !== "object") {
+      return false;
+    }
+    var updated = false;
+    STATE_FIELDS.forEach(function (field) {
+      var node = document.querySelector("[" + field.attr + "]");
+      if (!node) {
+        return;
+      }
+      if (!Object.prototype.hasOwnProperty.call(state, field.key)) {
+        return;
+      }
+      var raw = state[field.key];
+      var text;
+      if (field.key === "schema_version" && (raw === null || raw === undefined || raw === "")) {
+        text = "—";
+      } else if (raw === null || raw === undefined) {
+        text = "—";
+      } else {
+        text = String(raw);
+      }
+      node.textContent = text;
+      updated = true;
+    });
+    return updated;
+  }
+
   var forms = document.querySelectorAll("[data-debug-form]");
   forms.forEach(function (form) {
     var transcript = document.querySelector("[data-debug-transcript]");
@@ -283,7 +324,7 @@
           });
         })
         .then(function (result) {
-          if (!result.ok || !result.data || !Array.isArray(result.data.responses)) {
+          if (!result.ok || !result.data || !Array.isArray(result.data.responses) || !result.data.execution_state || typeof result.data.execution_state !== "object") {
             appendLine("error", "Cliente: " + (result.data && result.data.message ? result.data.message : "El canal local rechazó el mensaje."));
             setStatus("Error del canal local. No se realizó ningún cambio.");
             return;
@@ -296,6 +337,7 @@
               appendLine("customer", "Cliente: " + text);
             });
           }
+          updateExecutionState(result.data.execution_state);
           setStatus("Turno procesado por el pipeline transaccional. El transcript vive solo en esta pestaña.");
         })
         .catch(function () {

@@ -21,9 +21,21 @@ generic HTTP incoming-message endpoint, the provider coordinator,
 Twilio or the worker; it never creates a provider receipt, a
 deferred processing record, an outbound row, a worker lease or a
 Twilio request.
+
+After a successful turn the route re-validates the exact same
+Pedido and Session and projects a closed, typed snapshot of the new
+execution state for the browser-side state cells. The router never
+serializes the raw Session, Pedido, ``pending_intents`` JSON,
+source text, resolved values, candidate identifiers, queue
+payloads, diagnostics, exceptions, environment variables, settings,
+tokens or provider data. The transactional message processor
+remains the only commit/rollback authority; the route never calls
+``commit``, ``rollback``, ``flush``, ``refresh``, ``begin``, ``close``
+or ``expire``.
 """
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path as PathLib
 from typing import Annotated
 from urllib.parse import urlencode
@@ -53,7 +65,9 @@ from backend.services.pilot_order_operations_view_service import (
     InvalidListFilter,
     InvalidPedidoId,
     ListFilters,
+    PendingContextDebugView,
     PilotOrderOperationsViewService,
+    build_pending_context_debug_view,
     parse_comercio_id,
     parse_list_filters,
     parse_pedido_id,
@@ -75,6 +89,7 @@ LOCAL_TEST_REJECTED_MESSAGE = (
     "El canal local rechazó el mensaje. Revisá la consola y el "
     "panel principal para más detalles."
 )
+LOCAL_TEST_EXECUTION_STATE_EMPTY_SCHEMA_VERSION = ""
 
 
 def _service(
@@ -147,6 +162,13 @@ def _load_local_test_session(
     documented generic rejection without leaking which invariant
     failed. The loader never searches for another session and never
     returns a foreign session.
+
+    The pre-turn eligibility contract — ``pedido.estado_pedido ==
+    BORRADOR`` — applies only here. The post-turn snapshot loader
+    (:func:`_reload_exact_session_for_snapshot`) must NOT re-check
+    it: a successful business turn may legitimately leave the
+    pedido in ``ingresado`` and the panel must still surface the
+    refreshed execution state.
     """
     stmt = (
         select(Pedido)
@@ -175,6 +197,56 @@ def _load_local_test_session(
     return pedido, session
 
 
+def _reload_exact_session_for_snapshot(
+    db: Session,
+    pedido_id: int,
+    session_id: int,
+) -> tuple[Pedido, SessionModel] | None:
+    """Re-load the exact Pedido and Session to project the closed
+    execution-state snapshot after a successful business turn.
+
+    The helper is deliberately narrower than
+    :func:`_load_local_test_session`: it does NOT re-check
+    ``pedido.estado_pedido == BORRADOR``, because a valid
+    confirm-order turn legitimately flips the pedido to
+    ``ingresado``. It does NOT validate comercio/cliente FK
+    consistency either: those invariants were already enforced by
+    the pre-turn loader and the processor mutates only its own
+    exact target.
+
+    Identity is enforced by exact ``pedido.id`` AND
+    ``session.id_pedido == pedido.id`` AND
+    ``session.id == session_id``. If any of those links is broken
+    — for example the session was deleted or got re-pointed to a
+    different pedido during the turn — the helper returns
+    ``None`` so the caller can emit the documented generic
+    rejection without leaking which invariant failed.
+
+    The helper MUST NOT search for a successor session, another
+    active session for the same cliente/comercio, or any fallback
+    target. If the exact identity is gone, the request fails closed.
+    """
+    stmt = (
+        select(SessionModel)
+        .where(SessionModel.id == session_id)
+        .where(SessionModel.id_pedido == pedido_id)
+        .options(
+            joinedload(SessionModel.pedido),
+            joinedload(SessionModel.cliente),
+            joinedload(SessionModel.comercio),
+        )
+    )
+    session = db.execute(stmt).unique().scalar_one_or_none()
+    if session is None:
+        return None
+    pedido = getattr(session, "pedido", None)
+    if pedido is None:
+        return None
+    if pedido.id != pedido_id:
+        return None
+    return pedido, session
+
+
 class LocalTestRequest(BaseModel):
     """Bounded request schema for the panel-local test route.
 
@@ -187,6 +259,86 @@ class LocalTestRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     message: str = Field(min_length=1, max_length=LOCAL_TEST_MAX_MESSAGE_CHARS)
+
+
+class LocalTestExecutionState(BaseModel):
+    """Closed, typed execution-state snapshot for the exact selected
+    Session.
+
+    The schema mirrors the documented fields of
+    :class:`PendingContextDebugView` so the browser can replace each
+    existing state cell with ``textContent`` without ever receiving
+    raw JSON, source text, resolved values, candidate identifiers,
+    queue payloads, diagnostics, exception detail, environment,
+    settings, tokens, secrets or provider data. ``schema_version``
+    is emitted as ``null`` when the version is unknown; the
+    browser uses an em dash placeholder for that case.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    context_type: str
+    pending_encoding: str
+    active_intent: str
+    active_status: str
+    candidate_count: int
+    requirements_pending_count: int
+    requirements_completed_count: int
+    queue_length: int
+    schema_version: int | None
+    consistency: str
+
+
+class LocalTestResponse(BaseModel):
+    """Successful local-test response payload.
+
+    The payload is built explicitly so the route cannot accidentally
+    serialize the raw Session, Pedido or ``pending_intents``.
+    ``responses`` carries the mapped customer turns; ``execution_state``
+    carries the closed snapshot for the existing state cells. The
+    schema rejects any extra member so a future regression that
+    starts leaking raw fields would fail at runtime.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    responses: list[dict[str, str]]
+    execution_state: LocalTestExecutionState
+
+
+def _serialize_execution_state(
+    view: PendingContextDebugView,
+) -> LocalTestExecutionState:
+    """Build a :class:`LocalTestExecutionState` from a pending-context
+    debug view.
+
+    The helper pulls only the documented closed fields via
+    :func:`dataclasses.asdict` so a future field added to the
+    underlying dataclass never leaks into the wire payload. It must
+    be called with the freshest projection for the exact selected
+    Session so the operator sees the updated state after a
+    successful turn. The serializer never inspects the database or
+    the configuration.
+    """
+    payload = asdict(view)
+    return LocalTestExecutionState(
+        context_type=payload["context_type"],
+        pending_encoding=payload["pending_encoding"],
+        active_intent=payload["active_intent"],
+        active_status=payload["active_status"],
+        candidate_count=int(payload["candidate_count"]),
+        requirements_pending_count=int(payload["requirements_pending_count"]),
+        requirements_completed_count=int(
+            payload["requirements_completed_count"]
+        ),
+        queue_length=int(payload["queue_length"]),
+        schema_version=(
+            int(payload["schema_version"])
+            if payload["schema_version"] is not None
+            else None
+        ),
+        consistency=payload["consistency"],
+    )
 
 
 @router.get("", response_class=HTMLResponse)
@@ -312,6 +464,23 @@ def local_test_message(
     session for the same cliente/comercio and never creates provider
     receipts, deferred records, outbound rows, worker leases or
     Twilio deliveries.
+
+    After the processor returns, the route re-loads the exact same
+    Pedido/Session identity — without re-applying the
+    ``borrador``-only eligibility contract — and projects a typed,
+    closed snapshot of the new execution state for the browser-side
+    state cells. A successful turn that legitimately moves the
+    pedido from ``borrador`` to ``ingresado`` MUST still return the
+    mapped responses and the refreshed snapshot; the route never
+    substitutes a successor session or another active session. The
+    route does not serialize the raw Session, Pedido,
+    ``pending_intents`` JSON, source text, resolved values,
+    candidate identifiers, queue payloads, diagnostics, exception
+    detail, environment, settings, tokens or provider data. The
+    transactional message processor remains the only
+    commit/rollback authority; the route never calls ``commit``,
+    ``rollback``, ``flush``, ``refresh``, ``begin``, ``close`` or
+    ``expire``.
     """
     if origin_header != LOCAL_TEST_ORIGIN_VALUE:
         return _reject_local_test("missing same-origin header")
@@ -329,18 +498,33 @@ def local_test_message(
     responses = process_incoming_message_with_responses(
         db, exact_session, payload.message
     )
+
+    refreshed = _reload_exact_session_for_snapshot(
+        db, parsed_id, exact_session.id
+    )
+    if refreshed is None:
+        return _reject_local_test("target identity no longer present")
+    _, refreshed_session = refreshed
+
+    execution_state = build_pending_context_debug_view(
+        raw_context_type=refreshed_session.context_type,
+        raw_pending_intents=refreshed_session.pending_intents,
+    )
+
+    response_payload = LocalTestResponse(
+        responses=[
+            {
+                "message": response.message,
+                "intent": response.intent,
+                "status": response.status,
+            }
+            for response in responses
+        ],
+        execution_state=_serialize_execution_state(execution_state),
+    )
     return JSONResponse(
         status_code=200,
-        content={
-            "responses": [
-                {
-                    "message": response.message,
-                    "intent": response.intent,
-                    "status": response.status,
-                }
-                for response in responses
-            ]
-        },
+        content=response_payload.model_dump(),
     )
 
 
@@ -379,11 +563,16 @@ def commerce_catalog(
 
 
 __all__ = [
+    "LOCAL_TEST_EXECUTION_STATE_EMPTY_SCHEMA_VERSION",
     "LOCAL_TEST_MAX_MESSAGE_CHARS",
     "LOCAL_TEST_ORIGIN_HEADER",
     "LOCAL_TEST_ORIGIN_VALUE",
     "_ESTADO_VALUES",
+    "LocalTestExecutionState",
     "LocalTestRequest",
+    "LocalTestResponse",
     "_build_list_url",
+    "_reload_exact_session_for_snapshot",
+    "_serialize_execution_state",
     "router",
 ]

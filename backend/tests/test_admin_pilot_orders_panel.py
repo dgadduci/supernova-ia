@@ -1556,6 +1556,934 @@ class PanelDebugConsoleRenderingTest(unittest.TestCase):
         self.assertIn("maxlength=\"500\"", body)
 
 
+class PanelFixedViewportRenderingTest(unittest.TestCase):
+    """Task 7.1: the local-test transcript has a single fixed
+    responsive viewport height that does not grow with content."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def test_transcript_uses_fixed_height_not_min_max_range(self) -> None:
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail(),
+                history=_build_history(),
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        css = response.text
+        # The fixed viewport must use one stable height token so the
+        # column cannot grow with additional turns.
+        self.assertIn("height: 24rem", css)
+        # The transcript must NOT use a min/max range that could
+        # expand with content.
+        self.assertNotIn("min-height: 8rem", css)
+        self.assertNotIn("max-height: 24rem;", css)
+        # The transcript must keep its own scroll context.
+        self.assertIn("overflow-y: auto", css)
+        # Wrapping is preserved for long operator/customer text.
+        self.assertIn("white-space: pre-wrap", css)
+        self.assertIn("word-break: break-word", css)
+
+    def test_grid_uses_responsive_columns_and_align_start(self) -> None:
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail(),
+                history=_build_history(),
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        css = response.text
+        self.assertIn(
+            "minmax(16rem, 30%) minmax(16rem, 30%) minmax(20rem, 40%)",
+            css,
+        )
+        self.assertIn("align-items: start", css)
+        # Narrow viewport stacking is preserved.
+        self.assertIn("@media (max-width: 900px)", css)
+
+
+class PanelExecutionStateResponseTest(unittest.TestCase):
+    """Task 7.2: a successful local-test run returns a typed closed
+    ``execution_state`` snapshot alongside the mapped responses. The
+    snapshot mirrors the documented closed fields of
+    :class:`PendingContextDebugView` and never serializes raw
+    payloads, sessions, pedidos or pending JSON."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def _post(self):
+        headers = _basic_auth_header("ignored", CONFIGURED_TOKEN)
+        headers["X-Local-Test-Origin"] = "same-origin"
+        return self.client.post(
+            "/admin/pilot/orders/42/local-test",
+            json={"message": "hola"},
+            headers=headers,
+        )
+
+    def _build_session(self, *, context_type, pending_intents):
+        session = MagicMock(name="ExactSession")
+        session.id = 21
+        session.id_pedido = 42
+        session.id_comercio = 1
+        session.id_cliente = 31
+        session.estado_session = "activa"
+        session.context_type = context_type
+        session.pending_intents = pending_intents
+        return session
+
+    def test_response_contains_closed_execution_state_for_valid_session(
+        self,
+    ) -> None:
+        exact_session = self._build_session(
+            context_type="product_selection",
+            pending_intents={
+                "version": 1,
+                "active": {
+                    "intent": "agregar_producto",
+                    "source_text": "quiero una pizza",
+                    "status": "pending_resolution",
+                    "handler": "agregar_producto",
+                    "candidate_ids": [1, 2, 3],
+                    "requirements": [
+                        {"name": "size", "status": "pending"},
+                        {"name": "qty", "status": "completed"},
+                    ],
+                },
+                "queue": [],
+            },
+        )
+        exact_pedido = MagicMock(name="ExactPedido")
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ) as loader, patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+            return_value=(exact_pedido, exact_session),
+        ) as snapshot_loader, patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            from backend.intents.schemas.customer_response import (
+                CustomerResponse,
+            )
+
+            process_mock.return_value = [
+                CustomerResponse(
+                    message="Hola",
+                    intent="saludo",
+                    status="executed",
+                )
+            ]
+            response = self._post()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(loader.call_count, 1)
+        self.assertEqual(snapshot_loader.call_count, 1)
+        body = response.json()
+        self.assertIn("execution_state", body)
+        state = body["execution_state"]
+        self.assertEqual(
+            set(state.keys()),
+            {
+                "context_type",
+                "pending_encoding",
+                "active_intent",
+                "active_status",
+                "candidate_count",
+                "requirements_pending_count",
+                "requirements_completed_count",
+                "queue_length",
+                "schema_version",
+                "consistency",
+            },
+        )
+        self.assertEqual(state["context_type"], "product_selection")
+        self.assertEqual(state["pending_encoding"], "valid")
+        self.assertEqual(state["active_intent"], "agregar_producto")
+        self.assertEqual(state["active_status"], "pending_resolution")
+        self.assertEqual(state["candidate_count"], 3)
+        self.assertEqual(state["requirements_pending_count"], 1)
+        self.assertEqual(state["requirements_completed_count"], 1)
+        self.assertEqual(state["queue_length"], 0)
+        self.assertEqual(state["schema_version"], 1)
+        self.assertEqual(state["consistency"], "consistent")
+
+    def test_response_does_not_serialize_session_or_pedido(self) -> None:
+        exact_session = self._build_session(
+            context_type="product_selection",
+            pending_intents={
+                "version": 1,
+                "active": {
+                    "intent": "agregar_producto",
+                    "source_text": "SECRET-SOURCE",
+                    "status": "pending_resolution",
+                    "handler": "agregar_producto",
+                    "candidate_ids": [101, 202],
+                    "resolved_data": {"secret": "SECRET-VALUE"},
+                },
+                "queue": [
+                    {
+                        "intent": "agregar_producto",
+                        "source_text": "q1",
+                        "status": "executed",
+                        "handler": "agregar_producto",
+                    },
+                ],
+            },
+        )
+        exact_pedido = MagicMock(name="ExactPedido")
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            from backend.intents.schemas.customer_response import (
+                CustomerResponse,
+            )
+
+            process_mock.return_value = [
+                CustomerResponse(
+                    message="ok",
+                    intent="saludo",
+                    status="executed",
+                )
+            ]
+            response = self._post()
+        body_text = response.text
+        self.assertEqual(response.status_code, 200)
+        for forbidden in (
+            "SECRET-SOURCE",
+            "SECRET-VALUE",
+            "candidate_ids",
+            "resolved_data",
+            "source_text",
+            "pending_intents",
+            "id_pedido",
+            "id_comercio",
+            "id_cliente",
+            "OPENAI",
+            "API_KEY",
+            "identificador_proveedor",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, body_text)
+
+    def test_response_handles_empty_session_state(self) -> None:
+        exact_session = self._build_session(
+            context_type=None,
+            pending_intents=None,
+        )
+        exact_pedido = MagicMock(name="ExactPedido")
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            from backend.intents.schemas.customer_response import (
+                CustomerResponse,
+            )
+
+            process_mock.return_value = [
+                CustomerResponse(
+                    message="ok",
+                    intent="saludo",
+                    status="executed",
+                )
+            ]
+            response = self._post()
+        self.assertEqual(response.status_code, 200)
+        state = response.json()["execution_state"]
+        self.assertEqual(state["context_type"], "none")
+        self.assertEqual(state["pending_encoding"], "empty")
+        self.assertEqual(state["active_intent"], "none")
+        self.assertEqual(state["active_status"], "none")
+        self.assertEqual(state["candidate_count"], 0)
+        self.assertEqual(state["requirements_pending_count"], 0)
+        self.assertEqual(state["requirements_completed_count"], 0)
+        self.assertEqual(state["queue_length"], 0)
+        self.assertIsNone(state["schema_version"])
+        self.assertEqual(state["consistency"], "none")
+
+    def test_response_handles_malformed_pending_state(self) -> None:
+        exact_session = self._build_session(
+            context_type="product_selection",
+            pending_intents={"active": "not-a-dict"},
+        )
+        exact_pedido = MagicMock(name="ExactPedido")
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            from backend.intents.schemas.customer_response import (
+                CustomerResponse,
+            )
+
+            process_mock.return_value = [
+                CustomerResponse(
+                    message="ok",
+                    intent="saludo",
+                    status="executed",
+                )
+            ]
+            response = self._post()
+        self.assertEqual(response.status_code, 200)
+        state = response.json()["execution_state"]
+        self.assertEqual(state["pending_encoding"], "invalid")
+        self.assertEqual(state["consistency"], "inconsistent")
+        self.assertIsNone(state["schema_version"])
+
+    def test_route_does_not_call_commit_rollback_flush_refresh_begin_close_expire(
+        self,
+    ) -> None:
+        exact_session = self._build_session(
+            context_type=None,
+            pending_intents=None,
+        )
+        exact_pedido = MagicMock(name="ExactPedido")
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            from backend.intents.schemas.customer_response import (
+                CustomerResponse,
+            )
+
+            process_mock.return_value = [
+                CustomerResponse(
+                    message="ok",
+                    intent="saludo",
+                    status="executed",
+                )
+            ]
+            response = self._post()
+        self.assertEqual(response.status_code, 200)
+        self.session.commit.assert_not_called()
+        self.session.rollback.assert_not_called()
+        self.session.flush.assert_not_called()
+        self.session.refresh.assert_not_called()
+        self.session.begin.assert_not_called()
+        self.session.close.assert_not_called()
+        self.session.expire.assert_not_called()
+
+    def test_successful_turn_with_pedido_now_ingresado_still_returns_snapshot(
+        self,
+    ) -> None:
+        """A legitimate confirm-order turn may flip the exact pedido
+        from ``borrador`` to ``ingresado``. The post-turn snapshot
+        MUST still be returned, the mapped responses MUST be
+        preserved, and the route MUST NOT search for a successor
+        session or another active session for the same
+        cliente/comercio.
+
+        We simulate this by having the post-turn snapshot loader see
+        the exact same pedido/session identity (the processor's
+        commit did not delete or re-point the row) — only the
+        ``estado_pedido`` change matters, and that change is
+        invisible to the snapshot loader because it deliberately
+        does not check ``borrador``.
+        """
+        exact_session = self._build_session(
+            context_type="delivery_window",
+            pending_intents={
+                "version": 1,
+                "active": None,
+                "queue": [],
+            },
+        )
+        exact_pedido = MagicMock(name="ExactPedido")
+        exact_pedido.estado_pedido = EstadoPedido.INGRESADO
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ) as loader, patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+            return_value=(exact_pedido, exact_session),
+        ) as snapshot_loader, patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            from backend.intents.schemas.customer_response import (
+                CustomerResponse,
+            )
+
+            process_mock.return_value = [
+                CustomerResponse(
+                    message="Pedido confirmado",
+                    intent="confirmar_pedido",
+                    status="executed",
+                )
+            ]
+            response = self._post()
+        self.assertEqual(response.status_code, 200)
+        # Pre-turn loader is invoked once; the post-turn snapshot
+        # loader is invoked exactly once with the exact identity.
+        self.assertEqual(loader.call_count, 1)
+        self.assertEqual(snapshot_loader.call_count, 1)
+        # The post-turn loader received the exact pedido_id and
+        # session_id; it never received a fallback parameter.
+        snapshot_args = snapshot_loader.call_args.args
+        self.assertEqual(snapshot_args[1], 42)
+        self.assertEqual(snapshot_args[2], exact_session.id)
+        body = response.json()
+        # Mapped responses are preserved.
+        self.assertEqual(
+            body["responses"],
+            [
+                {
+                    "message": "Pedido confirmado",
+                    "intent": "confirmar_pedido",
+                    "status": "executed",
+                }
+            ],
+        )
+        # Closed execution_state is present and has only the
+        # documented keys.
+        self.assertIn("execution_state", body)
+        self.assertEqual(
+            set(body["execution_state"].keys()),
+            {
+                "context_type",
+                "pending_encoding",
+                "active_intent",
+                "active_status",
+                "candidate_count",
+                "requirements_pending_count",
+                "requirements_completed_count",
+                "queue_length",
+                "schema_version",
+                "consistency",
+            },
+        )
+        # No transaction control from the router side.
+        self.session.commit.assert_not_called()
+        self.session.rollback.assert_not_called()
+        self.session.flush.assert_not_called()
+        self.session.refresh.assert_not_called()
+        self.session.begin.assert_not_called()
+        self.session.close.assert_not_called()
+        self.session.expire.assert_not_called()
+        # The processor was called exactly once for the exact
+        # selected session.
+        process_mock.assert_called_once()
+        self.assertIs(process_mock.call_args.args[1], exact_session)
+
+    def test_snapshot_loader_rejects_only_when_exact_identity_is_gone(
+        self,
+    ) -> None:
+        """The post-turn snapshot loader returns ``None`` ONLY when
+        the exact session/pedido identity is gone (e.g., session
+        deleted or re-pointed to a different pedido during the
+        turn). In that case the route returns the documented
+        generic rejection and never fabricates a snapshot.
+
+        Crucially, the loader does NOT consider ``borrador``
+        eligibility — so a pedido that is now ``ingresado`` but
+        still references the same session id is NOT a rejection.
+        """
+        exact_session = self._build_session(
+            context_type=None,
+            pending_intents=None,
+        )
+        exact_pedido = MagicMock(name="ExactPedido")
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+            return_value=None,
+        ) as snapshot_loader, patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            from backend.intents.schemas.customer_response import (
+                CustomerResponse,
+            )
+
+            process_mock.return_value = [
+                CustomerResponse(
+                    message="ok",
+                    intent="saludo",
+                    status="executed",
+                )
+            ]
+            response = self._post()
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(snapshot_loader.call_count, 1)
+        body = response.json()
+        self.assertEqual(body.get("responses"), [])
+        self.assertIn("message", body)
+        self.assertNotIn("execution_state", body)
+
+    def test_route_rejects_unexpected_response_fields(self) -> None:
+        """The wire payload is enforced explicitly via the
+        ``LocalTestResponse`` schema, so unexpected fields cannot
+        leak into the response even through a regression."""
+        exact_session = self._build_session(
+            context_type=None,
+            pending_intents=None,
+        )
+        exact_pedido = MagicMock(name="ExactPedido")
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            from backend.intents.schemas.customer_response import (
+                CustomerResponse,
+            )
+
+            process_mock.return_value = [
+                CustomerResponse(
+                    message="ok",
+                    intent="saludo",
+                    status="executed",
+                )
+            ]
+            response = self._post()
+        body = response.json()
+        self.assertEqual(
+            set(body.keys()),
+            {"responses", "execution_state"},
+        )
+
+
+class PanelExecutionStateSerializationTest(unittest.TestCase):
+    """The :func:`_serialize_execution_state` helper projects only the
+    documented closed fields and refuses to emit other members."""
+
+    def test_serialize_emits_only_documented_fields(self) -> None:
+        from backend.routers.admin_pilot_orders import (
+            _serialize_execution_state,
+        )
+        from backend.services.pilot_order_operations_view_service import (
+            PendingContextDebugView,
+        )
+
+        view = PendingContextDebugView(
+            context_type="product_selection",
+            pending_encoding="valid",
+            active_intent="agregar_producto",
+            active_status="pending_resolution",
+            candidate_count=2,
+            requirements_pending_count=1,
+            requirements_completed_count=1,
+            queue_length=3,
+            schema_version=1,
+            consistency="consistent",
+        )
+        serialized = _serialize_execution_state(view)
+        self.assertEqual(
+            set(serialized.model_dump().keys()),
+            {
+                "context_type",
+                "pending_encoding",
+                "active_intent",
+                "active_status",
+                "candidate_count",
+                "requirements_pending_count",
+                "requirements_completed_count",
+                "queue_length",
+                "schema_version",
+                "consistency",
+            },
+        )
+
+    def test_serialize_handles_none_schema_version(self) -> None:
+        from backend.routers.admin_pilot_orders import (
+            _serialize_execution_state,
+        )
+        from backend.services.pilot_order_operations_view_service import (
+            PendingContextDebugView,
+        )
+
+        view = PendingContextDebugView(
+            context_type="none",
+            pending_encoding="empty",
+            active_intent="none",
+            active_status="none",
+            candidate_count=0,
+            requirements_pending_count=0,
+            requirements_completed_count=0,
+            queue_length=0,
+            schema_version=None,
+            consistency="none",
+        )
+        serialized = _serialize_execution_state(view)
+        self.assertIsNone(serialized.schema_version)
+
+
+class PanelExecutionStateDetailCellsTest(unittest.TestCase):
+    """The detail template renders every execution-state cell with a
+    ``data-debug-*`` attribute so the browser-side handler can update
+    it with ``textContent`` after a successful turn."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def test_every_state_cell_has_data_debug_attribute(self) -> None:
+        pending = PendingContextDebugView(
+            context_type="product_selection",
+            pending_encoding="valid",
+            active_intent="agregar_producto",
+            active_status="pending_resolution",
+            candidate_count=2,
+            requirements_pending_count=1,
+            requirements_completed_count=1,
+            queue_length=0,
+            schema_version=1,
+            consistency="consistent",
+        )
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail_with_pending_debug(pending_debug=pending),
+                history=_build_history(),
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        body = response.text
+        for attr in (
+            "data-debug-context",
+            "data-debug-encoding",
+            "data-debug-active-intent",
+            "data-debug-active-status",
+            "data-debug-candidate-count",
+            "data-debug-requirements-pending",
+            "data-debug-requirements-completed",
+            "data-debug-queue-length",
+            "data-debug-schema-version",
+            "data-debug-consistency",
+        ):
+            with self.subTest(attr=attr):
+                self.assertIn(attr, body)
+
+    def test_browser_handler_updates_state_cells_with_textContent(self) -> None:
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail(),
+                history=_build_history(),
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        body_no_css = _strip_css(response.text)
+        # The state-refresh handler must use textContent for every
+        # cell and never build HTML.
+        self.assertIn("textContent", body_no_css)
+        self.assertNotIn("innerHTML", body_no_css)
+        self.assertNotIn("outerHTML", body_no_css)
+        # It must look up every documented cell by its data attribute.
+        for attr in (
+            "data-debug-context",
+            "data-debug-encoding",
+            "data-debug-active-intent",
+            "data-debug-active-status",
+            "data-debug-candidate-count",
+            "data-debug-requirements-pending",
+            "data-debug-requirements-completed",
+            "data-debug-queue-length",
+            "data-debug-schema-version",
+            "data-debug-consistency",
+        ):
+            with self.subTest(attr=attr):
+                self.assertIn(attr, body_no_css)
+
+    def test_browser_handler_skips_state_update_on_failure(self) -> None:
+        """The handler must never synthesize a snapshot when the
+        response is not successful, the JSON is malformed or the
+        network call fails. The error branch must only append an
+        error line and update the status text."""
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail(),
+                history=_build_history(),
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        body_no_css = _strip_css(response.text)
+        # The handler must check both ``ok`` and ``execution_state`` so
+        # the snapshot is only applied on a successful payload.
+        self.assertIn("execution_state", body_no_css)
+        self.assertIn("updateExecutionState", body_no_css)
+        self.assertIn("Error del canal local", body_no_css)
+
+
+class PanelLocalTestAuthExactTargetNoProviderRegressionTest(
+    unittest.TestCase,
+):
+    """Task 7.3: the auth/exact-target/no-provider and transaction
+    boundaries are preserved after the console-refresh amendment."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def test_router_source_still_excludes_provider_worker_twilio(self) -> None:
+        from pathlib import Path
+
+        forbidden = (
+            "from backend.intents.handlers",
+            "from backend.intents.context",
+            "from backend.intents.recognizers",
+            "from backend.intents.resolvers",
+            "from backend.intents.processor",
+            "from backend.intents.contracts",
+            "from backend.llm",
+            "from backend.services.session_service",
+            "from backend.providers",
+            "from backend.workers",
+            "from backend.coordinators",
+            "import requests",
+            "import twilio",
+            "MessagingResponse",
+            "OutboundRow",
+            "ProviderInboundMessageCoordinator",
+            "ProviderReceipt",
+        )
+        source = Path(router_module.__file__).read_text(encoding="utf-8")
+        for value in forbidden:
+            with self.subTest(value=value):
+                self.assertNotIn(value, source)
+
+    def test_rejection_with_closed_session_does_not_simulate_snapshot(self) -> None:
+        """A rejected submission or a non-success response must
+        never produce an ``execution_state`` member. The browser
+        keeps the prior snapshot in place."""
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=None,
+        ):
+            headers = _basic_auth_header("ignored", CONFIGURED_TOKEN)
+            headers["X-Local-Test-Origin"] = "same-origin"
+            response = self.client.post(
+                "/admin/pilot/orders/42/local-test",
+                json={"message": "hola"},
+                headers=headers,
+            )
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertNotIn("execution_state", body)
+
+    def test_non_success_response_without_execution_state(self) -> None:
+        """Sends a wrong origin header so the documented generic
+        rejection fires. The body MUST NOT contain ``execution_state``."""
+        headers = _basic_auth_header("ignored", CONFIGURED_TOKEN)
+        # No X-Local-Test-Origin header.
+        response = self.client.post(
+            "/admin/pilot/orders/42/local-test",
+            json={"message": "hola"},
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertNotIn("execution_state", body)
+
+    def test_response_does_not_emit_session_or_pedido_fields(self) -> None:
+        """The successful response contract is enforced via the
+        ``LocalTestResponse`` schema and never leaks the raw
+        Session, Pedido or pending JSON under any key."""
+        exact_session = MagicMock(name="ExactSession")
+        exact_session.id = 21
+        exact_session.id_pedido = 42
+        exact_session.id_comercio = 1
+        exact_session.id_cliente = 31
+        exact_session.estado_session = "activa"
+        exact_session.context_type = "product_selection"
+        exact_session.pending_intents = {
+            "version": 1,
+            "active": {
+                "intent": "agregar_producto",
+                "source_text": "SECRET-TEXT",
+                "status": "pending_resolution",
+                "handler": "agregar_producto",
+                "candidate_ids": [101, 202],
+            },
+            "queue": [],
+        }
+        exact_pedido = MagicMock(name="ExactPedido")
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            from backend.intents.schemas.customer_response import (
+                CustomerResponse,
+            )
+
+            process_mock.return_value = [
+                CustomerResponse(
+                    message="ok",
+                    intent="saludo",
+                    status="executed",
+                )
+            ]
+            headers = _basic_auth_header("ignored", CONFIGURED_TOKEN)
+            headers["X-Local-Test-Origin"] = "same-origin"
+            response = self.client.post(
+                "/admin/pilot/orders/42/local-test",
+                json={"message": "hola"},
+                headers=headers,
+            )
+        body = response.json()
+        body_text = response.text
+        self.assertEqual(response.status_code, 200)
+        # The body must contain exactly the two documented keys.
+        self.assertEqual(set(body.keys()), {"responses", "execution_state"})
+        for forbidden in (
+            "SECRET-TEXT",
+            "candidate_ids",
+            "source_text",
+            "pending_intents",
+            "id_pedido",
+            "id_comercio",
+            "id_cliente",
+            "OPENAI",
+            "API_KEY",
+            "settings",
+            "identificador_proveedor",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, body_text)
+        # The execution_state key must NOT leak the raw values either.
+        self.assertEqual(
+            set(body["execution_state"].keys()),
+            {
+                "context_type",
+                "pending_encoding",
+                "active_intent",
+                "active_status",
+                "candidate_count",
+                "requirements_pending_count",
+                "requirements_completed_count",
+                "queue_length",
+                "schema_version",
+                "consistency",
+            },
+        )
+
+
 class PanelLocalTestRouteAuthTest(unittest.TestCase):
     """The local-test POST route is mounted behind the same panel
     Basic authentication as the rest of the route family. Missing
@@ -1807,6 +2735,43 @@ class PanelLocalTestRouteRevalidationTest(unittest.TestCase):
         self.assertNotIn("pedido", body.get("message", "").lower())
         process_mock.assert_not_called()
 
+    def test_pre_turn_loader_rejects_when_pedido_already_no_borrador(
+        self,
+    ) -> None:
+        """The pre-turn loader is the only gate that enforces the
+        ``borrador``-only eligibility contract. The post-turn
+        snapshot loader is exempt by design. This test makes the
+        asymmetry explicit by simulating a pre-turn loader
+        rejection that mirrors the ``pedido not in borrador``
+        branch — the route returns the documented generic
+        rejection and never calls the processor.
+        """
+        # A pedido with estado_pedido != BORRADOR makes the real
+        # pre-turn loader return None. To exercise the same path
+        # in tests we patch the loader to None and assert the
+        # processor is not called, mirroring the production branch
+        # for "pedido ya no es borrador".
+        with patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock, self._stub_loader_returning(None):
+            response = self._post(pedido_id="42")
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertEqual(body.get("responses"), [])
+        self.assertIn("message", body)
+        # The body MUST NOT echo back the reason: an operator
+        # probing the channel cannot tell apart "invalid id",
+        # "missing pedido", "session missing" or "pedido not in
+        # borrador" from this rejection.
+        message_lower = body.get("message", "").lower()
+        self.assertNotIn("borrador", message_lower)
+        self.assertNotIn("ingresado", message_lower)
+        self.assertNotIn("estado", message_lower)
+        # The post-turn snapshot loader is NOT consulted on a
+        # pre-turn rejection: there is nothing to project.
+        process_mock.assert_not_called()
+
 
 class PanelLocalTestRouteHappyPathTest(unittest.TestCase):
     """A valid local-test turn invokes the response orchestrator
@@ -1844,12 +2809,18 @@ class PanelLocalTestRouteHappyPathTest(unittest.TestCase):
         exact_session.id_comercio = 1
         exact_session.id_cliente = 31
         exact_session.estado_session = "activa"
+        exact_session.context_type = "product_selection"
+        exact_session.pending_intents = None
         exact_pedido = MagicMock(name="ExactPedido")
         with patch.object(
             router_module,
             "_load_local_test_session",
             return_value=(exact_pedido, exact_session),
         ) as loader, patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
             router_module,
             "process_incoming_message_with_responses",
         ) as process_mock:
@@ -1864,7 +2835,7 @@ class PanelLocalTestRouteHappyPathTest(unittest.TestCase):
             ]
             response = self._post()
         self.assertEqual(response.status_code, 200)
-        loader.assert_called_once()
+        self.assertEqual(loader.call_count, 1)
         process_mock.assert_called_once()
         called_args = process_mock.call_args.args
         # Signature is ``process_incoming_message_with_responses(db, session, message)``
@@ -1873,15 +2844,30 @@ class PanelLocalTestRouteHappyPathTest(unittest.TestCase):
         self.assertEqual(called_args[2], "hola")
         body = response.json()
         self.assertEqual(
-            body,
+            body["responses"],
+            [
+                {
+                    "message": "Hola, soy el cliente",
+                    "intent": "saludo",
+                    "status": "executed",
+                }
+            ],
+        )
+        self.assertIn("execution_state", body)
+        execution_state = body["execution_state"]
+        self.assertEqual(
+            set(execution_state.keys()),
             {
-                "responses": [
-                    {
-                        "message": "Hola, soy el cliente",
-                        "intent": "saludo",
-                        "status": "executed",
-                    }
-                ]
+                "context_type",
+                "pending_encoding",
+                "active_intent",
+                "active_status",
+                "candidate_count",
+                "requirements_pending_count",
+                "requirements_completed_count",
+                "queue_length",
+                "schema_version",
+                "consistency",
             },
         )
 
@@ -1892,10 +2878,16 @@ class PanelLocalTestRouteHappyPathTest(unittest.TestCase):
         exact_session.id_comercio = 1
         exact_session.id_cliente = 31
         exact_session.estado_session = "activa"
+        exact_session.context_type = None
+        exact_session.pending_intents = None
         exact_pedido = MagicMock(name="ExactPedido")
         with patch.object(
             router_module,
             "_load_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
             return_value=(exact_pedido, exact_session),
         ), patch.object(
             router_module,
@@ -1972,10 +2964,16 @@ class PanelLocalTestRouteNoMutationTest(unittest.TestCase):
         exact_session.id_comercio = 1
         exact_session.id_cliente = 31
         exact_session.estado_session = "activa"
+        exact_session.context_type = None
+        exact_session.pending_intents = None
         exact_pedido = MagicMock(name="ExactPedido")
         with patch.object(
             router_module,
             "_load_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
             return_value=(exact_pedido, exact_session),
         ), patch.object(
             router_module,
