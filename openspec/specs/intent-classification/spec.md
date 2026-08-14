@@ -1,5 +1,8 @@
-## MODIFIED Requirements
+# intent-classification Specification
 
+## Purpose
+TBD - created by archiving change fix-remove-product-verb-classification. Update Purpose after archive.
+## Requirements
 ### Requirement: Product-removal wording is classified as removal
 
 The static intent-classifier prompt SHALL instruct that a message whose
