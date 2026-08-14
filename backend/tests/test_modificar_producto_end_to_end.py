@@ -470,6 +470,232 @@ if __name__ == "__main__":
     unittest.main()
 
 
+def _seed_napolitanas_y_mozzarella(suffix: str) -> dict:
+    """Seed a draft Pedido with one ``Pizza Napolitana grande`` line plus
+    both ``Pizza Mozzarella`` presentations so the initial modification
+    message resolves to a ``destination_selection`` pending state.
+
+    The catalog contains exactly one ``Mozzarella`` product so the
+    initial destination recognizer returns two ProductoPresentacion
+    rows (grande/chica) for the bare destination message. The source
+    Pedido carries a single ``Pizza Napolitana grande`` line so the
+    source candidate is unique from the first turn.
+    """
+
+    estado_id = _estado_id()
+    with TestingSessionLocal() as db, db.begin():
+        comercio = Comercio(
+            nombre_fantasia=f"T-{suffix}",
+            nombre_corto=f"TC-{suffix}",
+            razon_social=f"R-{suffix}",
+            cuit=f"30-{suffix[:8]}-{suffix[8]}",
+            whatsapp=f"+5499{suffix[:8]}",
+            calle="X",
+            numero="1",
+            piso_departamento=None,
+            localidad="CABA",
+            provincia="BA",
+            codigo_postal="C1000",
+            slug=f"slug-{suffix}",
+            estado_id=estado_id,
+        )
+        db.add(comercio)
+        db.flush()
+
+        cliente = Cliente(
+            whatsapp=f"+5499{int(suffix, 16) % 100000000:08d}",
+            nombre=None,
+            domicilio=None,
+            activo=True,
+        )
+        db.add(cliente)
+        db.flush()
+
+        session_row = SessionModel(
+            id_comercio=comercio.id,
+            id_cliente=cliente.id,
+            id_pedido=None,
+            estado_session=EstadoSession.ACTIVA,
+            pending_intents={},
+            context_type=None,
+        )
+        db.add(session_row)
+        db.flush()
+
+        pedido = Pedido(
+            id_session=session_row.id,
+            id_medio_pago=None,
+            id_metodo_entrega=None,
+            datetime_entrega_programada=None,
+            estado_pedido=EstadoPedido.BORRADOR,
+        )
+        db.add(pedido)
+        db.flush()
+        session_row.id_pedido = pedido.id
+        db.flush()
+
+        categoria = CategoriaProducto(
+            id_comercio=comercio.id,
+            descripcion=f"Pizzas-{suffix}",
+            activo=True,
+            orden=0,
+        )
+        db.add(categoria)
+        db.flush()
+
+        producto_napo = Producto(
+            id_categoria_producto=categoria.id,
+            nombre=f"Pizza Napolitana {suffix}",
+            descripcion=None,
+            activo=True,
+            disponible=True,
+            orden=0,
+        )
+        db.add(producto_napo)
+        db.flush()
+
+        producto_mozza = Producto(
+            id_categoria_producto=categoria.id,
+            nombre=f"Pizza Mozzarella {suffix}",
+            descripcion=None,
+            activo=True,
+            disponible=True,
+            orden=1,
+        )
+        db.add(producto_mozza)
+        db.flush()
+
+        pres_grande = Presentacion(
+            id_comercio=comercio.id,
+            codigo="grande",
+            descripcion=f"grande-{suffix}",
+            activo=True,
+            orden=0,
+        )
+        db.add(pres_grande)
+        db.flush()
+
+        pres_chica = Presentacion(
+            id_comercio=comercio.id,
+            codigo="chica",
+            descripcion=f"chica-{suffix}",
+            activo=True,
+            orden=0,
+        )
+        db.add(pres_chica)
+        db.flush()
+
+        pp_napo_grande = ProductoPresentacion(
+            id_producto=producto_napo.id,
+            id_presentacion=pres_grande.id,
+            activo=True,
+            orden=0,
+        )
+        db.add(pp_napo_grande)
+        db.flush()
+
+        pp_mozza_grande = ProductoPresentacion(
+            id_producto=producto_mozza.id,
+            id_presentacion=pres_grande.id,
+            activo=True,
+            orden=0,
+        )
+        db.add(pp_mozza_grande)
+        db.flush()
+
+        pp_mozza_chica = ProductoPresentacion(
+            id_producto=producto_mozza.id,
+            id_presentacion=pres_chica.id,
+            activo=True,
+            orden=0,
+        )
+        db.add(pp_mozza_chica)
+        db.flush()
+
+        db.add(
+            Precio(
+                id_producto_presentacion=pp_napo_grande.id,
+                precio=Decimal("150.00"),
+            )
+        )
+        db.add(
+            Precio(
+                id_producto_presentacion=pp_mozza_grande.id,
+                precio=Decimal("140.00"),
+            )
+        )
+        db.add(
+            Precio(
+                id_producto_presentacion=pp_mozza_chica.id,
+                precio=Decimal("100.00"),
+            )
+        )
+        db.flush()
+
+        return {
+            "comercio_id": comercio.id,
+            "cliente_id": cliente.id,
+            "session_id": session_row.id,
+            "pedido_id": pedido.id,
+            "categoria_id": categoria.id,
+            "producto_napo_id": producto_napo.id,
+            "producto_mozza_id": producto_mozza.id,
+            "pp_napo_grande": pp_napo_grande.id,
+            "pp_mozza_grande": pp_mozza_grande.id,
+            "pp_mozza_chica": pp_mozza_chica.id,
+        }
+
+
+def _cleanup_napolitanas_y_mozzarella(base: dict) -> None:
+    with TestingSessionLocal() as db, db.begin():
+        sess_row = db.get(SessionModel, base["session_id"])
+        if sess_row is not None:
+            sess_row.id_pedido = None
+            sess_row.context_type = None
+            sess_row.pending_intents = {}
+            db.flush()
+        db.execute(
+            delete(PedidoProducto).where(
+                PedidoProducto.id_pedido == base["pedido_id"]
+            )
+        )
+        pp_ids = [
+            base["pp_napo_grande"],
+            base["pp_mozza_grande"],
+            base["pp_mozza_chica"],
+        ]
+        db.execute(
+            delete(Precio).where(Precio.id_producto_presentacion.in_(pp_ids))
+        )
+        db.execute(
+            delete(ProductoPresentacion).where(
+                ProductoPresentacion.id.in_(pp_ids)
+            )
+        )
+        db.execute(
+            delete(Producto).where(
+                Producto.id.in_(
+                    [base["producto_napo_id"], base["producto_mozza_id"]]
+                )
+            )
+        )
+        db.execute(
+            delete(CategoriaProducto).where(
+                CategoriaProducto.id == base["categoria_id"]
+            )
+        )
+        db.execute(delete(Pedido).where(Pedido.id == base["pedido_id"]))
+        db.execute(
+            delete(SessionModel).where(SessionModel.id == base["session_id"])
+        )
+        db.execute(
+            delete(Cliente).where(Cliente.id == base["cliente_id"])
+        )
+        db.execute(
+            delete(Comercio).where(Comercio.id == base["comercio_id"])
+        )
+
+
 class ModificarProductoEndToEndAtomicityTest(unittest.TestCase):
     """End-to-end matrix covering the section-7 atomic-quantity scenarios."""
 
@@ -1000,3 +1226,109 @@ class ModificarProductoHybridEndToEndTest(unittest.TestCase):
                 self.assertEqual(session_row.pending_intents, {})
         finally:
             _cleanup_napolitanas(base)
+
+
+class ModificarProductoBareDestinationExecutionTest(unittest.TestCase):
+    """Smallest pending destination-selection execution proof.
+
+    The first turn triggers a real pending state via the existing
+    orchestration path; the second turn is the bare ``chica`` reply
+    that the deterministic pre-check must resolve without invoking
+    the generic recognizer. The handler, service and repository are
+    untouched (no mocks); only the classifier is stubbed.
+    """
+
+    def test_chica_after_destination_clarification_transfers_two_and_clears(
+        self,
+    ) -> None:
+        from backend.intents.orchestration.incoming_message_orchestrator import (
+            process_incoming_message,
+        )
+
+        suffix = _suffix()
+        base = _seed_napolitanas_y_mozzarella(suffix)
+        try:
+            source_line_id = _seed_line(base, base["pp_napo_grande"], 5)
+            with _patched_classifier(_ModificarClassifier):
+                with TestingSessionLocal() as db:
+                    session_row = db.get(SessionModel, base["session_id"])
+                    assert session_row is not None
+                    initial = process_incoming_message(
+                        db,
+                        session_row,
+                        "cambiar 2 napolitanas grandes por una pizza de mozzarella",
+                    )
+                    self.assertEqual(len(initial), 1)
+                    self.assertEqual(initial[0].status, "pending_resolution")
+                    self.assertEqual(
+                        initial[0].stage, "destination_selection"
+                    )
+                    self.assertEqual(
+                        sorted(
+                            initial[0].resolved_data[
+                                "destination_candidate_ids"
+                            ]
+                        ),
+                        sorted(
+                            [
+                                base["pp_mozza_grande"],
+                                base["pp_mozza_chica"],
+                            ]
+                        ),
+                    )
+                    db.commit()
+
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, base["session_id"])
+                assert session_row is not None
+                self.assertIsNotNone(session_row.context_type)
+                pending = session_row.pending_intents or {}
+                active = pending.get("active") or {}
+                self.assertEqual(active.get("intent"), "modificar_producto")
+                self.assertEqual(
+                    active.get("stage"), "destination_selection"
+                )
+
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, base["session_id"])
+                assert session_row is not None
+                follow_up = process_incoming_message(
+                    db, session_row, "chica"
+                )
+                self.assertEqual(len(follow_up), 1)
+                self.assertEqual(follow_up[0].status, "executed")
+                self.assertEqual(
+                    follow_up[0].resolved_data[
+                        "pedido_producto_origen_id"
+                    ],
+                    source_line_id,
+                )
+                self.assertEqual(
+                    follow_up[0].resolved_data[
+                        "producto_presentacion_destino_id"
+                    ],
+                    base["pp_mozza_chica"],
+                )
+                self.assertEqual(
+                    follow_up[0].resolved_data["cantidad"], 2
+                )
+                db.commit()
+
+            with TestingSessionLocal() as db:
+                source = db.get(PedidoProducto, source_line_id)
+                self.assertEqual(source.cantidad, 3)
+                dest_line = db.execute(
+                    select(PedidoProducto).where(
+                        PedidoProducto.id_pedido == base["pedido_id"],
+                        PedidoProducto.id_producto_presentacion
+                        == base["pp_mozza_chica"],
+                    )
+                ).scalar_one()
+                self.assertEqual(dest_line.cantidad, 2)
+                session_row = db.get(SessionModel, base["session_id"])
+                self.assertIsNone(session_row.context_type)
+                cleared_pending = session_row.pending_intents or {}
+                self.assertIsNone(cleared_pending.get("active"))
+                self.assertEqual(cleared_pending.get("queue", []), [])
+        finally:
+            _cleanup_napolitanas_y_mozzarella(base)
