@@ -3,9 +3,7 @@
 ## Purpose
 
 Provide a deterministic response builder for `modificar_producto` that renders every outcome (source pending, destination pending, full-line executed, partial executed, consolidated executed, excess quantity, source absent, destination unavailable, source equals destination, generic failed) using only the order lines, presentations, and product names already loaded by the orchestration layer, without LLM beautification, prompt construction, or exposure of database identifiers.
-
 ## Requirements
-
 ### Requirement: Response builder module location
 
 The system SHALL expose `build_modificar_producto_response` from `backend/intents/responses/modificar_producto_response.py` and SHALL NOT import from `backend/old_project/`.
@@ -253,3 +251,20 @@ When driven by the real HTTP endpoint or the interactive CLI driver, every rejec
 
 - **WHEN** the interactive CLI driver processes a `modificar_producto` message whose service result is `rejected` for any deterministic reason
 - **THEN** the printed customer response confirms the Pedido is unchanged (or, for `source_not_in_pedido` and `equivalent_modification`, prints the equivalent documented rejection message); the printed order table after the rejection reflects the unchanged Pedido state
+
+### Requirement: Distinct quantity confirmation reflects durable mutation
+
+For an executed modification with distinct source and destination operation
+amounts, the customer response SHALL render both actual values and must not
+reuse the source value for destination. Existing wording for equal-quantity
+legacy outcomes remains unchanged.
+
+#### Scenario: Confirmation of 2 to 1 partial replacement
+
+- **WHEN** the durable operation decrements Napolitana by 2, increments Mozzarella by 1, and leaves 5 Napolitana
+- **THEN** the confirmation communicates 2 Napolitana replaced by 1 Mozzarella and that 5 Napolitana remain
+
+#### Scenario: Consolidated destination reports the actual destination total
+
+- **WHEN** the destination already existed and the distinct operation adds 1 unit
+- **THEN** the response may include the durable destination final total, but never reports the source amount as the amount added to destination

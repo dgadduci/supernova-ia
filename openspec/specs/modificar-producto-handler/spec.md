@@ -3,9 +3,7 @@
 ## Purpose
 
 Provide the ready handler and the atomic service operation for `modificar_producto`. The handler validates intent shape, delegates the atomic mutation to `PedidoProductoService.modify_product`, and never mutates rows manually. The service enforces every business rule (draft Pedido, ownership, source validity, destination validity, quantity semantics, equivalent-modification guard, unique-line invariant, price-snapshot preservation) inside the existing transaction boundary.
-
 ## Requirements
-
 ### Requirement: Handler module location
 
 The system SHALL expose `execute_modificar_producto` from `backend/intents/handlers/modificar_producto_handler.py` and SHALL NOT import from `backend/old_project/`.
@@ -334,3 +332,27 @@ When driven by the real HTTP endpoint or the interactive CLI driver, every desti
 
 - **WHEN** the interactive CLI driver receives `cambia las 5 empanadas de jamon y queso por un caramelo` against a Pedido with `Empanada de Jamón y Queso x5` and `caramelo` is absent from the catalog
 - **THEN** the printed order table shows the source line unchanged with `cantidad == 5`, no destination line appears, and the printed customer response confirms the Pedido is unchanged
+
+### Requirement: Atomic distinct source and destination amounts
+
+`PedidoProductoService.modify_product` SHALL accept an effective source amount
+and optional destination amount. When the destination amount is present and
+positive, it SHALL decrement/delete source by the source amount and
+create/increment destination by the destination amount in the same existing
+caller-owned transaction. When absent, destination SHALL receive the effective
+source amount for backward compatibility.
+
+#### Scenario: Partial 2 to 1 modification
+
+- **WHEN** a source line contains 7 units and a ready intent requests source `cantidad == 2` and `cantidad_destino == 1`
+- **THEN** source becomes 5, destination increases by 1, and no commit or rollback is issued by recognizer, resolver, handler, or service
+
+#### Scenario: Source ceiling still governs the mutation
+
+- **WHEN** source `cantidad` exceeds its current line, regardless of a lower valid `cantidad_destino`
+- **THEN** the result is the existing `quantity_exceeds_source` rejection and neither line changes
+
+#### Scenario: Existing one-quantity request remains equal transfer
+
+- **WHEN** a ready intent has `cantidad == 2` and no `cantidad_destino`
+- **THEN** source decreases by 2 and destination increases by 2 exactly as before

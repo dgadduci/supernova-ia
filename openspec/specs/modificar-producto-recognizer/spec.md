@@ -3,9 +3,7 @@
 ## Purpose
 
 Detect `modificar_producto` source candidates among the active draft Pedido's `PedidoProducto` lines and destination candidates among the comercio's active and available `ProductoPresentacion` rows, plus an optional explicit positive integer quantity, without ever falling back to the commerce catalog for source resolution or to the draft Pedido for destination resolution.
-
 ## Requirements
-
 ### Requirement: Recognizer module location
 
 The system SHALL expose `recognize_modificar_producto` from `backend/intents/recognizers/modificar_producto_recognizer.py` and SHALL NOT import from `backend/old_project/`.
@@ -126,3 +124,84 @@ The recognizer module SHALL export only `recognize_modificar_producto` through `
 
 - **WHEN** the module is imported and `__all__` is inspected
 - **THEN** `__all__` equals `["recognize_modificar_producto"]`
+
+### Requirement: Destination-only quantity means full source replacement
+
+When a modification message has no explicit positive quantity before `por` and
+one explicit positive quantity after it, the recognizer SHALL emit
+`cantidad is None` and `cantidad_destino == M`. It SHALL not copy M into
+legacy source `cantidad`.
+
+#### Scenario: Full one-unit source becomes two destination units
+
+- **WHEN** the message is `cambia la napolitana grande por dos mozzarella grande` and the selected source line has quantity 1
+- **THEN** the ready intent preserves `cantidad is None` and `cantidad_destino == 2`, so execution removes the source line and adds 2 destination units
+
+#### Scenario: Legacy pending remains unchanged
+
+- **WHEN** an existing pending payload has `cantidad == 2` and no `cantidad_destino`
+- **THEN** it continues to mean source 2 -> destination 2
+
+### Requirement: Explicit paired source and destination quantities
+
+When a `modificar_producto` message has the existing `por` separator and
+contains an explicit positive quantity on both sides, the recognizer SHALL
+emit the source amount as `cantidad` and the destination amount as optional
+`cantidad_destino`. It SHALL derive both only with the existing normalized
+quantity vocabulary; no LLM, hybrid, or candidate result may supply them.
+
+#### Scenario: Two source units become one destination unit
+
+- **WHEN** the message is `cambiar dos napolitanas grandes por una pizza de mozzarella`
+- **THEN** the recognizer emits `cantidad == 2` and `cantidad_destino == 1`
+
+#### Scenario: One explicit quantity remains compatible
+
+- **WHEN** the message is `cambiar dos napolitanas grandes por mozzarella`
+- **THEN** `cantidad == 2` and `cantidad_destino is None`, preserving the existing equal-quantity transfer contract
+
+### Requirement: Modification source catalog includes owned category context
+
+The `modificar_producto` recognizer SHALL build its source catalog only from
+`PedidoProductoService.list_by_pedido(session.id_pedido)`. Each source row
+SHALL carry its `pedido_producto_id`, `producto_presentacion_id`, product
+name, already eager-loaded product category description as `categoria_nombre`,
+presentation code, presentation description, and current quantity. The
+category description is token context only and SHALL NOT widen the candidate
+universe beyond those PedidoProducto rows.
+
+#### Scenario: Category-qualified specific source resolves an owned line
+
+- **WHEN** the active draft contains `Mozzarella Grande` in category `Pizzas`
+- **AND** the customer requests `cambia una pizza de mozzarella grande por 1 empanada de pollo`
+- **THEN** source recognition returns only that own `pedido_producto_id`
+- **AND** no commerce-catalog order line is introduced.
+
+#### Scenario: Category-qualified source ambiguity stays restricted
+
+- **WHEN** the active draft contains `Mozzarella Grande`, `Mozzarella Chica`,
+  and unrelated `Napolitana Chica`, all in category `Pizzas`
+- **AND** the customer requests `cambia una pizza de mozzarella por una empanada de pollo`
+- **THEN** source recognition returns exactly the two own Mozzarella line IDs
+- **AND** the existing `source_selection` pending flow owns clarification.
+
+#### Scenario: Category context does not create a source line
+
+- **WHEN** a category-qualified source product exists in the commerce catalog
+  but is absent from the active draft
+- **THEN** source recognition returns no candidate
+- **AND** the existing source-absent rejection preserves the Pedido.
+
+### Requirement: Source category projection is read-only
+
+The source category projection SHALL reuse the category relationship already
+loaded by the existing order-line query. It SHALL NOT issue a catalog-wide or
+per-line category query, own transaction control, or alter destination and
+quantity recognition.
+
+#### Scenario: Missing category relation fails safely
+
+- **WHEN** an otherwise malformed order-line row has no usable category
+  description
+- **THEN** the recognizer does not invent category context or a candidate
+- **AND** retains the existing no-match or technical-failure behavior.

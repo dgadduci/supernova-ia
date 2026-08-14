@@ -3,9 +3,7 @@
 ## Purpose
 
 Provide the initial and refinement orchestration for `modificar_producto`, including the dedicated `PRODUCT_MODIFICATION` context type, the explicit `source_selection` / `destination_selection` stages, and the resolver that refines source candidates first and destination candidates second without broadening either domain back to the full Pedido or full catalog.
-
 ## Requirements
-
 ### Requirement: Initial orchestration module location
 
 The system SHALL expose `process_initial_modificar_producto` from `backend/intents/orchestration/modificar_producto_initial.py` and SHALL NOT import from `backend/old_project/`.
@@ -344,3 +342,32 @@ When driven by the real HTTP endpoint or the interactive CLI driver, the initial
 
 - **WHEN** the interactive CLI driver processes any `modificar_producto` message (including the exact reproduction phrases)
 - **THEN** the CLI prints exactly one modification response; no separate `Quité` and `Agregué` responses appear in the printed output for the same modification
+
+### Requirement: Destination-only quantity survives clarification
+
+Initial orchestration and pending resolution SHALL preserve
+`cantidad is None` and `cantidad_destino == M` through source/destination
+selection. The existing handler re-read remains the authoritative full-source
+amount at execution.
+
+#### Scenario: Destination clarification keeps destination-only amount
+
+- **WHEN** source is unique, destination is ambiguous, and the message says `cambia la napolitana por dos mozzarella`
+- **THEN** after `grande` selects one pending destination, execution uses full current source quantity and destination amount 2 without widening candidates
+
+### Requirement: Paired quantities survive modification clarification
+
+The initial orchestrator and `product_modification_resolver` SHALL retain an
+optional `cantidad_destino` unchanged in ready and pending `resolved_data`.
+Source and destination candidate refinement remains identity-only and SHALL
+not replace either amount.
+
+#### Scenario: Destination selection keeps a 2 to 1 request
+
+- **WHEN** `cambiar dos napolitanas grandes por una pizza de mozzarella` creates destination-selection pending state
+- **THEN** its `resolved_data` contains `cantidad == 2` and `cantidad_destino == 1`; after `chica` selects one persisted candidate, the ready intent preserves both values
+
+#### Scenario: Old pending payload remains executable
+
+- **WHEN** an active modification pending intent contains legacy `cantidad` and no `cantidad_destino`
+- **THEN** resolving its candidate retains existing equal-quantity semantics and does not reject solely because the new optional field is absent
