@@ -145,3 +145,76 @@ durable transcript, local storage, cookie or URL parameter.
   characters
 - **THEN** the transcript displays it as literal text
 - **AND THEN** it does not execute markup or persist the transcript
+
+### Requirement: Local-test transcript has a fixed scroll viewport
+
+The local-test transcript SHALL retain one fixed responsive viewport height.
+Appending operator or customer turns SHALL scroll within that viewport and
+SHALL NOT increase the height of the chat column or the surrounding debug grid.
+Its text SHALL continue to wrap and be inserted as escaped plain text.
+
+#### Scenario: Many turns do not expand the console
+
+- **WHEN** an operator submits enough local-test turns to exceed the transcript
+  viewport
+- **THEN** the transcript scrolls to the newest turn inside its fixed viewport
+- **AND THEN** the order-detail and execution-state columns retain their layout
+  height independently of those turns.
+
+### Requirement: Successful local turns refresh only safe execution state
+
+For a successful local-test message, the route SHALL return the updated closed
+execution-state summary for the same exact selected Session together with the
+mapped customer responses. The browser SHALL update the existing execution
+state cells in place using plain text APIs, without a full page reload. The
+summary SHALL contain only the fields authorized for `PendingContextDebugView`
+and SHALL NOT contain raw pending JSON, source text, resolved values,
+candidate IDs, queue entries, diagnostics, exception detail, configuration,
+credentials or provider data.
+
+The pre-turn validation SHALL enforce the ``borrador``-only eligibility
+contract for the exact selected Pedido. The post-turn snapshot projection
+SHALL reload the exact same Pedido and Session by ``session.id`` AND
+``session.id_pedido == pedido_id`` only; it SHALL NOT re-check
+``borrador`` eligibility, SHALL NOT search for a successor session and
+SHALL NOT fall back to another active session for the same
+cliente/comercio. A successful turn that legitimately leaves the pedido in
+``ingresado`` MUST still return the mapped responses and the refreshed
+closed snapshot.
+
+#### Scenario: Pending resolution updates the visible state
+
+- **WHEN** a valid local-test turn changes the selected Session's pending
+  context
+- **THEN** the returned closed execution-state snapshot and the displayed
+  execution-state cells reflect that same selected Session after the turn
+- **AND THEN** the volatile transcript remains visible without a page reload.
+
+#### Scenario: Confirm-order turn still refreshes the visible state
+
+- **WHEN** a valid local-test turn legitimately flips the exact selected
+  Pedido from ``borrador`` to ``ingresado`` while leaving the exact session
+  identity intact
+- **THEN** the route returns 200 with the mapped responses and a closed
+  execution-state snapshot
+- **AND THEN** the displayed execution-state cells are updated from that
+  snapshot using plain text APIs
+- **AND THEN** the route does not search for any other session, does not
+  substitute a successor, and does not invoke any transactional control
+  itself.
+
+#### Scenario: Identity truly gone still preserves the documented rejection
+
+- **WHEN** the post-turn snapshot loader cannot reload the exact Pedido or
+  Session identity (for example the session was deleted or re-pointed to a
+  different pedido during the turn)
+- **THEN** the route returns the documented generic rejection
+- **AND THEN** the browser keeps the previously displayed execution-state
+  cells and only shows the existing generic local-test failure message.
+
+#### Scenario: Rejected local submission preserves the displayed snapshot
+
+- **WHEN** the local-test route rejects the request or the browser receives a
+  malformed/non-success response
+- **THEN** the browser retains the previously displayed execution-state cells
+- **AND THEN** it shows only the existing generic local-test failure message.

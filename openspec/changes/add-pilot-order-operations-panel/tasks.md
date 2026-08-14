@@ -75,3 +75,20 @@
   and the separate size-only order-line-selection correction has passed its
   local-test reproduction.
 - [ ] 6.2 Do not archive any OpenSpec as a consequence of this amendment.
+
+## 7. Console-refresh amendment
+
+- [x] 7.1 Give the browser-only local-test transcript one fixed scroll
+  viewport that cannot expand the three-column console.
+- [x] 7.2 Return a typed, closed updated execution-state snapshot after a
+  successful exact local-test turn and replace only the existing state cells
+  with escaped text, without a page reload. The post-turn projection reloads
+  the exact Pedido/Session identity via a dedicated helper that does NOT
+  re-apply the pre-turn ``borrador``-only eligibility contract, so a
+  legitimate ``borrador → ingresado`` turn still surfaces the refreshed
+  snapshot.
+- [x] 7.3 Add focused fixed-viewport, response/privacy, DOM-update,
+  rejection-preservation, auth/exact-target/no-provider and transaction
+  boundary regression coverage (including the confirm-order
+  ``borrador → ingresado`` regression and the "identity truly gone"
+  rejection regression); run and report the amendment validation commands.
