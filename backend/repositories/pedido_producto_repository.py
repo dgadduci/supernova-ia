@@ -8,6 +8,7 @@ from backend.models import (
     Pedido,
     PedidoProducto,
     Precio,
+    Producto,
     ProductoPresentacion,
 )
 from backend.models import Session as SessionModel
@@ -26,7 +27,8 @@ class PedidoProductoRepository:
             select(PedidoProducto)
             .options(
                 joinedload(PedidoProducto.producto_presentacion)
-                .joinedload(ProductoPresentacion.producto),
+                .joinedload(ProductoPresentacion.producto)
+                .joinedload(Producto.categoria),
                 joinedload(PedidoProducto.producto_presentacion)
                 .joinedload(ProductoPresentacion.presentacion),
             )

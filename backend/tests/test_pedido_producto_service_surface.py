@@ -34,6 +34,55 @@ class PedidoProductoRepositoryListByPedidoTest(unittest.TestCase):
             stmt_mock.options.assert_called_once()
             session.execute.assert_called_once()
 
+    def test_repository_eager_loads_product_category(self):
+        session = MagicMock(spec=SqlSession)
+        repo = PedidoProductoRepository(session)
+
+        chain_calls: list[int] = []
+
+        class _ChainTracker:
+            def __init__(self) -> None:
+                self.depth = 0
+
+            def joinedload(self, *_args, **_kwargs) -> "_ChainTracker":
+                self.depth += 1
+                return self
+
+        tracker_a = _ChainTracker()
+        tracker_b = _ChainTracker()
+
+        def _joinedload_factory(_arg):
+            if not chain_calls:
+                chain_calls.append(0)
+                return tracker_a
+            chain_calls.append(1)
+            return tracker_b
+
+        with patch.object(repo_module, "joinedload", side_effect=_joinedload_factory):
+            with patch.object(repo_module, "select") as select_mock:
+                stmt_mock = MagicMock()
+                select_mock.return_value = stmt_mock
+                stmt_mock.where.return_value = stmt_mock
+                stmt_mock.order_by.return_value = stmt_mock
+                stmt_mock.options.return_value = stmt_mock
+                scalars_mock = MagicMock()
+                scalars_mock.unique.return_value = []
+                session.execute.return_value.scalars.return_value = scalars_mock
+
+                repo.list_by_pedido(7)
+
+        self.assertEqual(tracker_a.depth, 2)
+        self.assertEqual(tracker_b.depth, 1)
+        self.assertEqual(len(chain_calls), 2)
+        self.assertEqual(stmt_mock.options.call_count, 1)
+        self.assertEqual(len(stmt_mock.options.call_args.args), 2)
+
+    def test_repository_public_contract_is_unchanged(self):
+        self.assertEqual(
+            PedidoProductoRepository.list_by_pedido.__name__,
+            "list_by_pedido",
+        )
+
 
 class PedidoProductoRepositoryGetForPedidoTest(unittest.TestCase):
     def test_returns_none_when_line_does_not_exist(self):
