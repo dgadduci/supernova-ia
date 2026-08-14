@@ -1,6 +1,6 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
-### Requirement: Modification source catalog is limited to current order lines
+### Requirement: Modification source catalog includes owned category context
 
 The `modificar_producto` recognizer SHALL build its source catalog only from
 `PedidoProductoService.list_by_pedido(session.id_pedido)`. Each source row
