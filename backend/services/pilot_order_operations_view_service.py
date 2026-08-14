@@ -15,12 +15,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session as SqlSession
 from sqlalchemy.orm import joinedload
 
+from backend.intents.schemas.pending_intents import PendingIntents
 from backend.models import (
     CategoriaProducto,
     Comercio,
@@ -38,6 +41,7 @@ from backend.models import (
 from backend.models import (
     Session as SessionModel,
 )
+from backend.sessions.enums.context_type import ContextType
 
 DEFAULT_PAGE_SIZE = 25
 ALLOWED_PAGE_SIZES = (25, 50, 100)
@@ -50,6 +54,39 @@ CLOSED_ORDER_STATES: tuple[EstadoPedido, ...] = (
     EstadoPedido.TERMINADO,
 )
 FALLBACK_ZONE_LABEL = "UTC"
+
+SUPPORTED_CONTEXT_LITERALS: frozenset[str] = frozenset(
+    {
+        ContextType.PRODUCT_SELECTION.value,
+        ContextType.ORDER_LINE_SELECTION.value,
+        ContextType.PRODUCT_MODIFICATION.value,
+        ContextType.ORDER_CLEAR_CONFIRMATION.value,
+    }
+)
+
+CLOSED_ACTIVE_INTENT_LITERALS: frozenset[str] = frozenset(
+    {
+        "agregar_producto",
+        "quitar_producto",
+        "vaciar_pedido",
+        "consultar_resumen_pedido",
+        "consultar_estado_pedido",
+        "confirmar_pedido",
+        "set_observacion_pedido",
+        "set_direccion_entrega",
+        "set_observacion_producto",
+        "saludo",
+        "agradecimiento",
+        "despedida",
+        "respuesta_afirmativa",
+        "respuesta_negativa",
+        "desconocida",
+    }
+)
+
+CLOSED_ACTIVE_STATUS_LITERALS: frozenset[str] = frozenset(
+    {"pending_resolution", "ready", "executed", "rejected", "failed"}
+)
 
 
 @dataclass(frozen=True)
@@ -187,6 +224,345 @@ class OrderDetailView:
     medio_pago: PaymentMethodView | None
     metodo_entrega: DeliveryMethodView | None
     lineas: list[OrderLineView] = field(default_factory=list)
+    pending_debug: PendingContextDebugView | None = None
+
+
+@dataclass(frozen=True)
+class PendingContextDebugView:
+    """Privacy-bounded summary of the selected session's pending
+    context.
+
+    Only typed, closed, derived values are surfaced:
+
+    * ``context_type`` is one of ``"none"``, a supported context
+      literal, or ``"unsupported"``; the raw persisted string is
+      never returned.
+    * ``pending_encoding`` is one of ``"empty"``, ``"valid"`` or
+      ``"invalid"``; malformed JSON only produces ``"invalid"``
+      without ever exposing the payload or the validation error.
+    * ``active_intent`` and ``active_status`` are restricted to the
+      documented closed literals; anything else is normalised to
+      ``"unsupported"``.
+    * ``candidate_count``, ``queue_length``,
+      ``requirements_pending_count`` and
+      ``requirements_completed_count`` are derived counts only;
+      identifiers, names, source text and values are never copied
+      into this dataclass.
+    * ``schema_version`` is the parsed integer version of the
+      pending JSON when the encoding is valid; ``None`` otherwise.
+    * ``consistency`` is one of ``"none"``, ``"consistent"`` or
+      ``"inconsistent"`` based on the documented contract between
+      the closed context_type and the parsed active work.
+
+    The dataclass intentionally exposes no raw JSON, no resolved
+    data, no source text, no observation values, no candidate ids,
+    no queue payloads, no provider identifiers, no configuration
+    values and no exception detail.
+    """
+
+    context_type: str
+    pending_encoding: str
+    active_intent: str
+    active_status: str
+    candidate_count: int
+    requirements_pending_count: int
+    requirements_completed_count: int
+    queue_length: int
+    schema_version: int | None
+    consistency: str
+
+
+DEBUG_CONTEXT_NONE = "none"
+DEBUG_CONTEXT_UNSUPPORTED = "unsupported"
+DEBUG_PENDING_EMPTY = "empty"
+DEBUG_PENDING_VALID = "valid"
+DEBUG_PENDING_INVALID = "invalid"
+DEBUG_ACTIVE_NONE = "none"
+DEBUG_ACTIVE_UNSUPPORTED = "unsupported"
+DEBUG_CONSISTENCY_NONE = "none"
+DEBUG_CONSISTENCY_OK = "consistent"
+DEBUG_CONSISTENCY_BAD = "inconsistent"
+
+
+def _normalize_context_type(raw_context_type: str | None) -> str:
+    """Return the closed debug view context_type for ``raw_context_type``.
+
+    ``None`` and the empty string both map to ``"none"``. Supported
+    literals are returned as-is so the operator still sees which flow
+    is active. Any other persisted value maps to ``"unsupported"``.
+    The raw value is never propagated to the view.
+    """
+    if raw_context_type is None or raw_context_type == "":
+        return DEBUG_CONTEXT_NONE
+    if raw_context_type in SUPPORTED_CONTEXT_LITERALS:
+        return raw_context_type
+    return DEBUG_CONTEXT_UNSUPPORTED
+
+
+def _normalize_active_intent(raw_intent: Any) -> str:
+    if raw_intent is None:
+        return DEBUG_ACTIVE_NONE
+    if not isinstance(raw_intent, str):
+        return DEBUG_ACTIVE_UNSUPPORTED
+    if raw_intent == "":
+        return DEBUG_ACTIVE_NONE
+    if raw_intent in CLOSED_ACTIVE_INTENT_LITERALS:
+        return raw_intent
+    return DEBUG_ACTIVE_UNSUPPORTED
+
+
+def _normalize_active_status(raw_status: Any) -> str:
+    if raw_status is None:
+        return DEBUG_ACTIVE_NONE
+    if not isinstance(raw_status, str):
+        return DEBUG_ACTIVE_UNSUPPORTED
+    if raw_status == "":
+        return DEBUG_ACTIVE_NONE
+    if raw_status in CLOSED_ACTIVE_STATUS_LITERALS:
+        return raw_status
+    return DEBUG_ACTIVE_UNSUPPORTED
+
+
+def _count_requirements(raw_requirements: Any) -> tuple[int, int]:
+    if not isinstance(raw_requirements, (list, tuple)):
+        return (0, 0)
+    pending = 0
+    completed = 0
+    for item in raw_requirements:
+        if isinstance(item, dict):
+            status_value = item.get("status")
+            if status_value == "pending":
+                pending += 1
+            elif status_value == "completed":
+                completed += 1
+        else:
+            status_attr = getattr(item, "status", None)
+            if status_attr == "pending":
+                pending += 1
+            elif status_attr == "completed":
+                completed += 1
+    return (pending, completed)
+
+
+def _count_candidates(raw_candidates: Any) -> int:
+    if not isinstance(raw_candidates, (list, tuple)):
+        return 0
+    return len(raw_candidates)
+
+
+def _queue_length(raw_queue: Any) -> int:
+    if not isinstance(raw_queue, (list, tuple)):
+        return 0
+    return len(raw_queue)
+
+
+def _consistency_for(
+    *,
+    normalized_context: str,
+    pending_encoding: str,
+    active_intent: str,
+    active_status: str,
+) -> str:
+    """Derive the closed consistency label.
+
+    The contract follows the documented intent:
+
+    * ``pending_encoding == "invalid"`` or ``context_type ==
+      "unsupported"`` reports ``"inconsistent"`` regardless of the
+      active intent, because the persisted state cannot be safely
+      resumed.
+    * A supported ``context_type`` with an empty pending encoding
+      reports ``"inconsistent"`` because the dispatcher expects
+      pending work for any non-empty context.
+    * An empty pending encoding with no context and no active intent
+      reports ``"none"`` (the canonical rest state).
+    * An unsupported ``active_intent`` while the pending encoding is
+      not empty reports ``"inconsistent"`` because the dispatcher
+      cannot resume an intent it does not recognise.
+    * An unsupported ``active_status`` while the pending encoding is
+      not empty reports ``"inconsistent"`` because the dispatcher
+      cannot resume a state it does not recognise.
+    * Any other combination where context, active intent and active
+      status are documented values reports ``"consistent"`` so the
+      operator can rely on the active work matching the closed
+      context.
+
+    The helper is pure and never inspects the database.
+    """
+    if pending_encoding == DEBUG_PENDING_INVALID:
+        return DEBUG_CONSISTENCY_BAD
+    if normalized_context == DEBUG_CONTEXT_UNSUPPORTED:
+        return DEBUG_CONSISTENCY_BAD
+    if (
+        normalized_context not in (DEBUG_CONTEXT_NONE, DEBUG_CONTEXT_UNSUPPORTED)
+        and pending_encoding == DEBUG_PENDING_EMPTY
+    ):
+        return DEBUG_CONSISTENCY_BAD
+    if (
+        normalized_context == DEBUG_CONTEXT_NONE
+        and pending_encoding == DEBUG_PENDING_EMPTY
+        and active_intent == DEBUG_ACTIVE_NONE
+    ):
+        return DEBUG_CONSISTENCY_NONE
+    if (
+        active_intent in (DEBUG_ACTIVE_NONE, DEBUG_ACTIVE_UNSUPPORTED)
+        and pending_encoding != DEBUG_PENDING_EMPTY
+    ):
+        return DEBUG_CONSISTENCY_BAD
+    if (
+        active_status in (DEBUG_ACTIVE_UNSUPPORTED,)
+        and pending_encoding != DEBUG_PENDING_EMPTY
+    ):
+        return DEBUG_CONSISTENCY_BAD
+    return DEBUG_CONSISTENCY_OK
+
+
+def _raw_pending_is_malformed(raw_pending_intents: Any) -> bool:
+    """Detect malformed ``pending_intents`` JSON.
+
+    The ORM returns a Python ``dict`` (or ``None``) so the only ways
+    the storage is malformed are:
+
+    * the value is not a ``dict``;
+    * ``version`` is present and not a non-negative integer;
+    * ``active`` is present and not a ``dict``;
+    * the ``active`` dict is missing any of ``intent``, ``source_text``
+      or ``handler``;
+    * the ``queue`` value is present and not a ``list``.
+
+    A dict without ``active`` and with an empty ``queue`` is the
+    canonical empty persisted shape and is therefore valid. The
+    helper returns ``True`` only when the persisted shape cannot be
+    safely projected into the typed view model.
+    """
+    if not isinstance(raw_pending_intents, dict):
+        return True
+    if "version" in raw_pending_intents and not isinstance(
+        raw_pending_intents["version"], int
+    ):
+        return True
+    if "version" in raw_pending_intents and raw_pending_intents["version"] < 0:
+        return True
+    if "active" in raw_pending_intents and raw_pending_intents["active"] is not None:
+        active_value = raw_pending_intents["active"]
+        if not isinstance(active_value, dict):
+            return True
+        for required_key in ("intent", "source_text", "handler"):
+            if required_key not in active_value:
+                return True
+            if not isinstance(active_value[required_key], str):
+                return True
+    return "queue" in raw_pending_intents and not isinstance(
+        raw_pending_intents["queue"], list
+    )
+
+
+def build_pending_context_debug_view(
+    *,
+    raw_context_type: str | None,
+    raw_pending_intents: Any,
+) -> PendingContextDebugView:
+    """Build a :class:`PendingContextDebugView` for the selected session.
+
+    The helper is pure and never inspects the database, the
+    configuration or any external service. It receives the raw
+    persisted fields exactly as the ORM exposes them and returns a
+    frozen view model that only carries the documented closed values.
+    Malformed ``pending_intents`` JSON never propagates beyond the
+    closed ``"invalid"`` sentinel.
+    """
+    normalized_context = _normalize_context_type(raw_context_type)
+    if raw_pending_intents is None or raw_pending_intents == {}:
+        return PendingContextDebugView(
+            context_type=normalized_context,
+            pending_encoding=DEBUG_PENDING_EMPTY,
+            active_intent=DEBUG_ACTIVE_NONE,
+            active_status=DEBUG_ACTIVE_NONE,
+            candidate_count=0,
+            requirements_pending_count=0,
+            requirements_completed_count=0,
+            queue_length=0,
+            schema_version=None,
+            consistency=_consistency_for(
+                normalized_context=normalized_context,
+                pending_encoding=DEBUG_PENDING_EMPTY,
+                active_intent=DEBUG_ACTIVE_NONE,
+                active_status=DEBUG_ACTIVE_NONE,
+            ),
+        )
+
+    if _raw_pending_is_malformed(raw_pending_intents):
+        return PendingContextDebugView(
+            context_type=normalized_context,
+            pending_encoding=DEBUG_PENDING_INVALID,
+            active_intent=DEBUG_ACTIVE_NONE,
+            active_status=DEBUG_ACTIVE_NONE,
+            candidate_count=0,
+            requirements_pending_count=0,
+            requirements_completed_count=0,
+            queue_length=0,
+            schema_version=None,
+            consistency=_consistency_for(
+                normalized_context=normalized_context,
+                pending_encoding=DEBUG_PENDING_INVALID,
+                active_intent=DEBUG_ACTIVE_NONE,
+                active_status=DEBUG_ACTIVE_NONE,
+            ),
+        )
+
+    try:
+        parsed = PendingIntents.model_validate(raw_pending_intents)
+    except ValidationError:
+        return PendingContextDebugView(
+            context_type=normalized_context,
+            pending_encoding=DEBUG_PENDING_INVALID,
+            active_intent=DEBUG_ACTIVE_NONE,
+            active_status=DEBUG_ACTIVE_NONE,
+            candidate_count=0,
+            requirements_pending_count=0,
+            requirements_completed_count=0,
+            queue_length=0,
+            schema_version=None,
+            consistency=_consistency_for(
+                normalized_context=normalized_context,
+                pending_encoding=DEBUG_PENDING_INVALID,
+                active_intent=DEBUG_ACTIVE_NONE,
+                active_status=DEBUG_ACTIVE_NONE,
+            ),
+        )
+
+    active_intent_raw = getattr(parsed.active, "intent", None)
+    active_status_raw = getattr(parsed.active, "status", None)
+    active_intent = _normalize_active_intent(active_intent_raw)
+    active_status = _normalize_active_status(active_status_raw)
+    candidate_count = _count_candidates(
+        getattr(parsed.active, "candidate_ids", None)
+    )
+    pending_req, completed_req = _count_requirements(
+        getattr(parsed.active, "requirements", None)
+    )
+    queue_length = _queue_length(parsed.queue)
+    schema_version = (
+        parsed.version if isinstance(parsed.version, int) else None
+    )
+
+    return PendingContextDebugView(
+        context_type=normalized_context,
+        pending_encoding=DEBUG_PENDING_VALID,
+        active_intent=active_intent,
+        active_status=active_status,
+        candidate_count=candidate_count,
+        requirements_pending_count=pending_req,
+        requirements_completed_count=completed_req,
+        queue_length=queue_length,
+        schema_version=schema_version,
+        consistency=_consistency_for(
+            normalized_context=normalized_context,
+            pending_encoding=DEBUG_PENDING_VALID,
+            active_intent=active_intent,
+            active_status=active_status,
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -518,6 +894,10 @@ class PilotOrderOperationsViewService:
         medio_pago = self._medio_pago_view(pedido)
         metodo_entrega = self._metodo_entrega_view(pedido)
         zona_horaria = pedido.session.comercio.zona_horaria
+        pending_debug = build_pending_context_debug_view(
+            raw_context_type=pedido.session.context_type,
+            raw_pending_intents=pedido.session.pending_intents,
+        )
         return OrderDetailView(
             pedido=OrderSummary(
                 id=pedido.id,
@@ -564,6 +944,7 @@ class PilotOrderOperationsViewService:
             medio_pago=medio_pago,
             metodo_entrega=metodo_entrega,
             lineas=lineas,
+            pending_debug=pending_debug,
         )
 
     def get_provider_history(
@@ -870,12 +1251,14 @@ __all__ = [
     "OrderSummary",
     "OutboundMessageView",
     "PaymentMethodView",
+    "PendingContextDebugView",
     "PilotOrderOperationsViewError",
     "PilotOrderOperationsViewService",
     "ProviderHistoryEntry",
     "ProviderHistoryView",
     "ProviderReceiptView",
     "SessionSummary",
+    "build_pending_context_debug_view",
     "format_local_datetime",
     "format_local_datetime_optional",
     "parse_comercio_id",

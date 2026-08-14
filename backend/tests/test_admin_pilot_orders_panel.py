@@ -41,6 +41,7 @@ from backend.services.pilot_order_operations_view_service import (
     OrderSummary,
     OutboundMessageView,
     PaymentMethodView,
+    PendingContextDebugView,
     ProviderHistoryEntry,
     ProviderHistoryView,
     ProviderReceiptView,
@@ -795,15 +796,31 @@ class PanelNoMutationTest(unittest.TestCase):
         self.session.begin.assert_not_called()
         self.session.close.assert_not_called()
 
-    def test_only_get_routes_are_registered(self) -> None:
+    def test_only_get_routes_are_registered_outside_local_test(self) -> None:
+        """The panel now owns one POST route — the panel-local test
+        channel for the exact selected Pedido. Every other route
+        must remain GET-only."""
         for route in router_module.router.routes:
             methods = getattr(route, "methods", set())
+            if getattr(route, "path", "").endswith("/local-test"):
+                self.assertEqual(
+                    methods,
+                    {"POST"},
+                    msg=(
+                        f"local-test route must be POST only, got {methods}"
+                    ),
+                )
+                continue
             self.assertTrue(
                 methods.issubset({"GET", "HEAD"}),
                 msg=f"non-GET methods registered: {methods}",
             )
 
-    def test_templates_contain_no_mutating_form(self) -> None:
+    def test_templates_contain_no_mutating_form_outside_local_test(self) -> None:
+        """The list view carries only the documented GET filter
+        form; the detail view carries exactly the documented
+        local-test form pointing at the panel-local POST route,
+        never at any external action."""
         with patch.object(
             router_module,
             "PilotOrderOperationsViewService",
@@ -824,6 +841,7 @@ class PanelNoMutationTest(unittest.TestCase):
         self.assertNotIn('method="POST"', list_response.text)
         self.assertNotIn('method="put"', list_response.text)
         self.assertNotIn('method="delete"', list_response.text)
+        self.assertIn('method="get"', list_response.text)
         with patch.object(
             router_module,
             "PilotOrderOperationsViewService",
@@ -836,8 +854,11 @@ class PanelNoMutationTest(unittest.TestCase):
                 "/admin/pilot/orders/42",
                 headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
             )
-        self.assertNotIn("<form", detail_response.text)
-        self.assertNotIn('method="post"', detail_response.text)
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertNotIn('method="put"', detail_response.text)
+        self.assertNotIn('method="delete"', detail_response.text)
+        self.assertIn('action="/admin/pilot/orders/42/local-test"', detail_response.text)
+        self.assertIn('X-Local-Test-Origin', detail_response.text)
 
 
 class PanelTemplatesEscapeTest(unittest.TestCase):
@@ -1256,6 +1277,755 @@ class PanelTimezoneRegressionTest(unittest.TestCase):
         self.session.refresh.assert_not_called()
         self.session.begin.assert_not_called()
         self.session.close.assert_not_called()
+
+
+def _build_detail_with_pending_debug(
+    *,
+    pending_debug: PendingContextDebugView | None,
+) -> OrderDetailView:
+    base = _build_detail()
+    return OrderDetailView(
+        pedido=base.pedido,
+        session=base.session,
+        client=base.client,
+        commerce=base.commerce,
+        direccion_entrega=base.direccion_entrega,
+        observaciones=base.observaciones,
+        datetime_entrega_programada=base.datetime_entrega_programada,
+        datetime_entrega_programada_local=base.datetime_entrega_programada_local,
+        medio_pago=base.medio_pago,
+        metodo_entrega=base.metodo_entrega,
+        lineas=base.lineas,
+        pending_debug=pending_debug,
+    )
+
+
+def _strip_css(html: str) -> str:
+    """Remove the inline ``<style>`` block so the tests can inspect
+    the rendered DOM without the static CSS colour hex codes
+    polluting the search."""
+    start = html.find("<style>")
+    end = html.find("</style>")
+    if start == -1 or end == -1:
+        return html
+    return html[:start] + html[end + len("</style>"):]
+
+
+class PanelDebugConsoleRenderingTest(unittest.TestCase):
+    """The detail view renders the 30/30/40 three-column console
+    with the local-test chat, the existing detail/history and the
+    safe execution-state column. Every privacy-bounded value is
+    emitted as text; no payload, raw JSON, source text, candidate
+    identifier, environment variable, configuration value or
+    secret ever appears in the rendered HTML."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def test_detail_renders_three_columns(self) -> None:
+        pending = PendingContextDebugView(
+            context_type="product_selection",
+            pending_encoding="valid",
+            active_intent="agregar_producto",
+            active_status="pending_resolution",
+            candidate_count=2,
+            requirements_pending_count=1,
+            requirements_completed_count=1,
+            queue_length=0,
+            schema_version=1,
+            consistency="consistent",
+        )
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail_with_pending_debug(pending_debug=pending),
+                history=_build_history(),
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 200)
+        body = response.text
+        self.assertIn('class="debug-grid"', body)
+        self.assertIn('class="debug-column debug-chat"', body)
+        self.assertIn('class="debug-column debug-detail"', body)
+        self.assertIn('class="debug-column debug-state"', body)
+        # CSS grid columns
+        self.assertIn(
+            "minmax(16rem, 30%) minmax(16rem, 30%) minmax(20rem, 40%)",
+            body,
+        )
+        # Narrow viewport stacking
+        self.assertIn("@media (max-width: 900px)", body)
+
+    def test_detail_renders_warning_label(self) -> None:
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail(),
+                history=_build_history(),
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        body = response.text
+        self.assertIn(
+            "Canal de prueba local — no WhatsApp / no Twilio",
+            body,
+        )
+        self.assertIn("Lo único durable", body)
+
+    def test_detail_renders_pending_debug_for_valid_state(self) -> None:
+        pending = PendingContextDebugView(
+            context_type="product_selection",
+            pending_encoding="valid",
+            active_intent="agregar_producto",
+            active_status="pending_resolution",
+            candidate_count=3,
+            requirements_pending_count=1,
+            requirements_completed_count=1,
+            queue_length=2,
+            schema_version=1,
+            consistency="consistent",
+        )
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail_with_pending_debug(pending_debug=pending),
+                history=_build_history(),
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        body = response.text
+        self.assertIn("product_selection", body)
+        self.assertIn("valid", body)
+        self.assertIn("agregar_producto", body)
+        self.assertIn("pending_resolution", body)
+        self.assertIn("3", body)
+        self.assertIn("1", body)
+
+    def test_detail_renders_invalid_state_with_no_payload(self) -> None:
+        pending = PendingContextDebugView(
+            context_type="product_selection",
+            pending_encoding="invalid",
+            active_intent="none",
+            active_status="none",
+            candidate_count=0,
+            requirements_pending_count=0,
+            requirements_completed_count=0,
+            queue_length=0,
+            schema_version=None,
+            consistency="inconsistent",
+        )
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail_with_pending_debug(pending_debug=pending),
+                history=_build_history(),
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        body = response.text
+        self.assertIn("invalid", body)
+        self.assertIn("inconsistent", body)
+        # Payload/candidate IDs/secret-like values must NEVER appear.
+        for forbidden in (
+            "SECRET-SOURCE",
+            "SECRET-VALUE",
+            "candidate_ids",
+            "resolved_data",
+            "source_text",
+            "pending_intents",
+            "raw_context_type",
+            "diagnostics",
+            "secret",
+            "OPENAI",
+            "API_KEY",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, body)
+
+    def test_detail_renders_none_state_when_no_pending_debug(self) -> None:
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail_with_pending_debug(pending_debug=None),
+                history=_build_history(),
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Sin estado de pending", response.text)
+
+    def test_transcript_uses_textContent_only(self) -> None:
+        """The browser transcript must never use ``innerHTML`` or
+        ``outerHTML`` to insert operator input or mapped responses.
+        Only ``textContent`` is allowed for the volatile transcript
+        so HTML-like input is rendered as literal text."""
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail(),
+                history=_build_history(),
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        body_no_css = _strip_css(response.text)
+        # The transcript uses textContent only.
+        self.assertIn("textContent", body_no_css)
+        self.assertNotIn("innerHTML", body_no_css)
+        self.assertNotIn("outerHTML", body_no_css)
+
+    def test_transcript_never_uses_storage_or_url(self) -> None:
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail(),
+                history=_build_history(),
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        body_no_css = _strip_css(response.text)
+        for forbidden in (
+            "localStorage",
+            "sessionStorage",
+            "document.cookie",
+            "history.pushState",
+            "history.replaceState",
+            "URLSearchParams",
+            "window.location.search",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, body_no_css)
+
+    def test_detail_local_test_form_is_post_only(self) -> None:
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail(),
+                history=_build_history(),
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        body = response.text
+        self.assertIn('action="/admin/pilot/orders/42/local-test"', body)
+        self.assertIn('method="post"', body)
+        self.assertIn("X-Local-Test-Origin", body)
+        self.assertIn("maxlength=\"500\"", body)
+
+
+class PanelLocalTestRouteAuthTest(unittest.TestCase):
+    """The local-test POST route is mounted behind the same panel
+    Basic authentication as the rest of the route family. Missing
+    or wrong credentials return 401 with no business work."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def test_missing_credential_returns_401(self) -> None:
+        response = self.client.post(
+            "/admin/pilot/orders/42/local-test",
+            json={"message": "hola"},
+            headers={"X-Local-Test-Origin": "same-origin"},
+        )
+        self.assertEqual(response.status_code, 401)
+        self.session_override.assert_not_called()
+
+    def test_wrong_password_returns_401(self) -> None:
+        response = self.client.post(
+            "/admin/pilot/orders/42/local-test",
+            json={"message": "hola"},
+            headers={
+                **_basic_auth_header("ignored", "definitely-wrong"),
+                "X-Local-Test-Origin": "same-origin",
+            },
+        )
+        self.assertEqual(response.status_code, 401)
+
+
+class PanelLocalTestRouteHeaderTest(unittest.TestCase):
+    """The local-test POST route requires the documented same-origin
+    custom header. Cross-origin form posts cannot set it, so the
+    header acts as the CSRF defence."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def _post(self, *, origin_value):
+        headers = _basic_auth_header("ignored", CONFIGURED_TOKEN)
+        if origin_value is not None:
+            headers["X-Local-Test-Origin"] = origin_value
+        return self.client.post(
+            "/admin/pilot/orders/42/local-test",
+            json={"message": "hola"},
+            headers=headers,
+        )
+
+    def test_missing_origin_header_returns_generic_rejection(self) -> None:
+        with patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            response = self._post(origin_value=None)
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertEqual(body.get("responses"), [])
+        self.assertIn("message", body)
+        process_mock.assert_not_called()
+
+    def test_wrong_origin_header_returns_generic_rejection(self) -> None:
+        with patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            response = self._post(origin_value="attacker.example")
+        self.assertEqual(response.status_code, 400)
+        process_mock.assert_not_called()
+
+
+class PanelLocalTestRouteBodyValidationTest(unittest.TestCase):
+    """Body validation rejects empty, malformed and oversized
+    payloads before the pipeline is invoked."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def _post(self, *, body, **kwargs):
+        headers = _basic_auth_header("ignored", CONFIGURED_TOKEN)
+        headers["X-Local-Test-Origin"] = "same-origin"
+        return self.client.post(
+            "/admin/pilot/orders/42/local-test",
+            headers=headers,
+            **kwargs,
+        )
+
+    def test_empty_body_returns_422(self) -> None:
+        with patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            response = self._post(body=None, json={})
+        self.assertEqual(response.status_code, 422)
+        process_mock.assert_not_called()
+
+    def test_non_string_message_returns_422(self) -> None:
+        with patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            response = self._post(body=None, json={"message": 123})
+        self.assertEqual(response.status_code, 422)
+        process_mock.assert_not_called()
+
+    def test_extra_field_returns_422(self) -> None:
+        with patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            response = self._post(
+                body=None, json={"message": "hola", "extra": "x"}
+            )
+        self.assertEqual(response.status_code, 422)
+        process_mock.assert_not_called()
+
+    def test_oversized_message_returns_422(self) -> None:
+        with patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            response = self._post(
+                body=None,
+                json={"message": "x" * 501},
+            )
+        self.assertEqual(response.status_code, 422)
+        process_mock.assert_not_called()
+
+    def test_empty_string_message_returns_422(self) -> None:
+        with patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            response = self._post(body=None, json={"message": ""})
+        self.assertEqual(response.status_code, 422)
+        process_mock.assert_not_called()
+
+
+class PanelLocalTestRouteRevalidationTest(unittest.TestCase):
+    """The route re-validates the exact selected Pedido. Any
+    mismatch (missing, closed, non-borrador, foreign session) must
+    return the generic rejection without invoking the pipeline."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def _post(self, pedido_id: str = "42"):
+        headers = _basic_auth_header("ignored", CONFIGURED_TOKEN)
+        headers["X-Local-Test-Origin"] = "same-origin"
+        return self.client.post(
+            f"/admin/pilot/orders/{pedido_id}/local-test",
+            json={"message": "hola"},
+            headers=headers,
+        )
+
+    def _stub_loader_returning(self, return_value):
+        return patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=return_value,
+        )
+
+    def test_invalid_pedido_id_returns_generic_rejection(self) -> None:
+        with patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock, self._stub_loader_returning(None):
+            response = self._post(pedido_id="abc")
+        self.assertEqual(response.status_code, 400)
+        process_mock.assert_not_called()
+
+    def test_missing_pedido_returns_generic_rejection(self) -> None:
+        with patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock, self._stub_loader_returning(None):
+            response = self._post(pedido_id="9999")
+        self.assertEqual(response.status_code, 400)
+        process_mock.assert_not_called()
+
+    def test_loader_rejection_returns_generic_rejection(self) -> None:
+        with patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock, self._stub_loader_returning(None):
+            response = self._post(pedido_id="42")
+        self.assertEqual(response.status_code, 400)
+        process_mock.assert_not_called()
+
+    def test_loader_rejection_returns_generic_message(self) -> None:
+        with patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock, self._stub_loader_returning(None):
+            response = self._post(pedido_id="42")
+        body = response.json()
+        self.assertEqual(body.get("responses"), [])
+        self.assertIn("message", body)
+        # The rejection body must never echo back the reason.
+        self.assertNotIn("invalid", body.get("message", "").lower())
+        self.assertNotIn("target", body.get("message", "").lower())
+        self.assertNotIn("session", body.get("message", "").lower())
+        self.assertNotIn("pedido", body.get("message", "").lower())
+        process_mock.assert_not_called()
+
+
+class PanelLocalTestRouteHappyPathTest(unittest.TestCase):
+    """A valid local-test turn invokes the response orchestrator
+    exactly once with the exact selected Session. No provider
+    coordinator, no receipt, no outbox, no worker, no Twilio."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def _post(self):
+        headers = _basic_auth_header("ignored", CONFIGURED_TOKEN)
+        headers["X-Local-Test-Origin"] = "same-origin"
+        return self.client.post(
+            "/admin/pilot/orders/42/local-test",
+            json={"message": "hola"},
+            headers=headers,
+        )
+
+    def test_happy_path_invokes_orchestrator_once_with_exact_session(self) -> None:
+        exact_session = MagicMock(name="ExactSession")
+        exact_session.id = 21
+        exact_session.id_pedido = 42
+        exact_session.id_comercio = 1
+        exact_session.id_cliente = 31
+        exact_session.estado_session = "activa"
+        exact_pedido = MagicMock(name="ExactPedido")
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ) as loader, patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            from backend.intents.schemas.customer_response import CustomerResponse
+
+            process_mock.return_value = [
+                CustomerResponse(
+                    message="Hola, soy el cliente",
+                    intent="saludo",
+                    status="executed",
+                )
+            ]
+            response = self._post()
+        self.assertEqual(response.status_code, 200)
+        loader.assert_called_once()
+        process_mock.assert_called_once()
+        called_args = process_mock.call_args.args
+        # Signature is ``process_incoming_message_with_responses(db, session, message)``
+        # so the second positional must be the exact selected Session.
+        self.assertIs(called_args[1], exact_session)
+        self.assertEqual(called_args[2], "hola")
+        body = response.json()
+        self.assertEqual(
+            body,
+            {
+                "responses": [
+                    {
+                        "message": "Hola, soy el cliente",
+                        "intent": "saludo",
+                        "status": "executed",
+                    }
+                ]
+            },
+        )
+
+    def test_happy_path_does_not_call_provider_outbox_worker(self) -> None:
+        exact_session = MagicMock(name="ExactSession")
+        exact_session.id = 21
+        exact_session.id_pedido = 42
+        exact_session.id_comercio = 1
+        exact_session.id_cliente = 31
+        exact_session.estado_session = "activa"
+        exact_pedido = MagicMock(name="ExactPedido")
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            from backend.intents.schemas.customer_response import CustomerResponse
+
+            process_mock.return_value = [
+                CustomerResponse(
+                    message="ok",
+                    intent="saludo",
+                    status="executed",
+                )
+            ]
+            response = self._post()
+        self.assertEqual(response.status_code, 200)
+        # The route never imports or references the provider
+        # coordinator, the worker or the outbox directly. The only
+        # call into the message pipeline is the response
+        # orchestrator for the exact selected session.
+        self.assertEqual(process_mock.call_count, 1)
+
+
+class PanelLocalTestRouteNoMutationTest(unittest.TestCase):
+    """The route never commits, rolls back, flushes, refreshes,
+    begins or closes the database session: the request-level
+    dependency remains the transaction owner, and the existing
+    transactional processor is the only commit/rollback authority
+    for a valid turn."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def _post(self, *, body):
+        headers = _basic_auth_header("ignored", CONFIGURED_TOKEN)
+        headers["X-Local-Test-Origin"] = "same-origin"
+        return self.client.post(
+            "/admin/pilot/orders/42/local-test",
+            json=body,
+            headers=headers,
+        )
+
+    def test_rejection_path_does_not_mutate_session(self) -> None:
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=None,
+        ):
+            response = self._post(body={"message": "hola"})
+        self.assertEqual(response.status_code, 400)
+        self.session.commit.assert_not_called()
+        self.session.rollback.assert_not_called()
+        self.session.flush.assert_not_called()
+        self.session.refresh.assert_not_called()
+        self.session.begin.assert_not_called()
+        self.session.close.assert_not_called()
+
+    def test_happy_path_routes_through_orchestrator(self) -> None:
+        exact_session = MagicMock(name="ExactSession")
+        exact_session.id = 21
+        exact_session.id_pedido = 42
+        exact_session.id_comercio = 1
+        exact_session.id_cliente = 31
+        exact_session.estado_session = "activa"
+        exact_pedido = MagicMock(name="ExactPedido")
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            from backend.intents.schemas.customer_response import CustomerResponse
+
+            process_mock.return_value = [
+                CustomerResponse(
+                    message="ok",
+                    intent="saludo",
+                    status="executed",
+                )
+            ]
+            response = self._post(body={"message": "hola"})
+        self.assertEqual(response.status_code, 200)
+
+
+class PanelLocalTestRouteSrcPrivacyTest(unittest.TestCase):
+    """The router file MUST NOT import any provider, Twilio, worker,
+    outbound or receipt surface. The local-test POST handler is the
+    only mutating entry point and only invokes the documented
+    response orchestrator seam."""
+
+    def test_router_source_does_not_import_provider_worker_twilio(self) -> None:
+        from pathlib import Path
+
+        forbidden = (
+            "from backend.intents.handlers",
+            "from backend.intents.context",
+            "from backend.intents.recognizers",
+            "from backend.intents.resolvers",
+            "from backend.intents.processor",
+            "from backend.intents.contracts",
+            "from backend.llm",
+            "from backend.services.session_service",
+            "from backend.providers",
+            "from backend.workers",
+            "from backend.coordinators",
+            "import requests",
+            "import twilio",
+            "MessagingResponse",
+            "OutboundRow",
+            "ProviderInboundMessageCoordinator",
+            "ProviderReceipt",
+        )
+        source = Path(router_module.__file__).read_text(encoding="utf-8")
+        for value in forbidden:
+            with self.subTest(value=value):
+                self.assertNotIn(value, source)
 
 
 if __name__ == "__main__":

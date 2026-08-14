@@ -31,7 +31,7 @@
   header .crumb { color: #cbd5e1; font-size: 0.85em; }
   main {
     padding: 16px 24px;
-    max-width: 1100px;
+    max-width: 1280px;
     margin: 0 auto;
   }
   h1, h2, h3 { margin: 0.4em 0; }
@@ -134,6 +134,78 @@
     margin: 6px 0 0;
   }
   .receipt + .outbound { margin-left: 16px; }
+  .debug-grid {
+    display: grid;
+    gap: 16px;
+    grid-template-columns: minmax(16rem, 30%) minmax(16rem, 30%) minmax(20rem, 40%);
+    align-items: start;
+    margin: 16px 0;
+  }
+  .debug-column {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    padding: 12px 16px;
+    min-width: 0;
+  }
+  .debug-column h2 { margin-top: 0; }
+  .debug-transcript {
+    min-height: 8rem;
+    max-height: 24rem;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    background: #fafafa;
+    padding: 8px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 0.9rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .debug-transcript .turn-operator { color: var(--accent); }
+  .debug-transcript .turn-customer { color: var(--fg); }
+  .debug-transcript .turn-error { color: var(--error); }
+  .debug-form textarea {
+    width: 100%;
+    min-height: 3rem;
+    padding: 6px 8px;
+    font-family: inherit;
+    font-size: 0.92rem;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    box-sizing: border-box;
+    resize: vertical;
+  }
+  .debug-form button {
+    margin-top: 8px;
+    padding: 6px 12px;
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: #fff;
+    border-radius: 3px;
+    cursor: pointer;
+  }
+  .debug-form button[disabled] {
+    background: var(--muted);
+    border-color: var(--muted);
+    cursor: not-allowed;
+  }
+  .debug-warning {
+    background: #fff8e6;
+    border: 1px solid var(--warn);
+    color: var(--warn);
+    padding: 8px 10px;
+    font-size: 0.85rem;
+    margin: 0 0 10px 0;
+  }
+  .debug-state dl { margin: 0.4em 0; }
+  .debug-state dt { font-weight: 600; color: var(--muted); margin-top: 0.3em; }
+  .debug-state dd { margin: 0 0 0.2em 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 0.95rem; }
+  .debug-state .badge-ok { color: var(--accent); }
+  .debug-state .badge-bad { color: var(--error); }
+  @media (max-width: 900px) {
+    .debug-grid {
+      grid-template-columns: 1fr;
+    }
+  }
 </style>
 </head>
 <body>
@@ -144,5 +216,99 @@
 <main>
 {% block body %}{% endblock %}
 </main>
+<script>
+(function () {
+  "use strict";
+  var forms = document.querySelectorAll("[data-debug-form]");
+  forms.forEach(function (form) {
+    var transcript = document.querySelector("[data-debug-transcript]");
+    var status = document.querySelector("[data-debug-status]");
+    var submit = form.querySelector("[data-debug-submit]");
+    var textarea = form.querySelector("[data-debug-textarea]");
+
+    function appendLine(kind, text) {
+      if (!transcript) {
+        return;
+      }
+      var p = document.createElement("p");
+      p.className = "turn-" + kind;
+      p.textContent = text;
+      transcript.appendChild(p);
+      transcript.scrollTop = transcript.scrollHeight;
+    }
+
+    function setStatus(text) {
+      if (status) {
+        status.textContent = text;
+      }
+    }
+
+    function setBusy(busy) {
+      if (submit) {
+        submit.disabled = busy;
+      }
+      if (textarea) {
+        textarea.disabled = busy;
+      }
+    }
+
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      if (!textarea) {
+        return;
+      }
+      var raw = textarea.value || "";
+      var trimmed = raw.trim();
+      if (!trimmed) {
+        setStatus("Mensaje vacío: no se envió nada.");
+        return;
+      }
+      appendLine("operator", "Operador: " + raw);
+      setBusy(true);
+      setStatus("Enviando al canal local…");
+      fetch(form.action, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Local-Test-Origin": "same-origin"
+        },
+        body: JSON.stringify({ message: trimmed })
+      })
+        .then(function (response) {
+          return response.json().catch(function () {
+            return {};
+          }).then(function (data) {
+            return { ok: response.ok, data: data };
+          });
+        })
+        .then(function (result) {
+          if (!result.ok || !result.data || !Array.isArray(result.data.responses)) {
+            appendLine("error", "Cliente: " + (result.data && result.data.message ? result.data.message : "El canal local rechazó el mensaje."));
+            setStatus("Error del canal local. No se realizó ningún cambio.");
+            return;
+          }
+          if (result.data.responses.length === 0) {
+            appendLine("customer", "Cliente: (sin respuesta)");
+          } else {
+            result.data.responses.forEach(function (entry) {
+              var text = entry && typeof entry.message === "string" ? entry.message : "";
+              appendLine("customer", "Cliente: " + text);
+            });
+          }
+          setStatus("Turno procesado por el pipeline transaccional. El transcript vive solo en esta pestaña.");
+        })
+        .catch(function () {
+          appendLine("error", "Cliente: El canal local rechazó el mensaje.");
+          setStatus("Error del canal local. No se realizó ningún cambio.");
+        })
+        .then(function () {
+          setBusy(false);
+          textarea.value = "";
+        });
+    });
+  });
+})();
+</script>
 </body>
 </html>

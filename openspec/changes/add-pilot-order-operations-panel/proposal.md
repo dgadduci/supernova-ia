@@ -128,3 +128,95 @@ of `fix-pending-context-recovery-and-status-query`, and then
 archived merely because this panel is delivered. After the panel is deployed,
 use it to inspect the designated pilot order/session and only then resume the
 previously documented production test sequences.
+
+## Debug-console amendment (2026-08-13)
+
+The deployed panel made it possible to confirm an order-line-selection
+production defect: after the valid initial ambiguity for `quitar_producto`, a
+size-only reply such as `Chica` or `Grande` remains pending and repeats the
+same clarification. This is not a Twilio transport defect. The existing
+provider history alone is too slow and incomplete for economical iteration,
+while raw JSON endpoints are unsuitable for the pilot operator.
+
+This amendment extends the existing authenticated detail page with a bounded
+operator debug console. It deliberately changes only this panel from a
+read-only surface into an explicitly labelled, tightly scoped local-test
+surface; it does not make the JSON APIs public or turn the panel into a
+general administration console.
+
+### Added scope
+
+- Render the detail as three responsive columns: 30% local-test chat, 30%
+  current order detail, and 40% safe execution-state view. Narrow screens may
+  stack the columns without losing information.
+- Show a typed, privacy-bounded summary of the selected session's
+  `context_type` and `pending_intents`: pending-state validity/presence,
+  active intent and status, candidate count, pending/completed requirement
+  counts, queue length, schema version when valid, and a closed consistency
+  state between `context_type` and active pending work. Continue showing the
+  selected session/pedido states and last movement already present.
+- Add one fixed **local test channel** to the selected-order page. An
+  authenticated operator may submit a bounded text turn only for that exact
+  active session, client, commerce and draft Pedido. It invokes the existing
+  transactional incoming-message response orchestration directly and renders
+  its customer responses in an in-page, browser-lifetime transcript.
+- The chat must visibly state that it is not WhatsApp/Twilio, creates no
+  provider receipt, no deferred provider processing record, no outbox row and
+  no provider delivery. The message/response transcript is not persisted or
+  sent to any provider; only ordinary business state changes made by the
+  existing message pipeline are durable.
+
+### Additional safety and non-goals
+
+- The state panel SHALL NOT render raw `pending_intents` JSON, source text,
+  resolved values, candidate IDs/labels, queue payloads, diagnostics,
+  exception detail, environment variables, configuration values, tokens,
+  provider identifiers or secrets. “Execution state” means typed business
+  state, never `os.environ`.
+- The local test channel is a fixed internal mode, not a selectable or
+  persisted `CanalWhatsapp`. Existing persisted channels are routing
+  authorities for provider traffic and MUST NOT be reused, fabricated or
+  changed by this panel.
+- The test route SHALL revalidate the exact selected session and Pedido at
+  submission time. It must reject a closed/missing session, a non-draft
+  Pedido, or an association mismatch; it must not fall back to another active
+  session for the same client/comercio.
+- The route uses the existing panel Basic authentication plus a same-origin
+  custom request header. It accepts a bounded plain-text payload, records no
+  new logs/events, and inserts displayed transcript text through escaped DOM
+  text rather than HTML interpolation.
+- No reset, cancel, close, manual context edit, direct handler/resolver call,
+  LLM bypass, receipt/outbox creation, provider send, worker invocation,
+  migration, general channel selector or durable chat storage is authorized.
+- Correcting size-only order-line selection is a separate pending corrective
+  change. This console provides the controlled reproduction path; it does not
+  change that business behavior.
+
+### Paused production gates
+
+The production-message gates of
+`fix-pilot-order-line-category-recognition`,
+`fix-pending-context-recovery-and-status-query`, and
+`implement-product-line-observation-intent` are paused until this amendment
+has been approved, implemented, reviewed and deployed. The chat is then used
+to reproduce and correct the size-only line-selection defect before any
+further WhatsApp testing. This pause does not authorize an archive of any
+change.
+
+### Expected files and focused validation for this amendment
+
+Expected implementation is limited to the existing panel router/view service
+and detail/base templates, plus their focused tests. A small panel-local
+request/view schema is allowed only if it keeps the router free of untyped
+payloads. It SHALL NOT modify the provider coordinator, worker, Twilio
+adapter, persisted channel models, existing generic incoming-message endpoint,
+database schema or migrations.
+
+Run in the user's local terminal:
+
+```text
+PYTHONPATH=. venv/bin/python -m pytest backend/tests/test_admin_pilot_orders_panel.py backend/tests/test_pilot_order_operations_view_service.py backend/tests/test_incoming_messages_endpoint.py backend/tests/test_incoming_message_response_orchestrator.py backend/tests/test_remaining_fastapi_surface_security.py -q
+PYTHONPATH=. venv/bin/python -m ruff check backend/routers/admin_pilot_orders.py backend/services/pilot_order_operations_view_service.py backend/tests/test_admin_pilot_orders_panel.py backend/tests/test_pilot_order_operations_view_service.py backend/tests/test_incoming_messages_endpoint.py backend/tests/test_incoming_message_response_orchestrator.py backend/tests/test_remaining_fastapi_surface_security.py
+PYTHONPATH=. venv/bin/python -m compileall -q backend/routers/admin_pilot_orders.py backend/services/pilot_order_operations_view_service.py
+openspec validate add-pilot-order-operations-panel --strict
+```

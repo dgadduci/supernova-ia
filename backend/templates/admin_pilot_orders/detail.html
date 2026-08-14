@@ -5,155 +5,227 @@
 <h1>Pedido #{{ detail.pedido.id }}</h1>
 <p class="muted">Solo lectura — vista operativa para diagnóstico del piloto.</p>
 
-<section class="panel-section">
-  <h2>Comercio</h2>
-  <dl>
-    <dt>ID</dt><dd>#{{ detail.commerce.id }}</dd>
-    <dt>Nombre de fantasía</dt><dd>{{ detail.commerce.nombre_fantasia }}</dd>
-    <dt>Nombre corto</dt><dd>{{ detail.commerce.nombre_corto }}</dd>
-    <dt>Zona horaria</dt><dd>{{ detail.commerce.zona_horaria }}</dd>
-  </dl>
-  <p class="muted">Todos los timestamps del detalle se muestran en la zona horaria de este comercio. Si la zona falta o es inválida, se usa <strong>UTC</strong>.</p>
-</section>
+<div class="debug-grid" data-debug-grid>
+  <section class="debug-column debug-chat" data-debug-chat aria-label="Canal de prueba local">
+    <h2>Canal de prueba local</h2>
+    <p class="debug-warning" data-debug-warning>
+      Canal de prueba local — no WhatsApp / no Twilio.
+      No crea recepción del proveedor, no encola trabajo diferido, no genera fila
+      de outbox ni envío a Twilio. Lo único durable son los cambios de negocio
+      que produzca el pipeline en este turno.
+    </p>
+    <form
+      class="debug-form"
+      method="post"
+      action="/admin/pilot/orders/{{ detail.pedido.id }}/local-test"
+      data-debug-form
+    >
+      <label class="muted" for="local-test-message">Mensaje del operador (texto plano)</label>
+      <textarea
+        id="local-test-message"
+        name="message"
+        maxlength="{{ local_test_max_chars }}"
+        data-debug-textarea
+        required
+      ></textarea>
+      <button type="submit" data-debug-submit>Enviar al canal local</button>
+    </form>
+    <h3>Transcript (solo esta página)</h3>
+    <div class="debug-transcript" data-debug-transcript aria-live="polite">
+      <p class="muted">El transcript vive solo en esta pestaña del navegador.
+      No se guarda, ni usa cookies del navegador, ni el almacén persistente
+      del navegador, ni parámetros de URL.</p>
+    </div>
+    <p class="muted" data-debug-status>Listo.</p>
+  </section>
 
-<section class="panel-section">
-  <h2>Cliente</h2>
-  <dl>
-    <dt>ID</dt><dd>#{{ detail.client.id }}</dd>
-    <dt>Nombre</dt>
-    <dd>{% if detail.client.nombre %}{{ detail.client.nombre }}{% else %}<span class="muted">—</span>{% endif %}</dd>
-    <dt>WhatsApp</dt><dd>{{ detail.client.whatsapp }}</dd>
-    <dt>Activo</dt><dd>{{ "sí" if detail.client.activo else "no" }}</dd>
-  </dl>
-</section>
+  <section class="debug-column debug-detail" aria-label="Detalle del pedido">
+    <h2>Detalle del pedido</h2>
 
-<section class="panel-section">
-  <h2>Sesión</h2>
-  <dl>
-    <dt>ID</dt><dd>#{{ detail.session.id }}</dd>
-    <dt>Estado</dt><dd>{{ detail.session.estado_session.value }}</dd>
-    <dt>Inicio</dt>
-    <dd>{{ detail.session.datetime_inicio_local.iso }}<br><span class="muted">{{ detail.session.datetime_inicio_local.zone_label }}</span></dd>
-    <dt>Último movimiento</dt>
-    <dd>{{ detail.session.datetime_ultimo_movimiento_local.iso }}<br><span class="muted">{{ detail.session.datetime_ultimo_movimiento_local.zone_label }}</span></dd>
-  </dl>
-</section>
+    <section class="panel-section">
+      <h3>Comercio</h3>
+      <dl>
+        <dt>ID</dt><dd>#{{ detail.commerce.id }}</dd>
+        <dt>Nombre de fantasía</dt><dd>{{ detail.commerce.nombre_fantasia }}</dd>
+        <dt>Nombre corto</dt><dd>{{ detail.commerce.nombre_corto }}</dd>
+        <dt>Zona horaria</dt><dd>{{ detail.commerce.zona_horaria }}</dd>
+      </dl>
+      <p class="muted">Todos los timestamps del detalle se muestran en la zona horaria de este comercio. Si la zona falta o es inválida, se usa <strong>UTC</strong>.</p>
+    </section>
 
-<section class="panel-section">
-  <h2>Pedido</h2>
-  <dl>
-    <dt>ID</dt><dd>#{{ detail.pedido.id }}</dd>
-    <dt>Estado</dt><dd>{{ detail.pedido.estado_pedido.value }}</dd>
-    <dt>Fecha de alta</dt>
-    <dd>{{ detail.pedido.fecha_alta_local.iso }}<br><span class="muted">{{ detail.pedido.fecha_alta_local.zone_label }}</span></dd>
-    <dt>Última modificación</dt>
-    <dd>{{ detail.pedido.fecha_ultima_modificacion_local.iso }}<br><span class="muted">{{ detail.pedido.fecha_ultima_modificacion_local.zone_label }}</span></dd>
-    <dt>Entrega programada</dt>
-    <dd>
-      {% if detail.datetime_entrega_programada_local %}
-        {{ detail.datetime_entrega_programada_local.iso }}<br><span class="muted">{{ detail.datetime_entrega_programada_local.zone_label }}</span>
+    <section class="panel-section">
+      <h3>Cliente</h3>
+      <dl>
+        <dt>ID</dt><dd>#{{ detail.client.id }}</dd>
+        <dt>Nombre</dt>
+        <dd>{% if detail.client.nombre %}{{ detail.client.nombre }}{% else %}<span class="muted">—</span>{% endif %}</dd>
+        <dt>WhatsApp</dt><dd>{{ detail.client.whatsapp }}</dd>
+        <dt>Activo</dt><dd>{{ "sí" if detail.client.activo else "no" }}</dd>
+      </dl>
+    </section>
+
+    <section class="panel-section">
+      <h3>Sesión</h3>
+      <dl>
+        <dt>ID</dt><dd>#{{ detail.session.id }}</dd>
+        <dt>Estado</dt><dd>{{ detail.session.estado_session.value }}</dd>
+        <dt>Inicio</dt>
+        <dd>{{ detail.session.datetime_inicio_local.iso }}<br><span class="muted">{{ detail.session.datetime_inicio_local.zone_label }}</span></dd>
+        <dt>Último movimiento</dt>
+        <dd>{{ detail.session.datetime_ultimo_movimiento_local.iso }}<br><span class="muted">{{ detail.session.datetime_ultimo_movimiento_local.zone_label }}</span></dd>
+      </dl>
+    </section>
+
+    <section class="panel-section">
+      <h3>Pedido</h3>
+      <dl>
+        <dt>ID</dt><dd>#{{ detail.pedido.id }}</dd>
+        <dt>Estado</dt><dd>{{ detail.pedido.estado_pedido.value }}</dd>
+        <dt>Fecha de alta</dt>
+        <dd>{{ detail.pedido.fecha_alta_local.iso }}<br><span class="muted">{{ detail.pedido.fecha_alta_local.zone_label }}</span></dd>
+        <dt>Última modificación</dt>
+        <dd>{{ detail.pedido.fecha_ultima_modificacion_local.iso }}<br><span class="muted">{{ detail.pedido.fecha_ultima_modificacion_local.zone_label }}</span></dd>
+        <dt>Entrega programada</dt>
+        <dd>
+          {% if detail.datetime_entrega_programada_local %}
+            {{ detail.datetime_entrega_programada_local.iso }}<br><span class="muted">{{ detail.datetime_entrega_programada_local.zone_label }}</span>
+          {% else %}
+            <span class="muted">—</span>
+          {% endif %}
+        </dd>
+        <dt>Dirección de entrega</dt>
+        <dd>{% if detail.direccion_entrega %}{{ detail.direccion_entrega }}{% else %}<span class="muted">—</span>{% endif %}</dd>
+        <dt>Observación general</dt>
+        <dd>{% if detail.observaciones %}{{ detail.observaciones }}{% else %}<span class="muted">—</span>{% endif %}</dd>
+      </dl>
+    </section>
+
+    <section class="panel-section">
+      <h3>Líneas</h3>
+      {% if detail.lineas %}
+      <table>
+        <thead>
+          <tr>
+            <th>Línea</th>
+            <th>Producto</th>
+            <th>Presentación</th>
+            <th>Cantidad</th>
+            <th>Precio unitario</th>
+            <th>Observación</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for line in detail.lineas %}
+          <tr>
+            <td>#{{ line.id }}</td>
+            <td>{{ line.producto_nombre }}</td>
+            <td>{% if line.presentacion_descripcion %}{{ line.presentacion_descripcion }}{% else %}<span class="muted">—</span>{% endif %}</td>
+            <td>{{ line.cantidad }}</td>
+            <td>{{ line.precio_unitario }}</td>
+            <td>{% if line.observaciones %}{{ line.observaciones }}{% else %}<span class="muted">—</span>{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
       {% else %}
-        <span class="muted">—</span>
+      <div class="empty">El pedido no tiene líneas registradas.</div>
       {% endif %}
-    </dd>
-    <dt>Dirección de entrega</dt>
-    <dd>{% if detail.direccion_entrega %}{{ detail.direccion_entrega }}{% else %}<span class="muted">—</span>{% endif %}</dd>
-    <dt>Observación general</dt>
-    <dd>{% if detail.observaciones %}{{ detail.observaciones }}{% else %}<span class="muted">—</span>{% endif %}</dd>
-  </dl>
-</section>
+    </section>
 
-<section class="panel-section">
-  <h2>Líneas</h2>
-  {% if detail.lineas %}
-  <table>
-    <thead>
-      <tr>
-        <th>Línea</th>
-        <th>Producto</th>
-        <th>Presentación</th>
-        <th>Cantidad</th>
-        <th>Precio unitario</th>
-        <th>Observación</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for line in detail.lineas %}
-      <tr>
-        <td>#{{ line.id }}</td>
-        <td>{{ line.producto_nombre }}</td>
-        <td>{% if line.presentacion_descripcion %}{{ line.presentacion_descripcion }}{% else %}<span class="muted">—</span>{% endif %}</td>
-        <td>{{ line.cantidad }}</td>
-        <td>{{ line.precio_unitario }}</td>
-        <td>{% if line.observaciones %}{{ line.observaciones }}{% else %}<span class="muted">—</span>{% endif %}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-  <div class="empty">El pedido no tiene líneas registradas.</div>
-  {% endif %}
-</section>
+    <section class="panel-section">
+      <h3>Medio de pago y método de entrega</h3>
+      <dl>
+        <dt>Medio de pago</dt>
+        <dd>
+          {% if detail.medio_pago %}
+            #{{ detail.medio_pago.id }} — {{ detail.medio_pago.descripcion }}
+          {% else %}
+            <span class="muted">— sin medio de pago registrado —</span>
+          {% endif %}
+        </dd>
+        <dt>Método de entrega</dt>
+        <dd>
+          {% if detail.metodo_entrega %}
+            #{{ detail.metodo_entrega.id }} — {{ detail.metodo_entrega.descripcion }}
+          {% else %}
+            <span class="muted">— sin método de entrega registrado —</span>
+          {% endif %}
+        </dd>
+      </dl>
+    </section>
 
-<section class="panel-section">
-  <h2>Medio de pago y método de entrega</h2>
-  <dl>
-    <dt>Medio de pago</dt>
-    <dd>
-      {% if detail.medio_pago %}
-        #{{ detail.medio_pago.id }} — {{ detail.medio_pago.descripcion }}
-      {% else %}
-        <span class="muted">— sin medio de pago registrado —</span>
-      {% endif %}
-    </dd>
-    <dt>Método de entrega</dt>
-    <dd>
-      {% if detail.metodo_entrega %}
-        #{{ detail.metodo_entrega.id }} — {{ detail.metodo_entrega.descripcion }}
-      {% else %}
-        <span class="muted">— sin método de entrega registrado —</span>
-      {% endif %}
-    </dd>
-  </dl>
-</section>
-
-<section class="panel-section">
-  <h2>Historial del cliente y comercio</h2>
-  <p class="muted">Recepciones de proveedor filtradas por el cliente y comercio exactos de este pedido. El esquema no vincula estas recepciones con la sesión o el pedido: son historial del cliente y comercio. Los timestamps se muestran en la zona del comercio.</p>
-  {% if history.entries %}
-    {% for entry in history.entries %}
-      <div class="receipt">
-        <strong>Recepción #{{ entry.receipt.id }}</strong> ·
-        proveedor: {{ entry.receipt.proveedor }} ·
-        canal: #{{ entry.receipt.canal_id }} ·
-        fecha: {{ entry.receipt.fecha_recepcion_local.iso }}<br><span class="muted">{{ entry.receipt.fecha_recepcion_local.zone_label }}</span>
-      </div>
-      {% if entry.outbounds %}
-        {% for msg in entry.outbounds %}
-          <div class="outbound">
-            <strong>Saliente #{{ msg.id }}</strong> ·
-            seq {{ msg.sequence }} ·
-            estado: {{ msg.estado }} ·
-            intentos: {{ msg.intentos }} ·
-            creado: {{ msg.fecha_creacion_local.iso }}<br><span class="muted">{{ msg.fecha_creacion_local.zone_label }}</span>
-            {% if msg.estado_proveedor %}
-              <br>Estado del proveedor: {{ msg.estado_proveedor }}
-            {% endif %}
-            {% if msg.estado_proveedor_en_local %}
-              <br>Fecha del estado: {{ msg.estado_proveedor_en_local.iso }}<br><span class="muted">{{ msg.estado_proveedor_en_local.zone_label }}</span>
-            {% endif %}
-            {% if msg.categoria_ultimo_fallo %}
-              <br>Fallo: {{ msg.categoria_ultimo_fallo }}{% if msg.codigo_ultimo_fallo %} ({{ msg.codigo_ultimo_fallo }}){% endif %}
-            {% endif %}
-            <pre>{{ msg.cuerpo }}</pre>
+    <section class="panel-section">
+      <h3>Historial del cliente y comercio</h3>
+      <p class="muted">Recepciones de proveedor filtradas por el cliente y comercio exactos de este pedido. El esquema no vincula estas recepciones con la sesión o el pedido: son historial del cliente y comercio. Los timestamps se muestran en la zona del comercio.</p>
+      {% if history.entries %}
+        {% for entry in history.entries %}
+          <div class="receipt">
+            <strong>Recepción #{{ entry.receipt.id }}</strong> ·
+            proveedor: {{ entry.receipt.proveedor }} ·
+            canal: #{{ entry.receipt.canal_id }} ·
+            fecha: {{ entry.receipt.fecha_recepcion_local.iso }}<br><span class="muted">{{ entry.receipt.fecha_recepcion_local.zone_label }}</span>
           </div>
+          {% if entry.outbounds %}
+            {% for msg in entry.outbounds %}
+              <div class="outbound">
+                <strong>Saliente #{{ msg.id }}</strong> ·
+                seq {{ msg.sequence }} ·
+                estado: {{ msg.estado }} ·
+                intentos: {{ msg.intentos }} ·
+                creado: {{ msg.fecha_creacion_local.iso }}<br><span class="muted">{{ msg.fecha_creacion_local.zone_label }}</span>
+                {% if msg.estado_proveedor %}
+                  <br>Estado del proveedor: {{ msg.estado_proveedor }}
+                {% endif %}
+                {% if msg.estado_proveedor_en_local %}
+                  <br>Fecha del estado: {{ msg.estado_proveedor_en_local.iso }}<br><span class="muted">{{ msg.estado_proveedor_en_local.zone_label }}</span>
+                {% endif %}
+                {% if msg.categoria_ultimo_fallo %}
+                  <br>Fallo: {{ msg.categoria_ultimo_fallo }}{% if msg.codigo_ultimo_fallo %} ({{ msg.codigo_ultimo_fallo }}){% endif %}
+                {% endif %}
+                <pre>{{ msg.cuerpo }}</pre>
+              </div>
+            {% endfor %}
+          {% else %}
+            <p class="muted">Sin mensajes salientes asociados a esta recepción.</p>
+          {% endif %}
         {% endfor %}
       {% else %}
-        <p class="muted">Sin mensajes salientes asociados a esta recepción.</p>
+        <div class="empty">Sin historial del cliente y comercio para este pedido.</div>
       {% endif %}
-    {% endfor %}
-  {% else %}
-    <div class="empty">Sin historial del cliente y comercio para este pedido.</div>
-  {% endif %}
-</section>
+    </section>
+  </section>
+
+  <section class="debug-column debug-state" aria-label="Estado de ejecución seguro">
+    <h2>Estado de ejecución (seguro)</h2>
+    <p class="muted">Vista derivada solo de la sesión exacta de este pedido. No expone el JSON pendiente, los textos originales, los identificadores de candidatos, los datos de la cola ni variables de entorno.</p>
+    {% if detail.pending_debug %}
+    <dl class="debug-state">
+      <dt>Contexto</dt><dd data-debug-context>{{ detail.pending_debug.context_type }}</dd>
+      <dt>Pending</dt><dd data-debug-encoding>{{ detail.pending_debug.pending_encoding }}</dd>
+      <dt>Intent activo</dt><dd data-debug-active-intent>{{ detail.pending_debug.active_intent }}</dd>
+      <dt>Status activo</dt><dd data-debug-active-status>{{ detail.pending_debug.active_status }}</dd>
+      <dt>Candidatos</dt><dd data-debug-candidate-count>{{ detail.pending_debug.candidate_count }}</dd>
+      <dt>Requirements pendientes</dt><dd data-debug-requirements-pending>{{ detail.pending_debug.requirements_pending_count }}</dd>
+      <dt>Requirements completados</dt><dd data-debug-requirements-completed>{{ detail.pending_debug.requirements_completed_count }}</dd>
+      <dt>Cola</dt><dd data-debug-queue-length>{{ detail.pending_debug.queue_length }}</dd>
+      <dt>Versión del pending</dt>
+      <dd>
+        {% if detail.pending_debug.schema_version is not none %}
+          {{ detail.pending_debug.schema_version }}
+        {% else %}
+          <span class="muted">—</span>
+        {% endif %}
+      </dd>
+      <dt>Consistencia</dt>
+      <dd
+        data-debug-consistency
+        class="{% if detail.pending_debug.consistency == 'consistent' %}badge-ok{% elif detail.pending_debug.consistency == 'inconsistent' %}badge-bad{% endif %}"
+      >{{ detail.pending_debug.consistency }}</dd>
+    </dl>
+    <p class="muted">Estados de sesión y pedido ya se muestran en la columna central; este panel resume el estado del pending context.</p>
+    {% else %}
+    <p class="muted">Sin estado de pending para este pedido.</p>
+    {% endif %}
+  </section>
+</div>
 {% endblock %}

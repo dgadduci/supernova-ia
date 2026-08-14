@@ -106,3 +106,96 @@ Focused tests shall prove:
 - template escaping and no mutating form/route/service method, commit,
   rollback, flush, refresh, begin or close call;
 - bounded default query does not load unrelated order lines/history.
+
+## Debug-console amendment
+
+### Three-column detail and safe execution state
+
+The existing exact order-detail query remains the sole source for the selected
+Pedido, Session, Cliente and Comercio. Its typed result gains a
+`PendingContextDebugView`, built from the selected session's persisted fields
+only. It has no raw JSON field and exposes only the following closed/derived
+values:
+
+| Value | Representation |
+| --- | --- |
+| context | `none`, a supported context literal, or `unsupported` |
+| pending encoding | `empty`, `valid`, or `invalid` |
+| active work | closed intent/status literals or `none` |
+| requirements | pending and completed counts only |
+| candidate state | candidate count only |
+| queue | queue length only |
+| version | parsed schema version only when valid |
+| consistency | `none`, `consistent`, or `inconsistent` |
+
+Malformed pending JSON is represented as `invalid`; its validation error and
+payload never render. Context/intent/status values that are not documented
+closed values render as `unsupported`, not as raw database content. This
+allows an operator to see context state without exposing source text,
+observation/address values, candidate IDs, product names or any other pending
+payload.
+
+The detail template becomes a responsive CSS grid with columns
+`minmax(16rem, 30%) minmax(16rem, 30%) minmax(20rem, 40%)`. The left column is
+the local-test chat, the centre column contains the current detail sections,
+and the right column contains execution state. Existing chronological provider
+history stays in the order-detail column and retains its explicit
+client+commerce limitation. On a narrow viewport the grid stacks; no desktop
+or external frontend framework is introduced.
+
+### Local-test message boundary
+
+```text
+authenticated panel page for exact pedido
+  -> POST same-origin local-test route with custom request header
+  -> reload/revalidate exact Pedido -> Session association
+  -> existing process_incoming_message_with_responses(db, exact_session, text)
+  -> normal caller-owned transactional message processor commits business turn
+  -> return mapped customer response JSON to browser-only transcript
+```
+
+The route is mounted beneath the existing Basic-authenticated panel family and
+uses a small request schema with a bounded nonblank string. It does not invoke
+the existing generic HTTP endpoint through an internal HTTP request: that
+endpoint locates an active session by client/comercio and may choose a session
+other than the selected order. Instead, the debug route resolves the selected
+Pedido and revalidates all of these invariants before invoking the existing
+response-orchestrator seam:
+
+1. Pedido id is the exact positive path id and exists;
+2. its linked Session exists and is active;
+3. `session.id_pedido` equals that exact Pedido id;
+4. the Pedido is `borrador`;
+5. session/client/comercio relations are internally consistent.
+
+Any business mismatch returns a generic closed local-test rejection; it must
+not search for, reuse or mutate another session/Pedido. The existing
+transactional message processor remains the sole commit/rollback owner for a
+valid test turn. The panel route, state view service and template must not
+call transaction-control methods.
+
+The local-test request never enters `ProviderInboundMessageCoordinator`, so
+it creates no provider receipt, deferred processing row, outbound row, worker
+lease or Twilio request. Browser JavaScript appends the operator input and
+mapped customer responses with `textContent`; it uses no local storage,
+cookie, URL parameter or durable transcript. A custom request header is
+required so cross-origin form posts cannot invoke the state-changing route;
+authentication remains HTTP Basic and the route emits no new application logs
+or observability events.
+
+### Tests for the amendment
+
+- exact detail projection renders safe pending-context summaries for empty,
+  valid, malformed and inconsistent persisted combinations without mutation;
+- raw pending JSON, source text, values, candidate IDs/labels, diagnostics,
+  environment/configuration values and secrets never render;
+- the 30/30/40 layout and local-test warning render with escaped values;
+- missing/wrong Basic auth, missing custom header, malformed/oversized body,
+  closed or mismatched selected session/Pedido, and a foreign target fail
+  without calling the pipeline;
+- a valid local-test turn calls the existing response orchestrator exactly
+  once for the exact selected Session, returns only mapped responses, makes no
+  provider/outbox/coordinator call and does not redirect to another active
+  session;
+- all existing GET list/detail/catalog routes remain read-only and their
+  authentication, commerce isolation and timezone contracts continue to pass.

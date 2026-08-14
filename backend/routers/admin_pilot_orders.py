@@ -11,6 +11,16 @@ The panel uses an HTTP Basic challenge whose password validates
 against the existing configured administrative token with a
 constant-time comparison. The username is ignored. The existing
 ``X-Admin-Token`` contract for the JSON API is unchanged.
+
+The bounded local-test ``POST /admin/pilot/orders/{pedido_id}/local-test``
+route is the single state-changing route family. It re-validates the
+exact selected Pedido and its Session, invokes the existing
+transactional message processor and returns the mapped customer
+responses to the browser-only transcript. It does not call the
+generic HTTP incoming-message endpoint, the provider coordinator,
+Twilio or the worker; it never creates a provider receipt, a
+deferred processing record, an outbound row, a worker lease or a
+Twilio request.
 """
 from __future__ import annotations
 
@@ -18,13 +28,25 @@ from pathlib import Path as PathLib
 from typing import Annotated
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, Path, Query, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi import APIRouter, Depends, Header, Path, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
-from sqlalchemy.orm import Session
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
+from sqlalchemy.orm import Session, joinedload
 
 from backend.dependencies import get_session, require_admin_pilot_basic
-from backend.models import EstadoPedido
+from backend.intents.orchestration.incoming_message_response_orchestrator import (
+    process_incoming_message_with_responses,
+)
+from backend.models import (
+    EstadoPedido,
+    EstadoSession,
+    Pedido,
+)
+from backend.models import (
+    Session as SessionModel,
+)
 from backend.services.pilot_order_operations_view_service import (
     ALLOWED_PAGE_SIZES,
     InvalidComercioId,
@@ -45,6 +67,14 @@ _templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
 _templates.env.autoescape = True
 
 _ESTADO_VALUES: tuple[str, ...] = tuple(member.value for member in EstadoPedido)
+
+LOCAL_TEST_MAX_MESSAGE_CHARS = 500
+LOCAL_TEST_ORIGIN_HEADER = "X-Local-Test-Origin"
+LOCAL_TEST_ORIGIN_VALUE = "same-origin"
+LOCAL_TEST_REJECTED_MESSAGE = (
+    "El canal local rechazó el mensaje. Revisá la consola y el "
+    "panel principal para más detalles."
+)
 
 
 def _service(
@@ -85,6 +115,78 @@ def _build_list_url(
     if not encoded:
         return base
     return f"{base}?{encoded}"
+
+
+def _reject_local_test(reason: str) -> JSONResponse:
+    """Return the documented generic rejection payload.
+
+    The route never emits a precise diagnostic so the response
+    cannot be used to enumerate the operator error class. It is the
+    only JSON body the route emits for invalid submissions.
+    """
+    return JSONResponse(
+        status_code=400,
+        content={
+            "responses": [],
+            "message": LOCAL_TEST_REJECTED_MESSAGE,
+        },
+    )
+
+
+def _load_local_test_session(
+    db: Session,
+    pedido_id: int,
+) -> tuple[Pedido, SessionModel] | None:
+    """Load the exact Pedido and Session for the local-test route.
+
+    Returns ``(pedido, session)`` when the exact positive pedido id
+    exists, the linked Session exists, ``session.id_pedido`` equals
+    the pedido id, the Session is active and the related
+    cliente/comercio/pedido foreign keys are internally consistent.
+    Returns ``None`` for every other shape so the caller can emit the
+    documented generic rejection without leaking which invariant
+    failed. The loader never searches for another session and never
+    returns a foreign session.
+    """
+    stmt = (
+        select(Pedido)
+        .where(Pedido.id == pedido_id)
+        .options(
+            joinedload(Pedido.session).joinedload(SessionModel.cliente),
+            joinedload(Pedido.session).joinedload(SessionModel.comercio),
+        )
+    )
+    pedido = db.execute(stmt).unique().scalar_one_or_none()
+    if pedido is None:
+        return None
+    if pedido.estado_pedido != EstadoPedido.BORRADOR:
+        return None
+    session = getattr(pedido, "session", None)
+    if session is None:
+        return None
+    if session.id_pedido != pedido.id:
+        return None
+    if session.estado_session != EstadoSession.ACTIVA:
+        return None
+    if session.id_comercio != pedido.session.comercio.id:
+        return None
+    if session.id_cliente != pedido.session.cliente.id:
+        return None
+    return pedido, session
+
+
+class LocalTestRequest(BaseModel):
+    """Bounded request schema for the panel-local test route.
+
+    The schema mirrors the IncomingMessageRequest shape but adds a
+    maximum message length so the form cannot be used to push
+    arbitrarily large payloads through the panel. ``extra='forbid'``
+    keeps the request surface minimal.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=LOCAL_TEST_MAX_MESSAGE_CHARS)
 
 
 @router.get("", response_class=HTMLResponse)
@@ -187,6 +289,57 @@ def detail_order(
         {
             "detail": detail,
             "history": history,
+            "local_test_max_chars": LOCAL_TEST_MAX_MESSAGE_CHARS,
+        },
+    )
+
+
+@router.post("/{pedido_id}/local-test", response_class=JSONResponse)
+def local_test_message(
+    pedido_id: Annotated[str, Path()],
+    payload: LocalTestRequest,
+    db: Annotated[Session, Depends(get_session)],
+    origin_header: Annotated[
+        str | None, Header(alias=LOCAL_TEST_ORIGIN_HEADER)
+    ] = None,
+) -> JSONResponse:
+    """Panel-local test channel for the exact selected Pedido.
+
+    This is the only state-changing route in the panel. It re-loads
+    the exact Pedido and Session, validates every documented
+    invariant, and then invokes the existing transactional message
+    processor for the exact Session. It never falls back to another
+    session for the same cliente/comercio and never creates provider
+    receipts, deferred records, outbound rows, worker leases or
+    Twilio deliveries.
+    """
+    if origin_header != LOCAL_TEST_ORIGIN_VALUE:
+        return _reject_local_test("missing same-origin header")
+
+    try:
+        parsed_id = parse_pedido_id(pedido_id)
+    except InvalidPedidoId:
+        return _reject_local_test("invalid pedido id")
+
+    loaded = _load_local_test_session(db, parsed_id)
+    if loaded is None:
+        return _reject_local_test("target not eligible")
+    _, exact_session = loaded
+
+    responses = process_incoming_message_with_responses(
+        db, exact_session, payload.message
+    )
+    return JSONResponse(
+        status_code=200,
+        content={
+            "responses": [
+                {
+                    "message": response.message,
+                    "intent": response.intent,
+                    "status": response.status,
+                }
+                for response in responses
+            ]
         },
     )
 
@@ -225,4 +378,12 @@ def commerce_catalog(
     )
 
 
-__all__ = ["_ESTADO_VALUES", "_build_list_url", "router"]
+__all__ = [
+    "LOCAL_TEST_MAX_MESSAGE_CHARS",
+    "LOCAL_TEST_ORIGIN_HEADER",
+    "LOCAL_TEST_ORIGIN_VALUE",
+    "_ESTADO_VALUES",
+    "LocalTestRequest",
+    "_build_list_url",
+    "router",
+]
