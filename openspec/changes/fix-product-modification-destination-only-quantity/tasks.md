@@ -19,8 +19,8 @@
 
 ## 3. Pilot gate
 
-- [ ] 3.1 After approved deploy test `cambia la napolitana grande por dos
+- [x] 3.1 After approved deploy test `cambia la napolitana grande por dos
   mozzarella grande`, select `grande` if asked, and verify source full removal
   / destination +2.
-- [ ] 3.2 Re-run source-only, paired and omitted quantity regressions; archive
+- [x] 3.2 Re-run source-only, paired and omitted quantity regressions; archive
   only with explicit user approval.
