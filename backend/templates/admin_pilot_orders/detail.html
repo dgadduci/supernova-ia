@@ -8,12 +8,6 @@
 <div class="debug-grid" data-debug-grid>
   <section class="debug-column debug-chat" data-debug-chat aria-label="Canal de prueba local">
     <h2>Canal de prueba local</h2>
-    <p class="debug-warning" data-debug-warning>
-      Canal de prueba local — no WhatsApp / no Twilio.
-      No crea recepción del proveedor, no encola trabajo diferido, no genera fila
-      de outbox ni envío a Twilio. Lo único durable son los cambios de negocio
-      que produzca el pipeline en este turno.
-    </p>
     <form
       class="debug-form"
       method="post"
@@ -37,6 +31,7 @@
       del navegador, ni parámetros de URL.</p>
     </div>
     <p class="muted" data-debug-status>Listo.</p>
+    <p class="muted debug-channel-note">Canal local; no envía a WhatsApp/Twilio.</p>
   </section>
 
   <section class="debug-column debug-detail" aria-label="Detalle del pedido">
@@ -103,30 +98,32 @@
     <section class="panel-section">
       <h3>Líneas</h3>
       {% if detail.lineas %}
-      <table>
-        <thead>
-          <tr>
-            <th>Línea</th>
-            <th>Producto</th>
-            <th>Presentación</th>
-            <th>Cantidad</th>
-            <th>Precio unitario</th>
-            <th>Observación</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for line in detail.lineas %}
-          <tr>
-            <td>#{{ line.id }}</td>
-            <td>{{ line.producto_nombre }}</td>
-            <td>{% if line.presentacion_descripcion %}{{ line.presentacion_descripcion }}{% else %}<span class="muted">—</span>{% endif %}</td>
-            <td>{{ line.cantidad }}</td>
-            <td>{{ line.precio_unitario }}</td>
-            <td>{% if line.observaciones %}{{ line.observaciones }}{% else %}<span class="muted">—</span>{% endif %}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+      <div class="debug-lines-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Línea</th>
+              <th>Producto</th>
+              <th>Presentación</th>
+              <th>Cantidad</th>
+              <th>Precio unitario</th>
+              <th>Observación</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for line in detail.lineas %}
+            <tr>
+              <td>#{{ line.id }}</td>
+              <td>{{ line.producto_nombre }}</td>
+              <td>{% if line.presentacion_descripcion %}{{ line.presentacion_descripcion }}{% else %}<span class="muted">—</span>{% endif %}</td>
+              <td>{{ line.cantidad }}</td>
+              <td>{{ line.precio_unitario }}</td>
+              <td>{% if line.observaciones %}{{ line.observaciones }}{% else %}<span class="muted">—</span>{% endif %}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
       {% else %}
       <div class="empty">El pedido no tiene líneas registradas.</div>
       {% endif %}
@@ -200,27 +197,29 @@
     <p class="muted">Vista derivada solo de la sesión exacta de este pedido. No expone el JSON pendiente, los textos originales, los identificadores de candidatos, los datos de la cola ni variables de entorno.</p>
     {% if detail.pending_debug %}
     <dl class="debug-state">
-      <dt>Contexto</dt><dd data-debug-context>{{ detail.pending_debug.context_type }}</dd>
-      <dt>Pending</dt><dd data-debug-encoding>{{ detail.pending_debug.pending_encoding }}</dd>
-      <dt>Intent activo</dt><dd data-debug-active-intent>{{ detail.pending_debug.active_intent }}</dd>
-      <dt>Status activo</dt><dd data-debug-active-status>{{ detail.pending_debug.active_status }}</dd>
-      <dt>Candidatos</dt><dd data-debug-candidate-count>{{ detail.pending_debug.candidate_count }}</dd>
-      <dt>Requirements pendientes</dt><dd data-debug-requirements-pending>{{ detail.pending_debug.requirements_pending_count }}</dd>
-      <dt>Requirements completados</dt><dd data-debug-requirements-completed>{{ detail.pending_debug.requirements_completed_count }}</dd>
-      <dt>Cola</dt><dd data-debug-queue-length>{{ detail.pending_debug.queue_length }}</dd>
-      <dt>Versión del pending</dt>
-      <dd data-debug-schema-version>
-        {% if detail.pending_debug.schema_version is not none %}
-          {{ detail.pending_debug.schema_version }}
-        {% else %}
-          <span class="muted">—</span>
-        {% endif %}
-      </dd>
-      <dt>Consistencia</dt>
-      <dd
-        data-debug-consistency
-        class="{% if detail.pending_debug.consistency == 'consistent' %}badge-ok{% elif detail.pending_debug.consistency == 'inconsistent' %}badge-bad{% endif %}"
-      >{{ detail.pending_debug.consistency }}</dd>
+      <div class="debug-state-row"><dt>Contexto:</dt><dd data-debug-context>{{ detail.pending_debug.context_type }}</dd></div>
+      <div class="debug-state-row"><dt>Pending:</dt><dd data-debug-encoding>{{ detail.pending_debug.pending_encoding }}</dd></div>
+      <div class="debug-state-row"><dt>Intent activo:</dt><dd data-debug-active-intent>{{ detail.pending_debug.active_intent }}</dd></div>
+      <div class="debug-state-row"><dt>Status activo:</dt><dd data-debug-active-status>{{ detail.pending_debug.active_status }}</dd></div>
+      <div class="debug-state-row"><dt>Candidatos:</dt><dd data-debug-candidate-count>{{ detail.pending_debug.candidate_count }}</dd></div>
+      <div class="debug-state-row"><dt>Requirements pendientes:</dt><dd data-debug-requirements-pending>{{ detail.pending_debug.requirements_pending_count }}</dd></div>
+      <div class="debug-state-row"><dt>Requirements completados:</dt><dd data-debug-requirements-completed>{{ detail.pending_debug.requirements_completed_count }}</dd></div>
+      <div class="debug-state-row"><dt>Cola:</dt><dd data-debug-queue-length>{{ detail.pending_debug.queue_length }}</dd></div>
+      <div class="debug-state-row"><dt>Versión del pending:</dt>
+        <dd data-debug-schema-version>
+          {% if detail.pending_debug.schema_version is not none %}
+            {{ detail.pending_debug.schema_version }}
+          {% else %}
+            <span class="muted">—</span>
+          {% endif %}
+        </dd>
+      </div>
+      <div class="debug-state-row"><dt>Consistencia:</dt>
+        <dd
+          data-debug-consistency
+          class="{% if detail.pending_debug.consistency == 'consistent' %}badge-ok{% elif detail.pending_debug.consistency == 'inconsistent' %}badge-bad{% endif %}"
+        >{{ detail.pending_debug.consistency }}</dd>
+      </div>
     </dl>
     <p class="muted">Estados de sesión y pedido ya se muestran en la columna central; este panel resume el estado del pending context.</p>
     {% else %}

@@ -298,3 +298,75 @@ git diff --check
 The amendment is source-only and reversible by reverting the local-test
 response/UI changes; it does not alter durable state beyond the ordinary
 business mutation already performed by a valid local test message.
+
+## Consistent compact-state amendment (2026-08-14)
+
+Pilot validation established that a successful pending product selection can
+add the exact requested presentation while the panel incorrectly shows
+`context_type=none`, `pending_encoding=valid`, no active work and
+`consistency=inconsistent`. This is a panel projection false positive, not a
+selection, resolver, transaction or context-cleanup failure.
+
+`clear_pending_context()` persists the canonical empty state as
+`PendingIntents().model_dump(mode="json")`: a valid versioned object with
+`active=null` and an empty `queue`. The panel currently treats only raw `null`
+and `{}` as empty, despite that canonical no-work representation.
+
+### Objective and scope
+
+- Treat a successfully parsed pending state with `active is None` and an empty
+  queue as semantic `empty`, irrespective of its schema version. With no
+  context it SHALL render `none / empty / none` and no schema-version value;
+  it SHALL NOT render a false `inconsistent` state.
+- Render every execution-state label and value on one compact logical row
+  (`nombre: valor`) while retaining the same closed values and DOM selectors
+  used by the local-test refresh.
+- Reduce the fixed local transcript viewport from 24rem to 12rem and retain
+  its own vertical scroll and long-text wrapping.
+- Put the order-lines table inside a bounded, scrollable viewport so all
+  existing lines remain accessible when the selected Pedido has many lines.
+- Remove the verbose local-channel warning above the chat. Keep a single
+  compact, visible local-only notice below the transcript stating that it does
+  not send through WhatsApp/Twilio; it must not claim provider/outbox effects
+  that are not newly implemented.
+
+### Boundaries, non-goals and fallback
+
+This is display/projection work only. It SHALL NOT change
+`clear_pending_context`, `pending_intents` persistence, pending dispatch,
+recognition, resolver candidate sets, handlers, Pedido/Session state,
+transaction ownership, local-test route behavior, providers, Twilio, outbox,
+workers, models, schema or migrations. It SHALL NOT expose raw pending JSON,
+source text, resolved values, IDs, queue payloads, diagnostics, settings,
+credentials or provider data.
+
+Malformed pending JSON remains `invalid`/`inconsistent`. A parsed state with
+an empty active work but a non-empty queue remains a valid but inconsistent
+state; the new empty normalization applies only when both active and queue are
+empty. Missing DOM state cells continue to fail closed in the browser update
+path, and a non-success local-test response continues to preserve the
+previously displayed snapshot.
+
+### Expected files and focused validation
+
+Expected implementation is limited to:
+
+- `backend/services/pilot_order_operations_view_service.py`;
+- `backend/templates/admin_pilot_orders/base.html` and `detail.html`;
+- `backend/tests/test_pilot_order_operations_view_service.py` and
+  `backend/tests/test_admin_pilot_orders_panel.py`;
+- this change's `tasks.md` after real completion.
+
+Run in the user's local terminal:
+
+```text
+PYTHONPATH=. venv/bin/python -m pytest backend/tests/test_pilot_order_operations_view_service.py backend/tests/test_admin_pilot_orders_panel.py -q
+PYTHONPATH=. venv/bin/python -m ruff check backend/services/pilot_order_operations_view_service.py backend/tests/test_pilot_order_operations_view_service.py backend/tests/test_admin_pilot_orders_panel.py
+PYTHONPATH=. venv/bin/python -m compileall -q backend/services/pilot_order_operations_view_service.py
+openspec validate add-pilot-order-operations-panel --strict
+git diff --check
+```
+
+The amendment is source-only and reversible by restoring the prior view
+projection and template CSS/markup. No production-message gate resumes and no
+OpenSpec is archived as a consequence.
