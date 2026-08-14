@@ -87,6 +87,7 @@ def _build_requirements(
     source_id: int | None,
     dest_id: int | None,
     cantidad: int | None,
+    cantidad_destino: int | None = None,
 ) -> list[RequirementState]:
     return [
         RequirementState(
@@ -103,6 +104,13 @@ def _build_requirements(
             name="cantidad",
             status="completed" if cantidad is not None else "pending",
             value=cantidad,
+        ),
+        RequirementState(
+            name="cantidad_destino",
+            status=(
+                "completed" if cantidad_destino is not None else "pending"
+            ),
+            value=cantidad_destino,
         ),
     ]
 
@@ -171,9 +179,12 @@ def _build_pending_intent(
     new_source_ids: list[int],
     new_dest_ids: list[int],
     cantidad: int | None,
+    cantidad_destino: int | None = None,
 ) -> ProcessedIntent:
     if cantidad is not None:
         new_resolved_data["cantidad"] = cantidad
+    if cantidad_destino is not None:
+        new_resolved_data["cantidad_destino"] = cantidad_destino
     new_resolved_data["source_candidate_ids"] = list(new_source_ids)
     new_resolved_data["destination_candidate_ids"] = list(new_dest_ids)
     return ProcessedIntent(
@@ -184,7 +195,9 @@ def _build_pending_intent(
         handler=active_intent.handler,
         stage=stage,  # type: ignore[arg-type]
         resolved_data=new_resolved_data,
-        requirements=_build_requirements(None, None, cantidad),
+        requirements=_build_requirements(
+            None, None, cantidad, cantidad_destino
+        ),
         candidate_ids=[],
     )
 
@@ -195,6 +208,7 @@ def _build_ready_intent(
     source_id: int,
     dest_id: int,
     cantidad: int | None,
+    cantidad_destino: int | None = None,
 ) -> ProcessedIntent:
     new_resolved_data["pedido_producto_origen_id"] = source_id
     new_resolved_data["producto_presentacion_destino_id"] = dest_id
@@ -202,6 +216,8 @@ def _build_ready_intent(
     new_resolved_data["destination_candidate_ids"] = [dest_id]
     if cantidad is not None:
         new_resolved_data["cantidad"] = cantidad
+    if cantidad_destino is not None:
+        new_resolved_data["cantidad_destino"] = cantidad_destino
     return ProcessedIntent(
         intent=active_intent.intent,
         source_text=active_intent.source_text,
@@ -210,7 +226,9 @@ def _build_ready_intent(
         handler=active_intent.handler,
         stage=None,
         resolved_data=new_resolved_data,
-        requirements=_build_requirements(source_id, dest_id, cantidad),
+        requirements=_build_requirements(
+            source_id, dest_id, cantidad, cantidad_destino
+        ),
         candidate_ids=[],
     )
 
@@ -224,6 +242,7 @@ def _resolve_source_selection(
     source_candidate_ids: list[int],
     destination_candidate_ids: list[int],
     cantidad: int | None,
+    cantidad_destino: int | None = None,
 ) -> ProcessedIntent:
     recognized = recognize_quitar_producto(db, session, message)
     recognized_pp_ids = _flatten_pedido_producto_ids(recognized)
@@ -249,6 +268,7 @@ def _resolve_source_selection(
                 source_id,
                 dest_id,
                 cantidad,
+                cantidad_destino,
             )
         return _build_pending_intent(
             active_intent,
@@ -257,6 +277,7 @@ def _resolve_source_selection(
             intersection,
             destination_candidate_ids,
             cantidad,
+            cantidad_destino,
         )
 
     return _build_pending_intent(
@@ -266,6 +287,7 @@ def _resolve_source_selection(
         intersection,
         destination_candidate_ids,
         cantidad,
+        cantidad_destino,
     )
 
 
@@ -278,6 +300,7 @@ def _resolve_destination_selection(
     source_candidate_ids: list[int],
     destination_candidate_ids: list[int],
     cantidad: int | None,
+    cantidad_destino: int | None = None,
 ) -> ProcessedIntent:
     catalog = ProductoQueryService(db).list_presentaciones_by_ids(
         destination_candidate_ids
@@ -302,6 +325,7 @@ def _resolve_destination_selection(
             int(source_id),
             dest_id,
             cantidad,
+            cantidad_destino,
         )
 
     modification_metadata: RecognizeContext = {
@@ -346,6 +370,7 @@ def _resolve_destination_selection(
             int(source_id),
             dest_id,
             cantidad,
+            cantidad_destino,
         )
 
     return _build_pending_intent(
@@ -355,6 +380,7 @@ def _resolve_destination_selection(
         source_candidate_ids,
         intersection,
         cantidad,
+        cantidad_destino,
     )
 
 
@@ -401,6 +427,7 @@ def resolve_product_modification(
             resolved_data.get("destination_candidate_ids") or []
         )
         cantidad = resolved_data.get("cantidad")
+        cantidad_destino = resolved_data.get("cantidad_destino")
         stage = active_intent.stage
 
         if not source_candidate_ids and not destination_candidate_ids:
@@ -416,6 +443,7 @@ def resolve_product_modification(
                 source_candidate_ids,
                 destination_candidate_ids,
                 cantidad,
+                cantidad_destino,
             )
 
         if stage == "destination_selection":
@@ -428,6 +456,7 @@ def resolve_product_modification(
                 source_candidate_ids,
                 destination_candidate_ids,
                 cantidad,
+                cantidad_destino,
             )
 
         return active_intent

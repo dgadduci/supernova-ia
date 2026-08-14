@@ -33,6 +33,7 @@ def _build_requirements(
     pedido_producto_origen_id: int | None,
     producto_presentacion_destino_id: int | None,
     cantidad: int | None,
+    cantidad_destino: int | None = None,
 ) -> list[RequirementState]:
     return [
         RequirementState(
@@ -54,6 +55,13 @@ def _build_requirements(
             status="completed" if cantidad is not None else "pending",
             value=cantidad,
         ),
+        RequirementState(
+            name="cantidad_destino",
+            status=(
+                "completed" if cantidad_destino is not None else "pending"
+            ),
+            value=cantidad_destino,
+        ),
     ]
 
 
@@ -62,6 +70,7 @@ def _build_ready_intent(
     pedido_producto_origen_id: int,
     producto_presentacion_destino_id: int,
     cantidad: int | None,
+    cantidad_destino: int | None = None,
 ) -> ProcessedIntent:
     resolved_data: dict = {
         "pedido_producto_origen_id": pedido_producto_origen_id,
@@ -71,6 +80,8 @@ def _build_ready_intent(
     }
     if cantidad is not None:
         resolved_data["cantidad"] = cantidad
+    if cantidad_destino is not None:
+        resolved_data["cantidad_destino"] = cantidad_destino
     return ProcessedIntent(
         intent="modificar_producto",
         source_text=source_text,
@@ -82,6 +93,7 @@ def _build_ready_intent(
             pedido_producto_origen_id,
             producto_presentacion_destino_id,
             cantidad,
+            cantidad_destino,
         ),
         candidate_ids=[],
     )
@@ -93,6 +105,7 @@ def _build_pending_intent(
     source_candidate_ids: list[int],
     destination_candidate_ids: list[int],
     cantidad: int | None,
+    cantidad_destino: int | None = None,
 ) -> ProcessedIntent:
     resolved_data: dict = {
         "source_candidate_ids": list(source_candidate_ids),
@@ -100,6 +113,8 @@ def _build_pending_intent(
     }
     if cantidad is not None:
         resolved_data["cantidad"] = cantidad
+    if cantidad_destino is not None:
+        resolved_data["cantidad_destino"] = cantidad_destino
     return ProcessedIntent(
         intent="modificar_producto",
         source_text=source_text,
@@ -108,7 +123,7 @@ def _build_pending_intent(
         handler="modificar_producto",
         stage=stage,
         resolved_data=resolved_data,
-        requirements=_build_requirements(None, None, cantidad),
+        requirements=_build_requirements(None, None, cantidad, cantidad_destino),
         candidate_ids=[],
     )
 
@@ -156,6 +171,20 @@ def process_initial_modificar_producto(
     source_candidate_ids = recognized.get("source_candidate_ids") or []
     destination_candidate_ids = recognized.get("destination_candidate_ids") or []
     cantidad = recognized.get("cantidad")
+    cantidad_destino = recognized.get("cantidad_destino")
+    cantidad_destino_invalid = bool(
+        recognized.get("cantidad_destino_invalid")
+    )
+
+    # Deterministic rejection of an explicit invalid destination quantity
+    # BEFORE creating pending, resolving candidates or invoking the
+    # handler/service. The explicit-invalid signal is distinct from the
+    # absent-quantity case so the legacy equal-quantity fallback can
+    # never be triggered for a `0` or negative destination amount.
+    if cantidad_destino_invalid:
+        return _build_rejected_intent(
+            source_text, reason="invalid_destination_quantity"
+        )
 
     if not source_candidate_ids and not destination_candidate_ids:
         return _build_rejected_intent(source_text, reason="source_absent")
@@ -177,6 +206,7 @@ def process_initial_modificar_producto(
             int(source_candidate_ids[0]),
             int(destination_candidate_ids[0]),
             cantidad,
+            cantidad_destino,
         )
         return execute_modificar_producto(db, session, ready_intent)
 
@@ -187,6 +217,7 @@ def process_initial_modificar_producto(
             source_candidate_ids,
             destination_candidate_ids,
             cantidad,
+            cantidad_destino,
         )
         set_pending_intent(session, pending_intent)
         return pending_intent
@@ -201,6 +232,7 @@ def process_initial_modificar_producto(
             source_candidate_ids,
             destination_candidate_ids,
             cantidad,
+            cantidad_destino,
         )
         set_pending_intent(session, pending_intent)
         return pending_intent

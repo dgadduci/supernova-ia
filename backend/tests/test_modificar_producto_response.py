@@ -219,6 +219,7 @@ class ModificarProductoResponseBuilderExecutedTest(unittest.TestCase):
                 "cantidad_destino_final": 6,
                 "origen_eliminado": True,
                 "destino_creado": False,
+                "cantidad_destino_modificada": 4,
             },
         )
 
@@ -227,6 +228,54 @@ class ModificarProductoResponseBuilderExecutedTest(unittest.TestCase):
         self.assertEqual(
             result.message,
             "Cambié 4 Empanadas de Verdura por Empanadas de Carne Picante. Ahora tenés 6 Empanadas de Carne Picante.",
+        )
+
+    def test_distinct_quantity_renders_both_values(self):
+        db = MagicMock(spec=DatabaseSession)
+        session = MagicMock(spec=ConversationSession)
+        intent = _intent(
+            "executed",
+            resolved_data={
+                "producto_origen_nombre": "Pizza Napolitana",
+                "producto_destino_nombre": "Pizza Mozzarella",
+                "cantidad_modificada": 2,
+                "cantidad_destino_modificada": 1,
+                "cantidad_origen_restante": 5,
+                "cantidad_destino_final": 1,
+                "origen_eliminado": False,
+                "destino_creado": True,
+            },
+        )
+
+        result = build_modificar_producto_response(db, session, intent)
+
+        self.assertEqual(
+            result.message,
+            "Cambié 2 Pizza Napolitana por 1 de Pizza Mozzarella. Quedan 5 Pizza Napolitana.",
+        )
+
+    def test_distinct_quantity_consolidated_renders_both_values(self):
+        db = MagicMock(spec=DatabaseSession)
+        session = MagicMock(spec=ConversationSession)
+        intent = _intent(
+            "executed",
+            resolved_data={
+                "producto_origen_nombre": "Pizza Napolitana",
+                "producto_destino_nombre": "Pizza Mozzarella",
+                "cantidad_modificada": 2,
+                "cantidad_destino_modificada": 1,
+                "cantidad_origen_restante": 0,
+                "cantidad_destino_final": 3,
+                "origen_eliminado": True,
+                "destino_creado": False,
+            },
+        )
+
+        result = build_modificar_producto_response(db, session, intent)
+
+        self.assertEqual(
+            result.message,
+            "Cambié 2 Pizza Napolitana por 1 de Pizza Mozzarella. Ahora tenés 3 Pizza Mozzarella.",
         )
 
 
@@ -321,6 +370,21 @@ class ModificarProductoResponseBuilderRejectedTest(unittest.TestCase):
         self.assertEqual(
             result.message,
             "Ese producto ya tiene esa presentación en tu pedido.",
+        )
+
+    def test_invalid_destination_quantity_renders_invalid_message(self):
+        db = MagicMock(spec=DatabaseSession)
+        session = MagicMock(spec=ConversationSession)
+        intent = _intent(
+            "rejected",
+            resolved_data={"reason": "invalid_destination_quantity"},
+        )
+
+        result = build_modificar_producto_response(db, session, intent)
+
+        self.assertEqual(
+            result.message,
+            "La cantidad del producto de reemplazo no es válida. Tu pedido no fue modificado.",
         )
 
 

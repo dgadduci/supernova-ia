@@ -148,6 +148,95 @@ class ExecuteModificarProductoGuardsTest(unittest.TestCase):
         service_cls.assert_not_called()
 
     @patch.object(handler_module, "PedidoProductoService")
+    def test_zero_cantidad_destino_returns_rejected(self, service_cls):
+        db = MagicMock(spec=DatabaseSession)
+        session = MagicMock(spec=ConversationSession)
+        session.id_pedido = 7
+        intent = ProcessedIntent(
+            intent="modificar_producto",
+            source_text="x",
+            status="ready",
+            recognizer="modificar_producto_recognizer",
+            handler="modificar_producto",
+            resolved_data={
+                "pedido_producto_origen_id": 1,
+                "producto_presentacion_destino_id": 2,
+                "cantidad": 2,
+                "cantidad_destino": 0,
+            },
+        )
+
+        result = execute_modificar_producto(db, session, intent)
+
+        self.assertEqual(result.status, "rejected")
+        service_cls.assert_not_called()
+
+    @patch.object(handler_module, "PedidoProductoService")
+    def test_non_integer_cantidad_destino_returns_rejected(self, service_cls):
+        db = MagicMock(spec=DatabaseSession)
+        session = MagicMock(spec=ConversationSession)
+        session.id_pedido = 7
+        intent = ProcessedIntent(
+            intent="modificar_producto",
+            source_text="x",
+            status="ready",
+            recognizer="modificar_producto_recognizer",
+            handler="modificar_producto",
+            resolved_data={
+                "pedido_producto_origen_id": 1,
+                "producto_presentacion_destino_id": 2,
+                "cantidad": 2,
+                "cantidad_destino": "no-int",
+            },
+        )
+
+        result = execute_modificar_producto(db, session, intent)
+
+        self.assertEqual(result.status, "rejected")
+        service_cls.assert_not_called()
+
+    @patch.object(handler_module, "PedidoProductoService")
+    def test_distinct_cantidades_passed_to_service(self, service_cls):
+        service = MagicMock()
+        service.modify_product.return_value = ModificationResult(
+            status="executed",
+            producto_origen_nombre="Pizza Napolitana",
+            presentacion_origen="grande",
+            producto_destino_nombre="Pizza Mozzarella",
+            presentacion_destino="grande",
+            cantidad_modificada=2,
+            cantidad_origen_restante=3,
+            cantidad_destino_final=1,
+            origen_eliminado=False,
+            destino_creado=True,
+            cantidad_destino_modificada=1,
+        )
+        service_cls.return_value = service
+
+        db = MagicMock(spec=DatabaseSession)
+        session = MagicMock(spec=ConversationSession)
+        session.id_pedido = 7
+        intent = ProcessedIntent(
+            intent="modificar_producto",
+            source_text="x",
+            status="ready",
+            recognizer="modificar_producto_recognizer",
+            handler="modificar_producto",
+            resolved_data={
+                "pedido_producto_origen_id": 1,
+                "producto_presentacion_destino_id": 2,
+                "cantidad": 2,
+                "cantidad_destino": 1,
+            },
+        )
+
+        result = execute_modificar_producto(db, session, intent)
+
+        self.assertEqual(result.status, "executed")
+        self.assertEqual(result.resolved_data["cantidad_destino_modificada"], 1)
+        service.modify_product.assert_called_once_with(7, 1, 2, 2, 1)
+
+    @patch.object(handler_module, "PedidoProductoService")
     def test_missing_pedido_returns_rejected(self, service_cls):
         db = MagicMock(spec=DatabaseSession)
         session = MagicMock(spec=ConversationSession)
@@ -175,6 +264,7 @@ class ExecuteModificarProductoExecutionTest(unittest.TestCase):
             cantidad_destino_final=2,
             origen_eliminado=True,
             destino_creado=True,
+            cantidad_destino_modificada=2,
         )
         service_cls.return_value = service
 
@@ -197,10 +287,11 @@ class ExecuteModificarProductoExecutionTest(unittest.TestCase):
         self.assertEqual(result.resolved_data["cantidad_modificada"], 2)
         self.assertEqual(result.resolved_data["cantidad_origen_restante"], 0)
         self.assertEqual(result.resolved_data["cantidad_destino_final"], 2)
+        self.assertEqual(result.resolved_data["cantidad_destino_modificada"], 2)
         self.assertTrue(result.resolved_data["origen_eliminado"])
         self.assertTrue(result.resolved_data["destino_creado"])
         service.modify_product.assert_called_once_with(
-            7, 1, 2, 2
+            7, 1, 2, 2, None
         )
 
     @patch.object(handler_module, "PedidoProductoService")

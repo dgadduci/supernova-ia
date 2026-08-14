@@ -465,6 +465,306 @@ class ModificarProductoEndToEndTest(unittest.TestCase):
         finally:
             _cleanup(base)
 
+    def test_zero_destination_quantity_rejected_no_pending_no_mutation(self):
+        """Blocker 1: `cambiar 2 ... por 0 ...` MUST be rejected at the
+        orchestrator before any pending state, candidate resolution or
+        PedidoProducto mutation. The legacy `2 -> 2` fallback cannot fire.
+        """
+        suffix = _suffix()
+        base = _seed(suffix)
+        try:
+            source_line_id = _seed_line(base, base["pp_a_chica"], 4)
+            with _patched_classifier(_ModificarClassifier):
+                with TestingSessionLocal() as db:
+                    session_row = db.get(SessionModel, base["session_id"])
+                    assert session_row is not None
+                    result = process_incoming_message(
+                        db,
+                        session_row,
+                        "cambiar 2 muzzarella por 0 napolitana",
+                    )
+                    self.assertEqual(len(result), 1)
+                    self.assertEqual(result[0].status, "rejected")
+                    self.assertEqual(
+                        result[0].resolved_data["reason"],
+                        "invalid_destination_quantity",
+                    )
+                    self.assertIsNone(session_row.context_type)
+                    pending = session_row.pending_intents or {}
+                    self.assertIsNone(pending.get("active"))
+                    db.commit()
+
+            with TestingSessionLocal() as db:
+                source = db.get(PedidoProducto, source_line_id)
+                self.assertEqual(source.cantidad, 4)
+                dest_lines = db.execute(
+                    select(PedidoProducto).where(
+                        PedidoProducto.id_pedido == base["pedido_id"],
+                        PedidoProducto.id_producto_presentacion
+                        == base["pp_b_grande"],
+                    )
+                ).all()
+                self.assertEqual(len(dest_lines), 0)
+        finally:
+            _cleanup(base)
+
+    def test_only_destination_quantity_falls_back_to_legacy_equal_transfer(self):
+        """Contract case 3: a request with the only explicit quantity on
+        the destination side must NOT widen into a paired 2 -> 1
+        operation. The legacy one-quantity semantics must collapse it to
+        a 2 -> 2 transfer.
+        """
+        suffix = _suffix()
+        base = _seed(suffix)
+        try:
+            source_line_id = _seed_line(base, base["pp_a_chica"], 4)
+            with _patched_classifier(_ModificarClassifier):
+                with TestingSessionLocal() as db:
+                    session_row = db.get(SessionModel, base["session_id"])
+                    assert session_row is not None
+                    result = process_incoming_message(
+                        db,
+                        session_row,
+                        "cambiar la muzzarella por 2 napolitanas",
+                    )
+                    self.assertEqual(len(result), 1)
+                    self.assertEqual(result[0].status, "executed")
+                    self.assertEqual(
+                        result[0].resolved_data["cantidad"], 2
+                    )
+                    self.assertIsNone(
+                        result[0].resolved_data.get("cantidad_destino")
+                    )
+                    db.commit()
+
+            with TestingSessionLocal() as db:
+                source = db.get(PedidoProducto, source_line_id)
+                self.assertEqual(source.cantidad, 2)
+                dest_line = db.execute(
+                    select(PedidoProducto).where(
+                        PedidoProducto.id_pedido == base["pedido_id"],
+                        PedidoProducto.id_producto_presentacion
+                        == base["pp_b_grande"],
+                    )
+                ).scalar_one()
+                self.assertEqual(dest_line.cantidad, 2)
+        finally:
+            _cleanup(base)
+
+    def test_paired_words_distinct_quantities_execute_2_to_1(self):
+        """Contract case 1: `cambiar dos napolitanas por una mozzarella`
+        must decrement source by 2 and create/increment destination by 1.
+        """
+        suffix = _suffix()
+        base = _seed(suffix)
+        try:
+            source_line_id = _seed_line(base, base["pp_a_chica"], 5)
+            with _patched_classifier(_ModificarClassifier):
+                with TestingSessionLocal() as db:
+                    session_row = db.get(SessionModel, base["session_id"])
+                    assert session_row is not None
+                    result = process_incoming_message(
+                        db,
+                        session_row,
+                        "cambiar dos muzzarella por una napolitana",
+                    )
+                    self.assertEqual(len(result), 1)
+                    self.assertEqual(result[0].status, "executed")
+                    self.assertEqual(
+                        result[0].resolved_data["cantidad"], 2
+                    )
+                    self.assertEqual(
+                        result[0].resolved_data["cantidad_destino"], 1
+                    )
+                    db.commit()
+
+            with TestingSessionLocal() as db:
+                source = db.get(PedidoProducto, source_line_id)
+                self.assertEqual(source.cantidad, 3)
+                dest_line = db.execute(
+                    select(PedidoProducto).where(
+                        PedidoProducto.id_pedido == base["pedido_id"],
+                        PedidoProducto.id_producto_presentacion
+                        == base["pp_b_grande"],
+                    )
+                ).scalar_one()
+                self.assertEqual(dest_line.cantidad, 1)
+        finally:
+            _cleanup(base)
+
+    def test_decimal_dot_destination_quantity_rejected_no_mutation(self):
+        """Blocker: `cambiar 2 ... por 1.5 ...` MUST be rejected before
+        any pending, candidate resolution or PedidoProducto mutation.
+        The legacy equal-quantity fallback (`2 -> 1`) cannot fire.
+        """
+        suffix = _suffix()
+        base = _seed(suffix)
+        try:
+            source_line_id = _seed_line(base, base["pp_a_chica"], 4)
+            with _patched_classifier(_ModificarClassifier):
+                with TestingSessionLocal() as db:
+                    session_row = db.get(SessionModel, base["session_id"])
+                    assert session_row is not None
+                    result = process_incoming_message(
+                        db,
+                        session_row,
+                        "cambiar 2 muzzarella por 1.5 napolitana",
+                    )
+                    self.assertEqual(len(result), 1)
+                    self.assertEqual(result[0].status, "rejected")
+                    self.assertEqual(
+                        result[0].resolved_data["reason"],
+                        "invalid_destination_quantity",
+                    )
+                    self.assertIsNone(session_row.context_type)
+                    pending = session_row.pending_intents or {}
+                    self.assertIsNone(pending.get("active"))
+                    db.commit()
+
+            with TestingSessionLocal() as db:
+                source = db.get(PedidoProducto, source_line_id)
+                self.assertEqual(source.cantidad, 4)
+                dest_lines = db.execute(
+                    select(PedidoProducto).where(
+                        PedidoProducto.id_pedido == base["pedido_id"],
+                        PedidoProducto.id_producto_presentacion
+                        == base["pp_b_grande"],
+                    )
+                ).all()
+                self.assertEqual(len(dest_lines), 0)
+        finally:
+            _cleanup(base)
+
+    def test_decimal_comma_destination_quantity_rejected_no_mutation(self):
+        """Spanish form `1,5` MUST behave the same as `1.5`: rejected,
+        Pedido intact, no pending, no mutation.
+        """
+        suffix = _suffix()
+        base = _seed(suffix)
+        try:
+            source_line_id = _seed_line(base, base["pp_a_chica"], 4)
+            with _patched_classifier(_ModificarClassifier):
+                with TestingSessionLocal() as db:
+                    session_row = db.get(SessionModel, base["session_id"])
+                    assert session_row is not None
+                    result = process_incoming_message(
+                        db,
+                        session_row,
+                        "cambiar 2 muzzarella por 1,5 napolitana",
+                    )
+                    self.assertEqual(len(result), 1)
+                    self.assertEqual(result[0].status, "rejected")
+                    self.assertEqual(
+                        result[0].resolved_data["reason"],
+                        "invalid_destination_quantity",
+                    )
+                    self.assertIsNone(session_row.context_type)
+                    pending = session_row.pending_intents or {}
+                    self.assertIsNone(pending.get("active"))
+                    db.commit()
+
+            with TestingSessionLocal() as db:
+                source = db.get(PedidoProducto, source_line_id)
+                self.assertEqual(source.cantidad, 4)
+                dest_lines = db.execute(
+                    select(PedidoProducto).where(
+                        PedidoProducto.id_pedido == base["pedido_id"],
+                        PedidoProducto.id_producto_presentacion
+                        == base["pp_b_grande"],
+                    )
+                ).all()
+                self.assertEqual(len(dest_lines), 0)
+        finally:
+            _cleanup(base)
+
+    def test_decimal_with_colon_after_por_rejected_no_mutation(self):
+        """`por:` with a decimal destination quantity MUST be rejected
+        because the raw `por` boundary must be semantically compatible
+        with `_split_on_por()`. Without the regex fix the decimal
+        would collapse into ``1 5`` and trigger a wrong ``2 -> 1``.
+        """
+        suffix = _suffix()
+        base = _seed(suffix)
+        try:
+            source_line_id = _seed_line(base, base["pp_a_chica"], 4)
+            with _patched_classifier(_ModificarClassifier):
+                with TestingSessionLocal() as db:
+                    session_row = db.get(SessionModel, base["session_id"])
+                    assert session_row is not None
+                    result = process_incoming_message(
+                        db,
+                        session_row,
+                        "cambiar 2 muzzarella por: 1.5 napolitana",
+                    )
+                    self.assertEqual(len(result), 1)
+                    self.assertEqual(result[0].status, "rejected")
+                    self.assertEqual(
+                        result[0].resolved_data["reason"],
+                        "invalid_destination_quantity",
+                    )
+                    self.assertIsNone(session_row.context_type)
+                    pending = session_row.pending_intents or {}
+                    self.assertIsNone(pending.get("active"))
+                    db.commit()
+
+            with TestingSessionLocal() as db:
+                source = db.get(PedidoProducto, source_line_id)
+                self.assertEqual(source.cantidad, 4)
+                dest_lines = db.execute(
+                    select(PedidoProducto).where(
+                        PedidoProducto.id_pedido == base["pedido_id"],
+                        PedidoProducto.id_producto_presentacion
+                        == base["pp_b_grande"],
+                    )
+                ).all()
+                self.assertEqual(len(dest_lines), 0)
+        finally:
+            _cleanup(base)
+
+    def test_negative_with_comma_after_por_rejected_no_mutation(self):
+        """`por,` with a negative destination quantity MUST be rejected.
+        The raw `por` boundary must be semantically compatible with
+        `_split_on_por()` so the ``-1`` token is recognised before
+        normalization strips the minus sign.
+        """
+        suffix = _suffix()
+        base = _seed(suffix)
+        try:
+            source_line_id = _seed_line(base, base["pp_a_chica"], 4)
+            with _patched_classifier(_ModificarClassifier):
+                with TestingSessionLocal() as db:
+                    session_row = db.get(SessionModel, base["session_id"])
+                    assert session_row is not None
+                    result = process_incoming_message(
+                        db,
+                        session_row,
+                        "cambiar 2 muzzarella por, -1 napolitana",
+                    )
+                    self.assertEqual(len(result), 1)
+                    self.assertEqual(result[0].status, "rejected")
+                    self.assertEqual(
+                        result[0].resolved_data["reason"],
+                        "invalid_destination_quantity",
+                    )
+                    self.assertIsNone(session_row.context_type)
+                    pending = session_row.pending_intents or {}
+                    self.assertIsNone(pending.get("active"))
+                    db.commit()
+
+            with TestingSessionLocal() as db:
+                source = db.get(PedidoProducto, source_line_id)
+                self.assertEqual(source.cantidad, 4)
+                dest_lines = db.execute(
+                    select(PedidoProducto).where(
+                        PedidoProducto.id_pedido == base["pedido_id"],
+                        PedidoProducto.id_producto_presentacion
+                        == base["pp_b_grande"],
+                    )
+                ).all()
+                self.assertEqual(len(dest_lines), 0)
+        finally:
+            _cleanup(base)
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -1312,6 +1612,15 @@ class ModificarProductoBareDestinationExecutionTest(unittest.TestCase):
                 self.assertEqual(
                     follow_up[0].resolved_data["cantidad"], 2
                 )
+                self.assertEqual(
+                    follow_up[0].resolved_data["cantidad_destino"], 1
+                )
+                self.assertEqual(
+                    follow_up[0].resolved_data[
+                        "cantidad_destino_modificada"
+                    ],
+                    1,
+                )
                 db.commit()
 
             with TestingSessionLocal() as db:
@@ -1324,7 +1633,7 @@ class ModificarProductoBareDestinationExecutionTest(unittest.TestCase):
                         == base["pp_mozza_chica"],
                     )
                 ).scalar_one()
-                self.assertEqual(dest_line.cantidad, 2)
+                self.assertEqual(dest_line.cantidad, 1)
                 session_row = db.get(SessionModel, base["session_id"])
                 self.assertIsNone(session_row.context_type)
                 cleared_pending = session_row.pending_intents or {}

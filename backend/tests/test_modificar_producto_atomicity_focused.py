@@ -432,6 +432,167 @@ class ModifyProductAuthoritativeQuantityTest(unittest.TestCase):
         )
 
 
+class ModifyProductDistinctDestinationQuantityTest(unittest.TestCase):
+    """Section 7 - paired `2 -> 1` modification atomic mutation."""
+
+    def test_distinct_quantity_decrements_source_creates_destination(self):
+        suffix = _suffix()
+        base = _seed(suffix)
+        try:
+            orig = _seed_product(
+                base,
+                suffix,
+                nombre=f"Origen {suffix}",
+                codigo_presentacion=f"orig-{suffix}",
+            )
+            dest = _seed_product(
+                base,
+                suffix,
+                nombre=f"Dest {suffix}",
+                codigo_presentacion=f"dest-{suffix}",
+            )
+            source_line_id = _seed_pedido_line(base, orig["pp_id"], 7)
+
+            with TestingSessionLocal() as db, db.begin():
+                result = PedidoProductoService(db).modify_product(
+                    base["pedido_id"],
+                    source_line_id,
+                    dest["pp_id"],
+                    2,
+                    1,
+                )
+
+            self.assertEqual(result.status, "executed")
+            self.assertEqual(result.cantidad_modificada, 2)
+            self.assertEqual(result.cantidad_destino_modificada, 1)
+            self.assertEqual(result.cantidad_origen_restante, 5)
+            self.assertEqual(result.cantidad_destino_final, 1)
+
+            with TestingSessionLocal() as db:
+                source = db.get(PedidoProducto, source_line_id)
+                self.assertIsNotNone(source)
+                self.assertEqual(source.cantidad, 5)
+                dest_line = db.execute(
+                    select(PedidoProducto).where(
+                        PedidoProducto.id_pedido == base["pedido_id"],
+                        PedidoProducto.id_producto_presentacion == dest["pp_id"],
+                    )
+                ).scalar_one()
+                self.assertEqual(dest_line.cantidad, 1)
+        finally:
+            _cleanup(base)
+
+    def test_absent_destination_quantity_mirrors_source(self):
+        suffix = _suffix()
+        base = _seed(suffix)
+        try:
+            orig = _seed_product(
+                base,
+                suffix,
+                nombre=f"Origen {suffix}",
+                codigo_presentacion=f"orig-{suffix}",
+            )
+            dest = _seed_product(
+                base,
+                suffix,
+                nombre=f"Dest {suffix}",
+                codigo_presentacion=f"dest-{suffix}",
+            )
+            source_line_id = _seed_pedido_line(base, orig["pp_id"], 4)
+
+            with TestingSessionLocal() as db, db.begin():
+                result = PedidoProductoService(db).modify_product(
+                    base["pedido_id"],
+                    source_line_id,
+                    dest["pp_id"],
+                    2,
+                    None,
+                )
+
+            self.assertEqual(result.status, "executed")
+            self.assertEqual(result.cantidad_modificada, 2)
+            self.assertEqual(result.cantidad_destino_modificada, 2)
+            self.assertEqual(result.cantidad_destino_final, 2)
+        finally:
+            _cleanup(base)
+
+    def test_zero_destination_quantity_rejected(self):
+        suffix = _suffix()
+        base = _seed(suffix)
+        try:
+            orig = _seed_product(
+                base,
+                suffix,
+                nombre=f"Origen {suffix}",
+                codigo_presentacion=f"orig-{suffix}",
+            )
+            dest = _seed_product(
+                base,
+                suffix,
+                nombre=f"Dest {suffix}",
+                codigo_presentacion=f"dest-{suffix}",
+            )
+            source_line_id = _seed_pedido_line(base, orig["pp_id"], 4)
+
+            with TestingSessionLocal() as db, db.begin():
+                result = PedidoProductoService(db).modify_product(
+                    base["pedido_id"],
+                    source_line_id,
+                    dest["pp_id"],
+                    2,
+                    0,
+                )
+
+            self.assertEqual(result.status, "rejected")
+            self.assertEqual(result.reason, "invalid_quantity")
+
+            with TestingSessionLocal() as db:
+                source = db.get(PedidoProducto, source_line_id)
+                self.assertIsNotNone(source)
+                self.assertEqual(source.cantidad, 4)
+        finally:
+            _cleanup(base)
+
+    def test_consolidated_destination_uses_destination_quantity(self):
+        suffix = _suffix()
+        base = _seed(suffix)
+        try:
+            orig = _seed_product(
+                base,
+                suffix,
+                nombre=f"Origen {suffix}",
+                codigo_presentacion=f"orig-{suffix}",
+            )
+            dest = _seed_product(
+                base,
+                suffix,
+                nombre=f"Dest {suffix}",
+                codigo_presentacion=f"dest-{suffix}",
+            )
+            source_line_id = _seed_pedido_line(base, orig["pp_id"], 5)
+            existing_dest_id = _seed_pedido_line(base, dest["pp_id"], 2)
+
+            with TestingSessionLocal() as db, db.begin():
+                result = PedidoProductoService(db).modify_product(
+                    base["pedido_id"],
+                    source_line_id,
+                    dest["pp_id"],
+                    2,
+                    1,
+                )
+
+            self.assertEqual(result.status, "executed")
+            self.assertEqual(result.cantidad_destino_modificada, 1)
+            self.assertEqual(result.cantidad_destino_final, 3)
+            self.assertFalse(result.destino_creado)
+
+            with TestingSessionLocal() as db:
+                existing_dest = db.get(PedidoProducto, existing_dest_id)
+                self.assertEqual(existing_dest.cantidad, 3)
+        finally:
+            _cleanup(base)
+
+
 class ModifyProductPriceSnapshotOrderingTest(unittest.TestCase):
     """Section 6.6 - current_precio is read before any source mutation."""
 

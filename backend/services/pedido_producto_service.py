@@ -419,12 +419,41 @@ class PedidoProductoService:
             return None
         return explicit_cantidad
 
+    @staticmethod
+    def _resolve_cantidad_destino(
+        explicit_cantidad_destino: int | None,
+        effective_source_cantidad: int,
+    ) -> int | None:
+        """Return the authoritative destination quantity.
+
+        When the caller supplies an explicit positive destination
+        quantity, that value is returned verbatim so the destination can
+        differ from the source quantity. Otherwise (legacy path) the
+        destination mirrors the effective source quantity, preserving the
+        existing equal-quantity contract.
+
+        Returns `None` only when the explicit value is present but
+        non-positive or non-integer so the caller can emit the
+        deterministic `invalid_quantity` reason.
+        """
+        if explicit_cantidad_destino is None:
+            return effective_source_cantidad
+        if (
+            isinstance(explicit_cantidad_destino, bool)
+            or not isinstance(explicit_cantidad_destino, int)
+        ):
+            return None
+        if explicit_cantidad_destino <= 0:
+            return None
+        return explicit_cantidad_destino
+
     def modify_product(
         self,
         pedido_id: int,
         pedido_producto_origen_id: int,
         producto_presentacion_destino_id: int,
         cantidad: int | None,
+        cantidad_destino: int | None = None,
     ) -> ModificationResult:
         """Atomically replace the source line with the destination product.
 
@@ -439,14 +468,17 @@ class PedidoProductoService:
         2. Load and validate the source PedidoProducto line.
         3. Compute `cantidad_a_modificar` (explicit quantity or re-read
            source quantity); validate the quantity ceiling.
-        4. Load and validate the destination ProductoPresentacion
+        4. Compute `cantidad_destino_a_modificar` (explicit destination
+           quantity or the effective source quantity for backward
+           compatibility); validate it is positive.
+        5. Load and validate the destination ProductoPresentacion
            (existence, same comercio, active, available, presentation
            active).
-        5. Run the equivalent-modification guard.
-        6. Run the destination consolidation lookup.
-        7. Read `current_precio` for any new destination line before any
+        6. Run the equivalent-modification guard.
+        7. Run the destination consolidation lookup.
+        8. Read `current_precio` for any new destination line before any
            source mutation.
-        8. Mutate the source and the destination atomically.
+        9. Mutate the source and the destination atomically.
 
         Returns a `ModificationResult` whose `status` is either `"executed"`
         (with display names, quantities, and consolidation flags populated)
@@ -485,6 +517,12 @@ class PedidoProductoService:
                 producto_origen_nombre=source_producto.nombre,
                 presentacion_origen=source_presentacion.codigo,
             )
+
+        cantidad_destino_a_modificar = self._resolve_cantidad_destino(
+            cantidad_destino, cantidad_a_modificar
+        )
+        if cantidad_destino_a_modificar is None:
+            return ModificationResult(status="rejected", reason="invalid_quantity")
 
         dest_pp = self._session.get(
             ProductoPresentacion, producto_presentacion_destino_id
@@ -541,7 +579,7 @@ class PedidoProductoService:
 
         if existing_dest is not None:
             updated_dest = self._repo.increment(
-                existing_dest.id, cantidad_a_modificar
+                existing_dest.id, cantidad_destino_a_modificar
             )
             destino_creado = False
             cantidad_destino_final = updated_dest.cantidad
@@ -550,11 +588,11 @@ class PedidoProductoService:
             self._repo.create_with_price_snapshot(
                 id_pedido=pedido_id,
                 id_producto_presentacion=producto_presentacion_destino_id,
-                cantidad=cantidad_a_modificar,
+                cantidad=cantidad_destino_a_modificar,
                 precio_unitario=precio.precio,
             )
             destino_creado = True
-            cantidad_destino_final = cantidad_a_modificar
+            cantidad_destino_final = cantidad_destino_a_modificar
 
         return ModificationResult(
             status="executed",
@@ -567,4 +605,5 @@ class PedidoProductoService:
             cantidad_destino_final=cantidad_destino_final,
             origen_eliminado=origen_eliminado,
             destino_creado=destino_creado,
+            cantidad_destino_modificada=cantidad_destino_a_modificar,
         )
