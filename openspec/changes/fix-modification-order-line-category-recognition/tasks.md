@@ -18,9 +18,9 @@
 
 ## 3. Pilot gate
 
-- [ ] 3.1 After approved deploy, test the two reported category-qualified
+- [x] 3.1 After approved deploy, test the two reported category-qualified
   messages against known draft lines and verify the existing success/pending
   result, exact lines, and cleared context when executed.
-- [ ] 3.2 Test an outside-draft category-qualified source remains rejected
+- [x] 3.2 Test an outside-draft category-qualified source remains rejected
   with no line mutation; complete the quantity-spec regression gates before
   archiving either change, and archive only with explicit user approval.
