@@ -35,3 +35,32 @@ legacy transaction-owning method.
   product turn
 - **THEN** no handler/service transaction-control call occurs before the
   coordinator commits the complete turn
+
+### Requirement: Repeated exact product adds preserve the durable cumulative quantity
+
+For the same active Session, its own `borrador` Pedido and the same exact
+selected presentation, each successful `agregar_producto` turn SHALL add the
+requested positive quantity to the existing durable line. The returned
+`cantidad_final` SHALL equal that persisted total, while the requested amount
+remains only the added delta. The local-test order-lines snapshot SHALL render
+that persisted total and SHALL NOT derive it from customer-response text or
+browser-local arithmetic.
+
+#### Scenario: Three sequential adds use one line and cumulative totals
+
+- **WHEN** a priced exact presentation is added with quantities `1`, then `2`,
+  then `3` in three completed turns for the same active draft
+- **THEN** the first turn creates one line at `1`, the second makes it `3`,
+  and the third makes it `6`
+- **AND THEN** each success response reports its durable final quantity (`1`,
+  `3`, `6`)
+- **AND THEN** the post-turn local-test snapshot contains exactly that one
+  line at `6`
+
+#### Scenario: Sequential add failure does not replace a durable line
+
+- **WHEN** a repeated add fails a pre-mutation business guard or raises an
+  unexpected technical failure
+- **THEN** it does not reset, replace, duplicate or otherwise change the
+  existing line
+- **AND THEN** existing typed rejection or outer rollback behavior applies

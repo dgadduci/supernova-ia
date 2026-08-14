@@ -33,3 +33,20 @@
   `fix-pending-context-recovery-and-status-query` only after 4.2 succeeds.
 - [ ] 4.4 Resume `implement-product-line-observation-intent` only after 4.3;
   do not archive any change without explicit user approval.
+
+## 5. Sequential add quantity regression amendment
+
+- [x] 5.1 Add a real sequential regression test for one exact presentation
+  and one active draft: quantities `1`, `2`, `3` produce one durable line at
+  `1`, `3`, `6`, with corresponding final-quantity responses.
+- [ ] 5.2 Diagnose and correct only the smallest modern add seam, exact-line
+  lookup, transaction-boundary or snapshot defect revealed by 5.1; preserve
+  caller-owned transaction control and legacy add behavior.
+- [x] 5.3 Prove the local-test JSON snapshot and panel update render the
+  durable total (`6`), not a request delta or browser-local calculation.
+- [x] 5.4 Run the focused validation commands added by this amendment and
+  report complete output, distinguishing reproducible pre-existing failures.
+- [ ] 5.5 After approved deploy, replay quantities `1`, `2`, `3` in the pilot
+  for the same draft/presentation; verify one line at `6`, responses with
+  totals `1`, `3`, `6`, and empty pending/context. Resume the product-flow
+  TODO only after this gate; do not archive without explicit approval.
