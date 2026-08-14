@@ -330,3 +330,59 @@ input still reaches invalid/inconsistent.
   remain present/escaped;
 - existing local-test refresh, privacy, auth and no-mutation behavior remains
   covered.
+
+## Local order-lines refresh amendment (2026-08-14)
+
+### Typed post-turn line snapshot
+
+The existing successful local-test response gains one `order_lines` member in
+addition to `responses` and `execution_state`. It is a typed JSON-safe list of
+the exact selected Pedido's existing visible line fields:
+
+| Field | Wire representation |
+| --- | --- |
+| line id | positive integer |
+| product name | string |
+| presentation description | string or `null` |
+| quantity | positive integer |
+| unit price | display string, preserving the stored decimal value |
+| line observation | string or `null` |
+
+After the normal transactional processor returns, the router retains the
+existing exact post-turn identity check, then asks the existing typed panel
+view service for lines by that same `pedido_id`. The view service owns the
+read query; the router does not issue a direct ORM line query and does not own
+transaction control. A missing/repointed exact identity continues to use the
+existing generic failure path; a valid post-turn `ingresado` Pedido remains
+eligible for this read snapshot.
+
+No ORM object is returned. The response explicitly maps only the table fields
+above and uses JSON-safe values before `JSONResponse` serialization. It never
+adds Session/Pedido metadata, pending state, provider data or configuration to
+the line snapshot.
+
+### In-place list rendering
+
+The detail template moves the existing lines section immediately after its
+“Detalle del pedido” heading. Its table body and empty-state block receive
+narrow `data-debug-*` hooks. On a successful response carrying a valid
+`order_lines` array, the existing browser script creates rows/cells with DOM
+APIs and assigns every value through `textContent`; it swaps empty/table
+visibility as appropriate and preserves the scroll wrapper. It does not use
+`innerHTML`, a page reload, browser storage or a second endpoint. Failed,
+malformed or rejected responses do not alter the existing rendered lines.
+
+### Focused tests
+
+- read projection maps multiple exact order lines, including nullable
+  presentation/observation and JSON-safe price display, without mutation;
+- a successful local turn returns only the documented `order_lines` fields for
+  the exact selected Pedido and preserves the closed execution-state contract;
+- response and browser rendering never leak Session/Pedido/pending/provider
+  fields and use text APIs only;
+- browser refresh replaces empty state with all returned rows, handles a
+  returned empty array, preserves transcript/state on failure, and retains
+  the scroll container;
+- the lines section appears immediately beneath “Detalle del pedido”, before
+  commerce/client/session/order metadata; authentication, exact-target and
+  transaction ownership regressions remain covered.

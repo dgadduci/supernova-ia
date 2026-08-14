@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import unittest
 from contextlib import contextmanager
+from dataclasses import FrozenInstanceError
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
@@ -35,6 +36,7 @@ from backend.services.pilot_order_operations_view_service import (
     InvalidPedidoId,
     LocalDateTimeView,
     OrderDetailView,
+    OrderLineSnapshot,
     OrderListRow,
     OrderSummary,
     OutboundMessageView,
@@ -45,6 +47,7 @@ from backend.services.pilot_order_operations_view_service import (
     build_pending_context_debug_view,
     format_local_datetime,
     format_local_datetime_optional,
+    format_order_line_price,
     parse_comercio_id,
     parse_list_filters,
     parse_pedido_id,
@@ -2515,6 +2518,256 @@ class GetDetailPendingDebugRenderingTest(unittest.TestCase):
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, payload)
+
+
+class FormatOrderLinePriceTest(unittest.TestCase):
+    """Task 9.1: the unit-price formatter keeps the stored
+    :class:`decimal.Decimal` value intact and is JSON-safe."""
+
+    def test_decimal_string_preserves_stored_value(self) -> None:
+        self.assertEqual(
+            format_order_line_price(Decimal("150.00")), "150.00"
+        )
+
+    def test_zero_decimal_renders_as_zero(self) -> None:
+        self.assertEqual(format_order_line_price(Decimal(0)), "0")
+
+    def test_large_decimal_preserves_precision(self) -> None:
+        self.assertEqual(
+            format_order_line_price(Decimal("123456789.99")),
+            "123456789.99",
+        )
+
+
+class OrderLineSnapshotFieldsTest(unittest.TestCase):
+    """Task 9.1: :class:`OrderLineSnapshot` only exposes the
+    documented closed fields and refuses extra members."""
+
+    def test_dataclass_has_only_documented_fields(self) -> None:
+        snapshot = OrderLineSnapshot(
+            id=100,
+            producto_nombre="Pan",
+            presentacion_descripcion="Bolsa x 1kg",
+            cantidad=2,
+            precio_unitario_display="150.00",
+            observaciones=None,
+        )
+        self.assertEqual(
+            set(snapshot.__dataclass_fields__.keys()),
+            {
+                "id",
+                "producto_nombre",
+                "presentacion_descripcion",
+                "cantidad",
+                "precio_unitario_display",
+                "observaciones",
+            },
+        )
+
+    def test_snapshot_is_frozen(self) -> None:
+        snapshot = OrderLineSnapshot(
+            id=100,
+            producto_nombre="Pan",
+            presentacion_descripcion=None,
+            cantidad=2,
+            precio_unitario_display="150.00",
+            observaciones=None,
+        )
+        with self.assertRaises(FrozenInstanceError):
+            snapshot.id = 999  # type: ignore[misc]
+
+    def test_snapshot_repr_does_not_leak_internal_value(self) -> None:
+        snapshot = OrderLineSnapshot(
+            id=100,
+            producto_nombre="Pan",
+            presentacion_descripcion=None,
+            cantidad=2,
+            precio_unitario_display="150.00",
+            observaciones="<script>",
+        )
+        payload = repr(snapshot)
+        # The repr never includes a Decimal token or any field name
+        # beyond the documented wire contract.
+        for forbidden in (
+            "Decimal",
+            "id_session",
+            "id_pedido",
+            "id_cliente",
+            "id_comercio",
+            "pending_intents",
+            "context_type",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, payload)
+
+
+class GetOrderLinesSnapshotTest(unittest.TestCase):
+    """Task 9.1: the new public projection emits a typed,
+    JSON-safe :class:`OrderLineSnapshot` list for the requested
+    pedido only."""
+
+    def _stub_session(self, lineas: list) -> MagicMock:
+        session = MagicMock(name="DatabaseSession")
+        session.commit = MagicMock()
+        session.rollback = MagicMock()
+        session.flush = MagicMock()
+        session.refresh = MagicMock()
+        session.begin = MagicMock()
+        session.close = MagicMock()
+        session.execute.return_value = _Result(
+            scalars_list=lineas, scalar_value=None
+        )
+        return session
+
+    def _build_line(
+        self,
+        *,
+        id: int,
+        cantidad: int,
+        precio_unitario: Decimal,
+        observaciones: str | None,
+        presentacion_descripcion: str | None = "Bolsa x 1kg",
+        producto_nombre: str = "Pan",
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=id,
+            cantidad=cantidad,
+            precio_unitario=precio_unitario,
+            observaciones=observaciones,
+            producto_presentacion=SimpleNamespace(
+                producto=SimpleNamespace(nombre=producto_nombre),
+                presentacion=SimpleNamespace(
+                    descripcion=presentacion_descripcion
+                ),
+            ),
+        )
+
+    def test_returns_empty_snapshot_for_empty_lines(self) -> None:
+        session = self._stub_session([])
+        snapshots = (
+            PilotOrderOperationsViewService(session).get_order_lines_snapshot(42)
+        )
+        self.assertEqual(snapshots, [])
+        session.commit.assert_not_called()
+        session.rollback.assert_not_called()
+        session.flush.assert_not_called()
+        session.refresh.assert_not_called()
+        session.begin.assert_not_called()
+        session.close.assert_not_called()
+
+    def test_maps_a_single_line_with_all_fields(self) -> None:
+        line = self._build_line(
+            id=100,
+            cantidad=2,
+            precio_unitario=Decimal("150.00"),
+            observaciones="Sin sal",
+        )
+        session = self._stub_session([line])
+        snapshots = (
+            PilotOrderOperationsViewService(session).get_order_lines_snapshot(42)
+        )
+        self.assertEqual(len(snapshots), 1)
+        snapshot = snapshots[0]
+        self.assertIsInstance(snapshot, OrderLineSnapshot)
+        self.assertEqual(snapshot.id, 100)
+        self.assertEqual(snapshot.producto_nombre, "Pan")
+        self.assertEqual(snapshot.presentacion_descripcion, "Bolsa x 1kg")
+        self.assertEqual(snapshot.cantidad, 2)
+        self.assertEqual(snapshot.precio_unitario_display, "150.00")
+        self.assertEqual(snapshot.observaciones, "Sin sal")
+
+    def test_maps_multiple_lines_with_nullable_presentation_and_observation(
+        self,
+    ) -> None:
+        lines = [
+            self._build_line(
+                id=1,
+                cantidad=1,
+                precio_unitario=Decimal("10.50"),
+                observaciones=None,
+                presentacion_descripcion=None,
+                producto_nombre="Agua",
+            ),
+            self._build_line(
+                id=2,
+                cantidad=3,
+                precio_unitario=Decimal("9.99"),
+                observaciones="Sin hielo",
+                presentacion_descripcion="Lata 330ml",
+                producto_nombre="Gaseosa",
+            ),
+        ]
+        session = self._stub_session(lines)
+        snapshots = (
+            PilotOrderOperationsViewService(session).get_order_lines_snapshot(42)
+        )
+        self.assertEqual(len(snapshots), 2)
+        self.assertEqual(snapshots[0].id, 1)
+        self.assertIsNone(snapshots[0].presentacion_descripcion)
+        self.assertIsNone(snapshots[0].observaciones)
+        self.assertEqual(snapshots[0].precio_unitario_display, "10.50")
+        self.assertEqual(snapshots[1].id, 2)
+        self.assertEqual(snapshots[1].presentacion_descripcion, "Lata 330ml")
+        self.assertEqual(snapshots[1].observaciones, "Sin hielo")
+        self.assertEqual(snapshots[1].precio_unitario_display, "9.99")
+
+    def test_snapshot_is_isolated_by_pedido_id(self) -> None:
+        """The query is scoped strictly by ``pedido_id``; the helper
+        must never broaden the search to another pedido, session,
+        cliente, comercio or product. The session is exercised once
+        so the helper cannot issue a secondary lookup."""
+        line = self._build_line(
+            id=7,
+            cantidad=1,
+            precio_unitario=Decimal("1.00"),
+            observaciones=None,
+        )
+        session = self._stub_session([line])
+        PilotOrderOperationsViewService(session).get_order_lines_snapshot(42)
+        self.assertEqual(session.execute.call_count, 1)
+
+    def test_snapshot_does_not_carry_decimal_or_orm_payload(self) -> None:
+        line = self._build_line(
+            id=100,
+            cantidad=2,
+            precio_unitario=Decimal("150.00"),
+            observaciones="Sin sal",
+        )
+        session = self._stub_session([line])
+        snapshots = (
+            PilotOrderOperationsViewService(session).get_order_lines_snapshot(42)
+        )
+        # The JSON-safe serialised payload must never contain a
+        # Decimal token or any ORM attribute leaked from the row.
+        payload = repr(snapshots)
+        for forbidden in (
+            "Decimal",
+            "pedidos_productos",
+            "ProductoPresentacion",
+            "producto_presentacion",
+            "id_pedido",
+            "id_session",
+            "id_comercio",
+            "id_cliente",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, payload)
+
+    def test_snapshot_does_not_mutate_session(self) -> None:
+        line = self._build_line(
+            id=100,
+            cantidad=2,
+            precio_unitario=Decimal("150.00"),
+            observaciones=None,
+        )
+        session = self._stub_session([line])
+        PilotOrderOperationsViewService(session).get_order_lines_snapshot(42)
+        session.commit.assert_not_called()
+        session.rollback.assert_not_called()
+        session.flush.assert_not_called()
+        session.refresh.assert_not_called()
+        session.begin.assert_not_called()
+        session.close.assert_not_called()
 
 
 if __name__ == "__main__":

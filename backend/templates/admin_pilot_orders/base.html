@@ -287,6 +287,124 @@
     return updated;
   }
 
+  var EMPTY_DASH_TEXT = "—";
+
+  function isValidLineEntry(entry) {
+    if (!entry || typeof entry !== "object") {
+      return false;
+    }
+    if (!Number.isInteger(entry.id) || entry.id <= 0) {
+      return false;
+    }
+    if (typeof entry.producto_nombre !== "string") {
+      return false;
+    }
+    if (
+      entry.presentacion_descripcion !== null &&
+      typeof entry.presentacion_descripcion !== "string"
+    ) {
+      return false;
+    }
+    if (!Number.isInteger(entry.cantidad) || entry.cantidad <= 0) {
+      return false;
+    }
+    if (typeof entry.precio_unitario_display !== "string") {
+      return false;
+    }
+    if (
+      entry.observaciones !== null &&
+      typeof entry.observaciones !== "string"
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  function validateOrderLines(lines) {
+    if (!Array.isArray(lines)) {
+      return false;
+    }
+    for (var i = 0; i < lines.length; i++) {
+      if (!isValidLineEntry(lines[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function buildLineCell(text) {
+    var td = document.createElement("td");
+    if (text === null || text === undefined || text === "") {
+      var span = document.createElement("span");
+      span.className = "muted";
+      span.textContent = EMPTY_DASH_TEXT;
+      td.appendChild(span);
+    } else {
+      td.textContent = String(text);
+    }
+    return td;
+  }
+
+  function buildLineRow(entry) {
+    var tr = document.createElement("tr");
+
+    var lineCell = document.createElement("td");
+    lineCell.textContent = "#" + String(entry.id);
+    tr.appendChild(lineCell);
+
+    tr.appendChild(buildLineCell(entry.producto_nombre));
+
+    var presentacionCell = document.createElement("td");
+    if (entry.presentacion_descripcion !== null && entry.presentacion_descripcion !== "") {
+      presentacionCell.textContent = entry.presentacion_descripcion;
+    } else {
+      var dashSpan = document.createElement("span");
+      dashSpan.className = "muted";
+      dashSpan.textContent = EMPTY_DASH_TEXT;
+      presentacionCell.appendChild(dashSpan);
+    }
+    tr.appendChild(presentacionCell);
+
+    tr.appendChild(buildLineCell(entry.cantidad));
+
+    tr.appendChild(buildLineCell(entry.precio_unitario_display));
+
+    var obsCell = document.createElement("td");
+    if (entry.observaciones !== null && entry.observaciones !== "") {
+      obsCell.textContent = entry.observaciones;
+    } else {
+      var obsSpan = document.createElement("span");
+      obsSpan.className = "muted";
+      obsSpan.textContent = EMPTY_DASH_TEXT;
+      obsCell.appendChild(obsSpan);
+    }
+    tr.appendChild(obsCell);
+
+    return tr;
+  }
+
+  function updateOrderLines(lines) {
+    if (!validateOrderLines(lines)) {
+      return false;
+    }
+    var tbody = document.querySelector("[data-debug-lines-tbody]");
+    var empty = document.querySelector("[data-debug-lines-empty]");
+    if (!tbody || !empty) {
+      return false;
+    }
+    var fragment = document.createDocumentFragment();
+    for (var i = 0; i < lines.length; i++) {
+      fragment.appendChild(buildLineRow(lines[i]));
+    }
+    tbody.replaceChildren(fragment);
+    if (lines.length === 0) {
+      empty.hidden = false;
+    } else {
+      empty.hidden = true;
+    }
+    return true;
+  }
+
   var forms = document.querySelectorAll("[data-debug-form]");
   forms.forEach(function (form) {
     var transcript = document.querySelector("[data-debug-transcript]");
@@ -351,7 +469,15 @@
           });
         })
         .then(function (result) {
-          if (!result.ok || !result.data || !Array.isArray(result.data.responses) || !result.data.execution_state || typeof result.data.execution_state !== "object") {
+          if (
+            !result.ok ||
+            !result.data ||
+            !Array.isArray(result.data.responses) ||
+            !result.data.execution_state ||
+            typeof result.data.execution_state !== "object" ||
+            !Array.isArray(result.data.order_lines) ||
+            !validateOrderLines(result.data.order_lines)
+          ) {
             appendLine("error", "Cliente: " + (result.data && result.data.message ? result.data.message : "El canal local rechazó el mensaje."));
             setStatus("Error del canal local. No se realizó ningún cambio.");
             return;
@@ -365,6 +491,7 @@
             });
           }
           updateExecutionState(result.data.execution_state);
+          updateOrderLines(result.data.order_lines);
           setStatus("Turno procesado por el pipeline transaccional. El transcript vive solo en esta pestaña.");
         })
         .catch(function () {
@@ -377,6 +504,14 @@
         });
     });
   });
+
+  if (typeof window !== "undefined") {
+    window.__panelDebugLines = {
+      isValidLineEntry: isValidLineEntry,
+      validateOrderLines: validateOrderLines,
+      updateOrderLines: updateOrderLines
+    };
+  }
 })();
 </script>
 </body>
