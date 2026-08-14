@@ -57,6 +57,8 @@ EXEMPT_PATHS = frozenset(
         "/webhooks/twilio/whatsapp/status",
         "/admin/pilot/orders",
         "/admin/pilot/orders/{pedido_id}",
+        "/admin/pilot/orders/{pedido_id}/local-test",
+        "/admin/pilot/orders/commerce/{comercio_id}/catalog",
     }
 )
 

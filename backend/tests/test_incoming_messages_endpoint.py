@@ -361,8 +361,7 @@ class IncomingMessagesModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(
             imports,
             [
-                "backend.intents.orchestration."
-                "incoming_message_response_orchestrator"
+                "backend.intents.orchestration.incoming_message_response_orchestrator",
             ],
         )
 

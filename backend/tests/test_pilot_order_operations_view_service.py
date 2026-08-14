@@ -38,9 +38,11 @@ from backend.services.pilot_order_operations_view_service import (
     OrderListRow,
     OrderSummary,
     OutboundMessageView,
+    PendingContextDebugView,
     PilotOrderOperationsViewService,
     ProviderReceiptView,
     SessionSummary,
+    build_pending_context_debug_view,
     format_local_datetime,
     format_local_datetime_optional,
     parse_comercio_id,
@@ -439,6 +441,8 @@ class GetDetailServiceTest(unittest.TestCase):
                 estado_session=EstadoSession.ACTIVA,
                 datetime_inicio=base,
                 datetime_ultimo_movimiento=base,
+                context_type=None,
+                pending_intents=None,
                 cliente=SimpleNamespace(
                     id=31,
                     nombre="Ana",
@@ -520,6 +524,8 @@ class GetDetailServiceTest(unittest.TestCase):
                 estado_session=EstadoSession.ACTIVA,
                 datetime_inicio=base,
                 datetime_ultimo_movimiento=base,
+                context_type=None,
+                pending_intents=None,
                 cliente=SimpleNamespace(
                     id=31,
                     nombre=None,
@@ -1033,6 +1039,8 @@ class TimezoneAppliedToViewModelsTest(unittest.TestCase):
                 estado_session=EstadoSession.ACTIVA,
                 datetime_inicio=base,
                 datetime_ultimo_movimiento=base,
+                context_type=None,
+                pending_intents=None,
                 cliente=SimpleNamespace(
                     id=31,
                     nombre="Ana",
@@ -1887,6 +1895,519 @@ class CatalogPricePrivacyRegressionTest(unittest.TestCase):
         self.assertNotIn("<script>alert(2)</script>", body)
         self.assertIn("&lt;img src=x onerror=alert(1)&gt;", body)
         self.assertIn("&lt;script&gt;alert(2)&lt;/script&gt;", body)
+
+
+class BuildPendingContextDebugViewTest(unittest.TestCase):
+    """The debug view helper returns only typed, closed, derived
+    values. Raw JSON, source text, observation values, candidate
+    identifiers, queue payloads, diagnostics and exception detail
+    MUST NEVER appear in the produced dataclass."""
+
+    def test_empty_state_is_consistent_none(self) -> None:
+        view = build_pending_context_debug_view(
+            raw_context_type=None,
+            raw_pending_intents=None,
+        )
+        self.assertEqual(view.context_type, "none")
+        self.assertEqual(view.pending_encoding, "empty")
+        self.assertEqual(view.active_intent, "none")
+        self.assertEqual(view.active_status, "none")
+        self.assertEqual(view.candidate_count, 0)
+        self.assertEqual(view.queue_length, 0)
+        self.assertEqual(view.requirements_pending_count, 0)
+        self.assertEqual(view.requirements_completed_count, 0)
+        self.assertIsNone(view.schema_version)
+        self.assertEqual(view.consistency, "none")
+
+    def test_empty_dict_is_treated_as_empty(self) -> None:
+        view = build_pending_context_debug_view(
+            raw_context_type="product_selection",
+            raw_pending_intents={},
+        )
+        self.assertEqual(view.pending_encoding, "empty")
+        self.assertEqual(view.active_intent, "none")
+        self.assertEqual(view.active_status, "none")
+        self.assertEqual(view.candidate_count, 0)
+        self.assertEqual(view.queue_length, 0)
+        self.assertEqual(view.schema_version, None)
+        self.assertEqual(view.context_type, "product_selection")
+        self.assertEqual(view.consistency, "inconsistent")
+
+    def test_valid_state_with_supported_context_is_consistent(self) -> None:
+        view = build_pending_context_debug_view(
+            raw_context_type="product_selection",
+            raw_pending_intents={
+                "version": 1,
+                "active": {
+                    "intent": "agregar_producto",
+                    "source_text": "quiero una pizza",
+                    "status": "pending_resolution",
+                    "handler": "agregar_producto",
+                    "requirements": [
+                        {"name": "size", "status": "pending"},
+                        {"name": "qty", "status": "completed"},
+                    ],
+                    "candidate_ids": [1, 2, 3],
+                },
+                "queue": [
+                    {
+                        "intent": "agregar_producto",
+                        "source_text": "y",
+                        "status": "executed",
+                        "handler": "agregar_producto",
+                    },
+                    {
+                        "intent": "agregar_producto",
+                        "source_text": "z",
+                        "status": "executed",
+                        "handler": "agregar_producto",
+                    },
+                ],
+            },
+        )
+        self.assertEqual(view.context_type, "product_selection")
+        self.assertEqual(view.pending_encoding, "valid")
+        self.assertEqual(view.active_intent, "agregar_producto")
+        self.assertEqual(view.active_status, "pending_resolution")
+        self.assertEqual(view.candidate_count, 3)
+        self.assertEqual(view.requirements_pending_count, 1)
+        self.assertEqual(view.requirements_completed_count, 1)
+        self.assertEqual(view.queue_length, 2)
+        self.assertEqual(view.schema_version, 1)
+        self.assertEqual(view.consistency, "consistent")
+
+    def test_unsupported_context_is_inconsistent(self) -> None:
+        view = build_pending_context_debug_view(
+            raw_context_type="not_a_real_context",
+            raw_pending_intents=None,
+        )
+        self.assertEqual(view.context_type, "unsupported")
+        self.assertEqual(view.consistency, "inconsistent")
+        self.assertEqual(view.pending_encoding, "empty")
+
+    def test_malformed_pending_dict_reports_invalid(self) -> None:
+        view = build_pending_context_debug_view(
+            raw_context_type="product_selection",
+            raw_pending_intents={"active": "not-a-dict"},
+        )
+        self.assertEqual(view.pending_encoding, "invalid")
+        self.assertEqual(view.consistency, "inconsistent")
+        self.assertIsNone(view.schema_version)
+        self.assertEqual(view.candidate_count, 0)
+
+    def test_pending_list_is_invalid(self) -> None:
+        view = build_pending_context_debug_view(
+            raw_context_type=None,
+            raw_pending_intents=["not", "a", "dict"],
+        )
+        self.assertEqual(view.pending_encoding, "invalid")
+        self.assertEqual(view.consistency, "inconsistent")
+
+    def test_missing_required_active_field_is_invalid(self) -> None:
+        view = build_pending_context_debug_view(
+            raw_context_type="product_selection",
+            raw_pending_intents={
+                "version": 1,
+                "active": {"intent": "x", "source_text": "y"},
+                "queue": [],
+            },
+        )
+        self.assertEqual(view.pending_encoding, "invalid")
+        self.assertEqual(view.consistency, "inconsistent")
+
+    def test_non_int_version_is_invalid(self) -> None:
+        view = build_pending_context_debug_view(
+            raw_context_type="product_selection",
+            raw_pending_intents={"version": "v1", "active": None, "queue": []},
+        )
+        self.assertEqual(view.pending_encoding, "invalid")
+
+    def test_unknown_active_intent_is_unsupported(self) -> None:
+        view = build_pending_context_debug_view(
+            raw_context_type="product_selection",
+            raw_pending_intents={
+                "version": 1,
+                "active": {
+                    "intent": "ghost_intent",
+                    "source_text": "x",
+                    "status": "pending_resolution",
+                    "handler": "x",
+                },
+                "queue": [],
+            },
+        )
+        self.assertEqual(view.active_intent, "unsupported")
+        self.assertEqual(view.active_status, "pending_resolution")
+        self.assertEqual(view.consistency, "inconsistent")
+
+    def test_unknown_active_status_is_invalid_not_unsupported(self) -> None:
+        """``status="mystery"`` is outside the documented Literal
+        allowlist and triggers a ``pydantic.ValidationError`` during
+        ``PendingIntents.model_validate``. The view MUST report a
+        closed ``invalid`` / ``inconsistent`` view with every derived
+        field zeroed and ``schema_version`` set to ``None``; it MUST
+        NOT fall back to the raw value and surface it as
+        ``"unsupported"``.
+        """
+        view = build_pending_context_debug_view(
+            raw_context_type="product_selection",
+            raw_pending_intents={
+                "version": 1,
+                "active": {
+                    "intent": "agregar_producto",
+                    "source_text": "x",
+                    "status": "mystery",
+                    "handler": "x",
+                },
+                "queue": [],
+            },
+        )
+        self.assertEqual(view.pending_encoding, "invalid")
+        self.assertEqual(view.consistency, "inconsistent")
+        self.assertEqual(view.active_intent, "none")
+        self.assertEqual(view.active_status, "none")
+        self.assertEqual(view.candidate_count, 0)
+        self.assertEqual(view.queue_length, 0)
+        self.assertEqual(view.requirements_pending_count, 0)
+        self.assertEqual(view.requirements_completed_count, 0)
+        self.assertIsNone(view.schema_version)
+        self.assertNotIn("mystery", repr(view))
+        self.assertNotIn("mystery", str(view))
+        self.assertNotIn("agregar_producto", repr(view))
+        self.assertNotIn("agregar_producto", str(view))
+
+    def test_empty_string_active_intent_is_none(self) -> None:
+        view = build_pending_context_debug_view(
+            raw_context_type="product_selection",
+            raw_pending_intents={
+                "version": 1,
+                "active": {
+                    "intent": "",
+                    "source_text": "",
+                    "status": "pending_resolution",
+                    "handler": "x",
+                },
+                "queue": [],
+            },
+        )
+        self.assertEqual(view.active_intent, "none")
+        self.assertEqual(view.active_status, "pending_resolution")
+        self.assertEqual(view.consistency, "inconsistent")
+
+    def test_active_with_structural_fields_but_missing_status_is_invalid(
+        self,
+    ) -> None:
+        """When the active intent carries all the structural fields
+        except ``status`` the persisted pending JSON cannot be
+        trusted and the view MUST report a closed
+        ``invalid`` / ``inconsistent`` summary with zeroed counters,
+        no schema version and no leakage of the raw fields."""
+
+        pending = {
+            "version": 1,
+            "active": {
+                "intent": "agregar_producto",
+                "source_text": "quiero una pizza",
+                "handler": "agregar_producto",
+                "candidate_ids": [11, 22, 33],
+                "requirements": [
+                    {"name": "size", "status": "pending"},
+                    {"name": "qty", "status": "completed"},
+                ],
+            },
+            "queue": [
+                {
+                    "intent": "agregar_producto",
+                    "source_text": "q1",
+                    "status": "executed",
+                    "handler": "agregar_producto",
+                },
+                {
+                    "intent": "agregar_producto",
+                    "source_text": "q2",
+                    "status": "executed",
+                    "handler": "agregar_producto",
+                },
+            ],
+        }
+        view = build_pending_context_debug_view(
+            raw_context_type="product_selection",
+            raw_pending_intents=pending,
+        )
+
+        self.assertEqual(view.pending_encoding, "invalid")
+        self.assertEqual(view.consistency, "inconsistent")
+        self.assertEqual(view.active_intent, "none")
+        self.assertEqual(view.active_status, "none")
+        self.assertEqual(view.candidate_count, 0)
+        self.assertEqual(view.queue_length, 0)
+        self.assertEqual(view.requirements_pending_count, 0)
+        self.assertEqual(view.requirements_completed_count, 0)
+        self.assertIsNone(view.schema_version)
+
+        rendered = repr(view) + " " + str(view)
+        for forbidden in (
+            "agregar_producto",
+            "quiero una pizza",
+            "11",
+            "22",
+            "33",
+            "size",
+            "qty",
+            "q1",
+            "q2",
+            "handler",
+            "source_text",
+            "candidate_ids",
+            "pending_intents",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, rendered)
+
+    def test_active_status_outside_literal_is_invalid(self) -> None:
+        """When the persisted ``status`` is not part of the documented
+        ``IntentStatus`` Literal allowlist, ``PendingIntents`` raises
+        ``pydantic.ValidationError`` and the view MUST return the
+        closed ``invalid`` / ``inconsistent`` summary; it MUST NOT
+        fall back to a raw normalised ``"unsupported"`` value."""
+
+        pending = {
+            "version": 1,
+            "active": {
+                "intent": "agregar_producto",
+                "source_text": "quiero una empanada",
+                "status": "mystery_state",
+                "handler": "agregar_producto",
+                "candidate_ids": [1],
+                "requirements": [{"name": "qty", "status": "pending"}],
+            },
+            "queue": [],
+        }
+        view = build_pending_context_debug_view(
+            raw_context_type="product_selection",
+            raw_pending_intents=pending,
+        )
+
+        self.assertEqual(view.pending_encoding, "invalid")
+        self.assertEqual(view.consistency, "inconsistent")
+        self.assertEqual(view.active_intent, "none")
+        self.assertEqual(view.active_status, "none")
+        self.assertEqual(view.candidate_count, 0)
+        self.assertEqual(view.queue_length, 0)
+        self.assertEqual(view.requirements_pending_count, 0)
+        self.assertEqual(view.requirements_completed_count, 0)
+        self.assertIsNone(view.schema_version)
+
+        rendered = repr(view) + " " + str(view)
+        for forbidden in (
+            "mystery_state",
+            "agregar_producto",
+            "quiero una empanada",
+            "candidate_ids",
+            "source_text",
+            "handler",
+            "pending_intents",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, rendered)
+
+    def test_dataclass_does_not_carry_raw_payload(self) -> None:
+        view = build_pending_context_debug_view(
+            raw_context_type="product_selection",
+            raw_pending_intents={
+                "version": 1,
+                "active": {
+                    "intent": "agregar_producto",
+                    "source_text": "SECRET-SOURCE",
+                    "status": "pending_resolution",
+                    "handler": "agregar_producto",
+                    "resolved_data": {"secret": "SECRET-VALUE"},
+                    "candidate_ids": [101, 202],
+                },
+                "queue": [],
+            },
+        )
+        for forbidden in (
+            "SECRET-SOURCE",
+            "SECRET-VALUE",
+            "101",
+            "202",
+            "candidate_ids",
+            "source_text",
+            "resolved_data",
+            "pending_intents",
+            "os.environ",
+            "ENV",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, repr(view))
+                self.assertNotIn(forbidden, str(view))
+
+    def test_dataclass_does_not_carry_configuration_or_secrets(self) -> None:
+        build_pending_context_debug_view(
+            raw_context_type="product_selection",
+            raw_pending_intents=None,
+        )
+        forbidden_fields = (
+            "raw_context_type",
+            "raw_pending_intents",
+            "payload",
+            "diagnostics",
+            "error",
+            "exception",
+            "config",
+            "secret",
+            "token",
+            "provider_id",
+            "identificador_proveedor",
+            "identificador_recepcion",
+        )
+        for field_name in forbidden_fields:
+            with self.subTest(field_name=field_name):
+                self.assertNotIn(field_name, PendingContextDebugView.__dataclass_fields__)
+
+
+class GetDetailPendingDebugRenderingTest(unittest.TestCase):
+    """The detail projection exposes a :class:`PendingContextDebugView`
+    derived solely from the selected session."""
+
+    def _stub_session_maker(self, *, pedido, lineas):
+        session = MagicMock(name="DatabaseSession")
+        session.commit = MagicMock()
+        session.rollback = MagicMock()
+        session.flush = MagicMock()
+        session.refresh = MagicMock()
+        session.begin = MagicMock()
+        session.close = MagicMock()
+
+        execute_calls = {"index": 0}
+
+        def _execute(_stmt):
+            result_index = execute_calls["index"]
+            execute_calls["index"] += 1
+            if result_index == 0:
+                return _Result(scalars_list=[], scalar_value=pedido)
+            return _Result(scalars_list=lineas, scalar_value=None)
+
+        session.execute.side_effect = _execute
+        return session
+
+    def _build_pedido(self, **overrides):
+        base = datetime(2026, 8, 12, 9, 0, tzinfo=timezone.utc)
+        pedido = SimpleNamespace(
+            id=42,
+            estado_pedido=EstadoPedido.INGRESADO,
+            fecha_alta=base,
+            fecha_ultima_modificacion=base,
+            direccion_entrega="Calle 123",
+            observaciones="obs",
+            datetime_entrega_programada=None,
+            medio_pago=None,
+            metodo_entrega=None,
+            session=SimpleNamespace(
+                id=21,
+                estado_session=EstadoSession.ACTIVA,
+                datetime_inicio=base,
+                datetime_ultimo_movimiento=base,
+                id_pedido=42,
+                id_comercio=1,
+                id_cliente=31,
+                context_type=overrides.get("context_type"),
+                pending_intents=overrides.get("pending_intents"),
+                cliente=SimpleNamespace(
+                    id=31,
+                    nombre="Ana",
+                    whatsapp="+5491100000001",
+                    activo=True,
+                ),
+                comercio=SimpleNamespace(
+                    id=1,
+                    nombre_fantasia="Comercio A",
+                    nombre_corto="A",
+                    zona_horaria="America/Argentina/Buenos_Aires",
+                ),
+            ),
+        )
+        return pedido
+
+    def test_detail_includes_pending_debug_for_empty_state(self) -> None:
+        pedido = self._build_pedido()
+        session = self._stub_session_maker(pedido=pedido, lineas=[])
+        detail = PilotOrderOperationsViewService(session).get_detail(42)
+        self.assertIsNotNone(detail.pending_debug)
+        assert detail.pending_debug is not None
+        self.assertEqual(detail.pending_debug.context_type, "none")
+        self.assertEqual(detail.pending_debug.pending_encoding, "empty")
+        self.assertEqual(detail.pending_debug.consistency, "none")
+
+    def test_detail_includes_pending_debug_for_valid_state(self) -> None:
+        pedido = self._build_pedido(
+            context_type="product_selection",
+            pending_intents={
+                "version": 1,
+                "active": {
+                    "intent": "agregar_producto",
+                    "source_text": "quiero pizza",
+                    "status": "pending_resolution",
+                    "handler": "agregar_producto",
+                    "candidate_ids": [1, 2],
+                    "requirements": [{"name": "size", "status": "pending"}],
+                },
+                "queue": [],
+            },
+        )
+        session = self._stub_session_maker(pedido=pedido, lineas=[])
+        detail = PilotOrderOperationsViewService(session).get_detail(42)
+        assert detail.pending_debug is not None
+        self.assertEqual(detail.pending_debug.context_type, "product_selection")
+        self.assertEqual(detail.pending_debug.pending_encoding, "valid")
+        self.assertEqual(detail.pending_debug.active_intent, "agregar_producto")
+        self.assertEqual(detail.pending_debug.active_status, "pending_resolution")
+        self.assertEqual(detail.pending_debug.candidate_count, 2)
+        self.assertEqual(detail.pending_debug.requirements_pending_count, 1)
+        self.assertEqual(detail.pending_debug.consistency, "consistent")
+
+    def test_detail_includes_pending_debug_for_invalid_state(self) -> None:
+        pedido = self._build_pedido(
+            context_type="product_selection",
+            pending_intents={"active": "not-a-dict"},
+        )
+        session = self._stub_session_maker(pedido=pedido, lineas=[])
+        detail = PilotOrderOperationsViewService(session).get_detail(42)
+        assert detail.pending_debug is not None
+        self.assertEqual(detail.pending_debug.pending_encoding, "invalid")
+        self.assertEqual(detail.pending_debug.consistency, "inconsistent")
+
+    def test_detail_does_not_leak_raw_payload_through_view(self) -> None:
+        pedido = self._build_pedido(
+            context_type="product_selection",
+            pending_intents={
+                "version": 1,
+                "active": {
+                    "intent": "agregar_producto",
+                    "source_text": "SECRET-SOURCE-TEXT",
+                    "status": "pending_resolution",
+                    "handler": "agregar_producto",
+                    "resolved_data": {"observation": "SECRET-OBSERVATION"},
+                    "candidate_ids": [99],
+                },
+                "queue": [],
+            },
+        )
+        session = self._stub_session_maker(pedido=pedido, lineas=[])
+        detail = PilotOrderOperationsViewService(session).get_detail(42)
+        assert detail.pending_debug is not None
+        payload = repr(detail.pending_debug)
+        for forbidden in (
+            "SECRET-SOURCE-TEXT",
+            "SECRET-OBSERVATION",
+            "resolved_data",
+            "candidate_ids",
+            "pending_intents",
+            "raw_context_type",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, payload)
 
 
 if __name__ == "__main__":

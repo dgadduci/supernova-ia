@@ -46,3 +46,32 @@
   4.1; then follow the original dependent observation production gate.
 - [ ] 4.3 Do not add a reset/cancel/close action or archive either prior
   change without a separate approved change and explicit user approval.
+
+## 5. Debug-console amendment
+
+- [x] 5.1 Add a typed, privacy-bounded pending-context execution-state view
+  for the exact selected session: context, pending validity, active
+  intent/status, counts, schema version and consistency only; never raw
+  `pending_intents` or environment/configuration data.
+- [x] 5.2 Render the responsive 30/30/40 detail layout: local-test chat,
+  existing order detail/history, and safe execution state.
+- [x] 5.3 Add the Basic-authenticated, same-origin local-test route. Revalidate
+  exact active session + own draft Pedido before using the existing response
+  orchestrator; keep all transaction ownership there.
+- [x] 5.4 Add the browser-only transcript and bounded request/response UI.
+  It must be visibly local-only, escape message text, and never create a
+  provider receipt, deferred work, outbox row or Twilio send.
+- [x] 5.5 Add focused state-privacy, auth/CSRF, exact-target, no-provider,
+  transaction-boundary, escaping and responsive-rendering tests.
+- [x] 5.6 Run the exact focused pytest, Ruff, compileall and strict OpenSpec
+  validation commands added to this amendment; report complete output.
+
+## 6. Paused dependent production gates
+
+- [ ] 6.1 PAUSED — do not resume real WhatsApp testing for
+  `fix-pilot-order-line-category-recognition`,
+  `fix-pending-context-recovery-and-status-query` or
+  `implement-product-line-observation-intent` until this console is deployed
+  and the separate size-only order-line-selection correction has passed its
+  local-test reproduction.
+- [ ] 6.2 Do not archive any OpenSpec as a consequence of this amendment.
