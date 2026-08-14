@@ -18,11 +18,13 @@ amendment, not the isolated handler seam:
   → :func:`dispatch_initial_message` (real, no pending context)
   → :class:`IntentClassifier`  (LLM boundary — mocked locally for
     determinism, NOT for hiding a defect)
-  → :func:`detectar_productos` / product recognizer
-    (mocked locally to pin exactly one priced presentation per turn,
-    NOT to hide a defect — the function still returns one valid
-    ``encontrados`` entry and the downstream resolver / orchestrator
-    / processor run unchanged)
+  → :func:`detectar_productos` / real
+    :class:`HybridAuthoritativeProductRecognizer` injected into the
+    orchestrator (the recognizer, its inner fuzzy recognizer, and
+    ``detectar_productos`` are NOT mocked; only deterministic
+    collaborators stand in for the LLM classifier, the embedding
+    client, and the vector search service so the test runs without
+    infrastructure).
   → :func:`process_initial_agregar_producto`
   → :func:`execute_agregar_producto` (real handler)
   → :func:`PedidoProductoService.stage_add_or_increment_for_session`
@@ -98,6 +100,14 @@ from backend.models import (
 )
 from backend.models import Session as SessionModel
 from backend.models.session import EstadoSession
+from backend.recognizers.fuzzy_product_recognizer import FuzzyProductRecognizer
+from backend.services.hybrid_authoritative_recognizer import (
+    HybridAuthoritativeProductRecognizer,
+)
+from backend.services.product_recognition_calibration_policy import (
+    HybridDecisionPolicy,
+)
+from backend.services.shadow_metrics_recorder import ShadowMetricsRecorder
 
 TEST_URL = "postgresql+psycopg:///supernova_test"
 engine = create_engine(TEST_URL)
@@ -318,42 +328,71 @@ def _cleanup_target(ids: dict) -> None:
 
 
 @contextmanager
-def _patched_recognizer(message_to_cantidad: dict[str, int], pp_id: int):
-    """Patch ``detectar_productos`` for the duration of the test.
+def _injected_hybrid_recognizer(pp_id: int):
+    """Inject a real ``HybridAuthoritativeProductRecognizer`` into
+    the agregar_producto orchestrator for the duration of the test.
 
-    Each input message maps to a single ready candidate with the
-    requested positive ``cantidad`` and the pre-seeded ``pp_id``.
-    No quantity in the original text is reused: ``cantidad`` is
-    passed explicitly so that the recognizer-side quantity parser
-    stays out of the test scope (per the user instruction not to
-    touch plural-recognition).
+    The recognizer is REAL: it is constructed once, attached to the
+    orchestrator's ``_product_recognizer`` module-level symbol, and
+    the orchestrator's ``detectar_productos`` wrapper is invoked
+    unchanged. The inner ``FuzzyProductRecognizer`` is also real;
+    it parses the raw text, finds the catalog entry, and feeds the
+    hybrid ranking.
+
+    Only the minimum deterministic collaborators stand in for the
+    LLM classifier, the embedding client and the vector search
+    service so the test runs without infrastructure. None of the
+    resolver, handler, service, repository, transactional processor,
+    response mapper, snapshot, or local endpoint are mocked.
     """
     from backend.intents.orchestration import (
         agregar_producto_orchestrator as agregar_module,
     )
 
-    def _fake_detectar_productos(text, catalog, *, intent_metadata=None):
-        cantidad = int(message_to_cantidad[text])
-        return {
-            "encontrados": [
-                {
-                    "producto_presentacion_id": int(pp_id),
-                    "cantidad": cantidad,
-                }
-            ],
-            "encontrados_posibles": [],
-            "encontrados_no_disponibles": [],
-            "no_encontrados": [],
-        }
+    class _DeterministicEmbeddingClient:
+        def embed_query(self, text):
+            return [0.0] * 384
 
-    patcher = patch.object(
-        agregar_module, "detectar_productos", side_effect=_fake_detectar_productos
+        def embed_documents(self, texts):
+            return [[0.0] * 384 for _ in texts]
+
+    class _StubVectorMatch:
+        def __init__(self, id_producto_presentacion, score):
+            self.id_producto_presentacion = id_producto_presentacion
+            self.score = score
+
+    class _DeterministicVectorSearchService:
+        def search_similar(
+            self,
+            *,
+            id_comercio,
+            query_embedding,
+            top_k,
+            candidate_producto_presentacion_ids,
+        ):
+            return [_StubVectorMatch(int(pp_id), 0.95)]
+
+    recognizer = HybridAuthoritativeProductRecognizer(
+        inner=FuzzyProductRecognizer(),
+        policy=HybridDecisionPolicy(
+            fuzzy_weight=0.5,
+            vector_weight=0.5,
+            unique_threshold=0.7,
+            ambiguous_threshold=0.4,
+            minimum_score_gap=0.05,
+            vector_top_k=5,
+        ),
+        embedding_client=_DeterministicEmbeddingClient(),
+        vector_search_service=lambda: _DeterministicVectorSearchService(),
+        recorder=ShadowMetricsRecorder(),
     )
-    patcher.start()
+
+    original = agregar_module._product_recognizer  # type: ignore[attr-defined]
+    agregar_module._product_recognizer = recognizer  # type: ignore[attr-defined]
     try:
         yield
     finally:
-        patcher.stop()
+        agregar_module._product_recognizer = original  # type: ignore[attr-defined]
 
 
 @contextmanager
@@ -561,10 +600,6 @@ class PilotLocalTestSequentialCumulativeRegressionTest(_LocalTestRouteHarness):
     def setUp(self) -> None:
         super().setUp()
         self.ids = _seed_target()
-        self.message_to_cantidad = {
-            message: cantidad
-            for cantidad, message in self.TURN_MESSAGES
-        }
         self.addCleanup(_cleanup_target, self.ids)
         self._settings_patcher = patch.object(
             dependencies_module,
@@ -578,8 +613,8 @@ class PilotLocalTestSequentialCumulativeRegressionTest(_LocalTestRouteHarness):
         return TestClient(app, raise_server_exceptions=False)
 
     def test_three_sequential_turns_produce_cumulative_totals(self) -> None:
-        with _patched_classifier(), _patched_recognizer(
-            self.message_to_cantidad, self.ids["pp_id"]
+        with _patched_classifier(), _injected_hybrid_recognizer(
+            self.ids["pp_id"]
         ):
             client = self._client()
             responses_recorded: list[dict] = []
@@ -713,14 +748,6 @@ class PilotLocalTestJsdomDurableRenderTest(_LocalTestRouteHarness):
     def setUp(self) -> None:
         super().setUp()
         self.ids = _seed_target()
-        self.message_to_cantidad = {
-            message: cantidad
-            for cantidad, message in (
-                (1, "agregar 1 napolitana grande"),
-                (2, "agregar 2 napolitanas grandes"),
-                (3, "agregar 3 napolitanas grandes"),
-            )
-        }
         self.addCleanup(_cleanup_target, self.ids)
         self._settings_patcher = patch.object(
             dependencies_module,
@@ -734,8 +761,8 @@ class PilotLocalTestJsdomDurableRenderTest(_LocalTestRouteHarness):
         return TestClient(app, raise_server_exceptions=False)
 
     def test_jsdom_table_renders_durable_six_after_third_turn(self) -> None:
-        with _patched_classifier(), _patched_recognizer(
-            self.message_to_cantidad, self.ids["pp_id"]
+        with _patched_classifier(), _injected_hybrid_recognizer(
+            self.ids["pp_id"]
         ):
             client = self._client()
             _run_one_local_test_post(

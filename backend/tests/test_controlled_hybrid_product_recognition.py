@@ -934,6 +934,297 @@ class HybridDecisionTranslationTest(unittest.TestCase):
         self.assertEqual(len(result["no_encontrados"]), 1)
 
 
+class _QuantityStubFuzzyRecognizer:
+    """Fuzzy stub that returns a configurable ``cantidad`` per entry.
+
+    The :class:`_StubFuzzyRecognizer` test fixture hardcodes
+    ``cantidad=1`` in every ``encontrados`` entry. The
+    hybrid-quantity-preservation scenarios need to verify the
+    technical fallback returns the fuzzy result byte-for-byte,
+    including a non-default quantity the inner recognizer supplied.
+    This stub keeps the rest of the contract intact while exposing
+    the per-entry quantity.
+    """
+
+    def __init__(
+        self,
+        *,
+        decision: str = "ambiguous",
+        encontrados: list[int] | None = None,
+        posibles: list[int] | None = None,
+        cantidad: int = 1,
+    ) -> None:
+        self._decision = decision
+        self._encontrados = encontrados or []
+        self._posibles = posibles or []
+        self._cantidad = int(cantidad)
+        self.call_count = 0
+        self.last_kwargs: dict | None = None
+
+    def recognize(
+        self,
+        text: str,
+        catalog: list[dict],
+        *,
+        intent_metadata: RecognizeContext | None = None,
+    ) -> ProductRecognizerResult:
+        self.call_count += 1
+        self.last_kwargs = {
+            "text": text,
+            "catalog": catalog,
+            "intent_metadata": intent_metadata,
+        }
+        encontrados = [
+            {
+                "producto_presentacion_id": pid,
+                "producto_nombre": f"producto {pid}",
+                "cantidad": self._cantidad,
+                "texto_origen": text,
+            }
+            for pid in self._encontrados
+        ]
+        posibles: list[dict] = []
+        if self._posibles:
+            productos = [
+                {
+                    "producto_presentacion_id": pid,
+                    "producto_nombre": f"producto {pid}",
+                    "texto_origen": text,
+                }
+                for pid in self._posibles
+            ]
+            posibles.append({"texto_origen": text, "productos": productos})
+
+        return {
+            "encontrados": encontrados,
+            "encontrados_posibles": posibles,
+            "encontrados_no_disponibles": [],
+            "no_encontrados": [] if (encontrados or posibles) else [{"texto_origen": text}],
+        }
+
+
+class HybridUniqueQuantityPreservationTest(unittest.TestCase):
+    """Focused coverage for the hybrid authoritative unique-quantity
+    preservation contract.
+
+    The translator preserves the deterministic positive quantity the
+    shared product-text extractor produces from the original input.
+    The top-ranked hybrid candidate stays authoritative; the
+    quantity extraction MUST NOT select, reorder, or widen the
+    candidate set, MUST NOT alter the hybrid decision or policy,
+    and MUST NOT replace a non-unique result with a unique one.
+    """
+
+    def _recognizer(
+        self,
+        *,
+        fuzzy_decision: str = "unique",
+        encontrados: list[int] | None = None,
+        posibles: list[int] | None = None,
+        vector_matches: list | None = None,
+    ) -> HybridAuthoritativeProductRecognizer:
+        return HybridAuthoritativeProductRecognizer(
+            inner=_StubFuzzyRecognizer(
+                decision=fuzzy_decision,
+                encontrados=encontrados or [],
+                posibles=posibles or [],
+            ),
+            policy=_stub_policy(),
+            embedding_client=_StubEmbeddingClient(),
+            vector_search_service=(
+                lambda: _StubVectorSearchService(matches=vector_matches or [])
+            ),
+            recorder=_StubRecorder(),
+            commerce_id_resolver=_resolver_with_commerce(99),
+        )
+
+    def test_unique_with_word_dos_preserves_quantity_two(self):
+        recognizer = self._recognizer(
+            fuzzy_decision="unique",
+            encontrados=[1],
+            vector_matches=[_StubVectorMatch(1, 0.9)],
+        )
+        result = recognizer.recognize(
+            "quiero dos napolitanas grandes", _catalog()
+        )
+        self.assertEqual(len(result["encontrados"]), 1)
+        # Top id is preserved exactly from the hybrid ranking.
+        self.assertEqual(result["encontrados"][0]["producto_presentacion_id"], 1)
+        # Deterministic quantity is preserved from the input text.
+        self.assertEqual(int(result["encontrados"][0]["cantidad"]), 2)
+        # The four-key contract stays balanced.
+        self.assertEqual(result["encontrados_posibles"], [])
+        self.assertEqual(result["no_encontrados"], [])
+        self.assertEqual(result["encontrados_no_disponibles"], [])
+
+    def test_unique_with_word_tres_preserves_quantity_three(self):
+        recognizer = self._recognizer(
+            fuzzy_decision="unique",
+            encontrados=[1],
+            vector_matches=[_StubVectorMatch(1, 0.9)],
+        )
+        result = recognizer.recognize(
+            "quiero tres napolitanas grandes", _catalog()
+        )
+        self.assertEqual(len(result["encontrados"]), 1)
+        self.assertEqual(result["encontrados"][0]["producto_presentacion_id"], 1)
+        self.assertEqual(int(result["encontrados"][0]["cantidad"]), 3)
+        self.assertEqual(result["encontrados_posibles"], [])
+        self.assertEqual(result["no_encontrados"], [])
+        self.assertEqual(result["encontrados_no_disponibles"], [])
+
+    def test_unique_without_quantity_defaults_to_one(self):
+        recognizer = self._recognizer(
+            fuzzy_decision="unique",
+            encontrados=[1],
+            vector_matches=[_StubVectorMatch(1, 0.9)],
+        )
+        result = recognizer.recognize("empanada", _catalog())
+        self.assertEqual(len(result["encontrados"]), 1)
+        self.assertEqual(result["encontrados"][0]["producto_presentacion_id"], 1)
+        # The extractor's documented default-of-one is preserved.
+        self.assertEqual(int(result["encontrados"][0]["cantidad"]), 1)
+        self.assertEqual(result["encontrados_posibles"], [])
+        self.assertEqual(result["no_encontrados"], [])
+        self.assertEqual(result["encontrados_no_disponibles"], [])
+
+    def test_ambiguous_decision_does_not_become_unique_from_quantity(self):
+        # Fuzzy ambiguous + filtered vector outside the allowed
+        # candidates: the hybrid decision MUST stay ambiguous; a
+        # ``dos`` in the text MUST NOT promote it to a unique one.
+        recognizer = self._recognizer(
+            fuzzy_decision="ambiguous",
+            posibles=[1, 2],
+            vector_matches=[_StubVectorMatch(99, 0.95)],
+        )
+        result = recognizer.recognize(
+            "quiero dos cosas ambiguas", _catalog()
+        )
+        self.assertEqual(result["encontrados"], [])
+        self.assertEqual(len(result["encontrados_posibles"]), 1)
+        self.assertEqual(
+            len(result["encontrados_posibles"][0]["productos"]),
+            2,
+        )
+        self.assertEqual(result["no_encontrados"], [])
+        self.assertEqual(result["encontrados_no_disponibles"], [])
+
+    def test_unknown_decision_does_not_become_unique_from_quantity(self):
+        recognizer = self._recognizer(
+            fuzzy_decision="unknown",
+            vector_matches=[_StubVectorMatch(99, 0.95)],
+        )
+        result = recognizer.recognize(
+            "quiero dos cosas desconocidas", _catalog()
+        )
+        self.assertEqual(result["encontrados"], [])
+        self.assertEqual(result["encontrados_posibles"], [])
+        self.assertEqual(len(result["no_encontrados"]), 1)
+        self.assertEqual(result["encontrados_no_disponibles"], [])
+
+    def test_candidate_bounds_and_ranking_policy_are_unaltered(self):
+        """The hybrid ranking, the policy weights and the catalog
+        scope filter MUST NOT change when the input carries an
+        explicit quantity word. The vector side has a candidate
+        outside the allowed catalog; the translator MUST still pick
+        the top-ranked allowed id.
+        """
+        recognizer = self._recognizer(
+            fuzzy_decision="unique",
+            encontrados=[1],
+            vector_matches=[
+                _StubVectorMatch(99, 0.99),
+                _StubVectorMatch(1, 0.9),
+            ],
+        )
+        result = recognizer.recognize(
+            "quiero dos napolitanas grandes", _catalog()
+        )
+        self.assertEqual(len(result["encontrados"]), 1)
+        # Top id comes from the filtered hybrid ranking, not from
+        # the catalog-scope-bypassed vector side.
+        self.assertEqual(result["encontrados"][0]["producto_presentacion_id"], 1)
+        self.assertEqual(int(result["encontrados"][0]["cantidad"]), 2)
+        # No vector id outside the catalog is introduced.
+        self.assertNotIn(99, [entry["producto_presentacion_id"] for entry in result["encontrados"]])
+        # The recorder payload keeps the filtered ranking untouched.
+        recorder_calls = recognizer._recorder.calls  # type: ignore[attr-defined]
+        self.assertEqual(len(recorder_calls), 1)
+        observation = recorder_calls[0]["hybrid_observation"]
+        self.assertNotIn(99, observation.hybrid_candidate_ranking)
+        self.assertIn(1, observation.hybrid_candidate_ranking)
+
+    def test_technical_embedding_failure_preserves_fuzzy_quantity(self):
+        """When the embedding pipeline fails, the recognizer returns
+        the fuzzy result byte-for-byte. A non-default quantity the
+        inner recognizer supplied MUST reach the caller untouched.
+        """
+        class _FailingEmbeddingClient:
+            def embed_query(self, text):
+                raise RuntimeError("embedding down")
+
+            def embed_documents(self, texts):
+                return [[0.0] * 384 for _ in texts]
+
+        inner = _QuantityStubFuzzyRecognizer(
+            decision="unique",
+            encontrados=[1],
+            cantidad=2,
+        )
+        recorder = _StubRecorder()
+        recognizer = HybridAuthoritativeProductRecognizer(
+            inner=inner,
+            policy=_stub_policy(),
+            embedding_client=_FailingEmbeddingClient(),
+            vector_search_service=lambda: _StubVectorSearchService(),
+            recorder=recorder,
+            commerce_id_resolver=_resolver_with_commerce(99),
+        )
+        result = recognizer.recognize(
+            "quiero dos napolitanas grandes", _catalog()
+        )
+        self.assertEqual(len(result["encontrados"]), 1)
+        self.assertEqual(result["encontrados"][0]["producto_presentacion_id"], 1)
+        # Fuzzy's quantity survives byte-for-byte.
+        self.assertEqual(int(result["encontrados"][0]["cantidad"]), 2)
+        comparison = recorder.calls[0]["comparison"]
+        self.assertEqual(comparison.failure_category, "embedding_failure")
+        self.assertFalse(comparison.vector_available)
+        self.assertTrue(comparison.fallback)
+
+    def test_technical_vector_failure_preserves_fuzzy_quantity(self):
+        """When the vector-search pipeline raises, the recognizer
+        returns the fuzzy result byte-for-byte, including the
+        inner recognizer's quantity.
+        """
+        inner = _QuantityStubFuzzyRecognizer(
+            decision="unique",
+            encontrados=[1],
+            cantidad=3,
+        )
+        recorder = _StubRecorder()
+        recognizer = HybridAuthoritativeProductRecognizer(
+            inner=inner,
+            policy=_stub_policy(),
+            embedding_client=_StubEmbeddingClient(),
+            vector_search_service=lambda: _StubVectorSearchService(
+                raise_on_call=True
+            ),
+            recorder=recorder,
+            commerce_id_resolver=_resolver_with_commerce(99),
+        )
+        result = recognizer.recognize(
+            "quiero tres napolitanas grandes", _catalog()
+        )
+        self.assertEqual(len(result["encontrados"]), 1)
+        self.assertEqual(result["encontrados"][0]["producto_presentacion_id"], 1)
+        self.assertEqual(int(result["encontrados"][0]["cantidad"]), 3)
+        comparison = recorder.calls[0]["comparison"]
+        self.assertEqual(comparison.failure_category, "vector_failure")
+        self.assertFalse(comparison.vector_available)
+        self.assertTrue(comparison.fallback)
+
+
 class TelemetrySurfaceTest(unittest.TestCase):
     def test_recorder_receives_hybrid_authoritative_mode(self):
         recognizer = HybridAuthoritativeProductRecognizer(

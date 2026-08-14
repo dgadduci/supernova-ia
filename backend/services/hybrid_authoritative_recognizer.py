@@ -572,8 +572,11 @@ def _translate_hybrid_decision(
     Invariants:
 
     - ``"unique"`` → single-entry ``encontrados`` carrying the
-      top-ranked candidate with ``cantidad=1`` and ``texto_origen``
-      set to the normalized input text.
+      top-ranked candidate with the deterministic positive quantity
+      extracted from the input text and ``texto_origen`` set to the
+      normalized input text. The product id is the top-ranked
+      candidate from the filtered hybrid ranking; quantity parsing
+      does NOT select or re-rank candidates.
     - ``"ambiguous"`` → single ``encontrados_posibles`` group whose
       ``productos`` is the filtered ranking in descending combined
       score order.
@@ -593,7 +596,7 @@ def _translate_hybrid_decision(
         entry: RecognizedProduct = {  # type: ignore[typeddict-item]
             "producto_presentacion_id": top_id,
             "producto_nombre": str(row.get("producto_nombre", "")),
-            "cantidad": 1,
+            "cantidad": _extract_deterministic_quantity(normalized_text),
             "texto_origen": normalized_text,
         }
         return {
@@ -631,6 +634,26 @@ def _translate_hybrid_decision(
         "encontrados_no_disponibles": [],
         "no_encontrados": [fragment],
     }
+
+
+def _extract_deterministic_quantity(text: str) -> int:
+    """Return the positive integer quantity for a ``unique`` hybrid
+    translation.
+
+    The helper reuses the existing deterministic
+    :func:`product_recognizer._extraer_cantidad` helper against the
+    input text. The extractor does NOT consult the catalog, the
+    hybrid ranking, the embedding client, the vector-search service,
+    any LLM or any database; it is a pure text-to-int helper that
+    already powers the inner fuzzy recognizer's quantity parsing.
+
+    When the input omits a valid quantity, the extractor returns its
+    documented default of ``1``, which matches the pre-change
+    hybrid translation default. The helper therefore preserves the
+    default-one behaviour and never widens candidates, reorders
+    the ranking, alters the hybrid decision, or selects a candidate.
+    """
+    return int(_recognizer_module._extraer_cantidad(text))
 
 
 def _build_catalog_index(catalog: list[dict]) -> dict[int, dict]:
