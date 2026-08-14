@@ -20,6 +20,11 @@
 
 ## 3. Controlled validation gate
 
+- **Deferred by explicit user decision (2026-08-14):** only one pilot client
+  is currently available, so independent clean drafts for the separate
+  `Chica` and `Grande` runs cannot be provisioned safely. Keep this gate
+  unchecked; it is not a passed production validation and must be resumed
+  when an isolated client/draft setup is available.
 - [ ] 3.1 After approved deploy, use clean panel-local drafts to test Chica
   and Grande separately; verify only selected line change and context cleanup.
 - [ ] 3.2 Resume WhatsApp gates only after 3.1; do not archive without

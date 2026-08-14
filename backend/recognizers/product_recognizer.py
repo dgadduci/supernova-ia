@@ -40,6 +40,17 @@ PALABRAS_CANTIDAD = {
     "ocho": "8", "nueve": "9", "diez": "10",
 }
 
+# Narrowly approved presentation-plural normalization. Applied after
+# quantity words are normalized to digits (so ``dos -> 2`` still wins) and
+# before generic singularization, so ``grandes`` does not become ``grand``
+# and is filtered as a recognized size rather than an unmatched token.
+# ``grandes`` and ``chicas`` are the only approved forms; do NOT add other
+# morphological rules here.
+PRESENTACION_PLURAL_NORMALIZATION: dict[str, str] = {
+    "grandes": "grande",
+    "chicas": "chica",
+}
+
 TAMANIOS = {
     "chica", "chico", "grande", "mediana", "mediano",
     "familiar", "individual", "porcion", "porciones",
@@ -173,6 +184,7 @@ def _normalizar_palabras_pedido(texto: str) -> str:
     resultado = []
     for palabra in palabras:
         palabra = PALABRAS_CANTIDAD.get(palabra, palabra)
+        palabra = PRESENTACION_PLURAL_NORMALIZATION.get(palabra, palabra)
         palabra = _singularizar_simple(palabra)
         palabra = _aplicar_aliases(palabra)
         resultado.append(palabra)
@@ -470,6 +482,7 @@ def _extraer_cantidad(texto: str) -> int:
 def _extraer_presentacion(texto: str) -> str | None:
     palabras = _normalizar_texto(texto).split()
     for palabra in palabras:
+        palabra = PRESENTACION_PLURAL_NORMALIZATION.get(palabra, palabra)
         if palabra in PRESENTACION_ALIASES:
             return PRESENTACION_ALIASES[palabra]
     return None

@@ -2,6 +2,7 @@ import unittest
 
 from backend.recognizers.product_recognizer import (
     PRESENTACION_ALIASES,
+    PRESENTACION_PLURAL_NORMALIZATION,
     STOPWORDS,
     detectar_productos,
 )
@@ -402,6 +403,153 @@ class DetectarProductosCategoriaPrefijoTest(unittest.TestCase):
         nombres = [p["producto_nombre"] for p in resultado["encontrados"]]
         self.assertEqual(nombres, ["Pizza Mozzarella"])
         self.assertEqual(resultado["no_encontrados"], [])
+
+
+NAPOLITANA_PIZZA_CATALOG = [
+    {
+        "producto_presentacion_id": 600,
+        "producto_id": 60,
+        "presentacion_id": 60,
+        "categoria_id": 1,
+        "categoria_nombre": "Pizzas",
+        "producto_nombre": "Napolitana",
+        "presentacion_codigo": "grande",
+        "presentacion_descripcion": "Pizza grande napolitana",
+        "activo": True,
+        "disponible": True,
+    },
+    {
+        "producto_presentacion_id": 601,
+        "producto_id": 60,
+        "presentacion_id": 61,
+        "categoria_id": 1,
+        "categoria_nombre": "Pizzas",
+        "producto_nombre": "Napolitana",
+        "presentacion_codigo": "chica",
+        "presentacion_descripcion": "Pizza chica napolitana",
+        "activo": True,
+        "disponible": True,
+    },
+]
+
+
+class DetectarProductosPresentacionPluralTest(unittest.TestCase):
+    """Narrowly approved presentation plural normalization.
+
+    ``grandes`` -> ``grande`` and ``chicas`` -> ``chica`` are mapped before
+    generic singularization, after quantity words. This keeps both
+    presentations recognized as sizes and prevents them from becoming
+    unmatched product tokens.
+    """
+
+    def test_presentacion_plural_normalization_solo_grandes_y_chicas(self):
+        self.assertEqual(
+            PRESENTACION_PLURAL_NORMALIZATION,
+            {"grandes": "grande", "chicas": "chica"},
+        )
+
+    def test_dos_napolitanas_grandes_solo_napolitana_grande_cantidad_dos(self):
+        resultado = detectar_productos(
+            "quiero dos napolitanas grandes", NAPOLITANA_PIZZA_CATALOG
+        )
+
+        ids = [p["producto_presentacion_id"] for p in resultado["encontrados"]]
+        self.assertEqual(ids, [600])
+        self.assertEqual(resultado["encontrados"][0]["cantidad"], 2)
+        self.assertEqual(resultado["no_encontrados"], [])
+        ids_posibles = [
+            p["producto_presentacion_id"]
+            for grupo in resultado["encontrados_posibles"]
+            if grupo.get("kind") is None
+            for p in grupo.get("productos", [])
+        ]
+        self.assertEqual(ids_posibles, [])
+
+    def test_dos_napolitanas_chicas_solo_napolitana_chica_cantidad_dos(self):
+        resultado = detectar_productos(
+            "quiero dos napolitanas chicas", NAPOLITANA_PIZZA_CATALOG
+        )
+
+        ids = [p["producto_presentacion_id"] for p in resultado["encontrados"]]
+        self.assertEqual(ids, [601])
+        self.assertEqual(resultado["encontrados"][0]["cantidad"], 2)
+        self.assertEqual(resultado["no_encontrados"], [])
+        ids_posibles = [
+            p["producto_presentacion_id"]
+            for grupo in resultado["encontrados_posibles"]
+            if grupo.get("kind") is None
+            for p in grupo.get("productos", [])
+        ]
+        self.assertEqual(ids_posibles, [])
+
+    def test_grande_singular_sigue_reconociendo_solo_napolitana_grande(self):
+        resultado = detectar_productos(
+            "una napolitana grande", NAPOLITANA_PIZZA_CATALOG
+        )
+
+        ids = [p["producto_presentacion_id"] for p in resultado["encontrados"]]
+        self.assertEqual(ids, [600])
+        self.assertEqual(resultado["encontrados"][0]["cantidad"], 1)
+
+    def test_chica_singular_sigue_reconociendo_solo_napolitana_chica(self):
+        resultado = detectar_productos(
+            "una napolitana chica", NAPOLITANA_PIZZA_CATALOG
+        )
+
+        ids = [p["producto_presentacion_id"] for p in resultado["encontrados"]]
+        self.assertEqual(ids, [601])
+        self.assertEqual(resultado["encontrados"][0]["cantidad"], 1)
+
+    def test_ausente_sigue_sin_encontrar(self):
+        resultado = detectar_productos(
+            "quiero dos calzoni grandes", NAPOLITANA_PIZZA_CATALOG
+        )
+
+        self.assertEqual(resultado["encontrados"], [])
+        self.assertEqual(resultado["no_encontrados"], [{"texto_origen": "quiero dos calzoni grandes"}])
+
+    def test_ambiguedad_pizza_sin_presentacion_se_mantiene(self):
+        resultado = detectar_productos(
+            "quiero una napolitana", NAPOLITANA_PIZZA_CATALOG
+        )
+
+        self.assertEqual(resultado["encontrados"], [])
+        ids_posibles = sorted(
+            [
+                p["producto_presentacion_id"]
+                for grupo in resultado["encontrados_posibles"]
+                if grupo.get("kind") is None
+                for p in grupo.get("productos", [])
+            ]
+        )
+        self.assertEqual(ids_posibles, [600, 601])
+
+
+class DetectarProductosAgregarSeamQuantityTwoTest(unittest.TestCase):
+    """Smallest add-product execution proof: a plural ``Grande`` request
+    reaches the existing quantity-two seam without introducing new
+    transaction control.
+
+    The recognizer output ``(producto_presentacion_id, cantidad)`` is the
+    contract consumed by ``process_agregar_producto`` and
+    ``execute_agregar_producto``. The processor and handler tests
+    independently prove quantity ``2`` preservation and the
+    create/increment outcomes; this test pins the recognizer side so the
+    full seam closes without a new path.
+    """
+
+    def test_dos_napolitanas_grandes_alimenta_seam_con_pp_id_y_cantidad(self):
+        resultado = detectar_productos(
+            "quiero dos napolitanas grandes", NAPOLITANA_PIZZA_CATALOG
+        )
+
+        self.assertEqual(len(resultado["encontrados"]), 1)
+        unico = resultado["encontrados"][0]
+        self.assertEqual(unico["producto_presentacion_id"], 600)
+        self.assertEqual(unico["cantidad"], 2)
+        self.assertEqual(
+            unico["presentacion_codigo"], "grande",
+        )
 
 
 if __name__ == "__main__":
