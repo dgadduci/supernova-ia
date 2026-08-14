@@ -1,5 +1,6 @@
 import importlib
 import unittest
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 from sqlalchemy.orm import Session as DatabaseSession
@@ -8,9 +9,32 @@ from backend.intents.recognizers import (
     modificar_producto_recognizer as recognizer_module,
 )
 from backend.intents.recognizers.modificar_producto_recognizer import (
+    _build_order_line_catalog,
     recognize_modificar_producto,
 )
 from backend.models.session import Session as ConversationSession
+from backend.recognizers.fuzzy_product_recognizer import FuzzyProductRecognizer
+
+
+@contextmanager
+def _patched_real_fuzzy():
+    """Replace the modification recognizer's module-level
+    ``_product_recognizer`` with a real ``FuzzyProductRecognizer`` for
+    the duration of the test.
+
+    The wrapper ``recognizer_module.detectar_productos`` continues to
+    be the production callable; only the underlying recognizer object
+    is swapped for the deterministic, in-process fuzzy instance. The
+    real fuzzy executes against the catalog with eager-loaded
+    ``categoria_nombre`` produced by ``_build_order_line_catalog``,
+    so the test exercises the real production code path end-to-end.
+    """
+    original = recognizer_module._product_recognizer
+    recognizer_module._product_recognizer = FuzzyProductRecognizer()
+    try:
+        yield
+    finally:
+        recognizer_module._product_recognizer = original
 
 
 class RecognizeModificarProductoSourceTest(unittest.TestCase):
@@ -930,20 +954,32 @@ class RecognizeModificarProductoHybridProjectionTest(unittest.TestCase):
 
     @staticmethod
     def _make_pedido_producto(
-        *, line_id: int, presentation_id: int, nombre: str = "Pizza"
+        *,
+        line_id: int,
+        presentation_id: int,
+        nombre: str = "Pizza",
+        presentacion_codigo: str = "chica",
+        presentacion_id: int = 1,
+        producto_id: int = 1,
+        categoria_id: int = 1,
+        categoria_descripcion: str = "Pizzas",
+        cantidad: int = 1,
     ):
         pp = MagicMock(id=line_id)
         pp.producto_presentacion.producto.nombre = nombre
-        pp.producto_presentacion.presentacion.codigo = "chica"
-        pp.producto_presentacion.id_producto = 1
-        pp.producto_presentacion.id_presentacion = 1
-        pp.producto_presentacion.producto.id_categoria_producto = 1
+        pp.producto_presentacion.producto.categoria.descripcion = (
+            categoria_descripcion
+        )
+        pp.producto_presentacion.presentacion.codigo = presentacion_codigo
+        pp.producto_presentacion.id_producto = producto_id
+        pp.producto_presentacion.id_presentacion = presentacion_id
+        pp.producto_presentacion.producto.id_categoria_producto = categoria_id
         pp.producto_presentacion.producto.activo = True
         pp.producto_presentacion.producto.disponible = True
         pp.producto_presentacion.presentacion.activo = True
         pp.producto_presentacion.activo = True
         pp.id_producto_presentacion = presentation_id
-        pp.cantidad = 1
+        pp.cantidad = cantidad
         return pp
 
     @patch.object(recognizer_module, "ProductoQueryService")
@@ -1398,6 +1434,349 @@ class RecognizeModificarProductoHybridProjectionTest(unittest.TestCase):
             ),
             set(),
         )
+
+
+class ModificarProductoCategoryProjectionTest(unittest.TestCase):
+    """Verify the order-line catalog now projects the eager-loaded
+    category description as ``categoria_nombre`` instead of ``None``.
+
+    The repository already eager-loads ``producto.categoria`` via the
+    existing source-line query. The source catalog MUST surface that
+    description so the shared recognizer can distinguish category
+    tokens like ``pizza`` / ``empanada`` from required product tokens.
+    """
+
+    @staticmethod
+    def _make_order_line(
+        *,
+        pedido_producto_id: int,
+        presentacion_id: int,
+        producto_id: int,
+        presentacion_codigo: str,
+        presentacion_descripcion: str,
+        producto_nombre: str,
+        categoria_id: int,
+        categoria_descripcion: str,
+        cantidad: int,
+    ):
+        presentacion = MagicMock(
+            codigo=presentacion_codigo,
+            descripcion=presentacion_descripcion,
+            activo=True,
+        )
+        producto = MagicMock(
+            nombre=producto_nombre,
+            id_categoria_producto=categoria_id,
+            activo=True,
+            disponible=True,
+        )
+        producto.categoria = MagicMock(descripcion=categoria_descripcion)
+        producto_presentacion = MagicMock(
+            id_producto=producto_id,
+            id_presentacion=presentacion_id,
+            activo=True,
+        )
+        producto_presentacion.producto = producto
+        producto_presentacion.presentacion = presentacion
+        pp = MagicMock(
+            id=pedido_producto_id,
+            id_producto_presentacion=100 + pedido_producto_id,
+            cantidad=cantidad,
+        )
+        pp.producto_presentacion = producto_presentacion
+        return pp
+
+    def test_order_line_catalog_projects_category_descripcion(self):
+        mozzarella_grande = self._make_order_line(
+            pedido_producto_id=1,
+            presentacion_id=11,
+            producto_id=21,
+            presentacion_codigo="grande",
+            presentacion_descripcion="Grande",
+            producto_nombre="Mozzarella",
+            categoria_id=31,
+            categoria_descripcion="Pizzas",
+            cantidad=1,
+        )
+        verdura = self._make_order_line(
+            pedido_producto_id=2,
+            presentacion_id=12,
+            producto_id=22,
+            presentacion_codigo="unidad",
+            presentacion_descripcion="Unidad",
+            producto_nombre="Verdura",
+            categoria_id=32,
+            categoria_descripcion="Empanadas",
+            cantidad=2,
+        )
+
+        catalog = _build_order_line_catalog([mozzarella_grande, verdura])
+
+        self.assertEqual(len(catalog), 2)
+        nombres = {entry["categoria_nombre"] for entry in catalog}
+        self.assertEqual(nombres, {"Pizzas", "Empanadas"})
+        for entry in catalog:
+            self.assertNotIn(
+                None,
+                [entry["categoria_nombre"]],
+                "categoria_nombre must come from the eager-loaded category",
+            )
+        by_id = {entry["pedido_producto_id"]: entry for entry in catalog}
+        self.assertEqual(by_id[1]["categoria_nombre"], "Pizzas")
+        self.assertEqual(by_id[2]["categoria_nombre"], "Empanadas")
+        self.assertEqual(by_id[1]["pedido_producto_id"], 1)
+        self.assertEqual(by_id[2]["pedido_producto_id"], 2)
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_recognize_threads_category_to_recognizer(
+        self, pp_service_cls, catalog_cls
+    ):
+        mozzarella_grande = self._make_order_line(
+            pedido_producto_id=10,
+            presentacion_id=1,
+            producto_id=21,
+            presentacion_codigo="grande",
+            presentacion_descripcion="Grande",
+            producto_nombre="Mozzarella",
+            categoria_id=31,
+            categoria_descripcion="Pizzas",
+            cantidad=1,
+        )
+        verdura = self._make_order_line(
+            pedido_producto_id=11,
+            presentacion_id=2,
+            producto_id=99,
+            presentacion_codigo="unidad",
+            presentacion_descripcion="Unidad",
+            producto_nombre="Verdura",
+            categoria_id=32,
+            categoria_descripcion="Empanadas",
+            cantidad=2,
+        )
+
+        service = MagicMock()
+        service.list_by_pedido.return_value = [mozzarella_grande, verdura]
+        pp_service_cls.return_value = service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        captured: dict = {}
+
+        def _capture(message, catalog, *, intent_metadata=None):
+            if catalog and "captured" not in captured:
+                captured["catalog"] = list(catalog)
+            return {
+                "encontrados": [],
+                "encontrados_posibles": [],
+                "encontrados_no_disponibles": [],
+                "no_encontrados": [],
+            }
+
+        with patch.object(recognizer_module, "detectar_productos", side_effect=_capture):
+            db = MagicMock(spec=DatabaseSession)
+            conversation_session = MagicMock(spec=ConversationSession)
+            conversation_session.id_pedido = 7
+            conversation_session.id_comercio = 1
+
+            recognize_modificar_producto(
+                db,
+                conversation_session,
+                "cambia una pizza de mozzarella grande por una empanada de carne",
+            )
+
+        categorias = {entry["categoria_nombre"] for entry in captured["catalog"]}
+        self.assertEqual(categorias, {"Pizzas", "Empanadas"})
+        for entry in captured["catalog"]:
+            self.assertNotIn(
+                None,
+                [entry["categoria_nombre"]],
+                "categoria_nombre must come from the eager-loaded category",
+            )
+
+
+class ModificarProductoPizzaMozzarellaOwnLinesTest(unittest.TestCase):
+    """Drive ``recognize_modificar_producto`` through the real shared
+    fuzzy recognizer configured via the module wrapper.
+
+    The factory recognizer is replaced with a real
+    ``FuzzyProductRecognizer`` instance via the existing
+    ``recognizer_module._product_recognizer`` module-level symbol;
+    the wrapper ``recognizer_module.detectar_productos`` continues to
+    be the production callable. The test verifies that the catalog
+    built with eager-loaded ``categoria_nombre`` produces the
+    effective source candidates surfaced as ``source_candidate_ids``.
+    """
+
+    def _owned_lines(self) -> list[MagicMock]:
+        return [
+            ModificarProductoCategoryProjectionTest._make_order_line(
+                pedido_producto_id=101,
+                presentacion_id=1,
+                producto_id=201,
+                presentacion_codigo="grande",
+                presentacion_descripcion="Grande",
+                producto_nombre="Mozzarella",
+                categoria_id=301,
+                categoria_descripcion="Pizzas",
+                cantidad=1,
+            ),
+            ModificarProductoCategoryProjectionTest._make_order_line(
+                pedido_producto_id=102,
+                presentacion_id=2,
+                producto_id=201,
+                presentacion_codigo="chica",
+                presentacion_descripcion="Chica",
+                producto_nombre="Mozzarella",
+                categoria_id=301,
+                categoria_descripcion="Pizzas",
+                cantidad=1,
+            ),
+            ModificarProductoCategoryProjectionTest._make_order_line(
+                pedido_producto_id=103,
+                presentacion_id=3,
+                producto_id=202,
+                presentacion_codigo="chica",
+                presentacion_descripcion="Chica",
+                producto_nombre="Napolitana",
+                categoria_id=301,
+                categoria_descripcion="Pizzas",
+                cantidad=1,
+            ),
+        ]
+
+    def _run_recognizer(self, owned_lines, message, destination_catalog=None):
+        """Run ``recognize_modificar_producto`` with the real shared
+        fuzzy recognizer controlled via the module wrapper. Returns
+        the recognizer result dict.
+        """
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        with _patched_real_fuzzy(), patch.object(
+            recognizer_module, "PedidoProductoService"
+        ) as pp_service_cls, patch.object(
+            recognizer_module, "ProductoQueryService"
+        ) as catalog_cls:
+            pp_service = MagicMock()
+            pp_service.list_by_pedido.return_value = owned_lines
+            pp_service_cls.return_value = pp_service
+
+            catalog_service = MagicMock()
+            catalog_service.list_recognizer_catalog.return_value = (
+                destination_catalog if destination_catalog is not None else []
+            )
+            catalog_cls.return_value = catalog_service
+
+            return recognize_modificar_producto(
+                db, conversation_session, message
+            )
+
+    def test_pizza_mozzarella_grande_resolves_only_owned_grande(self):
+        """``pizza de mozzarella grande`` MUST surface only the
+        Mozzarella Grande own line as ``source_candidate_ids``.
+        """
+        result = self._run_recognizer(
+            self._owned_lines(),
+            "cambia una pizza de mozzarella grande por una empanada de verdura",
+        )
+
+        self.assertEqual(result["source_candidate_ids"], [101])
+        self.assertEqual(result["source_pp_id"], 101)
+        self.assertNotIn(102, result["source_candidate_ids"])
+        self.assertNotIn(103, result["source_candidate_ids"])
+
+    def test_pizza_mozzarella_returns_only_two_mozzarella_lines(self):
+        """``pizza de mozzarella`` MUST surface exactly the two own
+        Mozzarella line IDs (Grande and Chica) and exclude the
+        Napolitana line that is foreign to the source product.
+        """
+        result = self._run_recognizer(
+            self._owned_lines(),
+            "cambia una pizza de mozzarella por una empanada de verdura",
+        )
+
+        self.assertEqual(set(result["source_candidate_ids"]), {101, 102})
+        self.assertIsNone(result["source_pp_id"])
+        self.assertNotIn(103, result["source_candidate_ids"])
+
+    def test_empanada_de_verdura_resolves_only_verdura(self):
+        """``empanada de verdura`` MUST surface only the Verdura own
+        line as ``source_candidate_ids``.
+        """
+        empanada = ModificarProductoCategoryProjectionTest._make_order_line(
+            pedido_producto_id=201,
+            presentacion_id=10,
+            producto_id=301,
+            presentacion_codigo="unidad",
+            presentacion_descripcion="Unidad",
+            producto_nombre="Verdura",
+            categoria_id=401,
+            categoria_descripcion="Empanadas",
+            cantidad=1,
+        )
+
+        result = self._run_recognizer(
+            [empanada],
+            "cambia una empanada de verdura por una empanada de carne",
+        )
+
+        self.assertEqual(result["source_candidate_ids"], [201])
+        self.assertEqual(result["source_pp_id"], 201)
+
+    def test_source_absent_from_draft_yields_no_candidate(self):
+        """A category-qualified source product that is absent from the
+        active draft MUST surface no source candidate through the
+        wrapper-based recognizer flow.
+        """
+        result = self._run_recognizer(
+            self._owned_lines(),
+            "cambia una empanada de carne por una empanada de verdura",
+        )
+
+        self.assertEqual(result["source_candidate_ids"], [])
+        self.assertIsNone(result["source_pp_id"])
+        self.assertNotIn(101, result["source_candidate_ids"])
+        self.assertNotIn(102, result["source_candidate_ids"])
+        self.assertNotIn(103, result["source_candidate_ids"])
+
+
+class ModificarProductoCategoryBoundaryTest(unittest.TestCase):
+    """Recognizer and initial orchestrator must not own transaction
+    control over the candidates they surface for category-qualified
+    source candidates.
+    """
+
+    def test_recognizer_module_does_not_commit(self):
+        importlib.reload(recognizer_module)
+        with open(recognizer_module.__file__, encoding="utf-8") as fh:
+            source = fh.read()
+        for forbidden in (
+            "db.commit",
+            "db.rollback",
+            "db.flush",
+            "db.refresh",
+            "db.begin",
+            "db.close",
+            "session.commit",
+            "session.rollback",
+            "session.flush",
+            "session.begin",
+            "session.close",
+            "session.refresh",
+            ".commit()",
+            ".rollback()",
+            ".flush()",
+            ".refresh()",
+            ".begin()",
+            ".close()",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, source)
 
 
 if __name__ == "__main__":
