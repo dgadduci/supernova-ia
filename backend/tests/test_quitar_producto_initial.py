@@ -135,6 +135,57 @@ class ProcessInitialQuitarProductoNoMatchTest(unittest.TestCase):
         self.assertEqual(result.intent, "quitar_producto")
 
 
+class ProcessInitialQuitarProductoPizzaMozzarellaPendingTest(unittest.TestCase):
+    """Repro the production defect: ``Quiero quitar una pizza de
+    mozzarella`` against a draft containing Mozzarella Grande,
+    Mozzarella Chica, and Napolitana Chica (all in ``Pizzas``). The
+    initial orchestrator MUST persist the existing ``pending_resolution``
+    context with exactly the two Mozzarella ``pedido_producto_id``s,
+    MUST NOT execute the handler, and MUST NOT own the transaction.
+    """
+
+    @patch.object(orchestrator_module, "execute_quitar_producto")
+    @patch.object(orchestrator_module, "set_pending_intent")
+    @patch.object(orchestrator_module, "recognize_quitar_producto")
+    def test_two_mozzarella_lines_create_pending_without_handler(
+        self, recognize, set_pending, execute_handler
+    ):
+        recognize.return_value = {
+            "encontrados": [],
+            "encontrados_posibles": [
+                {
+                    "texto_origen": "una pizza de mozzarella",
+                    "productos": [
+                        {"pedido_producto_id": 201},
+                        {"pedido_producto_id": 202},
+                    ],
+                }
+            ],
+            "encontrados_no_disponibles": [],
+            "no_encontrados": [],
+            "cantidad": None,
+        }
+
+        db = MagicMock(spec=DatabaseSession)
+        session = _session(id_pedido=7)
+
+        result = process_initial_quitar_producto(
+            db, session, "quiero quitar una pizza de mozzarella"
+        )
+
+        execute_handler.assert_not_called()
+        set_pending.assert_called_once()
+        self.assertEqual(result.status, "pending_resolution")
+        self.assertEqual(result.intent, "quitar_producto")
+        self.assertEqual(result.handler, "quitar_producto")
+        self.assertEqual(set(result.candidate_ids), {201, 202})
+        self.assertNotIn(999, result.candidate_ids)
+        db.commit.assert_not_called()
+        db.rollback.assert_not_called()
+        db.flush.assert_not_called()
+        db.begin.assert_not_called()
+
+
 class ProcessInitialQuitarProductoBoundariesTest(unittest.TestCase):
     def test_module_does_not_import_disallowed_side_effects(self):
         importlib.reload(orchestrator_module)

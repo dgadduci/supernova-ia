@@ -54,6 +54,7 @@ def _build_order_line_catalog(
         producto_presentacion = pp.producto_presentacion
         presentacion = producto_presentacion.presentacion
         producto = producto_presentacion.producto
+        categoria = producto.categoria
         catalog.append(
             {
                 "producto_presentacion_id": pp.id_producto_presentacion,
@@ -62,7 +63,7 @@ def _build_order_line_catalog(
                 "presentacion_id": producto_presentacion.id_presentacion,
                 "categoria_id": producto.id_categoria_producto,
                 "producto_nombre": producto.nombre,
-                "categoria_nombre": None,
+                "categoria_nombre": categoria.descripcion,
                 "presentacion_codigo": presentacion.codigo,
                 "presentacion_descripcion": presentacion.descripcion,
                 "producto_activo": bool(producto.activo),
