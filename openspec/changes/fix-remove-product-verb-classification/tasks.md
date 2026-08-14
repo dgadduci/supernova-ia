@@ -20,9 +20,9 @@
 
 ## 3. Pilot gate
 
-- [ ] 3.1 Send `saca una de mozzarella chica` against an own line; verify
+- [x] 3.1 Send `saca una de mozzarella chica` against an own line; verify
   decrement, no add, and cleared context/pending.
-- [ ] 3.2 Send `sacar dos de mozzarella chica`; verify existing remove
+- [x] 3.2 Send `sacar dos de mozzarella chica`; verify existing remove
   semantics, no add, no unrelated mutation, and cleared context/pending.
-- [ ] 3.3 Send `retirá una de mozzarella chica`; verify removal rather than
+- [x] 3.3 Send `retirá una de mozzarella chica`; verify removal rather than
   add, no unrelated mutation, and cleared context/pending.
