@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import hashlib
 
-PROMPT_TEMPLATE_VERSION = "intent-classifier/v1.4.0"
+PROMPT_TEMPLATE_VERSION = "intent-classifier/v1.5.0"
 
 _INTRO = (
     "\n"
@@ -85,6 +85,8 @@ Reglas de clasificación:
    * Usá `set_metodo_de_entrega` ÚNICAMENTE cuando el cliente selecciona o cambia la MODALIDAD de recepción (delivery / envío a domicilio, retiro por el local, consumo en salón). Verbos característicos: "quiero envío a domicilio", "lo paso a retirar", "lo retiro por el local", "lo voy a comer ahí", "que sea para llevar".
    * Usá `set_observacion_pedido` SOLO para instrucciones operativas NO direccionales: portón, timbre, acceso, ruta de ingreso, edificio o portería, seguridad, mascotas, cuidado o indicaciones similares, aunque aparezca la palabra "entrega". Verbos característicos: "la entrega es por el portón lateral", "tocar timbre", "dejar en la puerta", "cuidado con el perro", "es un edificio con portero".
    En la duda, si el mensaje contiene un DOMICILIO o DIRECCIÓN concreta, clasificá como `set_direccion_entrega` y NUNCA como `set_observacion_pedido`. La palabra "entrega" por sí sola no implica `set_metodo_de_entrega` ni `set_observacion_pedido` cuando la intención es fijar una dirección.
+
+9. Cuando el mensaje exprese quitar, sacar, retirar o eliminar uno o más productos del pedido actual, clasificá como `quitar_producto`. Esta es una regla SEMÁNTICA: el criterio de decisión es el significado de remoción del pedido, no la pertenencia a una lista cerrada de verbos. Formulaciones representativas que mapean a `quitar_producto` incluyen, entre otras, `quita`, `quitá`, `quitar`, `saca`, `sacá`, `sacar`, `retirá`, `retirar`, `eliminá`, `eliminar`. Una solicitud clara de remoción del pedido NUNCA debe clasificarse como `agregar_producto`. Cuando el mensaje sólo pida agregar o añadir productos al pedido, mantené la clasificación `agregar_producto` sin cambios.
 
 """
 

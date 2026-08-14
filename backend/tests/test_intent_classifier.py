@@ -4,6 +4,11 @@ import unittest
 
 import pydantic
 
+from backend.diagnostics import prompt_template as prompt_template_module
+from backend.diagnostics.prompt_template import (
+    PROMPT_TEMPLATE_VERSION,
+    build_intent_prompt,
+)
 from backend.intents.schemas.intent_classification import IntentName
 from backend.llm import intent_classifier as intent_classifier_module
 from backend.llm.intent_classifier import IntentClassifier
@@ -301,6 +306,172 @@ class IntentClassifierDebugLogPrivacyTest(unittest.TestCase):
                 if isinstance(value, str):
                     self.assertNotIn(message_sentinel, value)
                     self.assertNotIn(response_sentinel, value)
+
+
+class IntentClassifierRemovalSemanticRuleTest(unittest.TestCase):
+    """Verifies the static prompt instructs that messages expressing removal
+    of products from the current order map to ``quitar_producto`` and never
+    to ``agregar_producto``. The decision criterion is the meaning of
+    removal; representative wording is guidance, not a closed vocabulary.
+    """
+
+    _PROMPT = build_intent_prompt("__placeholder__")
+
+    def test_prompt_states_removal_semantic_rule(self):
+        self.assertIn("quitar_producto", self._PROMPT)
+        self.assertIn("agregar_producto", self._PROMPT)
+        for marker in (
+            "SEMÁNTICA",
+            "significado de remoción",
+            "NUNCA debe clasificarse como `agregar_producto`",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self._PROMPT)
+
+    def test_prompt_includes_representative_removal_wording(self):
+        for example in (
+            "quita",
+            "quitá",
+            "quitar",
+            "saca",
+            "sacá",
+            "sacar",
+            "retirá",
+            "retirar",
+            "eliminá",
+            "eliminar",
+        ):
+            with self.subTest(example=example):
+                self.assertIn(example, self._PROMPT)
+
+    def test_prompt_keeps_add_path_unchanged(self):
+        self.assertIn(
+            "agregar uno o más productos al pedido = `agregar_producto`",
+            self._PROMPT,
+        )
+
+    def test_prompt_does_not_introduce_a_closed_verb_list(self):
+        self.assertIn("lista cerrada", self._PROMPT)
+
+    def test_prompt_template_version_is_bumped_monotonically(self):
+        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.5.0")
+        self.assertGreater(
+            PROMPT_TEMPLATE_VERSION,
+            "intent-classifier/v1.4.0",
+        )
+
+
+class IntentClassifierRemovalPayloadSchemaTest(unittest.TestCase):
+    """Verifies that a controlled LLM payload returning one
+    ``quitar_producto`` for a representative removal request preserves the
+    literal customer-message substring and round-trips through the
+    existing ``IntentClassificationResult`` contract. These checks verify
+    the classifier schema, not the live LLM behavior.
+    """
+
+    _CASES: tuple[tuple[str, str], ...] = (
+        ("saca una de mozzarella chica", "saca una de mozzarella chica"),
+        ("sacar dos de mozzarella chica", "sacar dos de mozzarella chica"),
+        ("retirá una de mozzarella chica", "retirá una de mozzarella chica"),
+        ("quitá una pizza", "quitá una pizza"),
+    )
+
+    def test_single_quitar_producto_preserves_literal_mensaje(self):
+        for full_message, classified_mensaje in self._CASES:
+            with self.subTest(message=full_message):
+                stub = _StubQueryLlm(
+                    payload={
+                        "intents": [
+                            {
+                                "intent": "quitar_producto",
+                                "mensaje": classified_mensaje,
+                            }
+                        ],
+                        "mensaje": full_message,
+                    }
+                )
+                classifier = IntentClassifier(query_llm=stub)
+
+                result = classifier.query(full_message)
+
+                self.assertEqual(len(result.intents), 1)
+                classified = result.intents[0]
+                self.assertEqual(classified.intent, IntentName.QUITAR_PRODUCTO)
+                self.assertEqual(classified.mensaje, classified_mensaje)
+                self.assertIn(classified.mensaje, full_message)
+                self.assertEqual(result.mensaje, full_message)
+                self.assertEqual(len(stub.calls), 1)
+
+    def test_removal_payload_never_claims_agregar_producto(self):
+        stub = _StubQueryLlm(
+            payload={
+                "intents": [
+                    {
+                        "intent": "quitar_producto",
+                        "mensaje": "saca una de mozzarella chica",
+                    }
+                ],
+                "mensaje": "saca una de mozzarella chica",
+            }
+        )
+        classifier = IntentClassifier(query_llm=stub)
+
+        result = classifier.query("saca una de mozzarella chica")
+
+        self.assertEqual(
+            [ci.intent for ci in result.intents],
+            [IntentName.QUITAR_PRODUCTO],
+        )
+        self.assertNotIn(IntentName.AGREGAR_PRODUCTO, result.intents)
+
+    def test_add_request_still_maps_to_agregar_producto(self):
+        stub = _StubQueryLlm(
+            payload={
+                "intents": [
+                    {
+                        "intent": "agregar_producto",
+                        "mensaje": "una empanada",
+                    }
+                ],
+                "mensaje": "quiero una empanada",
+            }
+        )
+        classifier = IntentClassifier(query_llm=stub)
+
+        result = classifier.query("quiero una empanada")
+
+        self.assertEqual(len(result.intents), 1)
+        self.assertEqual(result.intents[0].intent, IntentName.AGREGAR_PRODUCTO)
+
+
+class IntentClassifierPromptTemplateFingerprintTest(unittest.TestCase):
+    """Confirms the static-only fingerprint contract still holds after the
+    removal-semantic rule is added. The fingerprint MUST be derived from
+    the static template body only and MUST change whenever the static
+    template body changes.
+    """
+
+    def test_fingerprint_is_derived_from_static_body(self):
+        from backend.diagnostics.prompt_template import template_fingerprint
+
+        expected = prompt_template_module._PROMPT_TEMPLATE_HASH
+        self.assertEqual(template_fingerprint(), expected)
+
+    def test_fingerprint_changes_when_body_changes(self):
+        from backend.diagnostics.prompt_template import template_fingerprint
+
+        original_body = prompt_template_module._PROMPT_TEMPLATE_BODY
+        original_hash = prompt_template_module._PROMPT_TEMPLATE_HASH
+        try:
+            modified_body = original_body + "\n# drift marker"
+            prompt_template_module._PROMPT_TEMPLATE_BODY = modified_body
+            prompt_template_module._PROMPT_TEMPLATE_HASH = (
+                __import__("hashlib").sha256(modified_body.encode("utf-8")).hexdigest()
+            )
+            self.assertNotEqual(template_fingerprint(), original_hash)
+        finally:
+            prompt_template_module._PROMPT_TEMPLATE_BODY = original_body
+            prompt_template_module._PROMPT_TEMPLATE_HASH = original_hash
 
 
 if __name__ == "__main__":
