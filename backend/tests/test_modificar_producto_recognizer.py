@@ -318,12 +318,13 @@ class RecognizeModificarProductoQuantityTest(unittest.TestCase):
 
     @patch.object(recognizer_module, "ProductoQueryService")
     @patch.object(recognizer_module, "PedidoProductoService")
-    def test_only_destination_quantity_routes_to_cantidad(
+    def test_only_destination_quantity_routes_to_cantidad_destino(
         self, pp_service_cls, catalog_cls
     ):
-        """Contract case 3: legacy one-quantity semantics keep
-        ``cantidad`` populated and ``cantidad_destino`` absent even when
-        the only explicit quantity appears on the destination side.
+        """Contract: when the only explicit quantity appears on the
+        destination side, ``cantidad`` MUST be ``None`` and
+        ``cantidad_destino`` MUST carry that value so the handler re-
+        reads the full source line and applies the destination amount.
         """
         db = MagicMock(spec=DatabaseSession)
         conversation_session = MagicMock(spec=ConversationSession)
@@ -344,9 +345,243 @@ class RecognizeModificarProductoQuantityTest(unittest.TestCase):
             "cambiar napolitanas por 2 mozzarellas",
         )
 
-        self.assertEqual(result["cantidad"], 2)
+        self.assertIsNone(result["cantidad"])
+        self.assertEqual(result["cantidad_destino"], 2)
+        self.assertFalse(result["cantidad_destino_invalid"])
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_only_destination_quantity_word_form_routes_to_cantidad_destino(
+        self, pp_service_cls, catalog_cls
+    ):
+        """Word-form destination quantity (``dos``) must behave the same
+        as the digit form: ``cantidad`` stays ``None`` and
+        ``cantidad_destino`` carries the value.
+        """
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = []
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        result = recognize_modificar_producto(
+            db,
+            conversation_session,
+            "cambiar la napolitana grande por dos mozzarellas grandes",
+        )
+
+        self.assertIsNone(result["cantidad"])
+        self.assertEqual(result["cantidad_destino"], 2)
+        self.assertFalse(result["cantidad_destino_invalid"])
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_paired_destination_quantity_preserves_explicit_source(
+        self, pp_service_cls, catalog_cls
+    ):
+        """Regression: source explicit + destination explicit must keep
+        the existing ``cantidad=source_value, cantidad_destino=dest_value``
+        contract; the destination-only branch change must not bleed into
+        the paired branch.
+        """
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = []
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        result = recognize_modificar_producto(
+            db,
+            conversation_session,
+            "cambiar 1 napolitana por 2 mozzarellas",
+        )
+
+        self.assertEqual(result["cantidad"], 1)
+        self.assertEqual(result["cantidad_destino"], 2)
+        self.assertFalse(result["cantidad_destino_invalid"])
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_only_source_quantity_keeps_cantidad_only(
+        self, pp_service_cls, catalog_cls
+    ):
+        """Regression: only the source side has an explicit quantity;
+        the recognizer must keep the legacy
+        ``cantidad=source_value, cantidad_destino=None`` contract so the
+        destination mirrors the source amount.
+        """
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = []
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        result = recognize_modificar_producto(
+            db,
+            conversation_session,
+            "cambiar 3 napolitanas por mozzarella",
+        )
+
+        self.assertEqual(result["cantidad"], 3)
         self.assertIsNone(result["cantidad_destino"])
         self.assertFalse(result["cantidad_destino_invalid"])
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_omitted_both_sides_returns_none_none(
+        self, pp_service_cls, catalog_cls
+    ):
+        """Regression: no explicit quantity on either side. Both fields
+        are ``None``; the handler re-reads the full source quantity.
+        """
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = []
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        result = recognize_modificar_producto(
+            db,
+            conversation_session,
+            "cambiar la napolitana por la mozzarella",
+        )
+
+        self.assertIsNone(result["cantidad"])
+        self.assertIsNone(result["cantidad_destino"])
+        self.assertFalse(result["cantidad_destino_invalid"])
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_destination_only_with_source_in_catalog_keeps_none(
+        self, pp_service_cls, catalog_cls
+    ):
+        """When the destination-only message also has a unique source
+        line available, the recognizer must still emit
+        ``cantidad=None``/``cantidad_destino=M`` so the handler does
+        the full source removal.
+        """
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp = MagicMock(id=41)
+        pp.producto_presentacion.producto.nombre = "Pizza Napolitana"
+        pp.producto_presentacion.presentacion.codigo = "grande"
+        pp.producto_presentacion.id_producto = 1
+        pp.producto_presentacion.id_presentacion = 1
+        pp.producto_presentacion.producto.id_categoria_producto = 1
+        pp.producto_presentacion.producto.activo = True
+        pp.producto_presentacion.producto.disponible = True
+        pp.producto_presentacion.presentacion.activo = True
+        pp.producto_presentacion.activo = True
+        pp.id_producto_presentacion = 101
+        pp.cantidad = 1
+
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = [pp]
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        def _detector_side_effect(message, catalog, **kwargs):
+            if not catalog:
+                return {
+                    "encontrados": [],
+                    "encontrados_posibles": [],
+                    "encontrados_no_disponibles": [],
+                    "no_encontrados": [],
+                }
+            return {
+                "encontrados": [
+                    {
+                        "producto_presentacion_id": 101,
+                        "pedido_producto_id": 41,
+                    }
+                ],
+                "encontrados_posibles": [],
+                "encontrados_no_disponibles": [],
+                "no_encontrados": [],
+            }
+
+        with patch.object(
+            recognizer_module,
+            "detectar_productos",
+            side_effect=_detector_side_effect,
+        ):
+            result = recognize_modificar_producto(
+                db,
+                conversation_session,
+                "cambia la napolitana grande por dos mozzarellas grandes",
+            )
+
+        self.assertIsNone(result["cantidad"])
+        self.assertEqual(result["cantidad_destino"], 2)
+        self.assertFalse(result["cantidad_destino_invalid"])
+        self.assertEqual(result["source_pp_id"], 41)
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_invalid_destination_quantity_overrides_destination_only(
+        self, pp_service_cls, catalog_cls
+    ):
+        """Even with no explicit source quantity, an invalid destination
+        quantity (``0``, ``-1``, ``1.5``, ``1,5``) must still surface
+        ``cantidad_destino_invalid=True`` and not be routed to
+        ``cantidad_destino``.
+        """
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = []
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        result = recognize_modificar_producto(
+            db,
+            conversation_session,
+            "cambiar napolitanas por 0 mozzarellas",
+        )
+
+        self.assertIsNone(result["cantidad"])
+        self.assertIsNone(result["cantidad_destino"])
+        self.assertTrue(result["cantidad_destino_invalid"])
 
     @patch.object(recognizer_module, "ProductoQueryService")
     @patch.object(recognizer_module, "PedidoProductoService")
