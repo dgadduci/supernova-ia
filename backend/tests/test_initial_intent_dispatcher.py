@@ -402,6 +402,59 @@ class DispatchInitialMessageBoundariesTest(unittest.TestCase):
         self.assertEqual(function_names, ["dispatch_initial_message"])
 
 
+class DispatchInitialMessageRepresentativeRemovalTest(unittest.TestCase):
+    """Reinforces the existing QUITAR_PRODUCTO branch by covering the
+    representative removal forms (``saca``, ``sacar``, ``retirá``). Each
+    classified result MUST route only to the existing remove orchestrator
+    and MUST NEVER invoke the add orchestrator.
+    """
+
+    _REPRESENTATIVE_CASES: tuple[tuple[str, str], ...] = (
+        ("saca una de mozzarella chica", "saca una de mozzarella chica"),
+        ("sacar dos de mozzarella chica", "sacar dos de mozzarella chica"),
+        ("retirá una de mozzarella chica", "retirá una de mozzarella chica"),
+    )
+
+    @patch.object(dispatcher_module, "process_initial_agregar_producto")
+    @patch.object(dispatcher_module, "process_initial_quitar_producto")
+    @patch.object(dispatcher_module, "IntentClassifier")
+    def test_representative_removal_routes_only_to_remove_orchestrator(
+        self, classifier_cls, quitar_orch, agregar_orch
+    ):
+        for full_message, classified_mensaje in self._REPRESENTATIVE_CASES:
+            with self.subTest(message=full_message):
+                quitar_orch.reset_mock()
+                agregar_orch.reset_mock()
+                sentinel = ProcessedIntent(
+                    intent="quitar_producto",
+                    source_text=classified_mensaje,
+                    status="pending_resolution",
+                    recognizer="recognizer_quitar_producto",
+                    handler="quitar_producto",
+                    candidate_ids=[1],
+                )
+                quitar_orch.return_value = sentinel
+                classifier_instance = MagicMock()
+                classifier_instance.query.return_value = _build_result(
+                    (IntentName.QUITAR_PRODUCTO, classified_mensaje)
+                )
+                classifier_cls.return_value = classifier_instance
+
+                db = MagicMock(name="DatabaseSession")
+                session = _session(context_type=None)
+
+                result = dispatch_initial_message(db, session, full_message)
+
+                agregar_orch.assert_not_called()
+                quitar_orch.assert_called_once_with(
+                    db, session, classified_mensaje
+                )
+                self.assertEqual(result, [sentinel])
+                self.assertEqual(result[0].intent, "quitar_producto")
+                self.assertEqual(result[0].handler, "quitar_producto")
+                self.assertNotEqual(result[0].handler, "agregar_producto")
+
+
 class DispatchInitialMessageSequentialQueueTest(unittest.TestCase):
     """Cases for the active-boundary stop and FIFO queueing behavior
     described by `initial-intent-dispatcher` requirements section.
