@@ -508,11 +508,13 @@ class ModificarProductoEndToEndTest(unittest.TestCase):
         finally:
             _cleanup(base)
 
-    def test_only_destination_quantity_falls_back_to_legacy_equal_transfer(self):
-        """Contract case 3: a request with the only explicit quantity on
-        the destination side must NOT widen into a paired 2 -> 1
-        operation. The legacy one-quantity semantics must collapse it to
-        a 2 -> 2 transfer.
+    def test_only_destination_quantity_removes_full_source_and_increments_destination(
+        self,
+    ):
+        """Contract: a request with the only explicit quantity on the
+        destination side MUST remove the full source line and create or
+        increment the destination by that explicit amount. The legacy
+        equal-quantity fallback must NOT be used.
         """
         suffix = _suffix()
         base = _seed(suffix)
@@ -529,17 +531,17 @@ class ModificarProductoEndToEndTest(unittest.TestCase):
                     )
                     self.assertEqual(len(result), 1)
                     self.assertEqual(result[0].status, "executed")
-                    self.assertEqual(
-                        result[0].resolved_data["cantidad"], 2
-                    )
                     self.assertIsNone(
-                        result[0].resolved_data.get("cantidad_destino")
+                        result[0].resolved_data.get("cantidad")
+                    )
+                    self.assertEqual(
+                        result[0].resolved_data["cantidad_destino"], 2
                     )
                     db.commit()
 
             with TestingSessionLocal() as db:
                 source = db.get(PedidoProducto, source_line_id)
-                self.assertEqual(source.cantidad, 2)
+                self.assertIsNone(source)
                 dest_line = db.execute(
                     select(PedidoProducto).where(
                         PedidoProducto.id_pedido == base["pedido_id"],
@@ -1634,6 +1636,202 @@ class ModificarProductoBareDestinationExecutionTest(unittest.TestCase):
                     )
                 ).scalar_one()
                 self.assertEqual(dest_line.cantidad, 1)
+                session_row = db.get(SessionModel, base["session_id"])
+                self.assertIsNone(session_row.context_type)
+                cleared_pending = session_row.pending_intents or {}
+                self.assertIsNone(cleared_pending.get("active"))
+                self.assertEqual(cleared_pending.get("queue", []), [])
+        finally:
+            _cleanup_napolitanas_y_mozzarella(base)
+
+    def test_grande_after_destination_only_pilot_removes_full_source_and_creates_two(
+        self,
+    ) -> None:
+        """Pilot gate: ``cambia la napolitana grande por dos mozzarella grande``
+        with source quantity 1 must leave the source removed, create the
+        ``Mozzarella grande`` destination at quantity 2, and preserve the
+        destination-only semantics through the recognizer.
+        """
+        from backend.intents.orchestration.incoming_message_orchestrator import (
+            process_incoming_message,
+        )
+
+        suffix = _suffix()
+        base = _seed_napolitanas_y_mozzarella(suffix)
+        try:
+            source_line_id = _seed_line(base, base["pp_napo_grande"], 1)
+            with _patched_classifier(_ModificarClassifier):
+                with TestingSessionLocal() as db:
+                    session_row = db.get(SessionModel, base["session_id"])
+                    assert session_row is not None
+                    initial = process_incoming_message(
+                        db,
+                        session_row,
+                        "cambia la napolitana grande por dos mozzarella grande",
+                    )
+                    self.assertEqual(len(initial), 1)
+                    self.assertEqual(initial[0].status, "executed")
+                    self.assertEqual(
+                        initial[0].resolved_data[
+                            "pedido_producto_origen_id"
+                        ],
+                        source_line_id,
+                    )
+                    self.assertEqual(
+                        initial[0].resolved_data[
+                            "producto_presentacion_destino_id"
+                        ],
+                        base["pp_mozza_grande"],
+                    )
+                    self.assertIsNone(
+                        initial[0].resolved_data.get("cantidad")
+                    )
+                    self.assertEqual(
+                        initial[0].resolved_data["cantidad_destino"], 2
+                    )
+                    self.assertEqual(
+                        initial[0].resolved_data[
+                            "cantidad_destino_modificada"
+                        ],
+                        2,
+                    )
+                    db.commit()
+
+            with TestingSessionLocal() as db:
+                source = db.get(PedidoProducto, source_line_id)
+                self.assertIsNone(source)
+                dest_line = db.execute(
+                    select(PedidoProducto).where(
+                        PedidoProducto.id_pedido == base["pedido_id"],
+                        PedidoProducto.id_producto_presentacion
+                        == base["pp_mozza_grande"],
+                    )
+                ).scalar_one()
+                self.assertEqual(dest_line.cantidad, 2)
+                session_row = db.get(SessionModel, base["session_id"])
+                self.assertIsNone(session_row.context_type)
+                cleared_pending = session_row.pending_intents or {}
+                self.assertIsNone(cleared_pending.get("active"))
+                self.assertEqual(cleared_pending.get("queue", []), [])
+        finally:
+            _cleanup_napolitanas_y_mozzarella(base)
+
+    def test_destination_only_without_qualifier_preserves_pending_and_full_source(
+        self,
+    ) -> None:
+        """When the destination-only message leaves the presentation
+        ambiguous (e.g. ``dos mozzarellas`` without a ``grande/chica``
+        qualifier), the pending state MUST carry
+        ``cantidad=None, cantidad_destino=2`` and the follow-up
+        ``grande`` clarification MUST execute a full source removal
+        plus a destination of exactly 2.
+        """
+        from backend.intents.orchestration.incoming_message_orchestrator import (
+            process_incoming_message,
+        )
+
+        suffix = _suffix()
+        base = _seed_napolitanas_y_mozzarella(suffix)
+        try:
+            source_line_id = _seed_line(base, base["pp_napo_grande"], 1)
+            with _patched_classifier(_ModificarClassifier):
+                with TestingSessionLocal() as db:
+                    session_row = db.get(SessionModel, base["session_id"])
+                    assert session_row is not None
+                    initial = process_incoming_message(
+                        db,
+                        session_row,
+                        "cambia la napolitana grande por dos mozzarellas",
+                    )
+                    self.assertEqual(len(initial), 1)
+                    self.assertEqual(initial[0].status, "pending_resolution")
+                    self.assertEqual(
+                        initial[0].stage, "destination_selection"
+                    )
+                    self.assertIsNone(
+                        initial[0].resolved_data.get("cantidad")
+                    )
+                    self.assertEqual(
+                        initial[0].resolved_data["cantidad_destino"], 2
+                    )
+                    self.assertEqual(
+                        sorted(
+                            initial[0].resolved_data[
+                                "destination_candidate_ids"
+                            ]
+                        ),
+                        sorted(
+                            [
+                                base["pp_mozza_grande"],
+                                base["pp_mozza_chica"],
+                            ]
+                        ),
+                    )
+                    db.commit()
+
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, base["session_id"])
+                assert session_row is not None
+                self.assertIsNotNone(session_row.context_type)
+                pending = session_row.pending_intents or {}
+                active = pending.get("active") or {}
+                self.assertEqual(active.get("intent"), "modificar_producto")
+                self.assertEqual(
+                    active.get("stage"), "destination_selection"
+                )
+                self.assertIsNone(
+                    active.get("resolved_data", {}).get("cantidad")
+                )
+                self.assertEqual(
+                    active.get("resolved_data", {}).get("cantidad_destino"),
+                    2,
+                )
+
+            with TestingSessionLocal() as db:
+                session_row = db.get(SessionModel, base["session_id"])
+                assert session_row is not None
+                follow_up = process_incoming_message(
+                    db, session_row, "grande"
+                )
+                self.assertEqual(len(follow_up), 1)
+                self.assertEqual(follow_up[0].status, "executed")
+                self.assertEqual(
+                    follow_up[0].resolved_data[
+                        "pedido_producto_origen_id"
+                    ],
+                    source_line_id,
+                )
+                self.assertEqual(
+                    follow_up[0].resolved_data[
+                        "producto_presentacion_destino_id"
+                    ],
+                    base["pp_mozza_grande"],
+                )
+                self.assertIsNone(
+                    follow_up[0].resolved_data.get("cantidad")
+                )
+                self.assertEqual(
+                    follow_up[0].resolved_data["cantidad_destino"], 2
+                )
+                self.assertEqual(
+                    follow_up[0].resolved_data[
+                        "cantidad_destino_modificada"
+                    ],
+                    2,
+                )
+                db.commit()
+
+            with TestingSessionLocal() as db:
+                source = db.get(PedidoProducto, source_line_id)
+                self.assertIsNone(source)
+                dest_line = db.execute(
+                    select(PedidoProducto).where(
+                        PedidoProducto.id_pedido == base["pedido_id"],
+                        PedidoProducto.id_producto_presentacion
+                        == base["pp_mozza_grande"],
+                    )
+                ).scalar_one()
+                self.assertEqual(dest_line.cantidad, 2)
                 session_row = db.get(SessionModel, base["session_id"])
                 self.assertIsNone(session_row.context_type)
                 cleared_pending = session_row.pending_intents or {}

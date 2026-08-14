@@ -417,10 +417,15 @@ def recognize_modificar_producto(
 
     - both sides carry an explicit positive integer quantity:
       ``cantidad = source_value``, ``cantidad_destino = dest_value``.
-    - exactly one side carries an explicit positive integer quantity:
-      ``cantidad`` receives that value (legacy one-quantity contract),
-      ``cantidad_destino`` is ``None`` so the destination mirrors the
-      effective source quantity.
+    - only the source side carries an explicit positive integer
+      quantity: ``cantidad = source_value``, ``cantidad_destino`` is
+      ``None`` so the destination mirrors the effective source
+      quantity.
+    - only the destination side carries an explicit positive integer
+      quantity: ``cantidad`` is ``None`` and ``cantidad_destino =
+      dest_value``. The handler re-reads the current source line
+      quantity at execution so the source is fully removed and the
+      destination is incremented by ``dest_value``.
     - neither side carries an explicit quantity: both ``cantidad`` and
       ``cantidad_destino`` are ``None``; the handler will re-read the
       current source line quantity.
@@ -556,8 +561,8 @@ def recognize_modificar_producto(
             cantidad = source_value
             cantidad_destino = None
         elif dest_positive:
-            cantidad = dest_value
-            cantidad_destino = None
+            cantidad = None
+            cantidad_destino = dest_value
         else:
             cantidad = None
             cantidad_destino = None
