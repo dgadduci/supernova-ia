@@ -652,3 +652,351 @@ class ModificarProductoEndToEndAtomicityTest(unittest.TestCase):
                     )
         finally:
             _cleanup(base)
+
+
+def _seed_napolitanas(suffix: str) -> dict:
+    """Seed a draft Pedido with one `Pizza Napolitana grande` line and
+    the catalog entries the integration test needs: a `Pizza Napolitana
+    chica` presentation that does not yet belong to the pedido. The
+    presentation codes use the alias tokens verbatim so the runtime
+    fuzzy presentation filter keeps both presentations distinct under
+    the test message.
+    """
+    estado_id = _estado_id()
+    with TestingSessionLocal() as db, db.begin():
+        comercio = Comercio(
+            nombre_fantasia=f"T-{suffix}",
+            nombre_corto=f"TC-{suffix}",
+            razon_social=f"R-{suffix}",
+            cuit=f"30-{suffix[:8]}-{suffix[8]}",
+            whatsapp=f"+5499{suffix[:8]}",
+            calle="X",
+            numero="1",
+            piso_departamento=None,
+            localidad="CABA",
+            provincia="BA",
+            codigo_postal="C1000",
+            slug=f"slug-{suffix}",
+            estado_id=estado_id,
+        )
+        db.add(comercio)
+        db.flush()
+
+        cliente = Cliente(
+            whatsapp=f"+5499{int(suffix, 16) % 100000000:08d}",
+            nombre=None,
+            domicilio=None,
+            activo=True,
+        )
+        db.add(cliente)
+        db.flush()
+
+        session_row = SessionModel(
+            id_comercio=comercio.id,
+            id_cliente=cliente.id,
+            id_pedido=None,
+            estado_session=EstadoSession.ACTIVA,
+            pending_intents={},
+            context_type=None,
+        )
+        db.add(session_row)
+        db.flush()
+
+        pedido = Pedido(
+            id_session=session_row.id,
+            id_medio_pago=None,
+            id_metodo_entrega=None,
+            datetime_entrega_programada=None,
+            estado_pedido=EstadoPedido.BORRADOR,
+        )
+        db.add(pedido)
+        db.flush()
+        session_row.id_pedido = pedido.id
+        db.flush()
+
+        categoria = CategoriaProducto(
+            id_comercio=comercio.id,
+            descripcion=f"Pizzas-{suffix}",
+            activo=True,
+            orden=0,
+        )
+        db.add(categoria)
+        db.flush()
+
+        producto = Producto(
+            id_categoria_producto=categoria.id,
+            nombre=f"Pizza Napolitana {suffix}",
+            descripcion=None,
+            activo=True,
+            disponible=True,
+            orden=0,
+        )
+        db.add(producto)
+        db.flush()
+
+        pres_grande = Presentacion(
+            id_comercio=comercio.id,
+            codigo="grande",
+            descripcion=f"grande-{suffix}",
+            activo=True,
+            orden=0,
+        )
+        db.add(pres_grande)
+        db.flush()
+
+        pres_chica = Presentacion(
+            id_comercio=comercio.id,
+            codigo="chica",
+            descripcion=f"chica-{suffix}",
+            activo=True,
+            orden=0,
+        )
+        db.add(pres_chica)
+        db.flush()
+
+        pp_grande = ProductoPresentacion(
+            id_producto=producto.id,
+            id_presentacion=pres_grande.id,
+            activo=True,
+            orden=0,
+        )
+        db.add(pp_grande)
+        db.flush()
+
+        pp_chica = ProductoPresentacion(
+            id_producto=producto.id,
+            id_presentacion=pres_chica.id,
+            activo=True,
+            orden=0,
+        )
+        db.add(pp_chica)
+        db.flush()
+
+        db.add(
+            Precio(id_producto_presentacion=pp_grande.id, precio=Decimal("150.00"))
+        )
+        db.add(
+            Precio(id_producto_presentacion=pp_chica.id, precio=Decimal("100.00"))
+        )
+        db.flush()
+
+        return {
+            "comercio_id": comercio.id,
+            "cliente_id": cliente.id,
+            "session_id": session_row.id,
+            "pedido_id": pedido.id,
+            "categoria_id": categoria.id,
+            "producto_id": producto.id,
+            "pp_grande": pp_grande.id,
+            "pp_chica": pp_chica.id,
+        }
+
+
+def _cleanup_napolitanas(base: dict) -> None:
+    with TestingSessionLocal() as db, db.begin():
+        sess_row = db.get(SessionModel, base["session_id"])
+        if sess_row is not None:
+            sess_row.id_pedido = None
+            sess_row.context_type = None
+            sess_row.pending_intents = {}
+            db.flush()
+        db.execute(
+            delete(PedidoProducto).where(PedidoProducto.id_pedido == base["pedido_id"])
+        )
+        db.execute(
+            delete(Precio).where(
+                Precio.id_producto_presentacion.in_(
+                    [base["pp_grande"], base["pp_chica"]]
+                )
+            )
+        )
+        db.execute(
+            delete(ProductoPresentacion).where(
+                ProductoPresentacion.id.in_([base["pp_grande"], base["pp_chica"]])
+            )
+        )
+        db.execute(delete(Producto).where(Producto.id == base["producto_id"]))
+        db.execute(
+            delete(CategoriaProducto).where(
+                CategoriaProducto.id == base["categoria_id"]
+            )
+        )
+        db.execute(delete(Pedido).where(Pedido.id == base["pedido_id"]))
+        db.execute(delete(SessionModel).where(SessionModel.id == base["session_id"]))
+        db.execute(delete(Cliente).where(Cliente.id == base["cliente_id"]))
+        db.execute(delete(Comercio).where(Comercio.id == base["comercio_id"]))
+
+
+class _StubHybridEmbeddingClient:
+    """Deterministic embedding client for the hybrid integration test.
+
+    Returns a fixed all-ones vector of the configured dimension so the
+    recognizer's ``embed_query`` call is exercised without any HTTP
+    transport or live LLM.
+    """
+
+    def __init__(self, dimension: int = 384) -> None:
+        self._vector = [1.0] * dimension
+        self.dimension = dimension
+
+    def embed_query(self, text: str) -> list[float]:
+        return list(self._vector)
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [list(self._vector) for _ in texts]
+
+
+class _StubHybridVectorMatch:
+    def __init__(self, id_producto_presentacion: int, score: float) -> None:
+        self.id_producto_presentacion = id_producto_presentacion
+        self.score = score
+
+
+class _StubHybridVectorSearchService:
+    """Deterministic per-call vector search service for the integration
+    test. Returns an empty match list so the 4.11.7 guard fires for the
+    fuzzy-unique decision and the fuzzy result becomes the authoritative
+    hybrid translation.
+    """
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def search_similar(
+        self,
+        *,
+        id_comercio: int,
+        query_embedding,
+        top_k: int,
+        candidate_producto_presentacion_ids,
+    ):
+        self.call_count += 1
+        return []
+
+
+class _StubHybridRecorder:
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def record(self, *args, **kwargs) -> None:
+        self.call_count += 1
+
+
+def _build_hybrid_recognizer():
+    """Build a real ``HybridAuthoritativeProductRecognizer`` with
+    deterministic embedding + vector + recorder collaborators.
+
+    The factory uses the calibrated ``HybridDecisionPolicy`` defaults
+    so the recognizer falls back to the fuzzy-unique decision when the
+    filtered vector side is empty (the 4.11.7 guard).
+    """
+    from backend.recognizers.fuzzy_product_recognizer import (
+        FuzzyProductRecognizer,
+    )
+    from backend.services.hybrid_authoritative_recognizer import (
+        HybridAuthoritativeProductRecognizer,
+    )
+    from backend.services.product_recognition_calibration_policy import (
+        HybridDecisionPolicy,
+    )
+
+    policy = HybridDecisionPolicy(
+        fuzzy_weight=0.5,
+        vector_weight=0.5,
+        unique_threshold=0.7,
+        ambiguous_threshold=0.4,
+        minimum_score_gap=0.05,
+        vector_top_k=5,
+    )
+    return HybridAuthoritativeProductRecognizer(
+        inner=FuzzyProductRecognizer(),
+        policy=policy,
+        embedding_client=_StubHybridEmbeddingClient(),
+        vector_search_service=lambda: _StubHybridVectorSearchService(),
+        recorder=_StubHybridRecorder(),
+        configured_mode="hybrid_authoritative",
+        effective_mode="hybrid_authoritative",
+    )
+
+
+class ModificarProductoHybridEndToEndTest(unittest.TestCase):
+    """Smallest real-hybrid modification integration proof.
+
+    Wires the real ``HybridAuthoritativeProductRecognizer`` into the
+    ``modificar_producto_recognizer`` module via its module-level
+    factory binding, then runs the existing orchestration path against
+    the real PostgreSQL test database. The handler, service,
+    repository and resolver remain untouched (no mocks); only the
+    classifier and the deterministic embedding/vector collaborators
+    are stubbed.
+    """
+
+    def test_cambiar_2_napolitanas_grandes_por_2_chicas_executes(
+        self,
+    ) -> None:
+        from backend.intents.recognizers import (
+            modificar_producto_recognizer as modificar_recognizer_module,
+        )
+
+        suffix = _suffix()
+        base = _seed_napolitanas(suffix)
+        try:
+            source_line_id = _seed_line(base, base["pp_grande"], 5)
+            hybrid_recognizer = _build_hybrid_recognizer()
+            original_recognizer = (
+                modificar_recognizer_module._product_recognizer  # type: ignore[attr-defined]
+            )
+            modificar_recognizer_module._product_recognizer = (  # type: ignore[attr-defined]
+                hybrid_recognizer
+            )
+            try:
+                with _patched_classifier(_ModificarClassifier):
+                    with TestingSessionLocal() as db:
+                        session_row = db.get(
+                            SessionModel, base["session_id"]
+                        )
+                        assert session_row is not None
+                        result = process_incoming_message(
+                            db,
+                            session_row,
+                            "cambiar 2 napolitanas grandes por 2 napolitanas chicas",
+                        )
+                        self.assertEqual(len(result), 1)
+                        self.assertEqual(result[0].status, "executed")
+                        self.assertEqual(
+                            result[0].resolved_data[
+                                "pedido_producto_origen_id"
+                            ],
+                            source_line_id,
+                        )
+                        self.assertEqual(
+                            result[0].resolved_data[
+                                "producto_presentacion_destino_id"
+                            ],
+                            base["pp_chica"],
+                        )
+                        self.assertEqual(
+                            result[0].resolved_data["cantidad"], 2
+                        )
+                        db.commit()
+            finally:
+                modificar_recognizer_module._product_recognizer = (  # type: ignore[attr-defined]
+                    original_recognizer
+                )
+
+            with TestingSessionLocal() as db:
+                source = db.get(PedidoProducto, source_line_id)
+                self.assertEqual(source.cantidad, 3)
+                dest_line = db.execute(
+                    select(PedidoProducto).where(
+                        PedidoProducto.id_pedido == base["pedido_id"],
+                        PedidoProducto.id_producto_presentacion
+                        == base["pp_chica"],
+                    )
+                ).scalar_one()
+                self.assertEqual(dest_line.cantidad, 2)
+                session_row = db.get(SessionModel, base["session_id"])
+                self.assertIsNone(session_row.context_type)
+                self.assertEqual(session_row.pending_intents, {})
+        finally:
+            _cleanup_napolitanas(base)

@@ -18,7 +18,7 @@
 
 ## 3. Production gate
 
-- [ ] 3.1 After approved deploy, add two then three of the same exact pilot
+- [x] 3.1 After approved deploy, add two then three of the same exact pilot
   presentation and verify cumulative totals, correct responses, one line and
   empty pending/context.
 - [ ] 3.2 Resume the product-flow TODO and consider archival only after 3.1
