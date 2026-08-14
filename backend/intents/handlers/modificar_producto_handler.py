@@ -68,6 +68,9 @@ def _executed_enriched(
     new_resolved_data["cantidad_modificada"] = result.cantidad_modificada
     new_resolved_data["cantidad_origen_restante"] = result.cantidad_origen_restante
     new_resolved_data["cantidad_destino_final"] = result.cantidad_destino_final
+    new_resolved_data["cantidad_destino_modificada"] = (
+        result.cantidad_destino_modificada
+    )
     new_resolved_data["origen_eliminado"] = result.origen_eliminado
     new_resolved_data["destino_creado"] = result.destino_creado
     return intent.model_copy(
@@ -123,6 +126,16 @@ def execute_modificar_producto(
         if cantidad <= 0:
             return _with_status(intent, "rejected")
 
+    cantidad_destino = intent.resolved_data.get("cantidad_destino")
+    if cantidad_destino is not None:
+        if (
+            isinstance(cantidad_destino, bool)
+            or not isinstance(cantidad_destino, int)
+        ):
+            return _with_status(intent, "rejected")
+        if cantidad_destino <= 0:
+            return _with_status(intent, "rejected")
+
     pedido_id = conversation_session.id_pedido
     if pedido_id is None:
         return _with_status(intent, "rejected")
@@ -149,6 +162,7 @@ def execute_modificar_producto(
             int(source_id),
             int(dest_id),
             effective_cantidad,
+            cantidad_destino,
         )
     except ModificationFailed:
         return _with_status(intent, "failed")

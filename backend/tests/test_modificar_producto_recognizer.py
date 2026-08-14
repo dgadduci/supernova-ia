@@ -211,6 +211,363 @@ class RecognizeModificarProductoQuantityTest(unittest.TestCase):
 
     @patch.object(recognizer_module, "ProductoQueryService")
     @patch.object(recognizer_module, "PedidoProductoService")
+    def test_paired_digit_quantities_extracted(self, pp_service_cls, catalog_cls):
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = []
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        result = recognize_modificar_producto(
+            db,
+            conversation_session,
+            "cambiar dos napolitanas grandes por una pizza de mozzarella",
+        )
+
+        self.assertEqual(result["cantidad"], 2)
+        self.assertEqual(result["cantidad_destino"], 1)
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_paired_digit_quantities_extracted_when_both_digits(
+        self, pp_service_cls, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = []
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        result = recognize_modificar_producto(
+            db,
+            conversation_session,
+            "cambiar 2 napolitanas grandes por 1 pizza de mozzarella",
+        )
+
+        self.assertEqual(result["cantidad"], 2)
+        self.assertEqual(result["cantidad_destino"], 1)
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_one_explicit_quantity_leaves_destination_none(
+        self, pp_service_cls, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = []
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        result = recognize_modificar_producto(
+            db,
+            conversation_session,
+            "cambiar dos napolitanas grandes por mozzarella",
+        )
+
+        self.assertEqual(result["cantidad"], 2)
+        self.assertIsNone(result["cantidad_destino"])
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_zero_destination_quantity_signals_invalid(
+        self, pp_service_cls, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = []
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        result = recognize_modificar_producto(
+            db,
+            conversation_session,
+            "cambiar 2 napolitanas grandes por 0 muzza",
+        )
+
+        self.assertEqual(result["cantidad"], 2)
+        self.assertIsNone(result["cantidad_destino"])
+        self.assertTrue(result["cantidad_destino_invalid"])
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_only_destination_quantity_routes_to_cantidad(
+        self, pp_service_cls, catalog_cls
+    ):
+        """Contract case 3: legacy one-quantity semantics keep
+        ``cantidad`` populated and ``cantidad_destino`` absent even when
+        the only explicit quantity appears on the destination side.
+        """
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = []
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        result = recognize_modificar_producto(
+            db,
+            conversation_session,
+            "cambiar napolitanas por 2 mozzarellas",
+        )
+
+        self.assertEqual(result["cantidad"], 2)
+        self.assertIsNone(result["cantidad_destino"])
+        self.assertFalse(result["cantidad_destino_invalid"])
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_negative_destination_quantity_signals_invalid(
+        self, pp_service_cls, catalog_cls
+    ):
+        """The probe must surface the explicit negative destination
+        quantity even though the text normalizer strips the minus sign.
+        """
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = []
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        result = recognize_modificar_producto(
+            db,
+            conversation_session,
+            "cambiar 2 napolitanas grandes por -1 muzza",
+        )
+
+        self.assertEqual(result["cantidad"], 2)
+        self.assertIsNone(result["cantidad_destino"])
+        self.assertTrue(result["cantidad_destino_invalid"])
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_decimal_dot_destination_quantity_signals_invalid(
+        self, pp_service_cls, catalog_cls
+    ):
+        """`1.5` MUST surface as an explicit invalid destination quantity
+        even though the text normalizer strips the dot. Otherwise the
+        legacy extractor would silently pick the ``1`` half of
+        ``1 5`` and execute a wrong ``2 -> 1`` mutation.
+        """
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = []
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        result = recognize_modificar_producto(
+            db,
+            conversation_session,
+            "cambiar 2 napolitanas grandes por 1.5 mozzarellas",
+        )
+
+        self.assertEqual(result["cantidad"], 2)
+        self.assertIsNone(result["cantidad_destino"])
+        self.assertTrue(result["cantidad_destino_invalid"])
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_decimal_comma_destination_quantity_signals_invalid(
+        self, pp_service_cls, catalog_cls
+    ):
+        """Spanish users commonly write ``1,5`` instead of ``1.5``. The
+        recognizer MUST surface both as an explicit invalid destination
+        quantity and never collapse to ``1`` or ``5``.
+        """
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = []
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        result = recognize_modificar_producto(
+            db,
+            conversation_session,
+            "cambiar 2 napolitanas grandes por 1,5 mozzarellas",
+        )
+
+        self.assertEqual(result["cantidad"], 2)
+        self.assertIsNone(result["cantidad_destino"])
+        self.assertTrue(result["cantidad_destino_invalid"])
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_decimal_with_colon_after_por_signals_invalid(
+        self, pp_service_cls, catalog_cls
+    ):
+        """`por:` (colon-adjacent) MUST be recognised as a ``por``
+        boundary in the raw text so the decimal destination token
+        ``1.5`` is detected as explicit-invalid instead of being
+        collapsed into ``1 5`` after normalization.
+        """
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = []
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        result = recognize_modificar_producto(
+            db,
+            conversation_session,
+            "cambiar 2 napolitanas por: 1.5 mozzarella",
+        )
+
+        self.assertEqual(result["cantidad"], 2)
+        self.assertIsNone(result["cantidad_destino"])
+        self.assertTrue(result["cantidad_destino_invalid"])
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_negative_with_comma_after_por_signals_invalid(
+        self, pp_service_cls, catalog_cls
+    ):
+        """`por,` (comma-adjacent) MUST be recognised as a ``por``
+        boundary so the negative destination quantity ``-1`` is
+        surfaced as explicit-invalid.
+        """
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = []
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        result = recognize_modificar_producto(
+            db,
+            conversation_session,
+            "cambiar 2 napolitanas por, -1 mozzarella",
+        )
+
+        self.assertEqual(result["cantidad"], 2)
+        self.assertIsNone(result["cantidad_destino"])
+        self.assertTrue(result["cantidad_destino_invalid"])
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_por_token_inside_other_word_is_not_a_boundary(
+        self, pp_service_cls, catalog_cls
+    ):
+        """`por` inside ``porcentaje`` MUST NOT be treated as a
+        destination boundary; the message has no real destination side.
+        """
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = []
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        result = recognize_modificar_producto(
+            db,
+            conversation_session,
+            "cambiar 2 napolitanas grandes por porcentaje",
+        )
+
+        self.assertIsNone(result["cantidad_destino"])
+        self.assertFalse(result["cantidad_destino_invalid"])
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_no_por_boundary_leaves_destination_none(
+        self, pp_service_cls, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = []
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        result = recognize_modificar_producto(
+            db,
+            conversation_session,
+            "cambiar 2 empanadas",
+        )
+
+        self.assertEqual(result["cantidad"], 2)
+        self.assertIsNone(result["cantidad_destino"])
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
     def test_omitted_quantity_returns_none(self, pp_service_cls, catalog_cls):
         db = MagicMock(spec=DatabaseSession)
         conversation_session = MagicMock(spec=ConversationSession)

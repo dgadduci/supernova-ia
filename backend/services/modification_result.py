@@ -25,6 +25,7 @@ class ModificationResult:
     origen_eliminado: bool | None = None
     destino_creado: bool | None = None
     cantidad_actual: int | None = None
+    cantidad_destino_modificada: int | None = None
 
 
 __all__ = ["ModificationResult"]

@@ -20,6 +20,7 @@ def _pending_intent(
     destination_candidate_ids: list[int],
     *,
     cantidad: int | None = None,
+    cantidad_destino: int | None = None,
 ) -> ProcessedIntent:
     resolved_data: dict = {
         "source_candidate_ids": list(source_candidate_ids),
@@ -27,6 +28,8 @@ def _pending_intent(
     }
     if cantidad is not None:
         resolved_data["cantidad"] = cantidad
+    if cantidad_destino is not None:
+        resolved_data["cantidad_destino"] = cantidad_destino
     return ProcessedIntent(
         intent="modificar_producto",
         source_text="x",
@@ -215,6 +218,90 @@ class ResolveProductModificationPreservationTest(unittest.TestCase):
         result = resolve_product_modification(db, session, "la chica", active)
 
         self.assertEqual(result.resolved_data["cantidad"], 3)
+
+    @patch.object(resolver_module, "recognize_quitar_producto")
+    def test_cantidad_destino_preserved_across_source_turns(self, recognizer):
+        db = MagicMock(spec=DatabaseSession)
+        session = MagicMock(spec=ConversationSession)
+        active = _pending_intent(
+            "source_selection", [11, 12], [200], cantidad=2
+        )
+        active.resolved_data["cantidad_destino"] = 1
+
+        recognizer.return_value = {
+            "encontrados": [{"pedido_producto_id": 11}],
+            "encontrados_posibles": [],
+            "encontrados_no_disponibles": [],
+            "no_encontrados": [],
+            "cantidad": None,
+        }
+
+        result = resolve_product_modification(db, session, "la chica", active)
+
+        self.assertEqual(result.resolved_data["cantidad"], 2)
+        self.assertEqual(result.resolved_data["cantidad_destino"], 1)
+
+    @patch.object(resolver_module, "ProductoQueryService")
+    @patch.object(resolver_module, "detectar_productos")
+    def test_cantidad_destino_preserved_across_destination_turns(
+        self, detector, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        session = MagicMock(spec=ConversationSession)
+        active = _pending_intent(
+            "destination_selection", [11], [200, 201], cantidad=2
+        )
+        active.resolved_data["cantidad_destino"] = 1
+
+        catalog_service = MagicMock()
+        catalog_service.list_presentaciones_by_ids.return_value = [
+            {"producto_presentacion_id": 200, "producto_nombre": "A", "presentacion_codigo": "g"},
+            {"producto_presentacion_id": 201, "producto_nombre": "B", "presentacion_codigo": "g"},
+        ]
+        catalog_cls.return_value = catalog_service
+
+        detector.return_value = {
+            "encontrados": [{"producto_presentacion_id": 200}],
+            "encontrados_posibles": [],
+            "encontrados_no_disponibles": [],
+            "no_encontrados": [],
+        }
+
+        result = resolve_product_modification(db, session, "la A", active)
+
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(result.resolved_data["cantidad"], 2)
+        self.assertEqual(result.resolved_data["cantidad_destino"], 1)
+
+    @patch.object(resolver_module, "ProductoQueryService")
+    @patch.object(resolver_module, "detectar_productos")
+    def test_bare_destination_keeps_paired_cantidad_destino(
+        self, detector, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        catalog_service = MagicMock()
+        catalog_service.list_presentaciones_by_ids.return_value = [
+            {"producto_presentacion_id": 101, "producto_nombre": "Mozzarella", "presentacion_codigo": "grande"},
+            {"producto_presentacion_id": 102, "producto_nombre": "Mozzarella", "presentacion_codigo": "chica"},
+        ]
+        catalog_cls.return_value = catalog_service
+
+        active = _pending_intent(
+            "destination_selection", [41], [101, 102], cantidad=2
+        )
+        active.resolved_data["cantidad_destino"] = 1
+
+        result = resolve_product_modification(
+            db, MagicMock(spec=ConversationSession), "chica", active
+        )
+
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(result.resolved_data["cantidad"], 2)
+        self.assertEqual(result.resolved_data["cantidad_destino"], 1)
+        self.assertEqual(
+            result.resolved_data["producto_presentacion_destino_id"], 102
+        )
+        detector.assert_not_called()
 
 
 class ResolveProductModificationBoundariesTest(unittest.TestCase):

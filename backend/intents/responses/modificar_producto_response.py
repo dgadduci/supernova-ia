@@ -8,10 +8,12 @@ in the rendered message.
 Deterministic message matrix:
 - Executed full transfer (omitted quantity): `Cambié <cantidad> <origen_nombre> por <cantidad> <destino_nombre>.`
 - Executed partial explicit-quantity transfer: `Cambié <cantidad> <origen_nombre> por <cantidad> de <destino_nombre>. Quedan <cantidad_origen_restante> <origen_nombre>.`
+- Executed distinct source/destination transfer: `Cambié <cantidad_origen> <origen_nombre> por <cantidad_destino> de <destino_nombre>. Quedan <cantidad_origen_restante> <origen_nombre>.`
 - Executed consolidated: `Cambié <cantidad_modificada> <origen_nombre> por <destino_nombre>. Ahora tenés <cantidad_destino_final> <destino_nombre>.`
 - Unknown destination: `No encontré el producto de reemplazo. Tu pedido no fue modificado.`
 - Unavailable destination: `El producto de reemplazo no está disponible. Tu pedido no fue modificado.`
 - Excess quantity: `Solo tenés <cantidad_actual> <origen_nombre> para cambiar. Tu pedido no fue modificado.`
+- Invalid destination quantity (zero or negative): `La cantidad del producto de reemplazo no es válida. Tu pedido no fue modificado.`
 """
 from sqlalchemy.orm import Session as DatabaseSession
 
@@ -30,6 +32,9 @@ _UNKNOWN_DESTINATION_MESSAGE = (
     "No encontré el producto de reemplazo. Tu pedido no fue modificado."
 )
 _EQUIVALENT_MESSAGE = "Ese producto ya tiene esa presentación en tu pedido."
+_INVALID_DESTINATION_QUANTITY_MESSAGE = (
+    "La cantidad del producto de reemplazo no es válida. Tu pedido no fue modificado."
+)
 _FAILED_MESSAGE = "No pude procesar tu pedido. Intentá de nuevo en un momento."
 
 
@@ -115,6 +120,11 @@ def _render_full_line(intent: ProcessedIntent) -> str:
     """Render a full-line executed swap with the quantity on both sides.
 
     Spec: `Cambié <cantidad_modificada> <origen_nombre> por <cantidad_modificada> <destino_nombre>.`
+
+    Only invoked when the source quantity equals the destination
+    quantity (legacy equal-quantity contract). When the two differ, the
+    distinct partial renderer is used so the customer never sees the
+    source quantity reused as the destination quantity.
     """
     data = intent.resolved_data
     cantidad_modificada = data.get("cantidad_modificada")
@@ -132,6 +142,8 @@ def _render_partial(intent: ProcessedIntent) -> str:
     """Render a partial explicit-quantity transfer.
 
     Spec: `Cambié <cantidad_modificada> <origen_nombre> por <cantidad_modificada> de <destino_nombre>. Quedan <cantidad_origen_restante> <origen_nombre>.`
+
+    Used when both amounts coincide (legacy partial contract).
     """
     data = intent.resolved_data
     cantidad_modificada = data.get("cantidad_modificada")
@@ -150,11 +162,60 @@ def _render_partial(intent: ProcessedIntent) -> str:
     )
 
 
+def _render_distinct(intent: ProcessedIntent) -> str:
+    """Render a distinct source/destination executed swap.
+
+    Spec (partial or full transfer):
+    `Cambié <cantidad_origen> <origen_nombre> por <cantidad_destino> de <destino_nombre>. Quedan <cantidad_origen_restante> <origen_nombre>.`
+
+    Spec (consolidated destination):
+    `Cambié <cantidad_origen> <origen_nombre> por <cantidad_destino> de <destino_nombre>. Ahora tenés <cantidad_destino_final> <destino_nombre>.`
+
+    Invoked when the durable operation decremented source by
+    ``cantidad_modificada`` and created/incremented destination by a
+    different ``cantidad_destino_modificada``. The wording never
+    substitutes the source amount for the destination amount.
+    """
+    data = intent.resolved_data
+    cantidad_modificada = data.get("cantidad_modificada")
+    cantidad_destino_modificada = data.get("cantidad_destino_modificada")
+    cantidad_origen_restante = data.get("cantidad_origen_restante")
+    cantidad_destino_final = data.get("cantidad_destino_final")
+    destino_creado = data.get("destino_creado")
+    if (
+        not isinstance(cantidad_modificada, int)
+        or not isinstance(cantidad_destino_modificada, int)
+        or not isinstance(cantidad_origen_restante, int)
+        or not isinstance(cantidad_destino_final, int)
+    ):
+        return _FAILED_MESSAGE
+    if destino_creado is False:
+        return (
+            f"Cambié {cantidad_modificada} "
+            f"{data.get('producto_origen_nombre', '')} "
+            f"por {cantidad_destino_modificada} de "
+            f"{data.get('producto_destino_nombre', '')}. "
+            f"Ahora tenés {cantidad_destino_final} "
+            f"{data.get('producto_destino_nombre', '')}."
+        )
+    return (
+        f"Cambié {cantidad_modificada} "
+        f"{data.get('producto_origen_nombre', '')} "
+        f"por {cantidad_destino_modificada} de "
+        f"{data.get('producto_destino_nombre', '')}. "
+        f"Quedan {cantidad_origen_restante} "
+        f"{data.get('producto_origen_nombre', '')}."
+    )
+
+
 def _render_consolidated(intent: ProcessedIntent) -> str:
     """Render a consolidated destination increment.
 
-    The existing pre-correction message is preserved; the spec keeps the
-    consolidated invariant unchanged.
+    The pre-correction equal-quantity wording is preserved verbatim:
+    `Cambié <cantidad_modificada> <origen_nombre> por <destino_nombre>. Ahora tenés <cantidad_destino_final> <destino_nombre>.`
+
+    When the durable source/destination quantities differ, the
+    distinct renderer is used so the customer sees both real values.
     """
     data = intent.resolved_data
     cantidad_modificada = data.get("cantidad_modificada")
@@ -254,7 +315,16 @@ def build_modificar_producto_response(
         data = intent.resolved_data
         destino_creado = data.get("destino_creado")
         origen_eliminado = data.get("origen_eliminado")
-        if destino_creado is True and origen_eliminado is True:
+        cantidad_modificada = data.get("cantidad_modificada")
+        cantidad_destino_modificada = data.get("cantidad_destino_modificada")
+        is_distinct = (
+            isinstance(cantidad_modificada, int)
+            and isinstance(cantidad_destino_modificada, int)
+            and cantidad_modificada != cantidad_destino_modificada
+        )
+        if is_distinct:
+            message = _render_distinct(intent)
+        elif destino_creado is True and origen_eliminado is True:
             message = _render_full_line(intent)
         elif destino_creado is False:
             message = _render_consolidated(intent)
@@ -280,6 +350,8 @@ def build_modificar_producto_response(
             message = _render_unavailable(intent)
         elif reason == "equivalent_modification":
             message = _EQUIVALENT_MESSAGE
+        elif reason == "invalid_destination_quantity":
+            message = _INVALID_DESTINATION_QUANTITY_MESSAGE
         else:
             message = _ABSENT_MESSAGE
         return CustomerResponse(
