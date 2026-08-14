@@ -272,3 +272,61 @@ status/error message remains the fallback.
   snapshot loader or the processor;
 - existing Basic authentication, same-origin, exact-target, no-provider and
   transaction-ownership contracts remain unchanged.
+
+## Consistent compact-state amendment (2026-08-14)
+
+### Canonical empty pending state
+
+`clear_pending_context()` delegates to the existing pending-state clear seam,
+which persists `PendingIntents().model_dump(mode="json")`. That canonical
+object is structurally valid and versioned, but semantically has no pending
+work when `parsed.active is None` and `parsed.queue` is empty.
+
+`build_pending_context_debug_view()` SHALL first retain its existing malformed
+shape/Pydantic validation handling. After a successful parse, it SHALL return
+the existing closed empty view when both conditions hold:
+
+```text
+parsed.active is None
+and not parsed.queue
+```
+
+The closed result is `pending_encoding=empty`, active intent/status `none`,
+all counts zero, `schema_version=None`, and the existing consistency function
+therefore reports `none` when context is also `none`. This does not rewrite
+the persisted JSON or change any context lifecycle behavior. A non-empty
+queue still reaches the existing valid/inconsistent projection, and malformed
+input still reaches invalid/inconsistent.
+
+### Compact, scrollable detail layout
+
+- The transcript uses `height: 12rem`, `overflow-y: auto`, wrapping and its
+  existing browser-only append/scroll behavior. It has no content-driven
+  minimum/maximum height range.
+- The verbose warning above the form is removed. A concise escaped text note
+  appears below the transcript/status: `Canal local; no envía a
+  WhatsApp/Twilio.` The title remains “Canal de prueba local”.
+- The execution-state markup groups each closed label/value pair in one row;
+  desktop and narrow layouts keep `nombre: valor` on the same row when space
+  allows. The existing `data-debug-*` value node remains exactly available to
+  the JavaScript refresh and is still updated with `textContent`.
+- The lines table is wrapped in a panel-local scroll container with a bounded
+  vertical viewport and `overflow: auto`. It preserves every line and table
+  cell; the operator scrolls the container instead of losing later rows. This
+  is presentation-only and does not change the order-lines query, pagination
+  or line data.
+
+### Focused tests
+
+- a canonical `PendingIntents` empty model dump with no context projects to
+  `none / empty / none`, zero counts and no schema version;
+- malformed state and a valid state with a queue but no active work preserve
+  their existing invalid/inconsistent and valid/inconsistent outcomes;
+- execution-state labels/values render as compact pairs while retaining every
+  existing `data-debug-*` selector;
+- transcript is exactly 12rem, wraps and scrolls; the prior verbose warning is
+  absent and the short local-only notice is present below the transcript;
+- order lines are inside a bounded scroll container and all rendered rows
+  remain present/escaped;
+- existing local-test refresh, privacy, auth and no-mutation behavior remains
+  covered.

@@ -2266,6 +2266,113 @@ class BuildPendingContextDebugViewTest(unittest.TestCase):
             with self.subTest(field_name=field_name):
                 self.assertNotIn(field_name, PendingContextDebugView.__dataclass_fields__)
 
+    def test_canonical_empty_json_with_no_context_is_empty(self) -> None:
+        """The canonical ``PendingIntents().model_dump(mode="json")``
+        representation (a versioned object with ``active=None`` and
+        an empty ``queue``) MUST be projected as the same closed
+        empty view as a literal ``None``: ``none / empty / none``,
+        zero counts and no schema-version display."""
+        canonical_empty = {
+            "version": 1,
+            "active": None,
+            "queue": [],
+        }
+        view = build_pending_context_debug_view(
+            raw_context_type=None,
+            raw_pending_intents=canonical_empty,
+        )
+        self.assertEqual(view.context_type, "none")
+        self.assertEqual(view.pending_encoding, "empty")
+        self.assertEqual(view.active_intent, "none")
+        self.assertEqual(view.active_status, "none")
+        self.assertEqual(view.candidate_count, 0)
+        self.assertEqual(view.queue_length, 0)
+        self.assertEqual(view.requirements_pending_count, 0)
+        self.assertEqual(view.requirements_completed_count, 0)
+        self.assertIsNone(view.schema_version)
+        self.assertEqual(view.consistency, "none")
+
+    def test_canonical_empty_json_via_model_dump_roundtrip(self) -> None:
+        """Persisting through ``PendingIntents().model_dump(mode="json")``
+        produces the same closed empty view even when read back via
+        the typed view."""
+        from backend.intents.schemas.pending_intents import (
+            PendingIntents,
+        )
+
+        persisted = PendingIntents().model_dump(mode="json")
+        view = build_pending_context_debug_view(
+            raw_context_type=None,
+            raw_pending_intents=persisted,
+        )
+        self.assertEqual(view.pending_encoding, "empty")
+        self.assertEqual(view.consistency, "none")
+        self.assertEqual(view.context_type, "none")
+        self.assertEqual(view.active_intent, "none")
+        self.assertEqual(view.active_status, "none")
+        self.assertEqual(view.candidate_count, 0)
+        self.assertEqual(view.queue_length, 0)
+        self.assertIsNone(view.schema_version)
+
+    def test_canonical_empty_with_supported_context_keeps_context_label(
+        self,
+    ) -> None:
+        """The canonical empty persisted shape collapses the
+        pending encoding to ``empty`` regardless of its stored
+        schema version. The supported context label is preserved
+        and the consistency helper reports ``inconsistent`` because
+        a supported context cannot be paired with an empty pending
+        encoding."""
+        view = build_pending_context_debug_view(
+            raw_context_type="product_selection",
+            raw_pending_intents={
+                "version": 1,
+                "active": None,
+                "queue": [],
+            },
+        )
+        self.assertEqual(view.context_type, "product_selection")
+        self.assertEqual(view.pending_encoding, "empty")
+        self.assertEqual(view.active_intent, "none")
+        self.assertEqual(view.active_status, "none")
+        self.assertEqual(view.candidate_count, 0)
+        self.assertEqual(view.queue_length, 0)
+        self.assertEqual(view.requirements_pending_count, 0)
+        self.assertEqual(view.requirements_completed_count, 0)
+        self.assertIsNone(view.schema_version)
+        self.assertEqual(view.consistency, "inconsistent")
+
+    def test_parsed_active_none_with_non_empty_queue_stays_valid(
+        self,
+    ) -> None:
+        """A parsed state with ``active is None`` but a non-empty
+        queue MUST keep the existing ``valid`` encoding and reach the
+        existing ``inconsistent`` projection — the new empty
+        normalization applies only when both active and queue are
+        empty."""
+        pending = {
+            "version": 1,
+            "active": None,
+            "queue": [
+                {
+                    "intent": "agregar_producto",
+                    "source_text": "x",
+                    "status": "executed",
+                    "handler": "agregar_producto",
+                }
+            ],
+        }
+        view = build_pending_context_debug_view(
+            raw_context_type=None,
+            raw_pending_intents=pending,
+        )
+        self.assertEqual(view.pending_encoding, "valid")
+        self.assertEqual(view.queue_length, 1)
+        self.assertEqual(view.active_intent, "none")
+        self.assertEqual(view.active_status, "none")
+        self.assertEqual(view.candidate_count, 0)
+        self.assertEqual(view.consistency, "inconsistent")
+
 
 class GetDetailPendingDebugRenderingTest(unittest.TestCase):
     """The detail projection exposes a :class:`PendingContextDebugView`

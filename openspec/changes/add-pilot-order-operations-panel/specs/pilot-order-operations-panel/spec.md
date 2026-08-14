@@ -218,3 +218,38 @@ closed snapshot.
   malformed/non-success response
 - **THEN** the browser retains the previously displayed execution-state cells
 - **AND THEN** it shows only the existing generic local-test failure message.
+
+### Requirement: Canonical cleared pending state is displayed as empty
+
+The panel SHALL treat the successfully parsed canonical cleared pending state
+(`active` absent and `queue` empty) as semantic `empty`, even when its stored
+JSON has a valid schema version. With `context_type` absent it SHALL display
+closed values `none / empty / none`, all counts zero and no displayed schema
+version. It SHALL NOT mutate the stored pending JSON or report this canonical
+state as inconsistent.
+
+#### Scenario: Cleared product selection has no false inconsistency
+
+- **WHEN** a successful product selection clears its pending context and the
+  selected Session stores the canonical versioned empty pending object
+- **THEN** the execution-state panel displays context `none`, pending `empty`
+  and consistency `none`
+- **AND THEN** it exposes no pending payload and does not alter the Session.
+
+### Requirement: Diagnostic detail remains compact and scrollable
+
+The local transcript SHALL use a fixed 12rem scroll viewport. The order-lines
+section SHALL render all selected Pedido lines within its own bounded
+scrollable container. Execution-state labels and their closed values SHALL
+render as compact `nombre: valor` pairs while preserving the existing
+`data-debug-*` value selectors. The verbose local-channel warning SHALL be
+removed; a concise notice below the transcript SHALL state that the channel
+does not send through WhatsApp/Twilio.
+
+#### Scenario: Long diagnostic data remains accessible without expanding columns
+
+- **WHEN** a transcript has many turns or a selected Pedido has more lines
+  than fit in its visible section
+- **THEN** each respective section scrolls internally and all turns/lines
+  remain accessible
+- **AND THEN** the panel does not expand those sections with content.

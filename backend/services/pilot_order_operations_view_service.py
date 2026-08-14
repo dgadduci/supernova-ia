@@ -531,6 +531,25 @@ def build_pending_context_debug_view(
             ),
         )
 
+    if parsed.active is None and not parsed.queue:
+        return PendingContextDebugView(
+            context_type=normalized_context,
+            pending_encoding=DEBUG_PENDING_EMPTY,
+            active_intent=DEBUG_ACTIVE_NONE,
+            active_status=DEBUG_ACTIVE_NONE,
+            candidate_count=0,
+            requirements_pending_count=0,
+            requirements_completed_count=0,
+            queue_length=0,
+            schema_version=None,
+            consistency=_consistency_for(
+                normalized_context=normalized_context,
+                pending_encoding=DEBUG_PENDING_EMPTY,
+                active_intent=DEBUG_ACTIVE_NONE,
+                active_status=DEBUG_ACTIVE_NONE,
+            ),
+        )
+
     active_intent_raw = getattr(parsed.active, "intent", None)
     active_status_raw = getattr(parsed.active, "status", None)
     active_intent = _normalize_active_intent(active_intent_raw)

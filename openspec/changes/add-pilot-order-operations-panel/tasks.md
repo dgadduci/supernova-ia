@@ -92,3 +92,13 @@
   boundary regression coverage (including the confirm-order
   ``borrador → ingresado`` regression and the "identity truly gone"
   rejection regression); run and report the amendment validation commands.
+
+## 8. Consistent compact-state amendment
+
+- [x] 8.1 Project the successfully parsed canonical empty pending state as
+  `empty` without changing pending persistence, dispatch or transactions.
+- [x] 8.2 Compact the diagnostic layout: execution-state `nombre: valor`
+  pairs, 12rem scrolling transcript, compact local-only notice below chat,
+  and bounded scrolling order-lines container.
+- [x] 8.3 Add focused projection, layout/selector, scrolling, escaping and
+  regression coverage; run and report the amendment validation commands.

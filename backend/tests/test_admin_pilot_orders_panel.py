@@ -1388,10 +1388,14 @@ class PanelDebugConsoleRenderingTest(unittest.TestCase):
             )
         body = response.text
         self.assertIn(
+            "Canal local; no envía a WhatsApp/Twilio",
+            body,
+        )
+        self.assertNotIn(
             "Canal de prueba local — no WhatsApp / no Twilio",
             body,
         )
-        self.assertIn("Lo único durable", body)
+        self.assertNotIn("Lo único durable", body)
 
     def test_detail_renders_pending_debug_for_valid_state(self) -> None:
         pending = PendingContextDebugView(
@@ -1591,7 +1595,7 @@ class PanelFixedViewportRenderingTest(unittest.TestCase):
         css = response.text
         # The fixed viewport must use one stable height token so the
         # column cannot grow with additional turns.
-        self.assertIn("height: 24rem", css)
+        self.assertIn("height: 12rem", css)
         # The transcript must NOT use a min/max range that could
         # expand with content.
         self.assertNotIn("min-height: 8rem", css)
@@ -2309,6 +2313,266 @@ class PanelExecutionStateDetailCellsTest(unittest.TestCase):
         self.assertIn("execution_state", body_no_css)
         self.assertIn("updateExecutionState", body_no_css)
         self.assertIn("Error del canal local", body_no_css)
+
+
+class PanelCompactStateLayoutTest(unittest.TestCase):
+    """Task 8.2: the execution-state column renders each label and
+    its value as a compact ``nombre: valor`` pair while preserving
+    every existing ``data-debug-*`` value selector."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def test_state_rows_pair_label_and_value(self) -> None:
+        pending = PendingContextDebugView(
+            context_type="product_selection",
+            pending_encoding="valid",
+            active_intent="agregar_producto",
+            active_status="pending_resolution",
+            candidate_count=2,
+            requirements_pending_count=1,
+            requirements_completed_count=1,
+            queue_length=0,
+            schema_version=1,
+            consistency="consistent",
+        )
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail_with_pending_debug(pending_debug=pending),
+                history=_build_history(),
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        body = response.text
+        # The execution-state markup must wrap each label/value in
+        # a row container so the operator sees ``nombre: valor``
+        # together on one logical row.
+        self.assertIn("debug-state-row", body)
+        # Each documented label is emitted with its colon suffix so
+        # the visual pair is explicit.
+        for label in (
+            "Contexto:",
+            "Pending:",
+            "Intent activo:",
+            "Status activo:",
+            "Candidatos:",
+            "Requirements pendientes:",
+            "Requirements completados:",
+            "Cola:",
+            "Versión del pending:",
+            "Consistencia:",
+        ):
+            with self.subTest(label=label):
+                self.assertIn(label, body)
+
+    def test_state_rows_preserve_data_debug_selectors(self) -> None:
+        """The compact rendering keeps every existing
+        ``data-debug-*`` value selector so the local-test refresh
+        JavaScript continues to find the cells it has to update."""
+        pending = PendingContextDebugView(
+            context_type="product_selection",
+            pending_encoding="valid",
+            active_intent="agregar_producto",
+            active_status="pending_resolution",
+            candidate_count=2,
+            requirements_pending_count=1,
+            requirements_completed_count=1,
+            queue_length=0,
+            schema_version=1,
+            consistency="consistent",
+        )
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail_with_pending_debug(pending_debug=pending),
+                history=_build_history(),
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        body = response.text
+        for attr in (
+            "data-debug-context",
+            "data-debug-encoding",
+            "data-debug-active-intent",
+            "data-debug-active-status",
+            "data-debug-candidate-count",
+            "data-debug-requirements-pending",
+            "data-debug-requirements-completed",
+            "data-debug-queue-length",
+            "data-debug-schema-version",
+            "data-debug-consistency",
+        ):
+            with self.subTest(attr=attr):
+                self.assertIn(attr, body)
+
+    def test_state_rows_use_flex_layout_in_css(self) -> None:
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail(),
+                history=_build_history(),
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        css = response.text
+        # The compact rows rely on flex layout so the label and the
+        # value stay on the same baseline even with long counts.
+        self.assertIn("debug-state-row", css)
+        self.assertIn("display: flex", css)
+
+
+class PanelCompactChatLayoutTest(unittest.TestCase):
+    """Task 8.2: the transcript shrinks to a single 12rem scroll
+    viewport, the long warning is removed and a short local-only
+    note sits below the transcript."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def test_transcript_height_is_12rem_not_24rem(self) -> None:
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail(),
+                history=_build_history(),
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        css = response.text
+        # Task 8.2 shrinks the fixed transcript viewport from 24rem
+        # to 12rem. The new value must be present, the old one must
+        # not.
+        self.assertIn("height: 12rem", css)
+        self.assertNotIn("height: 24rem", css)
+
+    def test_long_warning_is_absent_and_short_note_is_present(self) -> None:
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail(),
+                history=_build_history(),
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        body = response.text
+        # The verbose warning is removed entirely.
+        self.assertNotIn(
+            "Canal de prueba local — no WhatsApp / no Twilio",
+            body,
+        )
+        self.assertNotIn("Lo único durable", body)
+        # The short note sits below the transcript/status.
+        self.assertIn(
+            "Canal local; no envía a WhatsApp/Twilio",
+            body,
+        )
+        # It must be visually marked as a separate note so the
+        # operator can still recognise the local-only intent.
+        self.assertIn("debug-channel-note", body)
+
+
+class PanelLinesScrollContainerTest(unittest.TestCase):
+    """Task 8.2: the order-lines table lives inside a bounded
+    scroll container so every line remains accessible without
+    expanding the centre column."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def test_lines_table_is_inside_scroll_container(self) -> None:
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail(),
+                history=_build_history(),
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        body = response.text
+        # The scroll container must wrap the existing table so
+        # every line stays accessible without column expansion.
+        self.assertIn("debug-lines-scroll", body)
+        self.assertIn("<table>", body)
+        self.assertIn("Pan &lt;b&gt;", body)
+
+    def test_lines_scroll_container_css_is_bounded(self) -> None:
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail(),
+                history=_build_history(),
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        css = response.text
+        self.assertIn("debug-lines-scroll", css)
+        self.assertIn("overflow: auto", css)
+        self.assertIn("max-height", css)
 
 
 class PanelLocalTestAuthExactTargetNoProviderRegressionTest(
