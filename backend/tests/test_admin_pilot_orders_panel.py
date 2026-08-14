@@ -15,9 +15,15 @@ rejects ``MagicMock`` as a dependency).
 from __future__ import annotations
 
 import base64
+import json
+import os
+import subprocess
+import tempfile
+import typing
 import unittest
 from datetime import datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -35,6 +41,7 @@ from backend.services.pilot_order_operations_view_service import (
     CommerceSummary,
     DeliveryMethodView,
     OrderDetailView,
+    OrderLineSnapshot,
     OrderLineView,
     OrderListRow,
     OrderListView,
@@ -96,11 +103,13 @@ def _stub_service(
     list_view: OrderListView | None = None,
     detail: OrderDetailView | None = None,
     history: ProviderHistoryView | None = None,
+    order_lines_snapshot: list[OrderLineSnapshot] | None = None,
 ):
     return SimpleNamespace(
         list_orders=MagicMock(return_value=list_view),
         get_detail=MagicMock(return_value=detail),
         get_provider_history=MagicMock(return_value=history),
+        get_order_lines_snapshot=MagicMock(return_value=order_lines_snapshot),
     )
 
 
@@ -2125,7 +2134,7 @@ class PanelExecutionStateResponseTest(unittest.TestCase):
         body = response.json()
         self.assertEqual(
             set(body.keys()),
-            {"responses", "execution_state"},
+            {"responses", "execution_state", "order_lines"},
         )
 
 
@@ -2713,8 +2722,11 @@ class PanelLocalTestAuthExactTargetNoProviderRegressionTest(
         body = response.json()
         body_text = response.text
         self.assertEqual(response.status_code, 200)
-        # The body must contain exactly the two documented keys.
-        self.assertEqual(set(body.keys()), {"responses", "execution_state"})
+        # The body must contain exactly the three documented keys.
+        self.assertEqual(
+            set(body.keys()),
+            {"responses", "execution_state", "order_lines"},
+        )
         for forbidden in (
             "SECRET-TEXT",
             "candidate_ids",
@@ -3288,6 +3300,1106 @@ class PanelLocalTestRouteSrcPrivacyTest(unittest.TestCase):
         for value in forbidden:
             with self.subTest(value=value):
                 self.assertNotIn(value, source)
+
+
+class PanelLocalTestRouteOrderLinesSnapshotTest(unittest.TestCase):
+    """Task 9.1: the successful local-test response includes a typed
+    JSON-safe ``order_lines`` snapshot for the exact selected
+    Pedido. The snapshot is sourced through the existing panel
+    view service so the router never queries the ORM directly."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def _make_session(self) -> MagicMock:
+        exact_session = MagicMock(name="ExactSession")
+        exact_session.id = 21
+        exact_session.id_pedido = 42
+        exact_session.id_comercio = 1
+        exact_session.id_cliente = 31
+        exact_session.estado_session = "activa"
+        exact_session.context_type = None
+        exact_session.pending_intents = None
+        return exact_session
+
+    def _post(self):
+        headers = _basic_auth_header("ignored", CONFIGURED_TOKEN)
+        headers["X-Local-Test-Origin"] = "same-origin"
+        return self.client.post(
+            "/admin/pilot/orders/42/local-test",
+            json={"message": "hola"},
+            headers=headers,
+        )
+
+    def _post_with(self, *, snapshots: list[OrderLineSnapshot]):
+        exact_session = self._make_session()
+        exact_pedido = MagicMock(name="ExactPedido")
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls, patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            from backend.intents.schemas.customer_response import (
+                CustomerResponse,
+            )
+
+            service_cls.return_value = _stub_service(
+                order_lines_snapshot=snapshots,
+            )
+            process_mock.return_value = [
+                CustomerResponse(
+                    message="ok",
+                    intent="saludo",
+                    status="executed",
+                )
+            ]
+            return self._post(), service_cls.return_value, process_mock
+
+    def test_happy_path_returns_order_lines_snapshot(self) -> None:
+        snapshots = [
+            OrderLineSnapshot(
+                id=100,
+                producto_nombre="Pan",
+                presentacion_descripcion="Bolsa x 1kg",
+                cantidad=2,
+                precio_unitario_display="150.00",
+                observaciones="Sin sal",
+            ),
+            OrderLineSnapshot(
+                id=101,
+                producto_nombre="Agua",
+                presentacion_descripcion=None,
+                cantidad=1,
+                precio_unitario_display="0",
+                observaciones=None,
+            ),
+        ]
+        response, service, _process_mock = self._post_with(snapshots=snapshots)
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(
+            set(body.keys()),
+            {"responses", "execution_state", "order_lines"},
+        )
+        self.assertEqual(len(body["order_lines"]), 2)
+        first = body["order_lines"][0]
+        self.assertEqual(
+            set(first.keys()),
+            {
+                "id",
+                "producto_nombre",
+                "presentacion_descripcion",
+                "cantidad",
+                "precio_unitario_display",
+                "observaciones",
+            },
+        )
+        self.assertEqual(first["id"], 100)
+        self.assertEqual(first["producto_nombre"], "Pan")
+        self.assertEqual(first["presentacion_descripcion"], "Bolsa x 1kg")
+        self.assertEqual(first["cantidad"], 2)
+        self.assertEqual(first["precio_unitario_display"], "150.00")
+        self.assertEqual(first["observaciones"], "Sin sal")
+        self.assertIsNone(body["order_lines"][1]["presentacion_descripcion"])
+        self.assertIsNone(body["order_lines"][1]["observaciones"])
+        # The router must source lines via the view service so it
+        # never queries the ORM directly.
+        service.get_order_lines_snapshot.assert_called_once_with(42)
+
+    def test_happy_path_returns_empty_order_lines_when_pedido_has_no_lines(
+        self,
+    ) -> None:
+        response, _service, _process = self._post_with(snapshots=[])
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["order_lines"], [])
+
+    def test_happy_path_serializes_price_as_string(self) -> None:
+        """The router serializes the pre-formatted price string so the
+        wire payload is JSON-safe and never carries a raw Decimal."""
+        snapshots = [
+            OrderLineSnapshot(
+                id=1,
+                producto_nombre="Item",
+                presentacion_descripcion="X",
+                cantidad=1,
+                precio_unitario_display="150.00",
+                observaciones=None,
+            ),
+        ]
+        response, _service, _process = self._post_with(snapshots=snapshots)
+        body = response.json()
+        line = body["order_lines"][0]
+        self.assertIsInstance(line["precio_unitario_display"], str)
+        self.assertEqual(line["precio_unitario_display"], "150.00")
+        # No raw Decimal token leaks anywhere in the JSON payload.
+        self.assertNotIn("Decimal", response.text)
+
+    def test_response_does_not_emit_session_or_pedido_fields_in_order_lines(
+        self,
+    ) -> None:
+        snapshots = [
+            OrderLineSnapshot(
+                id=1,
+                producto_nombre="Item",
+                presentacion_descripcion="X",
+                cantidad=1,
+                precio_unitario_display="150.00",
+                observaciones="<script>",
+            ),
+        ]
+        response, _service, _process = self._post_with(snapshots=snapshots)
+        body_text = response.text
+        # ``order_lines`` must never expose Session/Pedido,
+        # pending, candidate, provider or credential fields. Note
+        # that ``context_type`` IS a documented closed
+        # ``execution_state`` value, so it is allowed in the body
+        # of a successful response — what the assertion forbids is
+        # leaking it through the order-lines array specifically.
+        self.assertNotIn(
+            "id_session", body_text.split('"order_lines"')[1]
+        )
+        self.assertNotIn(
+            "id_pedido", body_text.split('"order_lines"')[1]
+        )
+        self.assertNotIn(
+            "id_comercio", body_text.split('"order_lines"')[1]
+        )
+        self.assertNotIn(
+            "id_cliente", body_text.split('"order_lines"')[1]
+        )
+        self.assertNotIn(
+            "pending_intents", body_text.split('"order_lines"')[1]
+        )
+        self.assertNotIn(
+            "candidate_ids", body_text.split('"order_lines"')[1]
+        )
+        self.assertNotIn(
+            "source_text", body_text.split('"order_lines"')[1]
+        )
+        self.assertNotIn(
+            "identificador_proveedor", body_text.split('"order_lines"')[1]
+        )
+        self.assertNotIn(
+            "API_KEY", body_text.split('"order_lines"')[1]
+        )
+        self.assertNotIn(
+            "OPENAI", body_text.split('"order_lines"')[1]
+        )
+        # The order_lines JSON array only carries the documented
+        # closed field names — no ORM or session attribute leaks.
+        body = response.json()
+        for entry in body["order_lines"]:
+            self.assertEqual(
+                set(entry.keys()),
+                {
+                    "id",
+                    "producto_nombre",
+                    "presentacion_descripcion",
+                    "cantidad",
+                    "precio_unitario_display",
+                    "observaciones",
+                },
+            )
+
+    def test_rejection_does_not_emit_order_lines(self) -> None:
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls, patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=None,
+        ):
+            service_cls.return_value = _stub_service(
+                order_lines_snapshot=[
+                    OrderLineSnapshot(
+                        id=1,
+                        producto_nombre="X",
+                        presentacion_descripcion=None,
+                        cantidad=1,
+                        precio_unitario_display="1",
+                        observaciones=None,
+                    )
+                ],
+            )
+            response = self._post()
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertNotIn("order_lines", body)
+        self.assertNotIn("execution_state", body)
+
+    def test_wrong_origin_does_not_emit_order_lines(self) -> None:
+        headers = _basic_auth_header("ignored", CONFIGURED_TOKEN)
+        with patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock, patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                order_lines_snapshot=[
+                    OrderLineSnapshot(
+                        id=1,
+                        producto_nombre="X",
+                        presentacion_descripcion=None,
+                        cantidad=1,
+                        precio_unitario_display="1",
+                        observaciones=None,
+                    )
+                ],
+            )
+            response = self.client.post(
+                "/admin/pilot/orders/42/local-test",
+                json={"message": "hola"},
+                headers=headers,
+            )
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertNotIn("order_lines", body)
+        process_mock.assert_not_called()
+
+    def test_no_mutation_when_calling_order_lines_snapshot(self) -> None:
+        snapshots = [
+            OrderLineSnapshot(
+                id=1,
+                producto_nombre="X",
+                presentacion_descripcion=None,
+                cantidad=1,
+                precio_unitario_display="1",
+                observaciones=None,
+            ),
+        ]
+        response, _service, _process = self._post_with(snapshots=snapshots)
+        self.assertEqual(response.status_code, 200)
+        self.session.commit.assert_not_called()
+        self.session.rollback.assert_not_called()
+        self.session.flush.assert_not_called()
+        self.session.refresh.assert_not_called()
+        self.session.begin.assert_not_called()
+        self.session.close.assert_not_called()
+
+
+class PanelDetailLinesLayoutOrderTest(unittest.TestCase):
+    """Task 9.2: the scrollable lines section lives immediately below
+    ``<h2>Detalle del pedido</h2>`` and before the comercio/cliente
+    /sesión/pedido metadata sections."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def _render(self, *, lineas):
+        detail = _build_detail()
+        if lineas == "empty":
+            detail = OrderDetailView(
+                pedido=detail.pedido,
+                session=detail.session,
+                client=detail.client,
+                commerce=detail.commerce,
+                direccion_entrega=detail.direccion_entrega,
+                observaciones=detail.observaciones,
+                datetime_entrega_programada=detail.datetime_entrega_programada,
+                datetime_entrega_programada_local=detail.datetime_entrega_programada_local,
+                medio_pago=detail.medio_pago,
+                metodo_entrega=detail.metodo_entrega,
+                lineas=[],
+            )
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=detail,
+                history=_build_history(),
+            )
+            return self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+
+    def test_lines_section_follows_h2_detalle_del_pedido(self) -> None:
+        response = self._render(lineas="populated")
+        self.assertEqual(response.status_code, 200)
+        body = response.text
+        # The H2 heading must come before the Líneas section.
+        h2_index = body.find("<h2>Detalle del pedido</h2>")
+        self.assertNotEqual(h2_index, -1)
+        lines_section_index = body.find("<h3>Líneas</h3>")
+        self.assertNotEqual(lines_section_index, -1)
+        self.assertLess(h2_index, lines_section_index)
+        # The Líneas section must precede the Comercio/Cliente/Sesión/
+        # Pedido metadata sections.
+        comercio_index = body.find("<h3>Comercio</h3>")
+        cliente_index = body.find("<h3>Cliente</h3>")
+        session_index = body.find("<h3>Sesión</h3>")
+        pedido_index = body.find("<h3>Pedido</h3>")
+        for index in (
+            comercio_index,
+            cliente_index,
+            session_index,
+            pedido_index,
+        ):
+            with self.subTest(index=index):
+                self.assertGreater(index, lines_section_index)
+
+    def test_lines_table_has_data_debug_lines_tbody(self) -> None:
+        response = self._render(lineas="populated")
+        body = response.text
+        self.assertIn("data-debug-lines-tbody", body)
+
+    def test_empty_state_has_data_debug_lines_empty(self) -> None:
+        response = self._render(lineas="empty")
+        body = response.text
+        # When no lines exist, the empty-state node must be present
+        # (without ``hidden``) and the scroll container must still
+        # be rendered so the layout never shifts.
+        self.assertIn("data-debug-lines-empty", body)
+        self.assertIn("El pedido no tiene líneas registradas.", body)
+        # The empty-state is visible (no hidden attribute).
+        self.assertRegex(
+            body,
+            r'<div class="empty" data-debug-lines-empty[^>]*>El pedido no tiene líneas registradas\.',
+        )
+
+    def test_lines_with_data_are_present_and_empty_state_hidden(self) -> None:
+        response = self._render(lineas="populated")
+        body = response.text
+        self.assertIn("data-debug-lines-tbody", body)
+        self.assertIn("Pan &lt;b&gt;", body)
+        # The empty-state node must still be present (so the browser
+        # script can toggle it) but hidden when lines exist.
+        self.assertIn("data-debug-lines-empty", body)
+        self.assertRegex(
+            body,
+            r'<div class="empty" data-debug-lines-empty hidden>El pedido no tiene líneas registradas\.',
+        )
+
+
+class PanelLinesRefreshBrowserScriptTest(unittest.TestCase):
+    """Task 9.2: the existing browser script refreshes the
+    scrollable line list in place via text APIs only, never
+    ``innerHTML``, and preserves the existing transcript on a
+    failure."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def _detail_body(self) -> str:
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail(),
+                history=_build_history(),
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 200)
+        return _strip_css(response.text)
+
+    def test_browser_handler_uses_text_apis_only(self) -> None:
+        body = self._detail_body()
+        # The line-refresh handler must rely exclusively on text
+        # APIs and DOM creation helpers.
+        for required in (
+            "createElement",
+            "textContent",
+            "replaceChildren",
+            "data-debug-lines-tbody",
+            "data-debug-lines-empty",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, body)
+        # No HTML interpolation helper anywhere in the script.
+        self.assertNotIn("innerHTML", body)
+        self.assertNotIn("outerHTML", body)
+
+    def test_browser_handler_validates_order_lines_array(self) -> None:
+        body = self._detail_body()
+        # The handler must check ``order_lines`` is an array before
+        # applying any update so a malformed response cannot
+        # overwrite the displayed lines.
+        self.assertIn("order_lines", body)
+        self.assertIn("Array.isArray(result.data.order_lines)", body)
+
+    def test_browser_handler_keeps_transcript_on_failure(self) -> None:
+        body = self._detail_body()
+        # The handler must short-circuit on a non-success, malformed
+        # or non-array ``order_lines`` response. The shared error
+        # branch returns BEFORE any refresh helper is reached.
+        self.assertIn("Error del canal local", body)
+        self.assertIn("Array.isArray(result.data.order_lines)", body)
+        # The handler must return inside the validation block so a
+        # failure never reaches ``updateOrderLines``.
+        self.assertIn("return;", body)
+        # Validate that the validation guard sits before the line
+        # refresh call in the success branch.
+        validation_index = body.find("Array.isArray(result.data.order_lines)")
+        update_index = body.find("updateOrderLines(result.data.order_lines)")
+        self.assertNotEqual(validation_index, -1)
+        self.assertNotEqual(update_index, -1)
+        self.assertLess(validation_index, update_index)
+
+    def test_browser_handler_replaces_rows_on_success(self) -> None:
+        body = self._detail_body()
+        # The success path must call replaceChildren so old rows
+        # are removed before the new ones are inserted.
+        self.assertIn("replaceChildren", body)
+        # The success path must invoke updateOrderLines with the
+        # validated array.
+        self.assertIn("updateOrderLines(result.data.order_lines)", body)
+
+
+_BASE_TEMPLATE_HTML_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "templates"
+    / "admin_pilot_orders"
+    / "base.html"
+)
+
+
+def _resolve_jsdom_require_path():
+    """Locate a ``jsdom`` install for the JSDOM-backed tests.
+
+    The helper probes ``$PANEL_JSDOM_PATH`` first and falls back
+    to the local fixture installed at ``/tmp/jsdom-test`` during
+    development. The probe is deliberately narrow so the tests
+    skip cleanly when the Node.js runtime or ``jsdom`` is not
+    available on the host.
+    """
+    candidates = [
+        os.environ.get("PANEL_JSDOM_PATH"),
+        "/tmp/jsdom-test/node_modules/jsdom",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate, "package.json").exists():
+            return candidate
+    return None
+
+
+def _extract_inline_script(template_html: str) -> str:
+    start = template_html.find("<script>")
+    end = template_html.find("</script>")
+    if start == -1 or end == -1:
+        raise AssertionError(
+            "could not locate the inline <script> tag in base.html"
+        )
+    return template_html[start + len("<script>"):end]
+
+
+def _build_lines_update_js(*, initial_rows_html: str, empty_attr: str, payload) -> str:
+    jsdom_path = _resolve_jsdom_require_path()
+    if jsdom_path is None:
+        raise unittest.SkipTest(
+            "jsdom not available; install via `npm install jsdom` "
+            "and set PANEL_JSDOM_PATH (or use /tmp/jsdom-test) to "
+            "enable the runtime order-lines validation tests."
+        )
+    template = _BASE_TEMPLATE_HTML_PATH.read_text(encoding="utf-8")
+    script = _extract_inline_script(template)
+    jsdom_literal = json.dumps(jsdom_path)
+    payload_literal = json.dumps(payload)
+    return (
+        "const {JSDOM} = require(" + jsdom_literal + ");\n"
+        "const dom = new JSDOM("
+        "`<!DOCTYPE html><html><body>"
+        "<table><tbody data-debug-lines-tbody>"
+        + initial_rows_html.replace("`", "\\`")
+        + "</tbody></table>"
+        "<div class=\\\"empty\\\" data-debug-lines-empty"
+        + empty_attr
+        + ">El pedido no tiene líneas registradas.</div>"
+        "<script>"
+        + script.replace("`", "\\`")
+        + "</script>"
+        "</body></html>`, {runScripts: 'dangerously'});\n"
+        "const w = dom.window;\n"
+        "const tbody = w.document.querySelector('[data-debug-lines-tbody]');\n"
+        "const empty = w.document.querySelector('[data-debug-lines-empty]');\n"
+        "const before = {\n"
+        "  rows: tbody.children.length,\n"
+        "  hidden: empty.hidden\n"
+        "};\n"
+        "const payload = " + payload_literal + ";\n"
+        "const result = w.__panelDebugLines\n"
+        "  ? w.__panelDebugLines.updateOrderLines(payload)\n"
+        "  : null;\n"
+        "const after = {\n"
+        "  rows: tbody.children.length,\n"
+        "  hidden: empty.hidden\n"
+        "};\n"
+        "console.log(JSON.stringify({before: before, after: after, result: result}));\n"
+    )
+
+
+def _run_lines_update_in_jsdom(
+    payload,
+    *,
+    initial_lines: list[dict] | None = None,
+    empty_hidden: bool = True,
+) -> dict:
+    rows_html = ""
+    if initial_lines:
+        rows_html = "".join(
+            "<tr><td>#"
+            + str(int(row["id"]))
+            + "</td><td>"
+            + str(row.get("producto_nombre", ""))
+            + "</td><td></td><td>"
+            + str(row.get("cantidad", ""))
+            + "</td><td>"
+            + str(row.get("precio_unitario_display", ""))
+            + "</td><td></td></tr>"
+            for row in initial_lines
+        )
+    empty_attr = " hidden" if empty_hidden else ""
+    js_source = _build_lines_update_js(
+        initial_rows_html=rows_html,
+        empty_attr=empty_attr,
+        payload=payload,
+    )
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".js", delete=False, encoding="utf-8"
+    ) as handle:
+        handle.write(js_source)
+        script_path = handle.name
+    try:
+        completed = subprocess.run(
+            ["node", script_path],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    finally:
+        Path(script_path).unlink(missing_ok=True)
+    output = completed.stdout.decode("utf-8").strip()
+    if not output:
+        raise AssertionError(
+            "node produced no stdout; stderr was: "
+            + completed.stderr.decode("utf-8")
+        )
+    return json.loads(output.splitlines()[-1])
+
+
+def _build_form_submit_js(*, response_payload, initial_lines, initial_execution_state) -> str:
+    jsdom_path = _resolve_jsdom_require_path()
+    if jsdom_path is None:
+        raise unittest.SkipTest(
+            "jsdom not available; install via `npm install jsdom` "
+            "and set PANEL_JSDOM_PATH (or use /tmp/jsdom-test) to "
+            "enable the runtime order-lines validation tests."
+        )
+    template = _BASE_TEMPLATE_HTML_PATH.read_text(encoding="utf-8")
+    script = _extract_inline_script(template)
+    initial_rows_html = "".join(
+        "<tr><td>#"
+        + str(int(row["id"]))
+        + "</td><td>"
+        + str(row.get("producto_nombre", ""))
+        + "</td></tr>"
+        for row in initial_lines
+    )
+    cell_attr_map = {
+        "context_type": "data-debug-context",
+        "pending_encoding": "data-debug-encoding",
+        "active_intent": "data-debug-active-intent",
+        "active_status": "data-debug-active-status",
+        "candidate_count": "data-debug-candidate-count",
+        "requirements_pending_count": "data-debug-requirements-pending",
+        "requirements_completed_count": "data-debug-requirements-completed",
+        "queue_length": "data-debug-queue-length",
+        "schema_version": "data-debug-schema-version",
+        "consistency": "data-debug-consistency",
+    }
+    execution_state_cells_html = "".join(
+        "<dd "
+        + cell_attr_map[key]
+        + ">"
+        + json.dumps(initial_execution_state[key])[1:-1]
+        + "</dd>"
+        for key in cell_attr_map
+    )
+    jsdom_literal = json.dumps(jsdom_path)
+    response_literal = json.dumps(response_payload)
+    script_literal = json.dumps(script)
+    return (
+        "const {JSDOM} = require(" + jsdom_literal + ");\n"
+        "const initialRowsHtml = " + json.dumps(initial_rows_html) + ";\n"
+        "const executionStateCellsHtml = "
+        + json.dumps(execution_state_cells_html)
+        + ";\n"
+        "const baseScript = " + script_literal + ";\n"
+        "const responsePayload = " + response_literal + ";\n"
+        "function escapeScript(scriptBody) {\n"
+        "  return scriptBody.replace(/<\\/script/gi, '<\\\\/script');\n"
+        "}\n"
+        "const safeBaseScript = escapeScript(baseScript);\n"
+        "const html = [\n"
+        "  '<!DOCTYPE html><html><body>',\n"
+        "  '<form data-debug-form action=\"/test\">',\n"
+        "  '<textarea data-debug-textarea></textarea>',\n"
+        "  '<button data-debug-submit></button>',\n"
+        "  '</form>',\n"
+        "  '<div data-debug-transcript></div>',\n"
+        "  '<p data-debug-status></p>',\n"
+        "  '<table><tbody data-debug-lines-tbody>',\n"
+        "  initialRowsHtml,\n"
+        "  '</tbody></table>',\n"
+        "  '<div class=\"empty\" data-debug-lines-empty hidden>El pedido no tiene líneas registradas.</div>',\n"
+        "  '<dl>',\n"
+        "  executionStateCellsHtml,\n"
+        "  '</dl>',\n"
+        "  '<script>window.fetch = function(url, options) { return Promise.resolve({ ok: true, json: function() { return Promise.resolve(responsePayload); } }); };</script>',\n"
+        "  '<script>',\n"
+        "  safeBaseScript,\n"
+        "  '</script>',\n"
+        "  '</body></html>'\n"
+        "].join('');\n"
+        "const dom = new JSDOM(html, {runScripts: 'dangerously'});\n"
+        "const w = dom.window;\n"
+        "const form = w.document.querySelector('[data-debug-form]');\n"
+        "const textarea = w.document.querySelector('[data-debug-textarea]');\n"
+        "textarea.value = 'turno de prueba';\n"
+        "const submitEvent = new w.Event('submit', {bubbles: true, cancelable: true});\n"
+        "form.dispatchEvent(submitEvent);\n"
+        "setTimeout(function() {\n"
+        "  const tbody = w.document.querySelector('[data-debug-lines-tbody]');\n"
+        "  const empty = w.document.querySelector('[data-debug-lines-empty]');\n"
+        "  const transcript = w.document.querySelector('[data-debug-transcript]');\n"
+        "  const status = w.document.querySelector('[data-debug-status]');\n"
+        "  const executionStateCells = [\n"
+        "    'data-debug-context',\n"
+        "    'data-debug-encoding',\n"
+        "    'data-debug-active-intent',\n"
+        "    'data-debug-active-status',\n"
+        "    'data-debug-candidate-count',\n"
+        "    'data-debug-requirements-pending',\n"
+        "    'data-debug-requirements-completed',\n"
+        "    'data-debug-queue-length',\n"
+        "    'data-debug-schema-version',\n"
+        "    'data-debug-consistency'\n"
+        "  ];\n"
+        "  const executionStateAfter = {};\n"
+        "  executionStateCells.forEach(function(attr) {\n"
+        "    const node = w.document.querySelector('[' + attr + ']');\n"
+        "    executionStateAfter[attr] = node ? node.textContent : null;\n"
+        "  });\n"
+        "  const result = {\n"
+        "    tbodyRows: tbody.children.length,\n"
+        "    tbodyFirstCell: tbody.children.length > 0 ? tbody.children[0].textContent : null,\n"
+        "    emptyHidden: empty.hidden,\n"
+        "    transcript: transcript.textContent,\n"
+        "    status: status.textContent,\n"
+        "    executionState: executionStateAfter\n"
+        "  };\n"
+        "  console.log(JSON.stringify(result));\n"
+        "}, 100);\n"
+    )
+
+
+def _run_form_submit_in_jsdom(
+    *, response_payload, initial_lines, initial_execution_state
+) -> dict:
+    js_source = _build_form_submit_js(
+        response_payload=response_payload,
+        initial_lines=initial_lines,
+        initial_execution_state=initial_execution_state,
+    )
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".js", delete=False, encoding="utf-8"
+    ) as handle:
+        handle.write(js_source)
+        script_path = handle.name
+    try:
+        completed = subprocess.run(
+            ["node", script_path],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    finally:
+        Path(script_path).unlink(missing_ok=True)
+    output = completed.stdout.decode("utf-8").strip()
+    if not output:
+        raise AssertionError(
+            "node produced no stdout; stderr was: "
+            + completed.stderr.decode("utf-8")
+        )
+    return json.loads(output.splitlines()[-1])
+
+
+class PanelLocalTestRouteOrderLinesStrictValidationTest(unittest.TestCase):
+    """The browser-side order-line refresh must validate the
+    snapshot strictly before any DOM mutation. A single invalid
+    entry invalidates the entire snapshot; ``replaceChildren`` is
+    only invoked after the validated count is known."""
+
+    _INITIAL_LINES: typing.ClassVar[list[dict]] = [
+        {
+            "id": 100,
+            "producto_nombre": "Initial line",
+            "cantidad": 1,
+            "precio_unitario_display": "150.00",
+        }
+    ]
+    _INITIAL_EXECUTION_STATE: typing.ClassVar[dict] = {
+        "context_type": "old-context",
+        "pending_encoding": "old-pending",
+        "active_intent": "old-intent",
+        "active_status": "old-status",
+        "candidate_count": 99,
+        "requirements_pending_count": 99,
+        "requirements_completed_count": 99,
+        "queue_length": 99,
+        "schema_version": 1,
+        "consistency": "consistent",
+    }
+
+    def test_payload_with_null_preserves_existing_lines(self) -> None:
+        result = _run_lines_update_in_jsdom(
+            payload=[None],
+            initial_lines=self._INITIAL_LINES,
+            empty_hidden=True,
+        )
+        self.assertEqual(result["before"], {"rows": 1, "hidden": True})
+        self.assertEqual(result["after"], {"rows": 1, "hidden": True})
+        self.assertEqual(result["result"], False)
+
+    def test_payload_with_empty_object_preserves_existing_lines(self) -> None:
+        result = _run_lines_update_in_jsdom(
+            payload=[{}],
+            initial_lines=self._INITIAL_LINES,
+            empty_hidden=True,
+        )
+        self.assertEqual(result["before"], {"rows": 1, "hidden": True})
+        self.assertEqual(result["after"], {"rows": 1, "hidden": True})
+        self.assertEqual(result["result"], False)
+
+    def test_payload_with_invalid_entry_does_not_update_partially(self) -> None:
+        result = _run_lines_update_in_jsdom(
+            payload=[
+                {
+                    "id": 1,
+                    "producto_nombre": "valid",
+                    "presentacion_descripcion": None,
+                    "cantidad": 1,
+                    "precio_unitario_display": "150.00",
+                    "observaciones": None,
+                },
+                None,
+            ],
+            initial_lines=self._INITIAL_LINES,
+            empty_hidden=True,
+        )
+        self.assertEqual(result["before"], {"rows": 1, "hidden": True})
+        self.assertEqual(result["after"], {"rows": 1, "hidden": True})
+        self.assertEqual(result["result"], False)
+
+    def test_empty_valid_payload_clears_rows_and_shows_empty_state(self) -> None:
+        result = _run_lines_update_in_jsdom(
+            payload=[],
+            initial_lines=self._INITIAL_LINES,
+            empty_hidden=True,
+        )
+        self.assertEqual(result["before"], {"rows": 1, "hidden": True})
+        self.assertEqual(result["after"], {"rows": 0, "hidden": False})
+        self.assertEqual(result["result"], True)
+
+    def test_fully_valid_payload_replaces_all_rows(self) -> None:
+        payload = [
+            {
+                "id": 7,
+                "producto_nombre": "Replacement A",
+                "presentacion_descripcion": "Bag",
+                "cantidad": 2,
+                "precio_unitario_display": "150.00",
+                "observaciones": None,
+            },
+            {
+                "id": 8,
+                "producto_nombre": "Replacement B",
+                "presentacion_descripcion": None,
+                "cantidad": 3,
+                "precio_unitario_display": "9.99",
+                "observaciones": "Sin sal",
+            },
+        ]
+        result = _run_lines_update_in_jsdom(
+            payload=payload,
+            initial_lines=self._INITIAL_LINES,
+            empty_hidden=True,
+        )
+        self.assertEqual(result["before"], {"rows": 1, "hidden": True})
+        self.assertEqual(result["after"], {"rows": 2, "hidden": True})
+        self.assertEqual(result["result"], True)
+
+    def test_payload_with_invalid_types_rejects_snapshot(self) -> None:
+        # Wrong type for ``id`` (string instead of integer).
+        result = _run_lines_update_in_jsdom(
+            payload=[
+                {
+                    "id": "1",
+                    "producto_nombre": "wrong-id-type",
+                    "presentacion_descripcion": None,
+                    "cantidad": 1,
+                    "precio_unitario_display": "150.00",
+                    "observaciones": None,
+                }
+            ],
+            initial_lines=self._INITIAL_LINES,
+            empty_hidden=True,
+        )
+        self.assertEqual(result["after"], {"rows": 1, "hidden": True})
+        self.assertEqual(result["result"], False)
+
+    def test_payload_with_non_array_input_rejects_snapshot(self) -> None:
+        for payload in (None, "lines", 42, {"lines": []}):
+            with self.subTest(payload=payload):
+                result = _run_lines_update_in_jsdom(
+                    payload=payload,
+                    initial_lines=self._INITIAL_LINES,
+                    empty_hidden=True,
+                )
+                self.assertEqual(result["after"], {"rows": 1, "hidden": True})
+                self.assertEqual(result["result"], False)
+
+    def test_payload_with_zero_or_negative_id_rejects_snapshot(self) -> None:
+        for bad_id in (0, -1):
+            with self.subTest(bad_id=bad_id):
+                payload = [
+                    {
+                        "id": bad_id,
+                        "producto_nombre": "wrong-id",
+                        "presentacion_descripcion": None,
+                        "cantidad": 1,
+                        "precio_unitario_display": "150.00",
+                        "observaciones": None,
+                    }
+                ]
+                result = _run_lines_update_in_jsdom(
+                    payload=payload,
+                    initial_lines=self._INITIAL_LINES,
+                    empty_hidden=True,
+                )
+                self.assertEqual(result["after"], {"rows": 1, "hidden": True})
+                self.assertEqual(result["result"], False)
+
+    def test_payload_with_missing_field_rejects_snapshot(self) -> None:
+        payload = [
+            {
+                "id": 1,
+                "producto_nombre": "missing-observaciones",
+                "presentacion_descripcion": None,
+                "cantidad": 1,
+                "precio_unitario_display": "150.00",
+            }
+        ]
+        result = _run_lines_update_in_jsdom(
+            payload=payload,
+            initial_lines=self._INITIAL_LINES,
+            empty_hidden=True,
+        )
+        self.assertEqual(result["after"], {"rows": 1, "hidden": True})
+        self.assertEqual(result["result"], False)
+
+
+class PanelLocalTestRouteOrderLinesFormRejectionTest(unittest.TestCase):
+    """Task 9 review fix: a malformed ``order_lines`` snapshot
+    triggers the documented generic rejection branch. The browser
+    keeps the previously rendered lines, the previously rendered
+    execution state and the in-memory transcript. The script
+    never builds HTML through ``innerHTML`` / ``outerHTML``."""
+
+    _INITIAL_LINES: typing.ClassVar[list[dict]] = [
+        {
+            "id": 100,
+            "producto_nombre": "Initial line",
+            "cantidad": 1,
+            "precio_unitario_display": "150.00",
+        }
+    ]
+    _INITIAL_EXECUTION_STATE: typing.ClassVar[dict] = {
+        "context_type": "old-context",
+        "pending_encoding": "old-pending",
+        "active_intent": "old-intent",
+        "active_status": "old-status",
+        "candidate_count": 99,
+        "requirements_pending_count": 99,
+        "requirements_completed_count": 99,
+        "queue_length": 99,
+        "schema_version": 1,
+        "consistency": "consistent",
+    }
+    _VALID_RESPONSE: typing.ClassVar[dict] = {
+        "responses": [{"message": "ignored"}],
+        "execution_state": {
+            "context_type": "new-context",
+            "pending_encoding": "new-pending",
+            "active_intent": "new-intent",
+            "active_status": "new-status",
+            "candidate_count": 0,
+            "requirements_pending_count": 0,
+            "requirements_completed_count": 0,
+            "queue_length": 0,
+            "schema_version": None,
+            "consistency": "none",
+        },
+        "order_lines": [
+            {
+                "id": 999,
+                "producto_nombre": "Should not be applied",
+                "presentacion_descripcion": None,
+                "cantidad": 1,
+                "precio_unitario_display": "150.00",
+                "observaciones": None,
+            }
+        ],
+    }
+
+    def _malformed_response(self, *, order_lines):
+        payload = dict(self._VALID_RESPONSE)
+        payload["order_lines"] = order_lines
+        return payload
+
+    def _assert_preserved(self, result) -> None:
+        self.assertEqual(result["tbodyRows"], 1)
+        self.assertEqual(result["emptyHidden"], True)
+        self.assertIn("#100", result["tbodyFirstCell"])
+        self.assertIn(
+            "El canal local rechazó el mensaje", result["transcript"]
+        )
+        self.assertIn(
+            "Error del canal local", result["status"]
+        )
+        self.assertEqual(
+            result["executionState"]["data-debug-context"], "old-context"
+        )
+        self.assertEqual(
+            result["executionState"]["data-debug-encoding"], "old-pending"
+        )
+        self.assertEqual(
+            result["executionState"]["data-debug-active-intent"], "old-intent"
+        )
+        self.assertEqual(
+            result["executionState"]["data-debug-consistency"], "consistent"
+        )
+
+    def test_malformed_response_preserves_lines_and_execution_state(self) -> None:
+        for malformed in (
+            [None],
+            [{}],
+            [
+                {
+                    "id": 1,
+                    "producto_nombre": "valid",
+                    "presentacion_descripcion": None,
+                    "cantidad": 1,
+                    "precio_unitario_display": "150.00",
+                    "observaciones": None,
+                },
+                {"id": 2},
+            ],
+        ):
+            with self.subTest(payload=malformed):
+                result = _run_form_submit_in_jsdom(
+                    response_payload=self._malformed_response(
+                        order_lines=malformed
+                    ),
+                    initial_lines=self._INITIAL_LINES,
+                    initial_execution_state=self._INITIAL_EXECUTION_STATE,
+                )
+                self._assert_preserved(result)
+
+    def test_browser_script_does_not_use_innerHTML_or_outerHTML(self) -> None:
+        template = _BASE_TEMPLATE_HTML_PATH.read_text(encoding="utf-8")
+        script = _extract_inline_script(template)
+        self.assertNotIn("innerHTML", script)
+        self.assertNotIn("outerHTML", script)
+
+    def test_browser_script_uses_safe_dom_apis(self) -> None:
+        template = _BASE_TEMPLATE_HTML_PATH.read_text(encoding="utf-8")
+        script = _extract_inline_script(template)
+        for required in (
+            "createElement",
+            "textContent",
+            "replaceChildren",
+            "isValidLineEntry",
+            "validateOrderLines",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, script)
+
+    def test_form_handler_validates_before_state_update(self) -> None:
+        template = _BASE_TEMPLATE_HTML_PATH.read_text(encoding="utf-8")
+        script = _extract_inline_script(template)
+        # ``validateOrderLines`` must be invoked inside the
+        # payload validation guard, before any state mutation.
+        validation_index = script.find("validateOrderLines(result.data.order_lines)")
+        execution_index = script.find("updateExecutionState(result.data.execution_state)")
+        order_lines_index = script.find("updateOrderLines(result.data.order_lines)")
+        self.assertNotEqual(validation_index, -1)
+        self.assertNotEqual(execution_index, -1)
+        self.assertNotEqual(order_lines_index, -1)
+        self.assertLess(validation_index, execution_index)
+        self.assertLess(validation_index, order_lines_index)
+        self.assertLess(execution_index, order_lines_index)
+        # The guard must return on a malformed snapshot so neither
+        # the lines nor the execution state are overwritten.
+        guard_block = script[
+            validation_index : script.find("return;", validation_index) + len("return;")
+        ]
+        self.assertIn("appendLine(\"error\"", guard_block)
+        self.assertIn("Error del canal local", guard_block)
 
 
 if __name__ == "__main__":

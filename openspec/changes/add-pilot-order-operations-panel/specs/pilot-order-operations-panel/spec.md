@@ -253,3 +253,33 @@ does not send through WhatsApp/Twilio.
 - **THEN** each respective section scrolls internally and all turns/lines
   remain accessible
 - **AND THEN** the panel does not expand those sections with content.
+
+### Requirement: Successful local turns refresh exact order lines
+
+For a successful local-test turn, the existing response SHALL include a typed,
+JSON-safe `order_lines` snapshot for the same exact selected Pedido. It SHALL
+contain only line id, product name, optional presentation description,
+quantity, unit-price display value and optional line observation. The browser
+SHALL replace the existing scrollable line-list contents in place using text
+APIs, without a page reload or transcript loss. It SHALL NOT expose ORM,
+Session/Pedido, pending, provider, diagnostic or credential data.
+
+#### Scenario: Added product appears without manual reload
+
+- **WHEN** a valid local-test turn adds a product line to an initially empty
+  selected draft
+- **THEN** the response returns that exact line in `order_lines`
+- **AND THEN** the detail page replaces its empty-line message with the
+  scrollable list row without a page reload.
+
+### Requirement: Order lines lead the detail column
+
+The scrollable order-lines list SHALL appear immediately below the “Detalle del
+pedido” heading and before commerce, client, session and Pedido metadata. It
+SHALL retain all rows in its bounded scroll container.
+
+#### Scenario: Several lines remain visible at the top of detail
+
+- **WHEN** the selected Pedido has several product lines
+- **THEN** the operator finds their scrollable list at the start of the detail
+  column and can access every row by scrolling that list.

@@ -102,3 +102,14 @@
   and bounded scrolling order-lines container.
 - [x] 8.3 Add focused projection, layout/selector, scrolling, escaping and
   regression coverage; run and report the amendment validation commands.
+
+## 9. Local order-lines refresh amendment
+
+- [x] 9.1 Add a typed JSON-safe exact-Pedido order-lines snapshot to successful
+  local-test responses through the existing panel read projection.
+- [x] 9.2 Move the scrollable lines list beneath “Detalle del pedido” and
+  refresh it in place with text-only DOM APIs while preserving transcript and
+  failure behavior.
+- [x] 9.3 Add focused projection, exact-target/privacy, browser-refresh,
+  empty/multiple-line, layout-order, scroll and no-mutation regression
+  coverage; run and report amendment validation.

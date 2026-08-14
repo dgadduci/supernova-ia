@@ -38,6 +38,37 @@
     <h2>Detalle del pedido</h2>
 
     <section class="panel-section">
+      <h3>Líneas</h3>
+      <div class="debug-lines-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Línea</th>
+              <th>Producto</th>
+              <th>Presentación</th>
+              <th>Cantidad</th>
+              <th>Precio unitario</th>
+              <th>Observación</th>
+            </tr>
+          </thead>
+          <tbody data-debug-lines-tbody>
+            {% for line in detail.lineas %}
+            <tr>
+              <td>#{{ line.id }}</td>
+              <td>{{ line.producto_nombre }}</td>
+              <td>{% if line.presentacion_descripcion %}{{ line.presentacion_descripcion }}{% else %}<span class="muted">—</span>{% endif %}</td>
+              <td>{{ line.cantidad }}</td>
+              <td>{{ line.precio_unitario }}</td>
+              <td>{% if line.observaciones %}{{ line.observaciones }}{% else %}<span class="muted">—</span>{% endif %}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="empty" data-debug-lines-empty{% if detail.lineas %} hidden{% endif %}>El pedido no tiene líneas registradas.</div>
+    </section>
+
+    <section class="panel-section">
       <h3>Comercio</h3>
       <dl>
         <dt>ID</dt><dd>#{{ detail.commerce.id }}</dd>
@@ -93,40 +124,6 @@
         <dt>Observación general</dt>
         <dd>{% if detail.observaciones %}{{ detail.observaciones }}{% else %}<span class="muted">—</span>{% endif %}</dd>
       </dl>
-    </section>
-
-    <section class="panel-section">
-      <h3>Líneas</h3>
-      {% if detail.lineas %}
-      <div class="debug-lines-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Línea</th>
-              <th>Producto</th>
-              <th>Presentación</th>
-              <th>Cantidad</th>
-              <th>Precio unitario</th>
-              <th>Observación</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for line in detail.lineas %}
-            <tr>
-              <td>#{{ line.id }}</td>
-              <td>{{ line.producto_nombre }}</td>
-              <td>{% if line.presentacion_descripcion %}{{ line.presentacion_descripcion }}{% else %}<span class="muted">—</span>{% endif %}</td>
-              <td>{{ line.cantidad }}</td>
-              <td>{{ line.precio_unitario }}</td>
-              <td>{% if line.observaciones %}{{ line.observaciones }}{% else %}<span class="muted">—</span>{% endif %}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      {% else %}
-      <div class="empty">El pedido no tiene líneas registradas.</div>
-      {% endif %}
     </section>
 
     <section class="panel-section">

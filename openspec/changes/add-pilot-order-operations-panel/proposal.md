@@ -370,3 +370,70 @@ git diff --check
 The amendment is source-only and reversible by restoring the prior view
 projection and template CSS/markup. No production-message gate resumes and no
 OpenSpec is archived as a consequence.
+
+## Local order-lines refresh amendment (2026-08-14)
+
+The local-test chat commits ordinary product additions correctly, but the
+detail page currently renders its order lines only at initial page load. Its
+post-turn browser code refreshes the safe execution state only. Consequently,
+an initially empty draft continues to say that it has no lines until the
+operator manually reloads the page, even though the exact Pedido now contains
+the added line.
+
+### Objective and scope
+
+- For every successful local-test turn, return a typed, JSON-safe snapshot of
+  the current lines for the same exact selected Pedido together with the
+  existing mapped customer responses and closed execution state.
+- Update the existing detail page's line list in place from that snapshot,
+  using DOM creation/text APIs only. Do not reload the page or discard the
+  browser-lifetime chat transcript.
+- Move the existing scrollable lines list to the beginning of the central
+  detail column, immediately below “Detalle del pedido”. Its current bounded
+  scrolling behavior remains, so later rows stay accessible.
+
+### Shared boundary, privacy, transaction ownership and fallback
+
+The existing pre-turn and post-turn exact-target safeguards remain unchanged.
+The order-line snapshot is read only after a successful existing transactional
+message turn and is scoped strictly to the exact requested `pedido_id`; it
+must not search by client, commerce, session or product and must not use a
+successor Pedido. The router does not query ORM models directly: it reuses a
+narrow typed projection from the existing panel view service.
+
+Each line exposes only the fields already visible to the authenticated detail
+operator: line id, product name, presentation description or absence,
+quantity, unit-price display value and line observation or absence. The
+response SHALL be JSON-safe and explicit; it SHALL NOT serialize ORM objects,
+Session/Pedido fields, pending JSON, source text, candidate IDs, diagnostics,
+settings, credentials or provider data. The browser inserts every line value
+with `textContent`, never HTML interpolation.
+
+If a local-test request is rejected, malformed, or technically fails, the
+browser retains its current lines and transcript. No provider/outbox/worker or
+Twilio behavior changes, and no durable chat/line cache is created.
+
+### Non-goals
+
+No order-line business operation, product recognition, pending-context
+lifecycle, response mapper, generic incoming endpoint, new router endpoint,
+pagination, migration, reset/cancel/close/create-session action, provider
+flow or OpenSpec production gate changes. This amendment does not correct the
+separate `quitar_producto` size-only selection defect.
+
+### Expected files and focused validation
+
+Expected implementation is limited to the existing panel router/view service,
+base/detail templates, their focused tests and this change's `tasks.md`.
+
+```text
+PYTHONPATH=. venv/bin/python -m pytest backend/tests/test_pilot_order_operations_view_service.py backend/tests/test_admin_pilot_orders_panel.py -q
+PYTHONPATH=. venv/bin/python -m ruff check backend/routers/admin_pilot_orders.py backend/services/pilot_order_operations_view_service.py backend/tests/test_pilot_order_operations_view_service.py backend/tests/test_admin_pilot_orders_panel.py
+PYTHONPATH=. venv/bin/python -m compileall -q backend/routers/admin_pilot_orders.py backend/services/pilot_order_operations_view_service.py
+openspec validate add-pilot-order-operations-panel --strict
+git diff --check
+```
+
+This source-only amendment is reversible by reverting the typed snapshot and
+DOM update. It neither creates nor changes an order line beyond the normal
+business mutation that the already-approved local message pipeline performs.

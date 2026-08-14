@@ -200,6 +200,58 @@ class OrderLineView:
 
 
 @dataclass(frozen=True)
+class OrderLineSnapshot:
+    """JSON-safe typed projection of one order line.
+
+    The dataclass is the single source of truth for the
+    :class:`~backend.routers.admin_pilot_orders.LocalTestResponse`
+    ``order_lines`` member. It only carries the fields already
+    visible to the authenticated detail operator:
+
+    * ``id``: positive integer line id;
+    * ``producto_nombre``: product name string;
+    * ``presentacion_descripcion``: optional presentation description
+      or ``None`` when absent;
+    * ``cantidad``: positive integer quantity;
+    * ``precio_unitario_display``: decimal-stable display string
+      built from the stored :class:`decimal.Decimal` value. The
+      raw :class:`decimal.Decimal` is never exposed through the
+      JSON payload so the route cannot accidentally serialize a
+      non-JSON-safe value;
+    * ``observaciones``: optional line observation or ``None``.
+
+    The dataclass intentionally exposes no ORM object, no
+    Session/Pedido metadata, no pending JSON, no resolved values,
+    no candidate identifiers, no queue payloads, no diagnostic,
+    no exception detail, no environment / settings values, no
+    tokens, no secrets and no provider data.
+    """
+
+    id: int
+    producto_nombre: str
+    presentacion_descripcion: str | None
+    cantidad: int
+    precio_unitario_display: str
+    observaciones: str | None
+
+
+def format_order_line_price(precio_unitario: Decimal) -> str:
+    """Return a JSON-safe display string for a stored
+    :class:`decimal.Decimal` unit price.
+
+    The helper preserves the stored decimal value exactly through
+    :class:`decimal.Decimal`'s canonical ``str()`` representation
+    so a value stored as ``Decimal('150.00')`` keeps the trailing
+    zeros in the wire payload (matching what the existing template
+    renders today via ``{{ line.precio_unitario }}``).
+
+    The helper never inspects the database, the configuration or
+    any external service and is pure.
+    """
+    return str(precio_unitario)
+
+
+@dataclass(frozen=True)
 class PaymentMethodView:
     id: int
     descripcion: str
@@ -966,6 +1018,45 @@ class PilotOrderOperationsViewService:
             pending_debug=pending_debug,
         )
 
+    def get_order_lines_snapshot(
+        self,
+        pedido_id: int,
+    ) -> list[OrderLineSnapshot]:
+        """Return the typed JSON-safe line snapshot for one ``pedido_id``.
+
+        The helper is the only source of ``order_lines`` data for the
+        panel-local test response. It reuses
+        :meth:`_list_lineas` so the join shape, ordering and
+        presentation resolution are identical to the existing detail
+        view; the only difference is that the ``Decimal`` unit price
+        is projected through :func:`format_order_line_price` so the
+        wire payload never carries a non-JSON-safe value.
+
+        The helper is read-only: it does not commit, rollback,
+        flush, refresh, begin or close the request session and it
+        never mutates any row. It never broadens the search by
+        session, cliente, comercio or product; the query is
+        scoped strictly by ``pedido_id``. The helper is safe to
+        call after a successful business turn because the existing
+        ``process_incoming_message_with_responses`` call has
+        already mutated the pedido through its own transaction.
+        """
+
+        views = self._list_lineas(pedido_id)
+        return [
+            OrderLineSnapshot(
+                id=view.id,
+                producto_nombre=view.producto_nombre,
+                presentacion_descripcion=view.presentacion_descripcion,
+                cantidad=view.cantidad,
+                precio_unitario_display=format_order_line_price(
+                    view.precio_unitario
+                ),
+                observaciones=view.observaciones,
+            )
+            for view in views
+        ]
+
     def get_provider_history(
         self,
         *,
@@ -1264,6 +1355,7 @@ __all__ = [
     "ListFilters",
     "LocalDateTimeView",
     "OrderDetailView",
+    "OrderLineSnapshot",
     "OrderLineView",
     "OrderListRow",
     "OrderListView",
@@ -1280,6 +1372,7 @@ __all__ = [
     "build_pending_context_debug_view",
     "format_local_datetime",
     "format_local_datetime_optional",
+    "format_order_line_price",
     "parse_comercio_id",
     "parse_list_filters",
     "parse_pedido_id",

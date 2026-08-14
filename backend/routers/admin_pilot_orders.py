@@ -65,6 +65,7 @@ from backend.services.pilot_order_operations_view_service import (
     InvalidListFilter,
     InvalidPedidoId,
     ListFilters,
+    OrderLineSnapshot,
     PendingContextDebugView,
     PilotOrderOperationsViewService,
     build_pending_context_debug_view,
@@ -289,21 +290,49 @@ class LocalTestExecutionState(BaseModel):
     consistency: str
 
 
+class LocalTestOrderLine(BaseModel):
+    """JSON-safe typed order-line snapshot for the exact selected
+    Pedido.
+
+    The schema mirrors :class:`OrderLineSnapshot` and is built from
+    the documented closed fields only. ``precio_unitario_display``
+    is a pre-formatted display string (built from the stored
+    :class:`decimal.Decimal` value through
+    :func:`format_order_line_price`) so the response is JSON-safe
+    without exposing a raw ``Decimal``. ``extra='forbid'`` rejects
+    any future regression that tries to leak ORM, Session, Pedido,
+    pending, provider, diagnostic or credential data.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    producto_nombre: str
+    presentacion_descripcion: str | None
+    cantidad: int
+    precio_unitario_display: str
+    observaciones: str | None
+
+
 class LocalTestResponse(BaseModel):
     """Successful local-test response payload.
 
     The payload is built explicitly so the route cannot accidentally
     serialize the raw Session, Pedido or ``pending_intents``.
     ``responses`` carries the mapped customer turns; ``execution_state``
-    carries the closed snapshot for the existing state cells. The
-    schema rejects any extra member so a future regression that
-    starts leaking raw fields would fail at runtime.
+    carries the closed snapshot for the existing state cells;
+    ``order_lines`` carries the typed, JSON-safe line snapshot for
+    the exact selected Pedido so the browser can refresh the
+    centre-column lines list in place. The schema rejects any
+    extra member so a future regression that starts leaking raw
+    fields would fail at runtime.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     responses: list[dict[str, str]]
     execution_state: LocalTestExecutionState
+    order_lines: list[LocalTestOrderLine]
 
 
 def _serialize_execution_state(
@@ -451,6 +480,7 @@ def local_test_message(
     pedido_id: Annotated[str, Path()],
     payload: LocalTestRequest,
     db: Annotated[Session, Depends(get_session)],
+    service: Annotated[PilotOrderOperationsViewService, Depends(_service)],
     origin_header: Annotated[
         str | None, Header(alias=LOCAL_TEST_ORIGIN_HEADER)
     ] = None,
@@ -511,6 +541,10 @@ def local_test_message(
         raw_pending_intents=refreshed_session.pending_intents,
     )
 
+    order_lines_snapshot: list[OrderLineSnapshot] = service.get_order_lines_snapshot(
+        parsed_id
+    )
+
     response_payload = LocalTestResponse(
         responses=[
             {
@@ -521,6 +555,17 @@ def local_test_message(
             for response in responses
         ],
         execution_state=_serialize_execution_state(execution_state),
+        order_lines=[
+            LocalTestOrderLine(
+                id=snapshot.id,
+                producto_nombre=snapshot.producto_nombre,
+                presentacion_descripcion=snapshot.presentacion_descripcion,
+                cantidad=snapshot.cantidad,
+                precio_unitario_display=snapshot.precio_unitario_display,
+                observaciones=snapshot.observaciones,
+            )
+            for snapshot in order_lines_snapshot
+        ],
     )
     return JSONResponse(
         status_code=200,
@@ -569,6 +614,7 @@ __all__ = [
     "LOCAL_TEST_ORIGIN_VALUE",
     "_ESTADO_VALUES",
     "LocalTestExecutionState",
+    "LocalTestOrderLine",
     "LocalTestRequest",
     "LocalTestResponse",
     "_build_list_url",
