@@ -327,5 +327,486 @@ class RecognizeModificarProductoBoundariesTest(unittest.TestCase):
         )
 
 
+class RecognizeModificarProductoHybridProjectionTest(unittest.TestCase):
+    """The hybrid authoritative recognizer emits recognized presentation
+    IDs but never the order-line primary key. The recognizer must
+    recover ``pedido_producto_id`` exclusively from the source catalog
+    it already built for the active draft Pedido, without widening
+    candidates or trusting values the recognizer might have carried
+    in.
+    """
+
+    @staticmethod
+    def _make_pedido_producto(
+        *, line_id: int, presentation_id: int, nombre: str = "Pizza"
+    ):
+        pp = MagicMock(id=line_id)
+        pp.producto_presentacion.producto.nombre = nombre
+        pp.producto_presentacion.presentacion.codigo = "chica"
+        pp.producto_presentacion.id_producto = 1
+        pp.producto_presentacion.id_presentacion = 1
+        pp.producto_presentacion.producto.id_categoria_producto = 1
+        pp.producto_presentacion.producto.activo = True
+        pp.producto_presentacion.producto.disponible = True
+        pp.producto_presentacion.presentacion.activo = True
+        pp.producto_presentacion.activo = True
+        pp.id_producto_presentacion = presentation_id
+        pp.cantidad = 1
+        return pp
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_hybrid_unique_source_restores_line_id_from_catalog(
+        self, pp_service_cls, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp = self._make_pedido_producto(
+            line_id=41, presentation_id=101, nombre="Pizza Napolitana"
+        )
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = [pp]
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        def _detector_side_effect(message, catalog, **kwargs):
+            if not catalog:
+                return {
+                    "encontrados": [],
+                    "encontrados_posibles": [],
+                    "encontrados_no_disponibles": [],
+                    "no_encontrados": [],
+                }
+            return {
+                "encontrados": [
+                    {
+                        "producto_presentacion_id": 101,
+                        "producto_nombre": "Pizza Napolitana",
+                        "cantidad": 2,
+                        "texto_origen": message,
+                    }
+                ],
+                "encontrados_posibles": [],
+                "encontrados_no_disponibles": [],
+                "no_encontrados": [],
+            }
+
+        with patch.object(
+            recognizer_module,
+            "detectar_productos",
+            side_effect=_detector_side_effect,
+        ):
+            result = recognize_modificar_producto(
+                db, conversation_session, "cambiar 2 napolitanas por 2 muzza"
+            )
+
+        self.assertEqual(result["source_candidate_ids"], [41])
+        self.assertEqual(result["source_pp_id"], 41)
+        self.assertEqual(result["destination_candidate_ids"], [])
+        self.assertIsNone(result["destination_pp_id"])
+        self.assertEqual(result["cantidad"], 2)
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_hybrid_ambiguous_source_restricts_to_own_lines(
+        self, pp_service_cls, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp_a = self._make_pedido_producto(
+            line_id=41, presentation_id=101, nombre="Pizza Mozzarella"
+        )
+        pp_b = self._make_pedido_producto(
+            line_id=42, presentation_id=102, nombre="Pizza Napolitana"
+        )
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = [pp_a, pp_b]
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        def _detector_side_effect(message, catalog, **kwargs):
+            if not catalog:
+                return {
+                    "encontrados": [],
+                    "encontrados_posibles": [],
+                    "encontrados_no_disponibles": [],
+                    "no_encontrados": [],
+                }
+            return {
+                "encontrados": [],
+                "encontrados_posibles": [
+                    {
+                        "texto_origen": message,
+                        "productos": [
+                            {
+                                "producto_presentacion_id": 101,
+                                "producto_nombre": "Pizza Mozzarella",
+                                "texto_origen": message,
+                            },
+                            {
+                                "producto_presentacion_id": 102,
+                                "producto_nombre": "Pizza Napolitana",
+                                "texto_origen": message,
+                            },
+                        ],
+                    }
+                ],
+                "encontrados_no_disponibles": [],
+                "no_encontrados": [],
+            }
+
+        with patch.object(
+            recognizer_module,
+            "detectar_productos",
+            side_effect=_detector_side_effect,
+        ):
+            result = recognize_modificar_producto(
+                db, conversation_session, "cambiar pizza por napolitana"
+            )
+
+        self.assertEqual(set(result["source_candidate_ids"]), {41, 42})
+        self.assertIsNone(result["source_pp_id"])
+        self.assertEqual(result["destination_candidate_ids"], [])
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_hybrid_unmapped_source_does_not_contribute(
+        self, pp_service_cls, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp = self._make_pedido_producto(
+            line_id=41, presentation_id=101, nombre="Pizza Mozzarella"
+        )
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = [pp]
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        def _detector_side_effect(message, catalog, **kwargs):
+            if not catalog:
+                return {
+                    "encontrados": [],
+                    "encontrados_posibles": [],
+                    "encontrados_no_disponibles": [],
+                    "no_encontrados": [],
+                }
+            return {
+                "encontrados": [
+                    {
+                        "producto_presentacion_id": 999,
+                        "producto_nombre": "Pizza Foranea",
+                        "cantidad": 1,
+                        "texto_origen": message,
+                    }
+                ],
+                "encontrados_posibles": [],
+                "encontrados_no_disponibles": [],
+                "no_encontrados": [],
+            }
+
+        with patch.object(
+            recognizer_module,
+            "detectar_productos",
+            side_effect=_detector_side_effect,
+        ):
+            result = recognize_modificar_producto(
+                db, conversation_session, "cambiar la foranea por muzza"
+            )
+
+        self.assertEqual(result["source_candidate_ids"], [])
+        self.assertEqual(result["destination_candidate_ids"], [])
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_hybrid_carries_wrong_line_id_is_overwritten(
+        self, pp_service_cls, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp = self._make_pedido_producto(
+            line_id=41, presentation_id=101, nombre="Pizza Napolitana"
+        )
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = [pp]
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        def _detector_side_effect(message, catalog, **kwargs):
+            if not catalog:
+                return {
+                    "encontrados": [],
+                    "encontrados_posibles": [],
+                    "encontrados_no_disponibles": [],
+                    "no_encontrados": [],
+                }
+            return {
+                "encontrados": [
+                    {
+                        "producto_presentacion_id": 101,
+                        "pedido_producto_id": 999,
+                        "producto_nombre": "Pizza Napolitana",
+                        "cantidad": 2,
+                        "texto_origen": message,
+                    }
+                ],
+                "encontrados_posibles": [],
+                "encontrados_no_disponibles": [],
+                "no_encontrados": [],
+            }
+
+        with patch.object(
+            recognizer_module,
+            "detectar_productos",
+            side_effect=_detector_side_effect,
+        ):
+            result = recognize_modificar_producto(
+                db, conversation_session, "cambiar 2 napolitanas por 2 muzza"
+            )
+
+        self.assertEqual(result["source_candidate_ids"], [41])
+        self.assertEqual(result["source_pp_id"], 41)
+        self.assertNotIn(999, result["source_candidate_ids"])
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_hybrid_category_source_group_preserves_shape(
+        self, pp_service_cls, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp = self._make_pedido_producto(
+            line_id=41, presentation_id=101, nombre="Pizza Mozzarella"
+        )
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = [pp]
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        def _detector_side_effect(message, catalog, **kwargs):
+            if not catalog:
+                return {
+                    "encontrados": [],
+                    "encontrados_posibles": [],
+                    "encontrados_no_disponibles": [],
+                    "no_encontrados": [],
+                }
+            return {
+                "encontrados": [],
+                "encontrados_posibles": [
+                    {
+                        "kind": "category",
+                        "categoria_nombre": "Pizzas",
+                        "texto_origen": message,
+                    }
+                ],
+                "encontrados_no_disponibles": [],
+                "no_encontrados": [],
+            }
+
+        with patch.object(
+            recognizer_module,
+            "detectar_productos",
+            side_effect=_detector_side_effect,
+        ):
+            result = recognize_modificar_producto(
+                db, conversation_session, "cambiar la pizza por napolitana"
+            )
+
+        self.assertEqual(result["source_candidate_ids"], [])
+        self.assertEqual(result["destination_candidate_ids"], [])
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_hybrid_malformed_source_does_not_contribute(
+        self, pp_service_cls, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp = self._make_pedido_producto(
+            line_id=41, presentation_id=101, nombre="Pizza Napolitana"
+        )
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = [pp]
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = []
+        catalog_cls.return_value = catalog_service
+
+        def _detector_side_effect(message, catalog, **kwargs):
+            if not catalog:
+                return {
+                    "encontrados": [],
+                    "encontrados_posibles": [],
+                    "encontrados_no_disponibles": [],
+                    "no_encontrados": [],
+                }
+            return {
+                "encontrados": [
+                    {
+                        "producto_presentacion_id": "no-es-int",
+                        "producto_nombre": "Pizza Rara",
+                        "cantidad": 1,
+                        "texto_origen": message,
+                    },
+                    {
+                        "producto_nombre": "Sin presentacion",
+                        "cantidad": 1,
+                        "texto_origen": message,
+                    },
+                ],
+                "encontrados_posibles": [
+                    {
+                        "texto_origen": message,
+                        "productos": [
+                            {
+                                "producto_presentacion_id": True,
+                                "producto_nombre": "Bool id",
+                                "texto_origen": message,
+                            }
+                        ],
+                    }
+                ],
+                "encontrados_no_disponibles": [],
+                "no_encontrados": [],
+            }
+
+        with patch.object(
+            recognizer_module,
+            "detectar_productos",
+            side_effect=_detector_side_effect,
+        ):
+            result = recognize_modificar_producto(
+                db, conversation_session, "cambiar algo por otra cosa"
+            )
+
+        self.assertEqual(result["source_candidate_ids"], [])
+        self.assertEqual(result["destination_candidate_ids"], [])
+
+    @patch.object(recognizer_module, "ProductoQueryService")
+    @patch.object(recognizer_module, "PedidoProductoService")
+    def test_hybrid_source_destination_separation_under_hybrid(
+        self, pp_service_cls, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        conversation_session = MagicMock(spec=ConversationSession)
+        conversation_session.id_pedido = 7
+        conversation_session.id_comercio = 1
+
+        pp = self._make_pedido_producto(
+            line_id=41, presentation_id=101, nombre="Pizza Napolitana"
+        )
+        pp_service = MagicMock()
+        pp_service.list_by_pedido.return_value = [pp]
+        pp_service_cls.return_value = pp_service
+
+        catalog_service = MagicMock()
+        catalog_service.list_recognizer_catalog.return_value = [
+            {
+                "producto_presentacion_id": 200,
+                "producto_activo": True,
+                "presentacion_activo": True,
+                "activo": True,
+                "disponible": True,
+            }
+        ]
+        catalog_cls.return_value = catalog_service
+
+        def _detector_side_effect(message, catalog, **kwargs):
+            catalog_ids = {
+                int(entry["producto_presentacion_id"])
+                for entry in catalog
+                if entry.get("producto_presentacion_id") is not None
+            }
+            if 200 in catalog_ids:
+                return {
+                    "encontrados": [
+                        {
+                            "producto_presentacion_id": 200,
+                            "producto_nombre": "Pizza Mozzarella",
+                            "cantidad": 1,
+                            "texto_origen": message,
+                        }
+                    ],
+                    "encontrados_posibles": [],
+                    "encontrados_no_disponibles": [],
+                    "no_encontrados": [],
+                }
+            if 101 in catalog_ids:
+                return {
+                    "encontrados": [
+                        {
+                            "producto_presentacion_id": 101,
+                            "producto_nombre": "Pizza Napolitana",
+                            "cantidad": 2,
+                            "texto_origen": message,
+                        }
+                    ],
+                    "encontrados_posibles": [],
+                    "encontrados_no_disponibles": [],
+                    "no_encontrados": [],
+                }
+            return {
+                "encontrados": [],
+                "encontrados_posibles": [],
+                "encontrados_no_disponibles": [],
+                "no_encontrados": [],
+            }
+
+        with patch.object(
+            recognizer_module,
+            "detectar_productos",
+            side_effect=_detector_side_effect,
+        ):
+            result = recognize_modificar_producto(
+                db, conversation_session, "cambiar 2 napolitanas por muzza"
+            )
+
+        self.assertEqual(result["source_candidate_ids"], [41])
+        self.assertEqual(result["source_pp_id"], 41)
+        self.assertEqual(result["destination_candidate_ids"], [200])
+        self.assertEqual(result["destination_pp_id"], 200)
+        self.assertEqual(
+            set(result["source_candidate_ids"]).intersection(
+                result["destination_candidate_ids"]
+            ),
+            set(),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

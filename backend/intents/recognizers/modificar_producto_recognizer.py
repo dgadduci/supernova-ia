@@ -107,6 +107,98 @@ def _extract_quantity(message: str) -> int | None:
     return None
 
 
+def _build_source_line_identity_map(source_catalog: list[dict]) -> dict[int, int]:
+    """Return ``{producto_presentacion_id: pedido_producto_id}`` for the
+    current source catalog.
+
+    The map is built exclusively from the catalog rows the recognizer
+    already loaded via ``PedidoProductoService.list_by_pedido(...)`` and
+    passed to the shared recognizer. Rows missing a valid integer
+    ``producto_presentacion_id`` or ``pedido_producto_id`` are ignored.
+    When multiple catalog rows share a presentation id the first
+    encounter wins so the map stays deterministic.
+    """
+    identity: dict[int, int] = {}
+    for row in source_catalog:
+        presentation_id = row.get("producto_presentacion_id")
+        line_id = row.get("pedido_producto_id")
+        if presentation_id is None or line_id is None:
+            continue
+        try:
+            pid_int = int(presentation_id)
+            line_int = int(line_id)
+        except (TypeError, ValueError):
+            continue
+        identity.setdefault(pid_int, line_int)
+    return identity
+
+
+def _project_source_line_identity(
+    recognized: dict, source_catalog: list[dict]
+) -> None:
+    """Decorate ``recognized`` with the current own ``pedido_producto_id``.
+
+    The hybrid authoritative recognizer returns entries that carry only
+    a ``producto_presentacion_id``; it never carries the order-line
+    primary key, which is meaningful only to a Pedido-scoped caller.
+    This projection recovers that key by looking the recognized
+    presentation id up in the already-built source catalog and writes
+    it onto the entry, replacing any value the recognizer may have
+    returned.
+
+    Decorated entries:
+
+    - ``encontrados``: every entry with an integer presentation id that
+      resolves to an own catalog row gets the matching
+      ``pedido_producto_id``; entries without a valid integer
+      presentation id, foreign to the current source catalog, or
+      malformed contribute no candidate and have any carried
+      ``pedido_producto_id`` cleared.
+    - ``encontrados_posibles``: groups whose ``kind == "category"`` keep
+      their existing shape untouched. Non-category groups have every
+      ``productos`` entry decorated with the same rule.
+
+    The projection never widens the candidate set, never queries
+    another catalog, never reloads history, never trusts a
+    ``pedido_producto_id`` carried by the recognizer unless it matches
+    its own presentation id in the current source catalog, and never
+    mutates anything outside ``recognized``.
+    """
+    identity = _build_source_line_identity_map(source_catalog)
+    for entry in recognized.get("encontrados") or []:
+        _apply_identity_to_entry(entry, identity)
+    for group in recognized.get("encontrados_posibles") or []:
+        if isinstance(group, dict) and group.get("kind") == "category":
+            continue
+        for product in group.get("productos") or []:
+            _apply_identity_to_entry(product, identity)
+
+
+def _apply_identity_to_entry(entry: dict, identity: dict[int, int]) -> None:
+    """Decorate a single ``encontrados`` or ``productos`` entry.
+
+    The entry gets the matching ``pedido_producto_id`` from
+    ``identity`` when its presentation id resolves to an own catalog
+    row. Any ``pedido_producto_id`` the entry already carries is
+    cleared when the presentation id is missing, non-integer, or
+    foreign to the current source catalog.
+    """
+    presentation_id = entry.get("producto_presentacion_id")
+    pid_int: int | None = None
+    if presentation_id is not None:
+        if isinstance(presentation_id, bool):
+            pid_int = None
+        else:
+            try:
+                pid_int = int(presentation_id)
+            except (TypeError, ValueError):
+                pid_int = None
+    if pid_int is not None and pid_int in identity:
+        entry["pedido_producto_id"] = identity[pid_int]
+    elif "pedido_producto_id" in entry:
+        del entry["pedido_producto_id"]
+
+
 def _flatten_pedido_producto_ids(recognized: dict) -> list[int]:
     ids: list[int] = []
     for entry in recognized.get("encontrados") or []:
@@ -209,6 +301,7 @@ def recognize_modificar_producto(
                     },
                 ),
             )
+            _project_source_line_identity(source_detected, source_catalog)
             source_candidate_ids = sorted(set(_flatten_pedido_producto_ids(source_detected)))
             if len(source_candidate_ids) == 1:
                 source_pp_id = source_candidate_ids[0]
