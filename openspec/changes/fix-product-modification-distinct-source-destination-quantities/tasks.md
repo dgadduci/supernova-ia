@@ -45,9 +45,9 @@
 
 ## 4. Pilot gate
 
-- [ ] 4.1 After approved deploy, in a clean local pilot draft execute
+- [x] 4.1 After approved deploy, in a clean local pilot draft execute
   `cambiar dos napolitanas grandes por una pizza de mozzarella`, select
   `chica` if prompted, and verify source -2 / destination +1, response,
   lines, and cleared context/pending.
-- [ ] 4.2 Re-run one explicit equal-quantity and one omitted-quantity
+- [x] 4.2 Re-run one explicit equal-quantity and one omitted-quantity
   modification regression; consider archive only after user approval.
