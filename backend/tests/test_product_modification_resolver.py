@@ -240,5 +240,360 @@ class ResolveProductModificationBoundariesTest(unittest.TestCase):
         )
 
 
+class _TwoDestinationCatalogFixture:
+    def __init__(self) -> None:
+        self.rows = [
+            {
+                "producto_presentacion_id": 101,
+                "producto_nombre": "Mozzarella",
+                "presentacion_codigo": "grande",
+            },
+            {
+                "producto_presentacion_id": 102,
+                "producto_nombre": "Mozzarella",
+                "presentacion_codigo": "chica",
+            },
+        ]
+
+    def install(self, catalog_cls: MagicMock) -> None:
+        catalog_service = MagicMock()
+        catalog_service.list_presentaciones_by_ids.return_value = list(self.rows)
+        catalog_cls.return_value = catalog_service
+
+
+class ResolveProductModificationBareDestinationSelectionTest(
+    unittest.TestCase
+):
+    """Bare presentation refinement for ``destination_selection``."""
+
+    def _session(self) -> MagicMock:
+        return MagicMock(spec=ConversationSession)
+
+    def _active(self, *, cantidad: int | None = None) -> ProcessedIntent:
+        return _pending_intent(
+            "destination_selection",
+            [41],
+            [101, 102],
+            cantidad=cantidad,
+        )
+
+    def _catalog(
+        self,
+        *,
+        chica_id: int = 102,
+        codes: tuple[tuple[int, str], ...] = (
+            (101, "grande"),
+            (102, "chica"),
+        ),
+    ) -> list[dict]:
+        rows: list[dict] = []
+        for pp_id, code in codes:
+            rows.append(
+                {
+                    "producto_presentacion_id": pp_id,
+                    "producto_nombre": "Mozzarella",
+                    "presentacion_codigo": code,
+                }
+            )
+        return rows
+
+    @patch.object(resolver_module, "ProductoQueryService")
+    @patch.object(resolver_module, "detectar_productos")
+    def test_chica_bare_match_returns_ready_with_unique_destination(
+        self, detector, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        catalog_service = MagicMock()
+        catalog_service.list_presentaciones_by_ids.return_value = self._catalog()
+        catalog_cls.return_value = catalog_service
+
+        result = resolve_product_modification(
+            db, self._session(), "chica", self._active()
+        )
+
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(result.stage, None)
+        self.assertEqual(
+            result.resolved_data["pedido_producto_origen_id"], 41
+        )
+        self.assertEqual(
+            result.resolved_data["producto_presentacion_destino_id"], 102
+        )
+        self.assertEqual(
+            result.resolved_data["source_candidate_ids"], [41]
+        )
+        self.assertEqual(
+            result.resolved_data["destination_candidate_ids"], [102]
+        )
+        detector.assert_not_called()
+
+    @patch.object(resolver_module, "ProductoQueryService")
+    @patch.object(resolver_module, "detectar_productos")
+    def test_case_variation_uppercase_still_matches(
+        self, detector, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        catalog_service = MagicMock()
+        catalog_service.list_presentaciones_by_ids.return_value = self._catalog()
+        catalog_cls.return_value = catalog_service
+
+        result = resolve_product_modification(
+            db, self._session(), "CHICA", self._active()
+        )
+
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(
+            result.resolved_data["producto_presentacion_destino_id"], 102
+        )
+        detector.assert_not_called()
+
+    @patch.object(resolver_module, "ProductoQueryService")
+    @patch.object(resolver_module, "detectar_productos")
+    def test_article_la_chica_returns_unique_match(
+        self, detector, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        catalog_service = MagicMock()
+        catalog_service.list_presentaciones_by_ids.return_value = self._catalog()
+        catalog_cls.return_value = catalog_service
+
+        result = resolve_product_modification(
+            db, self._session(), "la chica", self._active()
+        )
+
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(
+            result.resolved_data["producto_presentacion_destino_id"], 102
+        )
+        detector.assert_not_called()
+
+    @patch.object(resolver_module, "ProductoQueryService")
+    @patch.object(resolver_module, "detectar_productos")
+    def test_article_un_grande_returns_unique_match(
+        self, detector, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        catalog_service = MagicMock()
+        catalog_service.list_presentaciones_by_ids.return_value = self._catalog()
+        catalog_cls.return_value = catalog_service
+
+        result = resolve_product_modification(
+            db, self._session(), "un grande", self._active()
+        )
+
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(
+            result.resolved_data["producto_presentacion_destino_id"], 101
+        )
+        detector.assert_not_called()
+
+    @patch.object(resolver_module, "ProductoQueryService")
+    @patch.object(resolver_module, "detectar_productos")
+    def test_source_candidate_and_cantidad_preserved(
+        self, detector, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        catalog_service = MagicMock()
+        catalog_service.list_presentaciones_by_ids.return_value = self._catalog()
+        catalog_cls.return_value = catalog_service
+
+        active = self._active(cantidad=2)
+        active.resolved_data["pedido_producto_origen_id"] = 41
+        active.resolved_data["legacy_marker"] = "kept"
+
+        result = resolve_product_modification(
+            db, self._session(), "chica", active
+        )
+
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(
+            result.resolved_data["pedido_producto_origen_id"], 41
+        )
+        self.assertEqual(result.resolved_data["cantidad"], 2)
+        self.assertEqual(
+            result.resolved_data["legacy_marker"], "kept"
+        )
+        detector.assert_not_called()
+
+    @patch.object(resolver_module, "ProductoQueryService")
+    @patch.object(resolver_module, "detectar_productos")
+    def test_zero_match_falls_through_to_recognizer(
+        self, detector, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        catalog_service = MagicMock()
+        catalog_service.list_presentaciones_by_ids.return_value = self._catalog()
+        catalog_cls.return_value = catalog_service
+
+        detector.return_value = {
+            "encontrados": [],
+            "encontrados_posibles": [],
+            "encontrados_no_disponibles": [],
+            "no_encontrados": [],
+        }
+
+        result = resolve_product_modification(
+            db, self._session(), "mediana", self._active()
+        )
+
+        detector.assert_called_once()
+        self.assertEqual(result.status, "pending_resolution")
+        self.assertEqual(
+            result.resolved_data["destination_candidate_ids"], [101, 102]
+        )
+
+    @patch.object(resolver_module, "ProductoQueryService")
+    @patch.object(resolver_module, "detectar_productos")
+    def test_multiple_match_falls_through_to_recognizer(
+        self, detector, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        active = _pending_intent(
+            "destination_selection", [41], [101, 200], cantidad=1
+        )
+        catalog_service = MagicMock()
+        catalog_service.list_presentaciones_by_ids.return_value = [
+            {
+                "producto_presentacion_id": 101,
+                "producto_nombre": "A",
+                "presentacion_codigo": "chica",
+            },
+            {
+                "producto_presentacion_id": 200,
+                "producto_nombre": "B",
+                "presentacion_codigo": "chica",
+            },
+        ]
+        catalog_cls.return_value = catalog_service
+
+        detector.return_value = {
+            "encontrados": [{"producto_presentacion_id": 101}],
+            "encontrados_posibles": [],
+            "encontrados_no_disponibles": [],
+            "no_encontrados": [],
+        }
+
+        result = resolve_product_modification(
+            db, self._session(), "chica", active
+        )
+
+        detector.assert_called_once()
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(
+            result.resolved_data["producto_presentacion_destino_id"], 101
+        )
+        self.assertNotEqual(
+            result.resolved_data["producto_presentacion_destino_id"], 200
+        )
+
+    @patch.object(resolver_module, "ProductoQueryService")
+    @patch.object(resolver_module, "detectar_productos")
+    def test_multi_token_reply_falls_through_to_recognizer(
+        self, detector, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        catalog_service = MagicMock()
+        catalog_service.list_presentaciones_by_ids.return_value = self._catalog()
+        catalog_cls.return_value = catalog_service
+
+        detector.return_value = {
+            "encontrados": [{"producto_presentacion_id": 102}],
+            "encontrados_posibles": [],
+            "encontrados_no_disponibles": [],
+            "no_encontrados": [],
+        }
+
+        result = resolve_product_modification(
+            db, self._session(), "la pizza chica", self._active()
+        )
+
+        detector.assert_called_once()
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(
+            result.resolved_data["producto_presentacion_destino_id"], 102
+        )
+
+    @patch.object(resolver_module, "ProductoQueryService")
+    @patch.object(resolver_module, "detectar_productos")
+    def test_full_mozzarella_chica_falls_through_to_recognizer(
+        self, detector, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        catalog_service = MagicMock()
+        catalog_service.list_presentaciones_by_ids.return_value = self._catalog()
+        catalog_cls.return_value = catalog_service
+
+        detector.return_value = {
+            "encontrados": [{"producto_presentacion_id": 102}],
+            "encontrados_posibles": [],
+            "encontrados_no_disponibles": [],
+            "no_encontrados": [],
+        }
+
+        result = resolve_product_modification(
+            db, self._session(), "mozzarella chica", self._active()
+        )
+
+        detector.assert_called_once()
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(
+            result.resolved_data["producto_presentacion_destino_id"], 102
+        )
+
+    @patch.object(resolver_module, "ProductoQueryService")
+    @patch.object(resolver_module, "detectar_productos")
+    def test_bare_match_does_not_widen_destination_candidates(
+        self, detector, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        catalog_service = MagicMock()
+        catalog_service.list_presentaciones_by_ids.return_value = self._catalog()
+        catalog_cls.return_value = catalog_service
+
+        result = resolve_product_modification(
+            db, self._session(), "chica", self._active()
+        )
+
+        self.assertEqual(
+            result.resolved_data["destination_candidate_ids"], [102]
+        )
+        self.assertNotIn(999, result.resolved_data["destination_candidate_ids"])
+
+    @patch.object(resolver_module, "ProductoQueryService")
+    @patch.object(resolver_module, "detectar_productos")
+    def test_bare_match_does_not_invoke_transaction_controls(
+        self, detector, catalog_cls
+    ):
+        db = MagicMock(spec=DatabaseSession)
+        catalog_service = MagicMock()
+        catalog_service.list_presentaciones_by_ids.return_value = self._catalog()
+        catalog_cls.return_value = catalog_service
+
+        for forbidden in (
+            "commit",
+            "rollback",
+            "flush",
+            "refresh",
+            "begin",
+            "begin_nested",
+            "close",
+        ):
+            setattr(db, forbidden, MagicMock())
+
+        result = resolve_product_modification(
+            db, self._session(), "la chica", self._active(cantidad=2)
+        )
+
+        self.assertEqual(result.status, "ready")
+        db.commit.assert_not_called()
+        db.rollback.assert_not_called()
+        db.flush.assert_not_called()
+        db.refresh.assert_not_called()
+        db.begin.assert_not_called()
+        db.begin_nested.assert_not_called()
+        db.close.assert_not_called()
+        detector.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

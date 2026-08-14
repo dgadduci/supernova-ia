@@ -10,6 +10,7 @@ The resolver preserves the already-resolved source ID, the optional
 turns. When both domains are unique, returns `ready` so the existing
 ready-execution path dispatches the modificar handler.
 """
+import re
 from typing import cast
 
 from sqlalchemy.orm import Session as DatabaseSession
@@ -104,6 +105,63 @@ def _build_requirements(
             value=cantidad,
         ),
     ]
+
+
+_BARE_PRESENTATION_CODES: frozenset[str] = frozenset({"chica", "grande"})
+_BARE_PRESENTATION_ARTICLES: frozenset[str] = frozenset(
+    {"la", "el", "una", "un", "las", "los"}
+)
+
+
+def _normalize_bare_message(message: str) -> list[str]:
+    cleaned = re.sub(r"\s+", " ", (message or "").lower()).strip()
+    if not cleaned:
+        return []
+    return cleaned.split(" ")
+
+
+def _match_bare_destination_presentation(
+    message: str, catalog: list[dict]
+) -> list[int]:
+    """Match a normalized bare presentation reply against the restricted catalog.
+
+    Accepts a single token equal to ``chica`` or ``grande``, or two tokens
+    where the first is one of ``la``, ``el``, ``una``, ``un``, ``las``,
+    ``los`` and the second is ``chica`` or ``grande``. Every other shape
+    yields an empty match so the caller falls through to the existing
+    recognizer path. The match only inspects ``presentacion_codigo`` of
+    the already restricted catalog rows and returns the matching
+    ``producto_presentacion_id`` values without any LLM, hybrid, vector
+    or fuzzy fallback.
+    """
+    tokens = _normalize_bare_message(message)
+    if not tokens:
+        return []
+    code: str | None = None
+    if len(tokens) == 1:
+        if tokens[0] in _BARE_PRESENTATION_CODES:
+            code = tokens[0]
+    elif len(tokens) == 2:
+        article, second = tokens
+        if article in _BARE_PRESENTATION_ARTICLES and second in _BARE_PRESENTATION_CODES:
+            code = second
+    if code is None:
+        return []
+
+    matches: list[int] = []
+    for row in catalog:
+        presentacion_codigo = row.get("presentacion_codigo")
+        if not isinstance(presentacion_codigo, str):
+            continue
+        if presentacion_codigo.strip().lower() != code:
+            continue
+        pp_id = row.get("producto_presentacion_id")
+        if pp_id is None:
+            continue
+        if int(pp_id) in matches:
+            continue
+        matches.append(int(pp_id))
+    return matches
 
 
 def _build_pending_intent(
@@ -226,6 +284,25 @@ def _resolve_destination_selection(
     )
     if not catalog:
         return active_intent.model_copy(update={"status": "rejected"})
+
+    bare_matches = _match_bare_destination_presentation(message, catalog)
+    if len(bare_matches) == 1:
+        dest_id = bare_matches[0]
+        new_resolved_data = dict(resolved_data)
+        source_id = (
+            source_candidate_ids[0]
+            if source_candidate_ids
+            else resolved_data.get("pedido_producto_origen_id")
+        )
+        if source_id is None:
+            return active_intent.model_copy(update={"status": "rejected"})
+        return _build_ready_intent(
+            active_intent,
+            new_resolved_data,
+            int(source_id),
+            dest_id,
+            cantidad,
+        )
 
     modification_metadata: RecognizeContext = {
         "catalog_scope": "commerce_dynamic_database",

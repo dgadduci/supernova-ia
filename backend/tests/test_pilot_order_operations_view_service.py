@@ -2770,5 +2770,138 @@ class GetOrderLinesSnapshotTest(unittest.TestCase):
         session.close.assert_not_called()
 
 
+class BuildPendingContextDebugViewProductModificationTest(unittest.TestCase):
+    """Faithful projection of an active ``modificar_producto`` pending state.
+
+    For a valid active modification the panel admits ``modificar_producto``
+    as the closed ``active_intent`` literal, derives ``candidate_count``
+    only from the stage-relevant persisted list and reports
+    ``consistent``. The panel must not expose any candidate identifier,
+    source text, quantity, resolved value or raw payload.
+    """
+
+    def test_destination_selection_count_is_destination_candidates(self) -> None:
+        view = build_pending_context_debug_view(
+            raw_context_type="product_modification",
+            raw_pending_intents={
+                "version": 1,
+                "active": {
+                    "intent": "modificar_producto",
+                    "source_text": "SECRET",
+                    "status": "pending_resolution",
+                    "stage": "destination_selection",
+                    "handler": "modificar_producto",
+                    "resolved_data": {
+                        "source_candidate_ids": [41],
+                        "destination_candidate_ids": [101, 102],
+                        "cantidad": 2,
+                    },
+                    "candidate_ids": [],
+                },
+                "queue": [],
+            },
+        )
+        self.assertEqual(view.context_type, "product_modification")
+        self.assertEqual(view.active_intent, "modificar_producto")
+        self.assertEqual(view.active_status, "pending_resolution")
+        self.assertEqual(view.candidate_count, 2)
+        self.assertEqual(view.consistency, "consistent")
+
+    def test_source_selection_count_is_source_candidates(self) -> None:
+        view = build_pending_context_debug_view(
+            raw_context_type="product_modification",
+            raw_pending_intents={
+                "version": 1,
+                "active": {
+                    "intent": "modificar_producto",
+                    "source_text": "SECRET",
+                    "status": "pending_resolution",
+                    "stage": "source_selection",
+                    "handler": "modificar_producto",
+                    "resolved_data": {
+                        "source_candidate_ids": [41, 42],
+                        "destination_candidate_ids": [200],
+                        "cantidad": 3,
+                    },
+                    "candidate_ids": [],
+                },
+                "queue": [],
+            },
+        )
+        self.assertEqual(view.active_intent, "modificar_producto")
+        self.assertEqual(view.active_status, "pending_resolution")
+        self.assertEqual(view.candidate_count, 2)
+        self.assertEqual(view.consistency, "consistent")
+
+    def test_modificar_producto_view_does_not_leak_pii(self) -> None:
+        view = build_pending_context_debug_view(
+            raw_context_type="product_modification",
+            raw_pending_intents={
+                "version": 1,
+                "active": {
+                    "intent": "modificar_producto",
+                    "source_text": "SECRET-SOURCE",
+                    "status": "pending_resolution",
+                    "stage": "destination_selection",
+                    "handler": "modificar_producto",
+                    "resolved_data": {
+                        "source_candidate_ids": [41],
+                        "destination_candidate_ids": [101, 102],
+                        "cantidad": 2,
+                        "pedido_producto_origen_id": 41,
+                        "producto_presentacion_destino_id": 102,
+                        "secret": "SECRET-VALUE",
+                    },
+                    "candidate_ids": [],
+                },
+                "queue": [],
+            },
+        )
+        rendered = repr(view) + " " + str(view)
+        for forbidden in (
+            "SECRET-SOURCE",
+            "SECRET-VALUE",
+            "41",
+            "101",
+            "102",
+            "source_candidate_ids",
+            "destination_candidate_ids",
+            "pedido_producto_origen_id",
+            "producto_presentacion_destino_id",
+            "resolved_data",
+            "candidate_ids",
+            "source_text",
+            "pending_intents",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, rendered)
+
+    def test_modificar_producto_invalid_state_remains_invalid(self) -> None:
+        """An invalid pending shape for a modification must keep the
+        closed ``invalid`` / ``inconsistent`` summary with every
+        derived field zeroed; the new ``modificar_producto`` allowlist
+        MUST NOT relax that contract."""
+
+        view = build_pending_context_debug_view(
+            raw_context_type="product_modification",
+            raw_pending_intents={"active": "not-a-dict"},
+        )
+        self.assertEqual(view.pending_encoding, "invalid")
+        self.assertEqual(view.consistency, "inconsistent")
+        self.assertEqual(view.active_intent, "none")
+        self.assertEqual(view.active_status, "none")
+        self.assertEqual(view.candidate_count, 0)
+
+    def test_modificar_producto_supported_intent_in_allowlist(self) -> None:
+        """``modificar_producto`` MUST appear in the closed allowlist so
+        it is admitted as ``active_intent`` instead of ``unsupported``."""
+
+        from backend.services.pilot_order_operations_view_service import (
+            CLOSED_ACTIVE_INTENT_LITERALS,
+        )
+
+        self.assertIn("modificar_producto", CLOSED_ACTIVE_INTENT_LITERALS)
+
+
 if __name__ == "__main__":
     unittest.main()

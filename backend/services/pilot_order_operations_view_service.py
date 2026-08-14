@@ -68,6 +68,7 @@ CLOSED_ACTIVE_INTENT_LITERALS: frozenset[str] = frozenset(
     {
         "agregar_producto",
         "quitar_producto",
+        "modificar_producto",
         "vaciar_pedido",
         "consultar_resumen_pedido",
         "consultar_estado_pedido",
@@ -83,6 +84,9 @@ CLOSED_ACTIVE_INTENT_LITERALS: frozenset[str] = frozenset(
         "desconocida",
     }
 )
+
+_MODIFICAR_SOURCE_STAGE = "source_selection"
+_MODIFICAR_DESTINATION_STAGE = "destination_selection"
 
 CLOSED_ACTIVE_STATUS_LITERALS: frozenset[str] = frozenset(
     {"pending_resolution", "ready", "executed", "rejected", "failed"}
@@ -402,6 +406,35 @@ def _count_candidates(raw_candidates: Any) -> int:
     return len(raw_candidates)
 
 
+def _stage_specific_candidate_count(
+    active_intent: str, parsed_active: Any
+) -> int:
+    """Return the stage-restricted candidate count for the active intent.
+
+    ``modificar_producto`` keeps its narrow pending candidate universe
+    inside ``resolved_data.source_candidate_ids`` and
+    ``resolved_data.destination_candidate_ids`` rather than the generic
+    ``candidate_ids`` list. For that intent the count is derived only
+    from the stage-relevant persisted list — ``source_candidate_ids``
+    at ``source_selection`` and ``destination_candidate_ids`` at
+    ``destination_selection`` — so the panel can show a faithful
+    number without ever exposing the underlying identifiers. Every
+    other intent keeps the generic ``candidate_ids`` count so the
+    existing closed projection is preserved.
+    """
+    if active_intent != "modificar_producto":
+        return _count_candidates(getattr(parsed_active, "candidate_ids", None))
+    resolved_data = getattr(parsed_active, "resolved_data", None)
+    if not isinstance(resolved_data, dict):
+        return 0
+    stage = getattr(parsed_active, "stage", None)
+    if stage == _MODIFICAR_SOURCE_STAGE:
+        return _count_candidates(resolved_data.get("source_candidate_ids"))
+    if stage == _MODIFICAR_DESTINATION_STAGE:
+        return _count_candidates(resolved_data.get("destination_candidate_ids"))
+    return 0
+
+
 def _queue_length(raw_queue: Any) -> int:
     if not isinstance(raw_queue, (list, tuple)):
         return 0
@@ -606,8 +639,8 @@ def build_pending_context_debug_view(
     active_status_raw = getattr(parsed.active, "status", None)
     active_intent = _normalize_active_intent(active_intent_raw)
     active_status = _normalize_active_status(active_status_raw)
-    candidate_count = _count_candidates(
-        getattr(parsed.active, "candidate_ids", None)
+    candidate_count = _stage_specific_candidate_count(
+        active_intent, parsed.active
     )
     pending_req, completed_req = _count_requirements(
         getattr(parsed.active, "requirements", None)
