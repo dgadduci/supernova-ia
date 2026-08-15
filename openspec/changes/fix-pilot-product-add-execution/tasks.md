@@ -25,9 +25,9 @@
 
 ## 4. Production gate and dependent changes
 
-- [ ] 4.1 After approved deploy, check Mozzarella Grande price availability in
+- [x] 4.1 After approved deploy, check Mozzarella Grande price availability in
   the panel. If unavailable, stop for separately approved catalog remediation.
-- [ ] 4.2 If available, run WhatsApp ambiguity → `Grande` and verify one line
+- [x] 4.2 If available, run WhatsApp ambiguity → `Grande` and verify one line
   and success response in the panel.
 - [ ] 4.3 Resume the three production checks of
   `fix-pending-context-recovery-and-status-query` only after 4.2 succeeds.
