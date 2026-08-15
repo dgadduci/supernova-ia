@@ -14,6 +14,12 @@ pedido. Each orchestrator returns a typed `ProcessedIntent` whose
   in-range text. For `set_direccion_entrega` this is the single
   replacement of `pedidos.direccion_entrega` with the normalized
   in-range text.
+- `pending_resolution` — for `confirmar_pedido` this is the bounded
+  observation capture step after the final preconditions pass. The
+  pending context never reaches the executor until the customer supplies
+  either ``"no"`` or a valid 1..500 code-point observation. The
+  orchestrator persists the pending context so the next inbound
+  message is routed through the dedicated resolver.
 - `rejected` — a valid business outcome that mutates nothing: missing or
   non-borrador pedido, empty pedido, missing required choice, ambiguous,
   inactive, or commerce-foreign choice, already-confirmed pedido,
@@ -37,7 +43,9 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session as DatabaseSession
 
+from backend.intents.context.pending_context_service import set_pending_intent
 from backend.intents.schemas.processed_intent import ProcessedIntent
+from backend.intents.schemas.requirement_state import RequirementState
 from backend.models import EstadoPedido, MediosPago, MetodosEntrega, Pedido
 from backend.models.session import EstadoSession
 from backend.models.session import Session as ConversationSession
@@ -345,91 +353,279 @@ def process_initial_confirmar_pedido(
     session: ConversationSession,
     source_text: str,
 ) -> ProcessedIntent:
-    """Transition a complete borrador to `ingresado` exactly once.
+    """Open the confirmation observation context for a complete borrador.
 
-    "Complete" means at least one persisted line, an active medios_pago
-    selection enabled for the session's commerce, and an active
-    metodos_entrega selection enabled for the session's commerce.
-    Address, scheduled time, and payment authorization are intentionally
-    not completion requirements.
+    ``confirmar_pedido`` is the single explicit confirmation intent and
+    runs the documented active-session / own-draft / non-empty-lines /
+    payment / delivery preconditions. When every precondition passes
+    the orchestrator does NOT confirm the order yet: it returns a
+    ``pending_resolution`` intent with a single pending
+    ``observacion_pedido`` requirement so the next inbound message is
+    routed through the dedicated order-confirmation observation
+    resolver. The order confirmation is atomically staged by the
+    same caller-owned transaction once the customer supplies either
+    ``"no"`` or a valid 1..500 code-point observation. The
+    finalizer is :func:`finalize_confirmar_pedido`.
+
+    When a precondition fails the orchestrator returns the documented
+    ``rejected`` outcome without mutating the pedido or the session;
+    the rejection reason is the only data exposed to the response
+    builder.
     """
-    pedido = _load_session_pedido(db, session)
-    if pedido is None:
-        return _rejected(
-            "confirmar_pedido",
-            source_text,
-            "no_draft",
-            "draft_order_closure",
-            "confirmar_pedido",
-        )
-    if pedido.estado_pedido != EstadoPedido.BORRADOR:
-        return _rejected(
-            "confirmar_pedido",
-            source_text,
-            "pedido_not_borrador",
-            "draft_order_closure",
-            "confirmar_pedido",
-        )
-    comercio_id = session.id_comercio
+    preconditions = _validate_confirmar_preconditions(
+        db,
+        session,
+        source_text,
+    )
+    if preconditions.status != "ok":
+        return preconditions.rejected
+    pedido = preconditions.pedido
+    assert pedido is not None
 
-    lines = PedidoProductoService(db).list_by_pedido(pedido.id)
-    if not lines:
-        return _rejected(
-            "confirmar_pedido",
-            source_text,
-            "empty_draft",
-            "draft_order_closure",
-            "confirmar_pedido",
-        )
-    if pedido.id_medio_pago is None or comercio_id is None:
-        return _rejected(
-            "confirmar_pedido",
-            source_text,
-            "missing_payment",
-            "draft_order_closure",
-            "confirmar_pedido",
-        )
-    active_payments = {
-        int(m.id)
-        for m in MediosPagoRepository(db).list_active_for_comercio(int(comercio_id))
-    }
-    if int(pedido.id_medio_pago) not in active_payments:
-        return _rejected(
-            "confirmar_pedido",
-            source_text,
-            "payment_not_active_for_comercio",
-            "draft_order_closure",
-            "confirmar_pedido",
-        )
-    if pedido.id_metodo_entrega is None:
-        return _rejected(
-            "confirmar_pedido",
-            source_text,
-            "missing_delivery",
-            "draft_order_closure",
-            "confirmar_pedido",
-        )
-    active_deliveries = {
-        int(m.id)
-        for m in MetodoEntregaRepository(db).list_active_for_comercio(int(comercio_id))
-    }
-    if int(pedido.id_metodo_entrega) not in active_deliveries:
-        return _rejected(
-            "confirmar_pedido",
-            source_text,
-            "delivery_not_active_for_comercio",
-            "draft_order_closure",
-            "confirmar_pedido",
-        )
+    pending = ProcessedIntent(
+        intent="confirmar_pedido",
+        source_text=source_text,
+        status="pending_resolution",
+        recognizer="draft_order_closure",
+        handler="confirmar_pedido",
+        resolved_data={},
+        requirements=[
+            RequirementState(
+                name="observacion_pedido",
+                status="pending",
+                value=None,
+            ),
+        ],
+        candidate_ids=[],
+    )
+    set_pending_intent(session, pending)
+    return pending
+
+
+def finalize_confirmar_pedido(
+    db: DatabaseSession,
+    session: ConversationSession,
+    source_text: str,
+    *,
+    observation_text: str | None = None,
+    skip_observation: bool = False,
+) -> ProcessedIntent:
+    """Atomically confirm the active draft pedido.
+
+    The finalizer is the only authority allowed to flip
+    ``pedido.estado_pedido`` from ``borrador`` to ``ingresado``. It
+    re-runs the documented active-session / own-draft / non-empty-lines
+    / payment / delivery preconditions immediately before staging any
+    attribute write, so a stale pending context cleared by the
+    transport never carries a partial confirmation forward. When the
+    ``skip_observation`` flag is ``False`` and ``observation_text`` is
+    not ``None``, the normalized text replaces
+    ``pedido.observaciones`` in the same caller-owned transaction; any
+    other combination preserves the prior ``pedido.observaciones``
+    value. The function never invokes the LLM, the intent classifier,
+    the product recognizer, the catalog, the order-line fuzzy
+    recognizer or any session-control method
+    (``commit`` / ``rollback`` / ``flush`` / ``refresh`` / ``begin`` /
+    ``close``).
+    """
+    preconditions = _validate_confirmar_preconditions(
+        db,
+        session,
+        source_text,
+    )
+    if preconditions.status != "ok":
+        return preconditions.rejected
+
+    pedido = preconditions.pedido
+    assert pedido is not None
+    if not skip_observation and observation_text is not None:
+        pedido.observaciones = observation_text
 
     pedido.estado_pedido = EstadoPedido.INGRESADO
+    resolved_data: dict[str, Any] = {"pedido_id": pedido.id}
+    if not skip_observation and observation_text is not None:
+        resolved_data["observation_accepted_length"] = len(
+            pedido.observaciones or ""
+        )
     return ProcessedIntent(
         intent="confirmar_pedido",
         source_text=source_text,
         status="executed",
         recognizer="draft_order_closure",
         handler="confirmar_pedido",
-        resolved_data={"pedido_id": pedido.id},
+        resolved_data=resolved_data,
+    )
+
+
+class _ConfirmarPreconditions:
+    """Outcome of the documented confirmation preconditions.
+
+    The local class is the channel through which
+    :func:`process_initial_confirmar_pedido` and
+    :func:`finalize_confirmar_pedido` share the precondition
+    validation: ``status == "ok"`` carries the loaded pedido;
+    otherwise ``rejected`` carries the deterministic rejection
+    outcome. The class is only used inside this module so the
+    ``__all__`` surface stays unchanged.
+    """
+
+    __slots__ = ("pedido", "rejected", "status")
+
+    def __init__(
+        self,
+        *,
+        status: str,
+        pedido: Pedido | None,
+        rejected: ProcessedIntent,
+    ) -> None:
+        self.status = status
+        self.pedido = pedido
+        self.rejected = rejected
+
+
+def _validate_confirmar_preconditions(
+    db: DatabaseSession,
+    session: ConversationSession,
+    source_text: str,
+) -> _ConfirmarPreconditions:
+    """Validate the documented confirmation preconditions.
+
+    The helper returns a ``_ConfirmarPreconditions`` with
+    ``status == "ok"`` and the loaded ``pedido`` when every
+    precondition passes and a ``rejected`` ProcessedIntent
+    otherwise. The validation must be performed inside the
+    caller's transaction so the live pedido state is observed
+    without an independent read.
+    """
+    if session.estado_session != EstadoSession.ACTIVA:
+        return _ConfirmarPreconditions(
+            status="rejected",
+            pedido=None,
+            rejected=_rejected(
+                "confirmar_pedido",
+                source_text,
+                "session_not_active",
+                "draft_order_closure",
+                "confirmar_pedido",
+            ),
+        )
+    pedido = _load_session_pedido(db, session)
+    if pedido is None:
+        return _ConfirmarPreconditions(
+            status="rejected",
+            pedido=None,
+            rejected=_rejected(
+                "confirmar_pedido",
+                source_text,
+                "no_draft",
+                "draft_order_closure",
+                "confirmar_pedido",
+            ),
+        )
+    if int(pedido.id_session) != int(session.id):
+        return _ConfirmarPreconditions(
+            status="rejected",
+            pedido=pedido,
+            rejected=_rejected(
+                "confirmar_pedido",
+                source_text,
+                "session_mismatch",
+                "draft_order_closure",
+                "confirmar_pedido",
+            ),
+        )
+    if pedido.estado_pedido != EstadoPedido.BORRADOR:
+        return _ConfirmarPreconditions(
+            status="rejected",
+            pedido=pedido,
+            rejected=_rejected(
+                "confirmar_pedido",
+                source_text,
+                "pedido_not_borrador",
+                "draft_order_closure",
+                "confirmar_pedido",
+            ),
+        )
+    comercio_id = session.id_comercio
+    lines = PedidoProductoService(db).list_by_pedido(pedido.id)
+    if not lines:
+        return _ConfirmarPreconditions(
+            status="rejected",
+            pedido=pedido,
+            rejected=_rejected(
+                "confirmar_pedido",
+                source_text,
+                "empty_draft",
+                "draft_order_closure",
+                "confirmar_pedido",
+            ),
+        )
+    if pedido.id_medio_pago is None or comercio_id is None:
+        return _ConfirmarPreconditions(
+            status="rejected",
+            pedido=pedido,
+            rejected=_rejected(
+                "confirmar_pedido",
+                source_text,
+                "missing_payment",
+                "draft_order_closure",
+                "confirmar_pedido",
+            ),
+        )
+    active_payments = {
+        int(m.id)
+        for m in MediosPagoRepository(db).list_active_for_comercio(int(comercio_id))
+    }
+    if int(pedido.id_medio_pago) not in active_payments:
+        return _ConfirmarPreconditions(
+            status="rejected",
+            pedido=pedido,
+            rejected=_rejected(
+                "confirmar_pedido",
+                source_text,
+                "payment_not_active_for_comercio",
+                "draft_order_closure",
+                "confirmar_pedido",
+            ),
+        )
+    if pedido.id_metodo_entrega is None:
+        return _ConfirmarPreconditions(
+            status="rejected",
+            pedido=pedido,
+            rejected=_rejected(
+                "confirmar_pedido",
+                source_text,
+                "missing_delivery",
+                "draft_order_closure",
+                "confirmar_pedido",
+            ),
+        )
+    active_deliveries = {
+        int(m.id)
+        for m in MetodoEntregaRepository(db).list_active_for_comercio(int(comercio_id))
+    }
+    if int(pedido.id_metodo_entrega) not in active_deliveries:
+        return _ConfirmarPreconditions(
+            status="rejected",
+            pedido=pedido,
+            rejected=_rejected(
+                "confirmar_pedido",
+                source_text,
+                "delivery_not_active_for_comercio",
+                "draft_order_closure",
+                "confirmar_pedido",
+            ),
+        )
+    return _ConfirmarPreconditions(
+        status="ok",
+        pedido=pedido,
+        rejected=ProcessedIntent(
+            intent="confirmar_pedido",
+            source_text=source_text,
+            status="rejected",
+            recognizer="draft_order_closure",
+            handler="confirmar_pedido",
+        ),
     )
 
 
@@ -990,6 +1186,7 @@ def process_initial_set_fecha_hora_entrega(
 
 
 __all__ = [
+    "finalize_confirmar_pedido",
     "process_initial_confirmar_pedido",
     "process_initial_consultar_resumen_pedido",
     "process_initial_set_direccion_entrega",

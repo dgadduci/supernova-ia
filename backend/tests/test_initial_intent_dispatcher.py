@@ -231,111 +231,52 @@ class DispatchInitialMessageRejectionTest(unittest.TestCase):
         agregar_orch.assert_not_called()
         self.assertEqual(result, [sentinel])
 
-    @patch.object(dispatcher_module, "process_initial_set_observacion_producto")
     @patch.object(dispatcher_module, "IntentClassifier")
-    def test_set_observacion_producto_calls_orchestrator_with_classified_message(
-        self, classifier_cls, orchestrator
+    def test_direct_observation_intents_are_rejected_with_deterministic_guidance(
+        self, classifier_cls
     ):
-        sentinel = ProcessedIntent(
-            intent="set_observacion_producto",
-            source_text="La pizza es sin aceitunas",
-            status="executed",
-            recognizer="recognizer_set_observacion_producto",
-            handler="set_observacion_producto",
-        )
-        orchestrator.return_value = sentinel
-        classifier_instance = MagicMock()
-        classifier_instance.query.return_value = _build_result(
-            (IntentName.SET_OBSERVACION_PRODUCTO, "La pizza es sin aceitunas")
-        )
-        classifier_cls.return_value = classifier_instance
+        """Direct ``set_observacion_producto`` and
+        ``set_observacion_pedido`` classifications outside the
+        confirmation context are rejected with the fixed guidance
+        that asks the customer to confirm the order first. The
+        product-line observation capability is removed and the
+        pedido observation capability is only reachable through the
+        explicit confirmation flow.
+        """
+        for intent in (
+            IntentName.SET_OBSERVACION_PRODUCTO,
+            IntentName.SET_OBSERVACION_PEDIDO,
+        ):
+            with self.subTest(intent=intent):
+                classifier_instance = MagicMock()
+                classifier_instance.query.return_value = _build_result(
+                    (intent, "La pizza es sin aceitunas")
+                )
+                classifier_cls.return_value = classifier_instance
 
-        db = MagicMock(name="DatabaseSession")
-        session = _session(context_type=None)
+                db = MagicMock(name="DatabaseSession")
+                session = _session(context_type=None)
 
-        result = dispatch_initial_message(
-            db, session, "La pizza es sin aceitunas"
-        )
+                result = dispatch_initial_message(
+                    db, session, "La pizza es sin aceitunas"
+                )
 
-        classifier_instance.query.assert_called_once_with(
-            "La pizza es sin aceitunas"
-        )
-        orchestrator.assert_called_once_with(
-            db, session, "La pizza es sin aceitunas"
-        )
-        self.assertEqual(result, [sentinel])
+                self.assertEqual(len(result), 1)
+                self.assertEqual(result[0].status, "rejected")
+                self.assertEqual(result[0].intent, intent.value)
+                self.assertEqual(
+                    result[0].resolved_data.get("reason"),
+                    "direct_observation_disabled",
+                )
+                self.assertIn(
+                    "confirmá",
+                    result[0].resolved_data.get("guidance", ""),
+                )
 
-    @patch.object(dispatcher_module, "process_initial_set_observacion_producto")
-    @patch.object(dispatcher_module, "IntentClassifier")
-    def test_set_observacion_producto_pending_resolution_returned_unchanged(
-        self, classifier_cls, orchestrator
-    ):
-        sentinel = ProcessedIntent(
-            intent="set_observacion_producto",
-            source_text="La pizza es sin aceitunas",
-            status="pending_resolution",
-            recognizer="recognizer_set_observacion_producto",
-            handler="set_observacion_producto",
-            candidate_ids=[10, 11],
-        )
-        orchestrator.return_value = sentinel
-        classifier_instance = MagicMock()
-        classifier_instance.query.return_value = _build_result(
-            (IntentName.SET_OBSERVACION_PRODUCTO, "La pizza es sin aceitunas")
-        )
-        classifier_cls.return_value = classifier_instance
-
-        db = MagicMock(name="DatabaseSession")
-        session = _session(context_type=None)
-
-        result = dispatch_initial_message(
-            db, session, "La pizza es sin aceitunas"
-        )
-
-        self.assertEqual(result, [sentinel])
-
-    @patch.object(dispatcher_module, "process_initial_set_observacion_producto")
-    @patch.object(dispatcher_module, "IntentClassifier")
-    def test_qualified_declarative_observation_routes_unchanged(
-        self, classifier_cls, orchestrator
-    ):
-        sentinel = ProcessedIntent(
-            intent="set_observacion_producto",
-            source_text="La pizza de mozzarella chica es sin aceitunas",
-            status="ready",
-            recognizer="recognizer_set_observacion_producto",
-            handler="set_observacion_producto",
-        )
-        orchestrator.return_value = sentinel
-        classifier_instance = MagicMock()
-        classifier_instance.query.return_value = _build_result(
-            (
-                IntentName.SET_OBSERVACION_PRODUCTO,
-                "La pizza de mozzarella chica es sin aceitunas",
-            )
-        )
-        classifier_cls.return_value = classifier_instance
-
-        db = MagicMock(name="DatabaseSession")
-        session = _session(context_type=None)
-
-        result = dispatch_initial_message(
-            db, session, "La pizza de mozzarella chica es sin aceitunas"
-        )
-
-        classifier_instance.query.assert_called_once_with(
-            "La pizza de mozzarella chica es sin aceitunas"
-        )
-        orchestrator.assert_called_once_with(
-            db, session, "La pizza de mozzarella chica es sin aceitunas"
-        )
-        self.assertEqual(result, [sentinel])
-
-    @patch.object(dispatcher_module, "process_initial_set_observacion_producto")
     @patch.object(dispatcher_module, "process_initial_agregar_producto")
     @patch.object(dispatcher_module, "IntentClassifier")
     def test_explicit_add_with_condition_routes_to_agregar_producto(
-        self, classifier_cls, agregar_orch, observacion_orch
+        self, classifier_cls, agregar_orch
     ):
         sentinel = ProcessedIntent(
             intent="agregar_producto",
@@ -367,7 +308,6 @@ class DispatchInitialMessageRejectionTest(unittest.TestCase):
         agregar_orch.assert_called_once_with(
             db, session, "quiero una pizza de mozzarella chica sin aceitunas"
         )
-        observacion_orch.assert_not_called()
         self.assertEqual(result, [sentinel])
 
 
@@ -474,6 +414,7 @@ class DispatchInitialMessageBoundariesTest(unittest.TestCase):
             node.name
             for node in tree.body
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and not node.name.startswith("_")
         ]
         self.assertEqual(function_names, ["dispatch_initial_message"])
 

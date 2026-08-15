@@ -48,7 +48,6 @@
               <th>Presentación</th>
               <th>Cantidad</th>
               <th>Precio unitario</th>
-              <th>Observación</th>
             </tr>
           </thead>
           <tbody data-debug-lines-tbody>
@@ -59,7 +58,6 @@
               <td>{% if line.presentacion_descripcion %}{{ line.presentacion_descripcion }}{% else %}<span class="muted">—</span>{% endif %}</td>
               <td>{{ line.cantidad }}</td>
               <td>{{ line.precio_unitario }}</td>
-              <td>{% if line.observaciones %}{{ line.observaciones }}{% else %}<span class="muted">—</span>{% endif %}</td>
             </tr>
             {% endfor %}
           </tbody>

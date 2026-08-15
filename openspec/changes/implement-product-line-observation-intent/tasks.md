@@ -75,3 +75,30 @@
   own line; verify only its observation changes, no quantity/line change, and
   context/pending clear. Keep 6.4 pending until its explicit clear is also
   verified.
+
+## 8. Superseding amendment: confirmation-time order observation
+
+- [x] 8.1 Replace the product-line-observation specification/contract with a
+  confirmation-time, Pedido-level free-text observation flow. Retire direct
+  observation classification guidance and line observation presentation;
+  preserve existing data without migration.
+- [x] 8.2 Make a valid explicit `confirmar_pedido` request create the bounded
+  observation context after existing closure preconditions pass. Implement
+  exact `no` skip and opaque valid-text capture; final capture and confirmation
+  must be atomically staged by the existing caller-owned transaction.
+- [x] 8.3 Disable direct product/pedido observation intent execution and
+  safely clear a stale product-line observation pending context without a line
+  write. Remove modules and seams that have no remaining caller.
+- [x] 8.4 Add focused coverage for no/text/empty/over-limit, precondition and
+  ownership revalidation, no classifier/LLM/product access in the capture
+  turn, response privacy, stale-pending safety, direct-intent rejection, panel
+  projection and transaction ownership.
+- [x] 8.5 Run the exact focused pytest, Ruff, compileall, strict OpenSpec
+  validation and `git diff --check` commands in `proposal.md`; record complete
+  local-terminal output and known pre-existing failures.
+- [ ] 8.6 Post-deploy pilot gate: complete one order with `no` and one with a
+  free-text note; verify each order is confirmed, the note is present only on
+  the Pedido where supplied, no line observation changes, and pending/context
+  are cleared. Do not include customer content or identifiers in the report.
+- [ ] 8.7 Request explicit approval before archiving. Earlier line-observation
+  tasks 1–7 are superseded and remain historical; they are not archive gates.

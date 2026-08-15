@@ -1,3 +1,9 @@
+"""Initial-classifier dispatcher for confirmed intents.
+
+Routes the classified message to the matching orchestrator. Order
+matters: the first matching branch wins so the documented intent
+contract is preserved.
+"""
 from pydantic import ValidationError
 from sqlalchemy.orm import Session as DatabaseSession
 
@@ -13,7 +19,6 @@ from backend.intents.orchestration.draft_order_closure import (
     process_initial_set_fecha_hora_entrega,
     process_initial_set_metodo_de_entrega,
     process_initial_set_metodo_de_pago,
-    process_initial_set_observacion_pedido,
 )
 from backend.intents.orchestration.informational_commerce_queries import (
     is_informational_commerce_intent,
@@ -31,9 +36,6 @@ from backend.intents.orchestration.order_status_query import (
 from backend.intents.orchestration.quitar_producto_initial import (
     process_initial_quitar_producto,
 )
-from backend.intents.orchestration.set_observacion_producto_initial import (
-    process_initial_set_observacion_producto,
-)
 from backend.intents.orchestration.vaciar_pedido_initial import (
     process_initial_vaciar_pedido,
 )
@@ -46,6 +48,36 @@ from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.intents.services.pending_intent_service import load as load_pending_state
 from backend.llm.intent_classifier import IntentClassifier
 from backend.models.session import Session as ConversationSession
+
+_DIRECT_OBSERVATION_GUIDANCE = (
+    "Por favor, confirmá el pedido para poder agregar una observación."
+)
+
+
+def _rejected_direct_observation(
+    classified_intent: IntentName,
+    classified_message: str,
+) -> ProcessedIntent:
+    """Return the deterministic rejection for a direct observation intent.
+
+    The product-line observation capability was removed and the pedido
+    observation capability is now reachable only through the explicit
+    confirmation flow. Any direct ``set_observacion_*`` intent
+    classified outside the dedicated confirmation context must
+    produce a single rejected outcome with the fixed guidance that
+    asks the customer to confirm the order first.
+    """
+    return ProcessedIntent(
+        intent=classified_intent.value,
+        source_text=classified_message,
+        status="rejected",
+        recognizer="intent_classifier",
+        handler=classified_intent.value,
+        resolved_data={
+            "reason": "direct_observation_disabled",
+            "guidance": _DIRECT_OBSERVATION_GUIDANCE,
+        },
+    )
 
 
 def dispatch_initial_message(
@@ -178,16 +210,18 @@ def dispatch_initial_message(
 
         if classified_intent == IntentName.SET_OBSERVACION_PEDIDO:
             processed.append(
-                process_initial_set_observacion_pedido(
-                    db, session, classified.mensaje
+                _rejected_direct_observation(
+                    classified_intent,
+                    classified.mensaje,
                 )
             )
             continue
 
         if classified_intent == IntentName.SET_OBSERVACION_PRODUCTO:
             processed.append(
-                process_initial_set_observacion_producto(
-                    db, session, classified.mensaje
+                _rejected_direct_observation(
+                    classified_intent,
+                    classified.mensaje,
                 )
             )
             continue

@@ -21,7 +21,7 @@ def process_incoming_message(
 ) -> list[ProcessedIntent]:
     if not isinstance(message, str):
         raise TypeError("message must be a str")
-    if not message.strip():
+    if session.context_type is None and not message.strip():
         raise ValueError("message must be a non-empty, non-whitespace string")
 
     if sink is None:

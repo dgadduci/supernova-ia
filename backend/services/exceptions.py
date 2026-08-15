@@ -158,10 +158,13 @@ class PedidoSessionMismatch(Exception):
     """Raised when a pedido does not belong to the supplied conversation
     session.
 
-    The ``set_observacion_producto`` seam raises this sentinel when
-    ``Pedido.id_session`` differs from the supplied ``session_id`` so the
-    caller can translate the rejection to a deterministic business
-    outcome without leaking the stored pedido or its lines.
+    The original ``set_observacion_producto`` seam was the only
+    caller that raised this sentinel when ``Pedido.id_session``
+    differed from the supplied ``session_id``. The seam has been
+    removed (the product-line observation capability is no longer an
+    active feature), but the sentinel remains as a domain marker
+    because the validation contract is shared with the rest of the
+    transactional services.
     """
 
 

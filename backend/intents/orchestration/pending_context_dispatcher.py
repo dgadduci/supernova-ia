@@ -5,6 +5,9 @@ from backend.diagnostics.sink import DiagnosticSink
 from backend.intents.context.order_clear_confirmation_resolver import (
     resolve_order_clear_confirmation,
 )
+from backend.intents.context.order_confirmation_observation_resolver import (
+    resolve_order_confirmation_observation,
+)
 from backend.intents.context.order_line_selection_resolver import (
     resolve_order_line_selection,
 )
@@ -13,6 +16,9 @@ from backend.intents.context.product_modification_resolver import (
 )
 from backend.intents.context.product_selection_context_service import (
     ProductSelectionContextService,
+)
+from backend.intents.orchestration.draft_order_closure import (
+    finalize_confirmar_pedido,
 )
 from backend.intents.orchestration.order_status_query import (
     is_explicit_order_status_query,
@@ -39,6 +45,7 @@ _SUPPORTED_CONTEXT_KINDS: frozenset[str] = frozenset(
         ContextType.ORDER_LINE_SELECTION.value,
         ContextType.PRODUCT_MODIFICATION.value,
         ContextType.ORDER_CLEAR_CONFIRMATION.value,
+        ContextType.ORDER_CONFIRMATION_OBSERVATION.value,
     }
 )
 
@@ -192,6 +199,56 @@ def _recover_invalid_pending_state(
     )
 
 
+def _recover_stale_product_line_observation_pending(
+    *,
+    session: ConversationSession,
+    active: ProcessedIntent,
+    context_type: str | None,
+    diagnostic_sink: DiagnosticSink,
+) -> ProcessedIntent:
+    """Clear a stale product-line observation pending state.
+
+    The product-line observation capability was removed but a
+    previously persisted pending intent (handler
+    ``set_observacion_producto``) remains valid only until the next
+    inbound message. The helper clears the pending JSON, resets
+    ``session.context_type`` to ``None`` and returns a single
+    ``rejected`` outcome. It never invokes the legacy handler, never
+    writes a ``PedidoProducto`` row, never observes the database,
+    never invokes the LLM/classifier/catalog and never calls a
+    transaction-control method. The next normal message reaches the
+    initial dispatcher because both the pending state and the
+    context type are now empty.
+    """
+    event_kind = _invalid_state_event_kind(context_type)
+    pre_candidate_count = len(active.candidate_ids or [])
+    clear_pending_state(session)
+    session.context_type = None
+    post_state = load_pending_state(session)
+    _emit_pending_snapshot(
+        diagnostic_sink, session, post_state, "after_stale_recovery"
+    )
+    _emit_pending_transition(
+        outcome="invalid_state_cleared",
+        context_kind=event_kind,
+        status_before=active.status,
+        status_after="rejected",
+        candidate_count_before=pre_candidate_count,
+        candidate_count_after=0,
+        context_cleared=True,
+    )
+    return ProcessedIntent(
+        intent="set_observacion_producto",
+        source_text=active.source_text,
+        status="rejected",
+        recognizer="recognizer_set_observacion_producto",
+        handler="set_observacion_producto",
+        resolved_data={},
+        requirements=[],
+        candidate_ids=[],
+    )
+
+
 def _run_supported_resolver(
     *,
     db: DatabaseSession,
@@ -218,6 +275,107 @@ def _run_supported_resolver(
             db, session, message, active, sink=diagnostic_sink
         )
     return _rejected_copy(active)
+
+
+def _build_pending_retry(
+    active: ProcessedIntent,
+    *,
+    reason: str,
+) -> ProcessedIntent:
+    """Return a ``pending_resolution`` retry intent without observation text.
+
+    The helper preserves the active intent's identity (intent, handler,
+    recognizer, source_text and the empty requirements list) and only
+    writes the closed ``capture_outcome`` label into ``resolved_data``.
+    The captured text and its normalized form are deliberately not
+    serialized: the response builder renders the fixed retry prompt
+    from the closed label alone.
+    """
+    return ProcessedIntent(
+        intent=active.intent,
+        source_text=active.source_text,
+        status="pending_resolution",
+        recognizer=active.recognizer,
+        handler=active.handler,
+        resolved_data={"capture_outcome": reason},
+        requirements=[],
+        candidate_ids=[],
+    )
+
+
+def _resolve_confirmation_capture(
+    *,
+    db: DatabaseSession,
+    session: ConversationSession,
+    message: str,
+    active: ProcessedIntent,
+    diagnostic_sink: DiagnosticSink,
+) -> list[ProcessedIntent]:
+    """Consume the bounded capture turn without leaking text.
+
+    The resolver returns an in-memory
+    :class:`OrderConfirmationCaptureOutcome`. The branch forwards the
+    text only as a local argument to the finalizer when the capture
+    is valid (exact ``no`` skip or 1..500 normalized text), or returns
+    a closed retry intent that preserves the pending state when the
+    capture is empty or too long. The pending JSON is never written
+    with the text; the diagnostic events emitted through
+    ``diagnostic_sink`` carry only closed metadata.
+    """
+    outcome = resolve_order_confirmation_observation(
+        db, session, message, active, sink=diagnostic_sink
+    )
+    pre_candidate_count = _candidate_count(active)
+    if outcome.retry:
+        retry_intent = _build_pending_retry(
+            active, reason=outcome.retry_reason
+        )
+        post_state = load_pending_state(session)
+        _emit_pending_snapshot(diagnostic_sink, session, post_state, "after_resolver")
+        _emit_pending_transition(
+            outcome="pending_preserved",
+            context_kind=ContextType.ORDER_CONFIRMATION_OBSERVATION.value,
+            status_before=active.status,
+            status_after=retry_intent.status,
+            candidate_count_before=pre_candidate_count,
+            candidate_count_after=_candidate_count(retry_intent),
+            context_cleared=False,
+        )
+        return [retry_intent]
+
+    if outcome.skip:
+        finalized = finalize_confirmar_pedido(
+            db,
+            session,
+            active.source_text,
+            skip_observation=True,
+        )
+    else:
+        assert outcome.accepted_text is not None
+        finalized = finalize_confirmar_pedido(
+            db,
+            session,
+            active.source_text,
+            observation_text=outcome.accepted_text,
+            skip_observation=False,
+        )
+    clear_pending_state(session)
+    session.context_type = None
+    post_state = load_pending_state(session)
+    _emit_pending_snapshot(diagnostic_sink, session, post_state, "after_resolver")
+    final_status = finalized.status
+    if final_status not in ("executed", "rejected"):
+        final_status = "rejected" if finalized.status == "failed" else "executed"
+    _emit_pending_transition(
+        outcome="ready_executed" if finalized.status == "executed" else "rejected_cleared",
+        context_kind=ContextType.ORDER_CONFIRMATION_OBSERVATION.value,
+        status_before=active.status,
+        status_after=final_status,
+        candidate_count_before=pre_candidate_count,
+        candidate_count_after=_candidate_count(finalized),
+        context_cleared=True,
+    )
+    return [finalized]
 
 
 def _derive_post_execution_trace(
@@ -330,6 +488,25 @@ def dispatch_pending_context(
     assert active is not None
     assert session.context_type is not None
     assert context_kind is not None
+
+    if active.handler == "set_observacion_producto":
+        return [
+            _recover_stale_product_line_observation_pending(
+                session=session,
+                active=active,
+                context_type=context_kind,
+                diagnostic_sink=diagnostic_sink,
+            )
+        ]
+
+    if context_kind == ContextType.ORDER_CONFIRMATION_OBSERVATION.value:
+        return _resolve_confirmation_capture(
+            db=db,
+            session=session,
+            message=message,
+            active=active,
+            diagnostic_sink=diagnostic_sink,
+        )
 
     if is_explicit_order_status_query(message):
         status_intent = process_initial_order_status_query(db, session, message)

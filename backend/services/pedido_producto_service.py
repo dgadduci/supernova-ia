@@ -334,64 +334,6 @@ class PedidoProductoService:
             precio_unitario=precio.precio,
         )
 
-    def set_observacion_producto(
-        self,
-        *,
-        session_id: int,
-        pedido_id: int,
-        pedido_producto_id: int,
-        observacion: str | None,
-    ) -> PedidoProducto:
-        """Assign a nullable ``observaciones`` value to a single line of an
-        active conversation session's own ``borrador`` pedido.
-
-        The caller-owned transaction seam validates, in order:
-
-        1. the ``Pedido`` exists for ``pedido_id``;
-        2. ``Pedido.id_session`` equals ``session_id``;
-        3. ``Pedido.estado_pedido == BORRADOR``;
-        4. the ``PedidoProducto`` exists and belongs to that pedido.
-
-        Only then does the service stage the assignment through
-        ``PedidoProductoRepository.set_observacion``. The service NEVER
-        calls ``commit``, ``rollback``, ``flush``, ``refresh``, ``expire``,
-        ``begin``, or ``close``; the outer transactional processor owns
-        the full-turn atomicity guarantee. ``observacion`` is stored as
-        supplied (``None`` clears the column); the caller is responsible
-        for trimming set values before invoking this method.
-
-        Raises:
-            PedidoNotFound: when no pedido exists for ``pedido_id``.
-            PedidoSessionMismatch: when ``Pedido.id_session`` differs from
-                ``session_id``.
-            PedidoProductoNotEditable: when the pedido is not in
-                ``borrador`` state.
-            PedidoProductoNotFound: when the line does not exist or does
-                not belong to ``pedido_id``.
-
-        Returns:
-            The staged ``PedidoProducto`` row with its ``observaciones``
-            attribute updated. The actual persistence is performed by the
-            caller's outer transaction.
-        """
-        pedido = self._repo.pedido(pedido_id)
-        if pedido is None:
-            raise PedidoNotFound(pedido_id)
-        if int(pedido.id_session) != int(session_id):
-            raise PedidoSessionMismatch(pedido_id, int(session_id))
-        if pedido.estado_pedido != EstadoPedido.BORRADOR:
-            raise PedidoProductoNotEditable(
-                pedido_id, pedido.estado_pedido.value
-            )
-        line = self._repo.set_observacion(
-            pedido_id=pedido_id,
-            pedido_producto_id=pedido_producto_id,
-            observacion=observacion,
-        )
-        if line is None:
-            raise PedidoProductoNotFound(pedido_producto_id)
-        return line
-
     @staticmethod
     def _resolve_cantidad_a_modificar(
         explicit_cantidad: int | None,
