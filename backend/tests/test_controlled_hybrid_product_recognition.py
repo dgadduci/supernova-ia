@@ -1225,6 +1225,168 @@ class HybridUniqueQuantityPreservationTest(unittest.TestCase):
         self.assertTrue(comparison.fallback)
 
 
+class HybridAmbiguousQuantityPreservationTest(unittest.TestCase):
+    """Focused coverage for the hybrid authoritative
+    ambiguous-quantity-preservation contract.
+
+    When the hybrid policy decides ``ambiguous``, the translator
+    attaches the deterministic positive quantity the shared
+    product-text extractor produces from the original input to every
+    existing candidate in the single ``encontrados_posibles`` group.
+    The product ids, their order and the result shape stay
+    authoritative; quantity parsing MUST NOT select, reorder or
+    widen the candidate set and MUST NOT alter a unique decision.
+    """
+
+    def _recognizer(
+        self,
+        *,
+        fuzzy_decision: str = "ambiguous",
+        posibles: list[int] | None = None,
+        vector_matches: list | None = None,
+    ) -> HybridAuthoritativeProductRecognizer:
+        return HybridAuthoritativeProductRecognizer(
+            inner=_StubFuzzyRecognizer(
+                decision=fuzzy_decision,
+                posibles=posibles or [],
+            ),
+            policy=_stub_policy(),
+            embedding_client=_StubEmbeddingClient(),
+            vector_search_service=(
+                lambda: _StubVectorSearchService(matches=vector_matches or [])
+            ),
+            recorder=_StubRecorder(),
+            commerce_id_resolver=_resolver_with_commerce(99),
+        )
+
+    def _carne_catalog(self) -> list[dict]:
+        return [
+            {
+                "producto_presentacion_id": 11,
+                "producto_nombre": "Empanada de Carne",
+                "presentacion_codigo": "PICANTE",
+                "activo": True,
+                "disponible": True,
+                "aliases": {
+                    "general_aliases": ["empanada carne"],
+                    "specific_aliases": [],
+                },
+            },
+            {
+                "producto_presentacion_id": 12,
+                "producto_nombre": "Empanada de Carne",
+                "presentacion_codigo": "TRADICIONAL",
+                "activo": True,
+                "disponible": True,
+                "aliases": {
+                    "general_aliases": ["empanada carne"],
+                    "specific_aliases": [],
+                },
+            },
+        ]
+
+    def test_ambiguous_with_digit_two_preserves_candidate_quantity(self):
+        """``quiero 2 empanadas de carne`` → hybrid ambiguous
+        translation keeps exactly the existing ranked candidate ids
+        in their existing order and every candidate carries
+        ``cantidad == 2``.
+        """
+        recognizer = self._recognizer(
+            fuzzy_decision="ambiguous",
+            posibles=[11, 12],
+            vector_matches=[
+                _StubVectorMatch(11, 0.95),
+                _StubVectorMatch(12, 0.90),
+            ],
+        )
+        result = recognizer.recognize(
+            "quiero 2 empanadas de carne", self._carne_catalog()
+        )
+        # Result remains ambiguous; no automatic selection.
+        self.assertEqual(result["encontrados"], [])
+        self.assertEqual(len(result["encontrados_posibles"]), 1)
+        productos = result["encontrados_posibles"][0]["productos"]
+        # Same ids, same order — quantity parsing MUST NOT touch them.
+        self.assertEqual(
+            [entry["producto_presentacion_id"] for entry in productos],
+            [11, 12],
+        )
+        # Every candidate carries the deterministic quantity two.
+        for entry in productos:
+            self.assertEqual(int(entry["cantidad"]), 2)
+        # The four-key contract stays balanced.
+        self.assertEqual(result["no_encontrados"], [])
+        self.assertEqual(result["encontrados_no_disponibles"], [])
+
+    def test_ambiguous_without_quantity_defaults_each_candidate_to_one(self):
+        """When the input omits a valid quantity, every existing
+        candidate in the ambiguous group keeps the extractor's
+        documented default of ``1``."""
+        recognizer = self._recognizer(
+            fuzzy_decision="ambiguous",
+            posibles=[11, 12],
+            vector_matches=[
+                _StubVectorMatch(11, 0.95),
+                _StubVectorMatch(12, 0.90),
+            ],
+        )
+        result = recognizer.recognize(
+            "quiero empanadas de carne", self._carne_catalog()
+        )
+        self.assertEqual(result["encontrados"], [])
+        self.assertEqual(len(result["encontrados_posibles"]), 1)
+        productos = result["encontrados_posibles"][0]["productos"]
+        self.assertEqual(
+            [entry["producto_presentacion_id"] for entry in productos],
+            [11, 12],
+        )
+        for entry in productos:
+            self.assertEqual(int(entry["cantidad"]), 1)
+
+    def test_ambiguous_quantity_does_not_widen_candidate_set(self):
+        """The quantity parser MUST NOT introduce candidates outside
+        the existing filtered hybrid ranking — even when the input
+        carries a digit quantity."""
+        recognizer = self._recognizer(
+            fuzzy_decision="ambiguous",
+            posibles=[11, 12],
+            vector_matches=[
+                _StubVectorMatch(11, 0.95),
+                _StubVectorMatch(12, 0.90),
+                _StubVectorMatch(99, 0.99),
+            ],
+        )
+        result = recognizer.recognize(
+            "quiero 2 empanadas de carne", self._carne_catalog()
+        )
+        productos = result["encontrados_posibles"][0]["productos"]
+        ids = [entry["producto_presentacion_id"] for entry in productos]
+        self.assertNotIn(99, ids)
+        self.assertEqual(ids, [11, 12])
+        recorder_calls = recognizer._recorder.calls  # type: ignore[attr-defined]
+        self.assertEqual(len(recorder_calls), 1)
+        observation = recorder_calls[0]["hybrid_observation"]
+        self.assertNotIn(99, observation.hybrid_candidate_ranking)
+
+    def test_ambiguous_quantity_does_not_promote_to_unique(self):
+        """An explicit digit quantity MUST NOT convert an ambiguous
+        hybrid decision into a unique one. Quantity parsing is a
+        text helper; it does not choose a presentation."""
+        recognizer = self._recognizer(
+            fuzzy_decision="ambiguous",
+            posibles=[11, 12],
+            vector_matches=[
+                _StubVectorMatch(11, 0.95),
+                _StubVectorMatch(12, 0.90),
+            ],
+        )
+        result = recognizer.recognize(
+            "quiero 2 empanadas de carne", self._carne_catalog()
+        )
+        self.assertEqual(result["encontrados"], [])
+        self.assertEqual(len(result["encontrados_posibles"]), 1)
+
+
 class TelemetrySurfaceTest(unittest.TestCase):
     def test_recorder_receives_hybrid_authoritative_mode(self):
         recognizer = HybridAuthoritativeProductRecognizer(

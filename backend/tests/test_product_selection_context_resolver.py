@@ -408,6 +408,254 @@ class ResolveProductSelectionCarneFragmentTest(unittest.TestCase):
         self.assertEqual(result.candidate_ids, [])
 
 
+class HybridAmbiguousQuantitySelectionFlowTest(unittest.TestCase):
+    """4.x: prove the deterministic quantity the hybrid ambiguous
+    translation attaches to each candidate survives the pending →
+    bounded-selection path.
+
+    The hybrid recognizer is the only one patched: every other
+    resolver/handler/repository seam keeps its real implementation,
+    so the test exercises the documented production chain.
+    """
+
+    def _carne_picante_suave_catalog(self) -> list[dict]:
+        """Isolated PICANTE/SUAVE catalog mirroring the pilot.
+
+        The shared ``CARNE_CATALOG`` exposes PICANTE/TRADICIONAL,
+        which is correct for the pre-existing ``ResolveProductSelectionCarneFragmentTest``
+        but does NOT exercise the bounded ``suave`` selection the pilot
+        runs. The tests in this class use ONLY this isolated copy
+        so they do not mutate or depend on the shared catalog.
+        """
+        return [
+            {
+                "producto_presentacion_id": 11,
+                "producto_nombre": "Empanada de Carne",
+                "presentacion_codigo": "PICANTE",
+            },
+            {
+                "producto_presentacion_id": 12,
+                "producto_nombre": "Empanada de Carne",
+                "presentacion_codigo": "SUAVE",
+            },
+        ]
+
+    def _carne_active(self, candidate_ids, cantidad: int = 1) -> ProcessedIntent:
+        return ProcessedIntent(
+            intent="agregar_producto",
+            source_text="quiero 2 empanadas de carne",
+            status="pending_resolution",
+            recognizer="recognizer_productos",
+            handler="agregar_producto",
+            resolved_data={"cantidad": cantidad},
+            requirements=[
+                RequirementState(
+                    name="producto_presentacion_id",
+                    status="pending",
+                    value=None,
+                )
+            ],
+            candidate_ids=list(candidate_ids),
+        )
+
+    def _hybrid_recognizer(self):
+        """Build a deterministic hybrid recognizer that always
+        emits the ambiguous Carne translation."""
+        from backend.services.hybrid_authoritative_recognizer import (
+            HybridAuthoritativeProductRecognizer,
+        )
+        from backend.services.product_recognition_calibration_policy import (
+            HybridDecisionPolicy,
+        )
+        from backend.services.shadow_metrics_recorder import ShadowMetricsRecorder
+
+        class _AlwaysAmbiguousFuzzy:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def recognize(self, text, catalog, *, intent_metadata=None):
+                self.calls += 1
+                return {
+                    "encontrados": [],
+                    "encontrados_posibles": [
+                        {
+                            "texto_origen": text,
+                            "productos": [
+                                {
+                                    "producto_presentacion_id": 11,
+                                    "producto_nombre": "Empanada de Carne",
+                                    "texto_origen": text,
+                                },
+                                {
+                                    "producto_presentacion_id": 12,
+                                    "producto_nombre": "Empanada de Carne",
+                                    "texto_origen": text,
+                                },
+                            ],
+                        }
+                    ],
+                    "encontrados_no_disponibles": [],
+                    "no_encontrados": [],
+                }
+
+        class _StubEmbedding:
+            def embed_query(self, text):
+                return [0.0] * 384
+
+            def embed_documents(self, texts):
+                return [[0.0] * 384 for _ in texts]
+
+        class _StubVectorMatch:
+            def __init__(self, pid, score):
+                self.id_producto_presentacion = pid
+                self.score = score
+
+        class _StubVectorService:
+            def search_similar(
+                self,
+                *,
+                id_comercio,
+                query_embedding,
+                top_k,
+                candidate_producto_presentacion_ids,
+            ):
+                return [
+                    _StubVectorMatch(11, 0.95),
+                    _StubVectorMatch(12, 0.90),
+                ]
+
+        return HybridAuthoritativeProductRecognizer(
+            inner=_AlwaysAmbiguousFuzzy(),
+            policy=HybridDecisionPolicy(
+                fuzzy_weight=0.5,
+                vector_weight=0.5,
+                unique_threshold=0.7,
+                ambiguous_threshold=0.4,
+                minimum_score_gap=0.05,
+                vector_top_k=5,
+            ),
+            embedding_client=_StubEmbedding(),
+            vector_search_service=lambda: _StubVectorService(),
+            recorder=ShadowMetricsRecorder(),
+            configured_mode="hybrid_authoritative",
+            effective_mode="hybrid_authoritative",
+            commerce_id_resolver=lambda catalog: 99,
+        )
+
+    def test_hybrid_ambiguous_translation_attaches_quantity_two_to_each_candidate(self):
+        recognizer = self._hybrid_recognizer()
+        result = recognizer.recognize(
+            "quiero 2 empanadas de carne", CARNE_CATALOG
+        )
+        self.assertEqual(result["encontrados"], [])
+        self.assertEqual(len(result["encontrados_posibles"]), 1)
+        productos = result["encontrados_posibles"][0]["productos"]
+        self.assertEqual(
+            [p["producto_presentacion_id"] for p in productos], [11, 12]
+        )
+        for entry in productos:
+            self.assertEqual(int(entry["cantidad"]), 2)
+
+    def test_picante_selection_preserves_quantity_two(self):
+        """The pending → ``picante`` flow must NOT replace the
+        quantity the hybrid translator attached to the ambiguous
+        candidate set with the resolver default of one."""
+        from backend.intents.resolvers.product_intent_resolver import (
+            resolve_product_intent,
+        )
+
+        catalog = self._carne_picante_suave_catalog()
+
+        recognizer = self._hybrid_recognizer()
+        raw = recognizer.recognize(
+            "quiero 2 empanadas de carne", catalog
+        )
+        resolved = resolve_product_intent(raw)
+        self.assertEqual(resolved["resolved_data"]["cantidad"], 2)
+        self.assertEqual(resolved["candidate_ids"], [11, 12])
+
+        active = self._carne_active(
+            candidate_ids=resolved["candidate_ids"],
+            cantidad=resolved["resolved_data"]["cantidad"],
+        )
+
+        original = resolver_module._product_recognizer  # type: ignore[attr-defined]
+        resolver_module._product_recognizer = (  # type: ignore[attr-defined]
+            _FuzzyCarneSpy()
+        )
+        try:
+            result = resolve_product_selection(
+                "picante", active, catalog
+            )
+        finally:
+            resolver_module._product_recognizer = original  # type: ignore[attr-defined]
+
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(result.resolved_data.get("cantidad"), 2)
+        self.assertEqual(
+            result.resolved_data.get("producto_presentacion_id"), 11
+        )
+        self.assertEqual(result.candidate_ids, [])
+
+    def test_ambiguous_quantity_does_not_replace_persisted_pending_quantity(self):
+        """When the hybrid ambiguous translator omits ``cantidad``
+        (the pre-fix behaviour) the persisted pending state would
+        default to one. With the fix in place, the translator
+        always carries the parsed quantity, so the pending state
+        survives the bounded ``suave`` selection unchanged."""
+
+        catalog = self._carne_picante_suave_catalog()
+
+        recognizer = self._hybrid_recognizer()
+        raw = recognizer.recognize(
+            "agrega dos empanadas de carne", catalog
+        )
+        productos = raw["encontrados_posibles"][0]["productos"]
+        for entry in productos:
+            self.assertEqual(int(entry["cantidad"]), 2)
+
+        active = self._carne_active(
+            candidate_ids=[p["producto_presentacion_id"] for p in productos],
+            cantidad=2,
+        )
+
+        original = resolver_module._product_recognizer  # type: ignore[attr-defined]
+        resolver_module._product_recognizer = (  # type: ignore[attr-defined]
+            _FuzzyCarneSpy()
+        )
+        try:
+            result = resolve_product_selection(
+                "suave", active, catalog
+            )
+        finally:
+            resolver_module._product_recognizer = original  # type: ignore[attr-defined]
+
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(result.resolved_data.get("cantidad"), 2)
+        self.assertEqual(
+            result.resolved_data.get("producto_presentacion_id"), 12
+        )
+        self.assertEqual(result.candidate_ids, [])
+
+
+class _FuzzyCarneSpy:
+    """Spy recognizer that resolves ``picante``/``suave`` against
+    the carne catalog by mirroring the presentacion_codigo alias
+    path the production resolver applies when the real recognizer
+    returns no match. The spy returns an empty four-key result so
+    the resolver falls back to the alias-narrowing branch without
+    touching the persisted quantity.
+    """
+
+    def recognize(self, text, catalog, *, intent_metadata=None):
+        return {
+            "encontrados": [],
+            "encontrados_posibles": [],
+            "encontrados_no_disponibles": [],
+            "no_encontrados": [{"texto_origen": text}],
+        }
+
+
 class ResolveProductSelectionProductoNombreAliasTest(unittest.TestCase):
     """3.32.7: product-narrowing when the discriminating fragment lives in
     `producto_nombre` rather than `presentacion_codigo`. The new predicate
