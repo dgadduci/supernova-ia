@@ -22,7 +22,7 @@
 
 - [x] 3.1 Run the focused pytest, Ruff, compileall, strict OpenSpec validation,
   and `git diff --check` commands from `proposal.md`.
-- [ ] 3.2 Run the post-deploy pilot gate: confirm an order in the local panel,
+- [x] 3.2 Run the post-deploy pilot gate: confirm an order in the local panel,
   ask at least two naturally phrased status questions, and verify the exact
   selected order remains unchanged; verify one add/new-order phrase is rejected
   without creating a successor session or altering the confirmed order.
