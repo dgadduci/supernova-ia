@@ -101,6 +101,48 @@ class ControlledCorpusShapeTest(unittest.TestCase):
         )
         self.assertEqual(fixture.message, "Lo retiro por el local")
 
+    def test_category_pizzas_fixture_pins_single_ver_menu_intent(self):
+        fixture = next(
+            f for f in CONTROLLED_INTENT_CORPUS
+            if f.fixture_id == "F-VER_MENU-CATEGORIA_PIZZAS"
+        )
+        self.assertEqual(fixture.expected_intents, (IntentName.VER_MENU,))
+        self.assertEqual(fixture.message, "qué pizzas hay")
+        self.assertNotIn(IntentName.CONSULTAR_PRODUCTO, fixture.expected_intents)
+
+    def test_category_empanadas_fixture_pins_single_ver_menu_intent(self):
+        fixture = next(
+            f for f in CONTROLLED_INTENT_CORPUS
+            if f.fixture_id == "F-VER_MENU-CATEGORIA_EMPANADAS"
+        )
+        self.assertEqual(fixture.expected_intents, (IntentName.VER_MENU,))
+        self.assertEqual(fixture.message, "qué gustos de empanadas tenés")
+        self.assertNotIn(IntentName.CONSULTAR_PRODUCTO, fixture.expected_intents)
+
+    def test_category_bebidas_fixture_pins_single_ver_menu_intent(self):
+        fixture = next(
+            f for f in CONTROLLED_INTENT_CORPUS
+            if f.fixture_id == "F-VER_MENU-CATEGORIA_BEBIDAS"
+        )
+        self.assertEqual(fixture.expected_intents, (IntentName.VER_MENU,))
+        self.assertEqual(fixture.message, "qué bebidas están disponibles")
+        self.assertNotIn(IntentName.CONSULTAR_PRODUCTO, fixture.expected_intents)
+
+    def test_concrete_product_detail_fixture_remains_consultar_producto(self):
+        fixture = next(
+            f for f in CONTROLLED_INTENT_CORPUS
+            if f.fixture_id == "F-CONSULTAR_PRODUCTO-PRECIO_NAPOLITANA"
+        )
+        self.assertEqual(
+            fixture.expected_intents, (IntentName.CONSULTAR_PRODUCTO,)
+        )
+        self.assertEqual(fixture.message, "cuánto sale la napolitana grande")
+        self.assertNotIn(IntentName.VER_MENU, fixture.expected_intents)
+
+    def test_corpus_version_bumped_for_category_browse_fixtures(self):
+        self.assertTrue(CORPUS_VERSION.startswith("intent-corpus/v"))
+        self.assertGreaterEqual(CORPUS_VERSION, "intent-corpus/v1.6.0")
+
     def test_direccion_entrega_tilcara_fixture_pins_single_set_direccion_entrega(self):
         fixture = next(
             f for f in CONTROLLED_INTENT_CORPUS

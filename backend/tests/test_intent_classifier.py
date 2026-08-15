@@ -353,10 +353,10 @@ class IntentClassifierRemovalSemanticRuleTest(unittest.TestCase):
         self.assertIn("lista cerrada", self._PROMPT)
 
     def test_prompt_template_version_is_bumped_monotonically(self):
-        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.7.0")
+        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.8.0")
         self.assertGreater(
             PROMPT_TEMPLATE_VERSION,
-            "intent-classifier/v1.6.0",
+            "intent-classifier/v1.7.0",
         )
 
 
@@ -570,9 +570,9 @@ class IntentClassifierDeclarativeObservationFingerprintTest(unittest.TestCase):
     """
 
     def test_template_version_is_bumped_for_confirmation_time_amendment(self):
-        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.7.0")
+        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.8.0")
         self.assertGreater(
-            PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.6.0"
+            PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.7.0"
         )
 
     def test_template_fingerprint_excludes_customer_message(self):

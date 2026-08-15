@@ -111,6 +111,18 @@ def _build_menu_message(items: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _build_selected_category_menu_message(
+    items: list[dict],
+    categoria_nombre: str,
+) -> str:
+    lines: list[str] = [f"{categoria_nombre} disponibles:"]
+    for item in items:
+        formatted = _format_menu_item(item)
+        if formatted is not None:
+            lines.append(f"- {formatted}")
+    return "\n".join(lines)
+
+
 def _build_product_message(resolved_data: dict) -> str:
     nombre = resolved_data.get("producto_nombre")
     categoria = resolved_data.get("categoria_nombre")
@@ -202,6 +214,23 @@ def build_informational_commerce_response(
             if not isinstance(items, list) or not items:
                 return CustomerResponse(
                     message=_NO_MENU_MESSAGE,
+                    intent=intent_name,
+                    status="executed",
+                )
+            categoria_nombre = resolved_data.get("categoria_nombre")
+            if (
+                isinstance(categoria_nombre, str)
+                and categoria_nombre
+                and all(
+                    isinstance(item, dict)
+                    and item.get("categoria_nombre") == categoria_nombre
+                    for item in items
+                )
+            ):
+                return CustomerResponse(
+                    message=_build_selected_category_menu_message(
+                        items, categoria_nombre
+                    ),
                     intent=intent_name,
                     status="executed",
                 )

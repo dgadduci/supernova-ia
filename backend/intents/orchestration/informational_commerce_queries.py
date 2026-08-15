@@ -47,6 +47,13 @@ from sqlalchemy.orm import Session as DatabaseSession
 
 from backend.intents.schemas.intent_classification import ClassifiedIntent, IntentName
 from backend.intents.schemas.processed_intent import ProcessedIntent
+from backend.llm.menu_category_resolver import (
+    MAX_CANDIDATE_CONTEXT_CHARS,
+    MAX_CANDIDATE_NAME_LENGTH,
+    MenuCategoryCandidate,
+    MenuCategoryResolution,
+    MenuCategoryResolver,
+)
 from backend.models.session import Session as ConversationSession
 from backend.services.comercio_service import ComercioService
 from backend.services.configuracion_comercio_service import ConfiguracionComercioService
@@ -147,36 +154,199 @@ def _resolve_menu(
     the active/available/sellable filter and configured ordering are
     owned by the existing service. The commerce comes exclusively from
     ``session.id_comercio``.
+
+    When the catalog has at least one sellable item and the bounded
+    category candidate projection fits the documented budget, the
+    dedicated :class:`MenuCategoryResolver` is invoked exactly once to
+    decide which single category, if any, the customer menu browse
+    request refers to. The resolver is a language interpreter: the
+    backend alone revalidates the returned opaque ``(token, nombre)``
+    pair against the same in-memory candidate list and only then
+    uses the backend-held category identity to filter the
+    already-loaded catalog. ``categoria_id`` is **never** exposed to
+    the prompt, the resolver output, ``resolved_data``,
+    ``ProcessedIntent`` or the rendered customer response; it is
+    kept as a transient local key for in-memory filtering only.
+    On any no-selection, mismatched/invalid/unknown-token/oversize
+    candidate set or technical resolver failure, the existing
+    deterministic full-menu outcome is returned byte-for-byte
+    unchanged.
     """
     comercio_id = _require_comercio_id(session)
     products = ProductoQueryService(db).list_vendibles(comercio_id)
 
-    items: list[dict[str, str]] = []
+    full_items: list[dict[str, str]] = []
+    items_by_categoria_id: dict[int, list[dict[str, str]]] = {}
     for product in products:
-        categoria_nombre = (
-            product.categoria.descripcion if product.categoria else ""
-        )
+        categoria = getattr(product, "categoria", None)
+        categoria_id = getattr(categoria, "id", None)
+        categoria_nombre = getattr(categoria, "descripcion", None)
+        if not isinstance(categoria_nombre, str):
+            categoria_nombre = ""
         for pp in product.presentaciones:
-            items.append(
-                {
-                    "categoria_nombre": categoria_nombre,
-                    "producto_nombre": product.nombre,
-                    "presentacion_codigo": pp.presentacion.codigo,
-                    "presentacion_descripcion": pp.presentacion.descripcion,
-                }
-            )
+            item = {
+                "categoria_nombre": categoria_nombre,
+                "producto_nombre": product.nombre,
+                "presentacion_codigo": pp.presentacion.codigo,
+                "presentacion_descripcion": pp.presentacion.descripcion,
+            }
+            full_items.append(item)
+            if isinstance(categoria_id, int) and not isinstance(categoria_id, bool):
+                items_by_categoria_id.setdefault(categoria_id, []).append(item)
 
-    if not items:
+    if not full_items:
         return _rejected(
             IntentName.VER_MENU.value,
             source_text,
             reason="no_items",
         )
+
+    candidates = _build_category_candidates(products)
+    bounded_candidates, oversize_class = _bound_candidates(candidates)
+    if oversize_class is None and bounded_candidates:
+        resolution = _build_menu_category_resolver().resolve(
+            source_text,
+            bounded_candidates,
+        )
+    else:
+        resolution = None
+
+    validated = _revalidate_menu_category_selection(
+        resolution,
+        bounded_candidates,
+    )
+    if validated is None:
+        return _executed(
+            IntentName.VER_MENU.value,
+            source_text,
+            resolved_data={"items": full_items},
+        )
+
+    categoria_id = validated.categoria_id
+    filtered_items = items_by_categoria_id.get(categoria_id, [])
+    if not filtered_items:
+        return _executed(
+            IntentName.VER_MENU.value,
+            source_text,
+            resolved_data={"items": full_items},
+        )
     return _executed(
         IntentName.VER_MENU.value,
         source_text,
-        resolved_data={"items": items},
+        resolved_data={
+            "items": filtered_items,
+            "categoria_nombre": validated.nombre,
+        },
     )
+
+
+def _revalidate_menu_category_selection(
+    resolution: MenuCategoryResolution | None,
+    bounded_candidates: list[MenuCategoryCandidate],
+) -> MenuCategoryCandidate | None:
+    """Authoritatively revalidate the resolver selection by exact
+    ``(token, nombre)`` match against the bounded candidate list.
+
+    The resolver already performs this exact check internally; this
+    helper exists so the orchestration re-applies the same gate from
+    scratch and never trusts a candidate that does not agree with the
+    in-memory candidate projection. ``categoria_id`` is also cross
+    checked so a forged or tampered resolution cannot inject a
+    different internal identity than the one the resolver chose.
+
+    Returns the unique validated :class:`MenuCategoryCandidate` only
+    when exactly one candidate matches every field; otherwise returns
+    ``None`` to honour the documented fallback to the full menu.
+    """
+    if resolution is None or resolution.selected is None:
+        return None
+    selected = resolution.selected
+    matched: list[MenuCategoryCandidate] = [
+        candidate
+        for candidate in bounded_candidates
+        if candidate.token == selected.token
+        and candidate.nombre == selected.nombre
+        and candidate.categoria_id == selected.categoria_id
+    ]
+    if len(matched) != 1:
+        return None
+    return matched[0]
+
+
+def _build_menu_category_resolver() -> MenuCategoryResolver:
+    """Factory for the bounded second LLM interpreter.
+
+    Extracted so tests can monkey-patch a stub without depending on
+    the real ``QueryLlm`` transport. The default returns a fresh
+    :class:`MenuCategoryResolver` using the existing configured LLM
+    transport.
+    """
+    return MenuCategoryResolver()
+
+
+def _build_category_candidates(products: list[Any]) -> list[MenuCategoryCandidate]:
+    """Derive one bounded candidate per category that has at least
+    one sellable presentation in the already-loaded catalog.
+
+    The real ``categoria_id`` is kept backend-side and is **never**
+    sent to the resolver. The opaque ``token`` is assigned in this
+    invocation's first-seen category order and is intentionally not a
+    database ID; it is not persisted and not re-used across calls.
+    The ``nombre`` is the exact catalog description.
+    """
+    seen_order: list[tuple[int, str, int]] = []
+    seen_keys: set[tuple[int, str]] = set()
+    for product in products:
+        categoria = getattr(product, "categoria", None)
+        categoria_id = getattr(categoria, "id", None)
+        categoria_descripcion = getattr(categoria, "descripcion", None)
+        if not isinstance(categoria_id, int) or isinstance(categoria_id, bool):
+            continue
+        if not isinstance(categoria_descripcion, str):
+            continue
+        key = (int(categoria_id), categoria_descripcion)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        seen_order.append(
+            (len(seen_order) + 1, categoria_descripcion, int(categoria_id))
+        )
+    return [
+        MenuCategoryCandidate(
+            categoria_id=categoria_id,
+            token=f"c{index}",
+            nombre=nombre,
+        )
+        for index, nombre, categoria_id in seen_order
+    ]
+
+
+def _bound_candidates(
+    candidates: list[MenuCategoryCandidate],
+) -> tuple[list[MenuCategoryCandidate], str | None]:
+    """Enforce the documented candidate bounds.
+
+    Returns ``(bounded_candidates, None)`` when the candidate
+    projection fits the documented budget, or ``(original_list,
+    class_label)`` when any bound is exceeded. ``class_label`` is
+    ``"oversized_count"`` when there are more than 20 categories,
+    ``"oversized_name"`` when any name exceeds the documented length
+    budget, or ``"oversized_context"`` when the serialized
+    projection exceeds the documented character budget. Any
+    oversize short-circuits the resolver and falls back to the
+    deterministic full menu.
+    """
+    if len(candidates) > 20:
+        return candidates, "oversized_count"
+    for candidate in candidates:
+        if len(candidate.nombre) > MAX_CANDIDATE_NAME_LENGTH:
+            return candidates, "oversized_name"
+    serialized = "|".join(
+        f"{candidate.token}:{candidate.nombre}" for candidate in candidates
+    )
+    if len(serialized) > MAX_CANDIDATE_CONTEXT_CHARS:
+        return candidates, "oversized_context"
+    return candidates, None
 
 
 def _match_products(

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from backend.intents.schemas.intent_classification import IntentName
 
-CORPUS_VERSION = "intent-corpus/v1.5.0"
+CORPUS_VERSION = "intent-corpus/v1.6.0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,11 +84,41 @@ CONTROLLED_INTENT_CORPUS: tuple[IntentFixture, ...] = (
         (IntentName.VER_MENU,),
     ),
     _fixture(
+        "F-VER_MENU-CATEGORIA_PIZZAS",
+        "Category browse: asks which pizzas are available (must remain "
+        "ver_menu, not consultar_producto)",
+        "qué pizzas hay",
+        (IntentName.VER_MENU,),
+    ),
+    _fixture(
+        "F-VER_MENU-CATEGORIA_EMPANADAS",
+        "Category browse: asks which empanada flavors are available "
+        "(must remain ver_menu, not consultar_producto)",
+        "qué gustos de empanadas tenés",
+        (IntentName.VER_MENU,),
+    ),
+    _fixture(
+        "F-VER_MENU-CATEGORIA_BEBIDAS",
+        "Category browse: asks which beverages are available (must "
+        "remain ver_menu, not consultar_producto)",
+        "qué bebidas están disponibles",
+        (IntentName.VER_MENU,),
+    ),
+    _fixture(
         "F-CONSULTAR_PRODUCTO",
         "Asks about a specific product",
         "Tienen empanadas de jamón y queso?",
         (IntentName.CONSULTAR_PRODUCTO,),
         ("empanadas de jamón y queso",),
+    ),
+    _fixture(
+        "F-CONSULTAR_PRODUCTO-PRECIO_NAPOLITANA",
+        "Concrete product detail: asks the price of a specific "
+        "presentation (must remain consultar_producto and must NOT "
+        "be classified as ver_menu)",
+        "cuánto sale la napolitana grande",
+        (IntentName.CONSULTAR_PRODUCTO,),
+        ("cuánto sale la napolitana grande",),
     ),
     _fixture(
         "F-VER_METODOS_DE_PAGO",

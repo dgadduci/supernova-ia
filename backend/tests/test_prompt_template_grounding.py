@@ -631,7 +631,50 @@ class SecondPromptCorrectionStructureTest(unittest.TestCase):
     def test_template_version_bumped_for_declarative_amendment(self):
         from backend.diagnostics import PROMPT_TEMPLATE_VERSION
 
-        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.7.0")
+        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.8.0")
+
+
+class CategoryBrowseGuidanceStructureTest(unittest.TestCase):
+    """Structural/contract checks for the category-browse guidance
+    pinned by the ``add-llm-assisted-category-menu-resolution`` change.
+
+    These tests do not simulate LLM results. They verify that the
+    rendered prompt documents the new category-browse rule and keeps
+    ``consultar_producto`` reserved for concrete product detail.
+    """
+
+    def _build_prompt(self, message: str = "dummy current message") -> str:
+        classifier = IntentClassifier(
+            query_llm=_StubQueryLlm({"intents": [], "mensaje": ""})
+        )
+        return classifier._build_prompt(message)
+
+    def test_catalog_entry_for_ver_menu_documents_category_browse(self):
+        prompt = self._build_prompt()
+        self.assertIn("categoría del comercio", prompt.casefold())
+        self.assertIn("pizzas", prompt.casefold())
+        self.assertIn("empanadas", prompt.casefold())
+        self.assertIn("bebidas", prompt.casefold())
+
+    def test_catalog_entry_for_consultar_producto_keeps_concrete_product(self):
+        prompt = self._build_prompt()
+        self.assertIn(
+            "producto concreto", prompt.casefold()
+        )
+
+    def test_rule_10_distinguishes_category_browse_from_product_detail(self):
+        prompt = self._build_prompt()
+        lowered = prompt.casefold()
+        self.assertIn("10.", prompt)
+        self.assertIn("ver_menu", lowered)
+        self.assertIn("consultar_producto", lowered)
+        self.assertIn("qué pizzas hay", lowered)
+        self.assertIn("qué gustos de empanadas tenés", lowered)
+        self.assertIn("qué bebidas están disponibles", lowered)
+        self.assertIn("nunca debe clasificarse como", lowered)
+
+    def test_template_version_bumped_for_category_browse_guidance(self):
+        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.8.0")
 
 
 class BoundaryCalibrationStructureTest(unittest.TestCase):
@@ -748,8 +791,8 @@ class BoundaryCalibrationStructureTest(unittest.TestCase):
             with self.subTest(message=message):
                 self.assertIn(message, prompt)
 
-    def test_template_version_bumped_to_v1_7_0(self):
-        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.7.0")
+    def test_template_version_bumped_to_v1_8_0(self):
+        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.8.0")
 
 
 if __name__ == "__main__":
