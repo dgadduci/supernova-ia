@@ -23,3 +23,18 @@
   empty pending/context.
 - [ ] 3.2 Resume the product-flow TODO and consider archival only after 3.1
   succeeds and explicit user approval is given.
+
+## 4. Preserve quantity through hybrid ambiguity
+
+- [x] 4.1 Extend only the hybrid ambiguous-result translation so each already
+  ranked candidate carries the deterministic input quantity; preserve default
+  one, ids/order/result shape, policy, fuzzy fallback and transaction-free
+  behavior.
+- [x] 4.2 Add focused hybrid and existing resolver/pending-selection coverage
+  for `quiero/agrega dos empanadas de carne` followed by `picante` or `suave`,
+  plus omitted-quantity and candidate-boundary regressions.
+- [x] 4.3 Run focused pytest, Ruff, compileall, strict OpenSpec validation and
+  `git diff --check`; report complete output and any pre-existing failures.
+- [ ] 4.4 After approved deploy, run the two Carne pilot messages and their
+  bounded selections; verify each response and durable line add exactly two
+  and pending/context clear after each turn.

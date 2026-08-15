@@ -579,7 +579,11 @@ def _translate_hybrid_decision(
       does NOT select or re-rank candidates.
     - ``"ambiguous"`` → single ``encontrados_posibles`` group whose
       ``productos`` is the filtered ranking in descending combined
-      score order.
+      score order; every candidate carries the same deterministic
+      positive quantity extracted from the input text (default ``1``
+      when the input omits a valid quantity). The product ids, the
+      order and the ranking stay authoritative; quantity parsing
+      does NOT select, reorder or widen the candidate set.
     - ``"unknown"`` → single-entry ``no_encontrados`` carrying the
       normalized input text.
 
@@ -608,11 +612,13 @@ def _translate_hybrid_decision(
 
     if decision == "ambiguous" and ranking:
         productos: list[RecognizedProduct] = []
+        cantidad_ambigua = _extract_deterministic_quantity(normalized_text)
         for index, pid in enumerate(ranking):
             row = catalog_index.get(pid, {})
             entry: RecognizedProduct = {  # type: ignore[typeddict-item]
                 "producto_presentacion_id": pid,
                 "producto_nombre": str(row.get("producto_nombre", "")),
+                "cantidad": cantidad_ambigua,
                 "texto_origen": normalized_text,
             }
             productos.append(entry)
@@ -637,8 +643,8 @@ def _translate_hybrid_decision(
 
 
 def _extract_deterministic_quantity(text: str) -> int:
-    """Return the positive integer quantity for a ``unique`` hybrid
-    translation.
+    """Return the positive integer quantity for a hybrid ``unique`` or
+    ``ambiguous`` translation.
 
     The helper reuses the existing deterministic
     :func:`product_recognizer._extraer_cantidad` helper against the
