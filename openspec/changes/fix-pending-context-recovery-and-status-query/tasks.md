@@ -28,7 +28,7 @@
 
 ## 4. Production gate and dependent change
 
-- [ ] 4.1 PAUSED — after `fix-pilot-product-add-execution` is approved,
+- [x] 4.1 After `fix-pilot-product-add-execution` is approved,
   implemented, deployed and has passed its catalog/WhatsApp gate, run the three controlled
   WhatsApp message sequences in `proposal.md`; record only outcomes and
   timestamps, never customer content or identifiers.
