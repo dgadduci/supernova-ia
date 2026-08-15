@@ -28,6 +28,6 @@
 
 ## 4. Pilot gate
 
-- [ ] 4.1 After approved deploy, verify an existing commerce was backfilled to
+- [x] 4.1 After approved deploy, verify an existing commerce was backfilled to
   `neutro`, an administrator can read active flavors and select another active
   flavor, and customer messages remain factually and textually unchanged.
