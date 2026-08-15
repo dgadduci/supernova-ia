@@ -35,6 +35,6 @@
   plus omitted-quantity and candidate-boundary regressions.
 - [x] 4.3 Run focused pytest, Ruff, compileall, strict OpenSpec validation and
   `git diff --check`; report complete output and any pre-existing failures.
-- [ ] 4.4 After approved deploy, run the two Carne pilot messages and their
+- [x] 4.4 After approved deploy, run the two Carne pilot messages and their
   bounded selections; verify each response and durable line add exactly two
   and pending/context clear after each turn.
