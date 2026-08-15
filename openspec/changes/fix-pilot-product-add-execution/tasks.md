@@ -46,7 +46,7 @@
   durable total (`6`), not a request delta or browser-local calculation.
 - [x] 5.4 Run the focused validation commands added by this amendment and
   report complete output, distinguishing reproducible pre-existing failures.
-- [ ] 5.5 After approved deploy, replay quantities `1`, `2`, `3` in the pilot
+- [x] 5.5 After approved deploy, replay quantities `1`, `2`, `3` in the pilot
   for the same draft/presentation; verify one line at `6`, responses with
   totals `1`, `3`, `6`, and empty pending/context. Resume the product-flow
   TODO only after this gate; do not archive without explicit approval.
