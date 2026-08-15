@@ -22,6 +22,14 @@ Twilio or the worker; it never creates a provider receipt, a
 deferred processing record, an outbound row, a worker lease or a
 Twilio request.
 
+For the exact selected non-``BORRADOR`` pedido with a clean pending
+context the route additionally accepts exactly one
+``consultar_estado_pedido`` intent classified by the existing
+classifier. The classifier is invoked once as a language
+interpreter only; every other outcome returns the documented
+generic local rejection without invoking the message processor, the
+global dispatcher or any mutating handler.
+
 After a successful turn the route re-validates the exact same
 Pedido and Session and projects a closed, typed snapshot of the new
 execution state for the browser-side state cells. The router never
@@ -43,7 +51,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, Header, Path, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
@@ -51,6 +59,15 @@ from backend.dependencies import get_session, require_admin_pilot_basic
 from backend.intents.orchestration.incoming_message_response_orchestrator import (
     process_incoming_message_with_responses,
 )
+from backend.intents.orchestration.order_status_query import (
+    process_initial_order_status_query,
+)
+from backend.intents.schemas.intent_classification import (
+    IntentClassificationResult,
+    IntentName,
+)
+from backend.intents.schemas.pending_intents import PendingIntents
+from backend.llm.intent_classifier import IntentClassifier
 from backend.models import (
     EstadoPedido,
     EstadoSession,
@@ -58,6 +75,9 @@ from backend.models import (
 )
 from backend.models import (
     Session as SessionModel,
+)
+from backend.services.outbound_response_mapper import (
+    build_customer_responses,
 )
 from backend.services.pilot_order_operations_view_service import (
     ALLOWED_PAGE_SIZES,
@@ -196,6 +216,121 @@ def _load_local_test_session(
     if session.id_cliente != pedido.session.cliente.id:
         return None
     return pedido, session
+
+
+def _load_confirmed_local_test_session(
+    db: Session,
+    pedido_id: int,
+) -> tuple[Pedido, SessionModel] | None:
+    """Load the exact Pedido/Session for the confirmed-order branch.
+
+    The loader mirrors the identity, ownership and active-session
+    contract of :func:`_load_local_test_session` but accepts the
+    pedido in any non-``BORRADOR`` state so the route can answer a
+    natural-language status question for an already confirmed
+    pedido. It returns ``None`` for every other shape — including a
+    missing pedido, a non-positive id, a missing or re-pointed
+    Session, an inactive Session, a cliente/comercio mismatch or a
+    pedido that is still in ``BORRADOR`` — so the caller can emit
+    the documented generic rejection without leaking which
+    invariant failed.
+
+    The loader never searches for another session, a successor
+    session or an alternative active session for the same
+    cliente/comercio; it returns the exact identity or ``None``.
+    """
+    stmt = (
+        select(Pedido)
+        .where(Pedido.id == pedido_id)
+        .options(
+            joinedload(Pedido.session).joinedload(SessionModel.cliente),
+            joinedload(Pedido.session).joinedload(SessionModel.comercio),
+        )
+    )
+    pedido = db.execute(stmt).unique().scalar_one_or_none()
+    if pedido is None:
+        return None
+    if pedido.estado_pedido == EstadoPedido.BORRADOR:
+        return None
+    session = getattr(pedido, "session", None)
+    if session is None:
+        return None
+    if session.id_pedido != pedido.id:
+        return None
+    if session.estado_session != EstadoSession.ACTIVA:
+        return None
+    if session.id_comercio != pedido.session.comercio.id:
+        return None
+    if session.id_cliente != pedido.session.cliente.id:
+        return None
+    return pedido, session
+
+
+def _is_confirmed_clean_context(
+    raw_context_type: object,
+    raw_pending_intents: object,
+) -> bool:
+    """Return ``True`` only for a confirmed target with a clean
+    pending context.
+
+    The route must fail closed for any active or queued pending
+    state, malformed pending JSON or any non-``None``
+    ``context_type``. The accepted shape is exactly:
+    ``context_type`` strictly ``None`` AND ``pending_intents``
+    absent, an empty dict or a parsed
+    :class:`PendingIntents` carrying ``active is None`` and an
+    empty ``queue``. Any other shape — a non-``None``
+    ``context_type`` (including the empty string), a dict that
+    fails :meth:`PendingIntents.model_validate`, a parsed active
+    intent or a non-empty queue — returns ``False`` so the route
+    rejects before invoking the classifier or any business
+    orchestration.
+
+    Validation errors are swallowed and never propagated: the
+    helper returns ``False`` for any malformed JSON or
+    schema-incompatible shape without exposing validation detail,
+    pending JSON or exception text to the caller.
+    """
+    if raw_context_type is not None:
+        return False
+    if raw_pending_intents is None:
+        return True
+    if isinstance(raw_pending_intents, dict) and not raw_pending_intents:
+        return True
+    if not isinstance(raw_pending_intents, dict):
+        return False
+    try:
+        parsed = PendingIntents.model_validate(raw_pending_intents)
+    except ValidationError:
+        return False
+    return parsed.active is None and parsed.queue == []
+
+
+def _is_single_status_intent(
+    classification: object,
+) -> bool:
+    """Return ``True`` only when the classifier produced exactly one
+    :class:`IntentName.CONSULTAR_ESTADO_PEDIDO` intent.
+
+    Any other shape — missing intents, multiple intents, a
+    non-status intent, a non-string intent, or any value that does
+    not implement the documented ``intents`` surface — returns
+    ``False`` so the route fails closed before invoking any
+    business orchestration. The classifier remains a language
+    interpreter only: the route accepts the result precisely when
+    it is the one allowlisted intent, and rejects every other
+    outcome.
+    """
+    intents = getattr(classification, "intents", None)
+    if not isinstance(intents, list) or len(intents) != 1:
+        return False
+    item = intents[0]
+    intent_value = getattr(item, "intent", None)
+    if isinstance(intent_value, IntentName):
+        return intent_value == IntentName.CONSULTAR_ESTADO_PEDIDO
+    if isinstance(intent_value, str):
+        return intent_value == IntentName.CONSULTAR_ESTADO_PEDIDO.value
+    return False
 
 
 def _reload_exact_session_for_snapshot(
@@ -511,6 +646,21 @@ def local_test_message(
     commit/rollback authority; the route never calls ``commit``,
     ``rollback``, ``flush``, ``refresh``, ``begin``, ``close`` or
     ``expire``.
+
+    For the exact selected non-``BORRADOR`` pedido with a clean
+    pending context the route accepts ONLY a single
+    :class:`IntentName.CONSULTAR_ESTADO_PEDIDO` intent. The
+    classifier is invoked exactly once as a language interpreter;
+    every other outcome — non-status intent, multi-intent,
+    classifier transport/schema failure, pending active/queue
+    activity, malformed pending JSON or any identity/ownership
+    inconsistency — returns the documented generic local
+    rejection and never invokes the normal message processor, the
+    global dispatcher or any mutating handler. The non-draft path
+    reuses :func:`process_initial_order_status_query` and
+    :func:`build_customer_responses` for the exact same
+    pedido/session identity and projects the same safe snapshot
+    used by the draft branch.
     """
     if origin_header != LOCAL_TEST_ORIGIN_VALUE:
         return _reject_local_test("missing same-origin header")
@@ -521,13 +671,41 @@ def local_test_message(
         return _reject_local_test("invalid pedido id")
 
     loaded = _load_local_test_session(db, parsed_id)
-    if loaded is None:
-        return _reject_local_test("target not eligible")
-    _, exact_session = loaded
+    if loaded is not None:
+        _, exact_session = loaded
+        responses = process_incoming_message_with_responses(
+            db, exact_session, payload.message
+        )
+    else:
+        confirmed = _load_confirmed_local_test_session(db, parsed_id)
+        if confirmed is None:
+            return _reject_local_test("target not eligible")
+        _, exact_session = confirmed
 
-    responses = process_incoming_message_with_responses(
-        db, exact_session, payload.message
-    )
+        if not _is_confirmed_clean_context(
+            raw_context_type=exact_session.context_type,
+            raw_pending_intents=exact_session.pending_intents,
+        ):
+            return _reject_local_test("pending context not clean")
+
+        classifier = IntentClassifier()
+        try:
+            classification: IntentClassificationResult = classifier.query(
+                payload.message
+            )
+        except Exception:  # noqa: BLE001 - classifier failures fail closed
+            return _reject_local_test("classifier failure")
+
+        if not _is_single_status_intent(classification):
+            return _reject_local_test("not a single status intent")
+
+        classified_message = classification.intents[0].mensaje
+        processed_intent = process_initial_order_status_query(
+            db, exact_session, classified_message
+        )
+        responses = build_customer_responses(
+            db, exact_session, [processed_intent]
+        )
 
     refreshed = _reload_exact_session_for_snapshot(
         db, parsed_id, exact_session.id
@@ -618,6 +796,9 @@ __all__ = [
     "LocalTestRequest",
     "LocalTestResponse",
     "_build_list_url",
+    "_is_confirmed_clean_context",
+    "_is_single_status_intent",
+    "_load_confirmed_local_test_session",
     "_reload_exact_session_for_snapshot",
     "_serialize_execution_state",
     "router",

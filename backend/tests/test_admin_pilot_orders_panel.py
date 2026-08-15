@@ -35,6 +35,8 @@ import backend.routers.admin_pilot_orders as router_module
 from backend.config import settings as settings_module
 from backend.config.settings import Settings
 from backend.dependencies import get_session
+from backend.intents.schemas.intent_classification import IntentName
+from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.models import EstadoPedido, EstadoSession
 from backend.services.pilot_order_operations_view_service import (
     ClientSummary,
@@ -2615,7 +2617,6 @@ class PanelLocalTestAuthExactTargetNoProviderRegressionTest(
             "from backend.intents.resolvers",
             "from backend.intents.processor",
             "from backend.intents.contracts",
-            "from backend.llm",
             "from backend.services.session_service",
             "from backend.providers",
             "from backend.workers",
@@ -2639,6 +2640,10 @@ class PanelLocalTestAuthExactTargetNoProviderRegressionTest(
         with patch.object(
             router_module,
             "_load_local_test_session",
+            return_value=None,
+        ), patch.object(
+            router_module,
+            "_load_confirmed_local_test_session",
             return_value=None,
         ):
             headers = _basic_auth_header("ignored", CONFIGURED_TOKEN)
@@ -2962,11 +2967,24 @@ class PanelLocalTestRouteRevalidationTest(unittest.TestCase):
         )
 
     def _stub_loader_returning(self, return_value):
-        return patch.object(
-            router_module,
-            "_load_local_test_session",
-            return_value=return_value,
+        from contextlib import ExitStack
+
+        stack = ExitStack()
+        stack.enter_context(
+            patch.object(
+                router_module,
+                "_load_local_test_session",
+                return_value=return_value,
+            )
         )
+        stack.enter_context(
+            patch.object(
+                router_module,
+                "_load_confirmed_local_test_session",
+                return_value=return_value,
+            )
+        )
+        return stack
 
     def test_invalid_pedido_id_returns_generic_rejection(self) -> None:
         with patch.object(
@@ -3223,6 +3241,10 @@ class PanelLocalTestRouteNoMutationTest(unittest.TestCase):
             router_module,
             "_load_local_test_session",
             return_value=None,
+        ), patch.object(
+            router_module,
+            "_load_confirmed_local_test_session",
+            return_value=None,
         ):
             response = self._post(body={"message": "hola"})
         self.assertEqual(response.status_code, 400)
@@ -3272,7 +3294,8 @@ class PanelLocalTestRouteSrcPrivacyTest(unittest.TestCase):
     """The router file MUST NOT import any provider, Twilio, worker,
     outbound or receipt surface. The local-test POST handler is the
     only mutating entry point and only invokes the documented
-    response orchestrator seam."""
+    response orchestrator seam plus the documented single-call
+    classifier invocation for the non-draft status branch."""
 
     def test_router_source_does_not_import_provider_worker_twilio(self) -> None:
         from pathlib import Path
@@ -3284,7 +3307,6 @@ class PanelLocalTestRouteSrcPrivacyTest(unittest.TestCase):
             "from backend.intents.resolvers",
             "from backend.intents.processor",
             "from backend.intents.contracts",
-            "from backend.llm",
             "from backend.services.session_service",
             "from backend.providers",
             "from backend.workers",
@@ -3300,6 +3322,33 @@ class PanelLocalTestRouteSrcPrivacyTest(unittest.TestCase):
         for value in forbidden:
             with self.subTest(value=value):
                 self.assertNotIn(value, source)
+
+    def test_router_source_only_uses_classifier_as_single_interpreter(
+        self,
+    ) -> None:
+        """The router imports the existing ``IntentClassifier`` only
+        so the non-draft branch can call it once as a language
+        interpreter. No prompt, corpus, enum or model surface from
+        the LLM package is imported; only the documented
+        classification entry point.
+        """
+        from pathlib import Path
+
+        source = Path(router_module.__file__).read_text(encoding="utf-8")
+        self.assertIn(
+            "from backend.llm.intent_classifier import IntentClassifier",
+            source,
+        )
+        for forbidden in (
+            "from backend.llm.query_llm",
+            "from backend.llm.settings",
+            "from backend.llm.prompt",
+            "from backend.diagnostics.prompt_template",
+            "build_intent_prompt",
+            "PROMPT_TEMPLATE_VERSION",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, source)
 
 
 class PanelLocalTestRouteOrderLinesSnapshotTest(unittest.TestCase):
@@ -3531,6 +3580,10 @@ class PanelLocalTestRouteOrderLinesSnapshotTest(unittest.TestCase):
         ) as service_cls, patch.object(
             router_module,
             "_load_local_test_session",
+            return_value=None,
+        ), patch.object(
+            router_module,
+            "_load_confirmed_local_test_session",
             return_value=None,
         ):
             service_cls.return_value = _stub_service(
@@ -4400,6 +4453,1069 @@ class PanelLocalTestRouteOrderLinesFormRejectionTest(unittest.TestCase):
         ]
         self.assertIn("appendLine(\"error\"", guard_block)
         self.assertIn("Error del canal local", guard_block)
+
+
+class PanelLocalTestConfirmedOrderStatusTest(unittest.TestCase):
+    """Confirmed-order local-test branch: a non-``BORRADOR`` pedido
+    with a clean pending context accepts only one
+    :class:`IntentName.CONSULTAR_ESTADO_PEDIDO` intent and routes
+    it through the existing read-only status orchestration. Every
+    other outcome — non-status intent, multi-intent, classifier
+    transport/schema failure, active/queued pending context or
+    identity/ownership inconsistency — returns the documented
+    generic local rejection without invoking the normal message
+    processor, the global dispatcher or any mutating handler.
+
+    These tests intentionally do NOT use the SQLAlchemy session
+    override to drive the loader, because the route reaches the
+    confirmed branch only after the existing draft loader returns
+    ``None``. The tests patch both
+    :func:`_load_local_test_session` and
+    :func:`_load_confirmed_local_test_session` so the
+    exact-target contract is exercised without touching the
+    database.
+    """
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def _post(self, *, message: str = "¿cómo viene mi pedido?"):
+        headers = _basic_auth_header("ignored", CONFIGURED_TOKEN)
+        headers["X-Local-Test-Origin"] = "same-origin"
+        return self.client.post(
+            "/admin/pilot/orders/42/local-test",
+            json={"message": message},
+            headers=headers,
+        )
+
+    def _build_session(
+        self,
+        *,
+        context_type=None,
+        pending_intents=None,
+    ):
+        session = MagicMock(name="ConfirmedExactSession")
+        session.id = 21
+        session.id_pedido = 42
+        session.id_comercio = 1
+        session.id_cliente = 31
+        session.estado_session = EstadoSession.ACTIVA
+        session.context_type = context_type
+        session.pending_intents = pending_intents
+        return session
+
+    def _build_pedido(self):
+        pedido = MagicMock(name="ConfirmedExactPedido")
+        pedido.id = 42
+        pedido.estado_pedido = EstadoPedido.INGRESADO
+        return pedido
+
+    def _stub_loaders(self, session):
+        pedido = self._build_pedido()
+        return pedido, session, [
+            patch.object(
+                router_module,
+                "_load_local_test_session",
+                return_value=None,
+            ),
+            patch.object(
+                router_module,
+                "_load_confirmed_local_test_session",
+                return_value=(pedido, session),
+            ),
+        ]
+
+    def _patched_post(self, *, session, extra_patches):
+        pedido, exact_session, loaders = self._stub_loaders(session)
+        patches = list(loaders) + list(extra_patches)
+        from contextlib import ExitStack
+
+        stack = ExitStack()
+        for p in patches:
+            stack.enter_context(p)
+        return stack, pedido, exact_session
+
+    def _build_classification(self, *, intents):
+        from backend.intents.schemas.intent_classification import (
+            ClassifiedIntent,
+            IntentClassificationResult,
+        )
+
+        first_message = (
+            intents[0][1] if intents else "noop"
+        )
+        return IntentClassificationResult(
+            intents=[
+                ClassifiedIntent(intent=name, mensaje=message)
+                for name, message in intents
+            ],
+            mensaje=first_message,
+        )
+
+    def test_natural_status_question_for_confirmed_order_returns_status(
+        self,
+    ) -> None:
+        """A confirmed pedido with a clean pending context accepts
+        a natural-language status question that the classifier maps
+        to ``consultar_estado_pedido``. The route reuses the
+        existing read-only status orchestration and shared response
+        mapper for the exact same pedido/session identity.
+        """
+        session = self._build_session()
+        classification = self._build_classification(
+            intents=[(IntentName.CONSULTAR_ESTADO_PEDIDO, "¿cómo viene mi pedido?")],
+        )
+        processed_intent = ProcessedIntent(
+            intent="consultar_estado_pedido",
+            source_text="¿cómo viene mi pedido?",
+            status="executed",
+            recognizer="order_status_query",
+            handler="consultar_estado_pedido",
+            resolved_data={"estado_pedido": "ingresado"},
+        )
+        with patch.object(
+            router_module, "IntentClassifier"
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_initial_order_status_query",
+            return_value=processed_intent,
+        ) as status_query, patch.object(
+            router_module,
+            "build_customer_responses",
+            return_value=[
+                MagicMock(
+                    name="CustomerResponse",
+                    message="Tu pedido fue recibido y está confirmado.",
+                    intent="consultar_estado_pedido",
+                    status="executed",
+                )
+            ],
+        ) as mapper, patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+            return_value=(self._build_pedido(), session),
+        ) as snapshot_loader, patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock, patch.object(
+            router_module, "PilotOrderOperationsViewService"
+        ) as service_cls:
+            classifier_instance = MagicMock()
+            classifier_instance.query.return_value = classification
+            classifier_cls.return_value = classifier_instance
+            service_cls.return_value = _stub_service(
+                order_lines_snapshot=[
+                    OrderLineSnapshot(
+                        id=1,
+                        producto_nombre="Pan",
+                        presentacion_descripcion="Bolsa x 1kg",
+                        cantidad=2,
+                        precio_unitario_display="150.00",
+                        observaciones=None,
+                    )
+                ],
+            )
+            stack, _pedido, exact_session = self._patched_post(
+                session=session,
+                extra_patches=[],
+            )
+            with stack:
+                response = self._post()
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(
+            body["responses"],
+            [
+                {
+                    "message": "Tu pedido fue recibido y está confirmado.",
+                    "intent": "consultar_estado_pedido",
+                    "status": "executed",
+                }
+            ],
+        )
+        # The classifier is invoked exactly once as a language
+        # interpreter only.
+        classifier_instance.query.assert_called_once_with(
+            "¿cómo viene mi pedido?"
+        )
+        # The status orchestrator and shared mapper are reused; the
+        # normal message processor is NEVER invoked on this branch.
+        status_query.assert_called_once()
+        mapper.assert_called_once()
+        process_mock.assert_not_called()
+        # The snapshot uses the same exact pedido/session identity.
+        snapshot_loader.assert_called_once()
+        snapshot_args = snapshot_loader.call_args.args
+        self.assertEqual(snapshot_args[1], 42)
+        self.assertEqual(snapshot_args[2], exact_session.id)
+        # No internal details leak into the response.
+        for forbidden in (
+            "pending_intents",
+            "candidate_ids",
+            "resolved_data",
+            "source_text",
+            "OPENAI",
+            "API_KEY",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, response.text)
+        self.assertEqual(
+            set(body.keys()),
+            {"responses", "execution_state", "order_lines"},
+        )
+
+    def test_confirmed_order_does_not_call_transaction_control_methods(
+        self,
+    ) -> None:
+        """The accepted confirmed path is read-only: the router
+        never calls commit/rollback/flush/refresh/begin/begin_nested/
+        close/expire and the snapshot loader does not touch
+        transaction controls either.
+        """
+        session = self._build_session()
+        classification = self._build_classification(
+            intents=[(IntentName.CONSULTAR_ESTADO_PEDIDO, "estado")],
+        )
+        processed_intent = ProcessedIntent(
+            intent="consultar_estado_pedido",
+            source_text="estado",
+            status="executed",
+            recognizer="order_status_query",
+            handler="consultar_estado_pedido",
+            resolved_data={"estado_pedido": "preparacion"},
+        )
+        with patch.object(
+            router_module, "IntentClassifier"
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_initial_order_status_query",
+            return_value=processed_intent,
+        ), patch.object(
+            router_module,
+            "build_customer_responses",
+            return_value=[
+                MagicMock(
+                    name="CustomerResponse",
+                    message="ok",
+                    intent="consultar_estado_pedido",
+                    status="executed",
+                )
+            ],
+        ), patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+            return_value=(self._build_pedido(), session),
+        ), patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ):
+            classifier_instance = MagicMock()
+            classifier_instance.query.return_value = classification
+            classifier_cls.return_value = classifier_instance
+            stack, _pedido, _exact_session = self._patched_post(
+                session=session,
+                extra_patches=[],
+            )
+            with stack:
+                response = self._post(message="estado")
+        self.assertEqual(response.status_code, 200)
+        for method in (
+            "commit",
+            "rollback",
+            "flush",
+            "refresh",
+            "begin",
+            "begin_nested",
+            "close",
+            "expire",
+        ):
+            with self.subTest(method=method):
+                getattr(self.session, method).assert_not_called()
+
+    def test_confirmed_order_with_iniciar_pedido_intent_is_rejected(
+        self,
+    ) -> None:
+        session = self._build_session()
+        classification = self._build_classification(
+            intents=[(IntentName.INICIAR_PEDIDO, "quiero un pedido nuevo")],
+        )
+        with patch.object(
+            router_module, "IntentClassifier"
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_initial_order_status_query",
+        ) as status_query, patch.object(
+            router_module,
+            "build_customer_responses",
+        ) as mapper, patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            classifier_instance = MagicMock()
+            classifier_instance.query.return_value = classification
+            classifier_cls.return_value = classifier_instance
+            stack, _pedido, _exact_session = self._patched_post(
+                session=session,
+                extra_patches=[],
+            )
+            with stack:
+                response = self._post(
+                    message="quiero un pedido nuevo",
+                )
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertEqual(body.get("responses"), [])
+        self.assertIn("message", body)
+        process_mock.assert_not_called()
+        status_query.assert_not_called()
+        mapper.assert_not_called()
+
+    def test_confirmed_order_with_add_remove_modify_cancel_is_rejected(
+        self,
+    ) -> None:
+        non_status_intents = (
+            IntentName.AGREGAR_PRODUCTO,
+            IntentName.QUITAR_PRODUCTO,
+            IntentName.MODIFICAR_PRODUCTO,
+            IntentName.CANCELAR_PEDIDO,
+        )
+        for intent_name in non_status_intents:
+            with self.subTest(intent=intent_name.value):
+                session = self._build_session()
+                classification = self._build_classification(
+                    intents=[(intent_name, "free-form text")],
+                )
+                with patch.object(
+                    router_module, "IntentClassifier"
+                ) as classifier_cls, patch.object(
+                    router_module,
+                    "process_initial_order_status_query",
+                ) as status_query, patch.object(
+                    router_module,
+                    "build_customer_responses",
+                ) as mapper, patch.object(
+                    router_module,
+                    "process_incoming_message_with_responses",
+                ) as process_mock:
+                    classifier_instance = MagicMock()
+                    classifier_instance.query.return_value = classification
+                    classifier_cls.return_value = classifier_instance
+                    stack, _pedido, _exact_session = self._patched_post(
+                        session=session,
+                        extra_patches=[],
+                    )
+                    with stack:
+                        response = self._post(message="x")
+                self.assertEqual(response.status_code, 400)
+                process_mock.assert_not_called()
+                status_query.assert_not_called()
+                mapper.assert_not_called()
+
+    def test_confirmed_order_with_multiple_intents_is_rejected(self) -> None:
+        session = self._build_session()
+        classification = self._build_classification(
+            intents=[
+                (IntentName.CONSULTAR_ESTADO_PEDIDO, "estado"),
+                (IntentName.AGREGAR_PRODUCTO, "una pizza"),
+            ],
+        )
+        with patch.object(
+            router_module, "IntentClassifier"
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_initial_order_status_query",
+        ) as status_query, patch.object(
+            router_module,
+            "build_customer_responses",
+        ) as mapper, patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            classifier_instance = MagicMock()
+            classifier_instance.query.return_value = classification
+            classifier_cls.return_value = classifier_instance
+            stack, _pedido, _exact_session = self._patched_post(
+                session=session,
+                extra_patches=[],
+            )
+            with stack:
+                response = self._post(message="estado y una pizza")
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertEqual(body.get("responses"), [])
+        process_mock.assert_not_called()
+        status_query.assert_not_called()
+        mapper.assert_not_called()
+        # Internal classifier payloads must not leak into the body.
+        for forbidden in (
+            "consultar_estado_pedido",
+            "agregar_producto",
+            "estado y una pizza",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, response.text)
+
+    def test_confirmed_order_with_classifier_transport_failure_is_rejected(
+        self,
+    ) -> None:
+        """Classifier transport or schema failure is rejected
+        generically without leaking exception detail, settings or
+        any internal payload into the HTTP body."""
+        session = self._build_session()
+        with patch.object(
+            router_module, "IntentClassifier"
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_initial_order_status_query",
+        ) as status_query, patch.object(
+            router_module,
+            "build_customer_responses",
+        ) as mapper, patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            classifier_instance = MagicMock()
+            classifier_instance.query.side_effect = RuntimeError(
+                "upstream LLM timeout with SECRET-KEY"
+            )
+            classifier_cls.return_value = classifier_instance
+            stack, _pedido, _exact_session = self._patched_post(
+                session=session,
+                extra_patches=[],
+            )
+            with stack:
+                response = self._post(message="estado")
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertEqual(body.get("responses"), [])
+        for forbidden in (
+            "RuntimeError",
+            "SECRET-KEY",
+            "timeout",
+            "LLM",
+            "openai",
+            "exception",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, response.text)
+        process_mock.assert_not_called()
+        status_query.assert_not_called()
+        mapper.assert_not_called()
+
+    def test_confirmed_order_with_active_pending_context_is_rejected(
+        self,
+    ) -> None:
+        """An active pending intent on the exact confirmed session
+        forces rejection BEFORE the classifier is invoked. The
+        normal message processor must never be called.
+        """
+        session = self._build_session(
+            context_type="product_selection",
+            pending_intents={
+                "version": 1,
+                "active": {
+                    "intent": "agregar_producto",
+                    "source_text": "una pizza",
+                    "status": "pending_resolution",
+                    "handler": "agregar_producto",
+                },
+                "queue": [],
+            },
+        )
+        with patch.object(
+            router_module, "IntentClassifier"
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_initial_order_status_query",
+        ) as status_query, patch.object(
+            router_module,
+            "build_customer_responses",
+        ) as mapper, patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            classifier_instance = MagicMock()
+            classifier_cls.return_value = classifier_instance
+            stack, _pedido, _exact_session = self._patched_post(
+                session=session,
+                extra_patches=[],
+            )
+            with stack:
+                response = self._post(message="estado")
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertEqual(body.get("responses"), [])
+        classifier_instance.query.assert_not_called()
+        process_mock.assert_not_called()
+        status_query.assert_not_called()
+        mapper.assert_not_called()
+
+    def test_confirmed_order_with_queued_pending_context_is_rejected(
+        self,
+    ) -> None:
+        session = self._build_session(
+            context_type=None,
+            pending_intents={
+                "version": 1,
+                "active": None,
+                "queue": [
+                    {
+                        "intent": "agregar_producto",
+                        "source_text": "q1",
+                        "status": "pending_resolution",
+                        "handler": "agregar_producto",
+                    }
+                ],
+            },
+        )
+        with patch.object(
+            router_module, "IntentClassifier"
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_initial_order_status_query",
+        ) as status_query, patch.object(
+            router_module,
+            "build_customer_responses",
+        ) as mapper, patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            classifier_instance = MagicMock()
+            classifier_cls.return_value = classifier_instance
+            stack, _pedido, _exact_session = self._patched_post(
+                session=session,
+                extra_patches=[],
+            )
+            with stack:
+                response = self._post(message="estado")
+        self.assertEqual(response.status_code, 400)
+        classifier_instance.query.assert_not_called()
+        process_mock.assert_not_called()
+        status_query.assert_not_called()
+        mapper.assert_not_called()
+
+    def test_confirmed_order_with_malformed_pending_json_is_rejected(
+        self,
+    ) -> None:
+        session = self._build_session(
+            context_type=None,
+            pending_intents={"active": "not-a-dict"},
+        )
+        with patch.object(
+            router_module, "IntentClassifier"
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_initial_order_status_query",
+        ) as status_query, patch.object(
+            router_module,
+            "build_customer_responses",
+        ) as mapper, patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            classifier_instance = MagicMock()
+            classifier_cls.return_value = classifier_instance
+            stack, _pedido, _exact_session = self._patched_post(
+                session=session,
+                extra_patches=[],
+            )
+            with stack:
+                response = self._post(message="estado")
+        self.assertEqual(response.status_code, 400)
+        classifier_instance.query.assert_not_called()
+        process_mock.assert_not_called()
+        status_query.assert_not_called()
+        mapper.assert_not_called()
+
+    def test_confirmed_order_with_non_empty_context_type_is_rejected(
+        self,
+    ) -> None:
+        session = self._build_session(
+            context_type="product_selection",
+            pending_intents=None,
+        )
+        with patch.object(
+            router_module, "IntentClassifier"
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_initial_order_status_query",
+        ) as status_query, patch.object(
+            router_module,
+            "build_customer_responses",
+        ) as mapper, patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            classifier_instance = MagicMock()
+            classifier_cls.return_value = classifier_instance
+            stack, _pedido, _exact_session = self._patched_post(
+                session=session,
+                extra_patches=[],
+            )
+            with stack:
+                response = self._post(message="estado")
+        self.assertEqual(response.status_code, 400)
+        classifier_instance.query.assert_not_called()
+        process_mock.assert_not_called()
+        status_query.assert_not_called()
+        mapper.assert_not_called()
+
+    def test_confirmed_order_with_identity_mismatch_is_rejected(
+        self,
+    ) -> None:
+        """When the confirmed loader returns ``None`` (missing
+        pedido, session, ownership or state mismatch) the route
+        returns the documented generic rejection without searching
+        for another session, another pedido or a successor."""
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=None,
+        ), patch.object(
+            router_module,
+            "_load_confirmed_local_test_session",
+            return_value=None,
+        ), patch.object(
+            router_module, "IntentClassifier"
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_initial_order_status_query",
+        ) as status_query, patch.object(
+            router_module,
+            "build_customer_responses",
+        ) as mapper, patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            classifier_instance = MagicMock()
+            classifier_cls.return_value = classifier_instance
+            response = self._post(message="estado")
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertEqual(body.get("responses"), [])
+        # The rejection body never leaks the failing invariant.
+        for forbidden in (
+            "ingresado",
+            "estado_pedido",
+            "session",
+            "pedido",
+            "comercio",
+            "cliente",
+            "id_pedido",
+            "id_session",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, response.text)
+        classifier_instance.query.assert_not_called()
+        process_mock.assert_not_called()
+        status_query.assert_not_called()
+        mapper.assert_not_called()
+
+    def test_confirmed_order_uses_same_pedido_session_in_snapshot(
+        self,
+    ) -> None:
+        """The accepted confirmed path reloads the snapshot for the
+        same exact pedido_id and session_id; no other pedido or
+        session is ever substituted.
+        """
+        session = self._build_session()
+        classification = self._build_classification(
+            intents=[(IntentName.CONSULTAR_ESTADO_PEDIDO, "estado")],
+        )
+        processed_intent = ProcessedIntent(
+            intent="consultar_estado_pedido",
+            source_text="estado",
+            status="executed",
+            recognizer="order_status_query",
+            handler="consultar_estado_pedido",
+            resolved_data={"estado_pedido": "terminado"},
+        )
+        with patch.object(
+            router_module, "IntentClassifier"
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_initial_order_status_query",
+            return_value=processed_intent,
+        ), patch.object(
+            router_module,
+            "build_customer_responses",
+            return_value=[
+                MagicMock(
+                    name="CustomerResponse",
+                    message="ok",
+                    intent="consultar_estado_pedido",
+                    status="executed",
+                )
+            ],
+        ), patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+            return_value=(self._build_pedido(), session),
+        ) as snapshot_loader, patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ):
+            classifier_instance = MagicMock()
+            classifier_instance.query.return_value = classification
+            classifier_cls.return_value = classifier_instance
+            stack, _pedido, exact_session = self._patched_post(
+                session=session,
+                extra_patches=[],
+            )
+            with stack:
+                response = self._post(message="estado")
+        self.assertEqual(response.status_code, 200)
+        snapshot_args = snapshot_loader.call_args.args
+        self.assertEqual(snapshot_args[1], 42)
+        self.assertEqual(snapshot_args[2], exact_session.id)
+
+    def test_draft_path_still_calls_message_processor_for_borrador(
+        self,
+    ) -> None:
+        """When the draft loader returns the exact ``BORRADOR``
+        session, the route MUST preserve the existing message
+        processor seam and MUST NOT enter the confirmed branch.
+        """
+        session = self._build_session(
+            context_type="product_selection",
+            pending_intents=None,
+        )
+        session.id_pedido = 42
+        pedido = self._build_pedido()
+        pedido.estado_pedido = EstadoPedido.BORRADOR
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=(pedido, session),
+        ), patch.object(
+            router_module,
+            "_load_confirmed_local_test_session",
+        ) as confirmed_loader, patch.object(
+            router_module, "IntentClassifier"
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock, patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+            return_value=(pedido, session),
+        ), patch.object(
+            router_module,
+            "process_initial_order_status_query",
+        ) as status_query, patch.object(
+            router_module,
+            "build_customer_responses",
+        ) as mapper:
+            from backend.intents.schemas.customer_response import (
+                CustomerResponse,
+            )
+
+            process_mock.return_value = [
+                CustomerResponse(
+                    message="ok",
+                    intent="saludo",
+                    status="executed",
+                )
+            ]
+            response = self._post(message="hola")
+        self.assertEqual(response.status_code, 200)
+        process_mock.assert_called_once()
+        # The confirmed branch was NOT entered.
+        confirmed_loader.assert_not_called()
+        classifier_cls.assert_not_called()
+        status_query.assert_not_called()
+        mapper.assert_not_called()
+
+    def test_canonical_pending_reaches_classifier_for_confirmed_order(
+        self,
+    ) -> None:
+        """A canonical valid pending JSON (``version=1``,
+        ``active=None`` and ``queue`` empty) lets the route reach
+        the :class:`IntentClassifier` for the confirmed order. The
+        classifier is invoked exactly once as the documented
+        language interpreter and no transaction-control method is
+        called.
+        """
+        session = self._build_session(
+            context_type=None,
+            pending_intents={
+                "version": 1,
+                "active": None,
+                "queue": [],
+            },
+        )
+        classification = self._build_classification(
+            intents=[(IntentName.CONSULTAR_ESTADO_PEDIDO, "estado")],
+        )
+        processed_intent = ProcessedIntent(
+            intent="consultar_estado_pedido",
+            source_text="estado",
+            status="executed",
+            recognizer="order_status_query",
+            handler="consultar_estado_pedido",
+            resolved_data={"estado_pedido": "ingresado"},
+        )
+        with patch.object(
+            router_module, "IntentClassifier"
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_initial_order_status_query",
+            return_value=processed_intent,
+        ) as status_query, patch.object(
+            router_module,
+            "build_customer_responses",
+            return_value=[
+                MagicMock(
+                    name="CustomerResponse",
+                    message="ok",
+                    intent="consultar_estado_pedido",
+                    status="executed",
+                )
+            ],
+        ) as mapper, patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+            return_value=(self._build_pedido(), session),
+        ), patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            classifier_instance = MagicMock()
+            classifier_instance.query.return_value = classification
+            classifier_cls.return_value = classifier_instance
+            stack, _pedido, _exact_session = self._patched_post(
+                session=session,
+                extra_patches=[],
+            )
+            with stack:
+                response = self._post(message="estado")
+        self.assertEqual(response.status_code, 200)
+        # The classifier IS invoked because the pending context is
+        # the documented canonical cleared shape.
+        classifier_instance.query.assert_called_once_with("estado")
+        status_query.assert_called_once()
+        mapper.assert_called_once()
+        process_mock.assert_not_called()
+        for method in (
+            "commit",
+            "rollback",
+            "flush",
+            "refresh",
+            "begin",
+            "begin_nested",
+            "close",
+            "expire",
+        ):
+            with self.subTest(method=method):
+                getattr(self.session, method).assert_not_called()
+
+    def test_empty_string_context_type_is_rejected_before_classifier(
+        self,
+    ) -> None:
+        """A non-``None`` ``context_type`` — including the empty
+        string — must fail closed BEFORE the classifier is even
+        constructed. The classifier is never called, no business
+        orchestrator is invoked and no transaction-control method
+        is touched.
+        """
+        session = self._build_session(
+            context_type="",
+            pending_intents=None,
+        )
+        with patch.object(
+            router_module, "IntentClassifier"
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_initial_order_status_query",
+        ) as status_query, patch.object(
+            router_module,
+            "build_customer_responses",
+        ) as mapper, patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            classifier_instance = MagicMock()
+            classifier_cls.return_value = classifier_instance
+            stack, _pedido, _exact_session = self._patched_post(
+                session=session,
+                extra_patches=[],
+            )
+            with stack:
+                response = self._post(message="estado")
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertEqual(body.get("responses"), [])
+        # The rejection never leaks the offending invariant.
+        for forbidden in ("context_type", "ingresado", "session", "pedido"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, response.text)
+        # Fail-closed BEFORE the classifier is even reached.
+        classifier_cls.assert_not_called()
+        classifier_instance.query.assert_not_called()
+        process_mock.assert_not_called()
+        status_query.assert_not_called()
+        mapper.assert_not_called()
+        for method in (
+            "commit",
+            "rollback",
+            "flush",
+            "refresh",
+            "begin",
+            "begin_nested",
+            "close",
+            "expire",
+        ):
+            with self.subTest(method=method):
+                getattr(self.session, method).assert_not_called()
+
+    def test_invalid_pending_version_is_rejected_before_classifier(
+        self,
+    ) -> None:
+        """A pending dict with a non-``int`` ``version`` must fail
+        closed BEFORE the classifier is reached. The router never
+        parses the payload manually: :class:`PendingIntents`
+        ``model_validate`` is the only validator.
+        """
+        session = self._build_session(
+            context_type=None,
+            pending_intents={
+                "version": "invalida",
+                "active": None,
+                "queue": [],
+            },
+        )
+        with patch.object(
+            router_module, "IntentClassifier"
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_initial_order_status_query",
+        ) as status_query, patch.object(
+            router_module,
+            "build_customer_responses",
+        ) as mapper, patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            classifier_instance = MagicMock()
+            classifier_cls.return_value = classifier_instance
+            stack, _pedido, _exact_session = self._patched_post(
+                session=session,
+                extra_patches=[],
+            )
+            with stack:
+                response = self._post(message="estado")
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertEqual(body.get("responses"), [])
+        # No validation detail leaks into the rejection body.
+        for forbidden in (
+            "version",
+            "invalida",
+            "pending_intents",
+            "ValidationError",
+            "pydantic",
+            "model_validate",
+            "PendingIntents",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, response.text)
+        classifier_cls.assert_not_called()
+        classifier_instance.query.assert_not_called()
+        process_mock.assert_not_called()
+        status_query.assert_not_called()
+        mapper.assert_not_called()
+        for method in (
+            "commit",
+            "rollback",
+            "flush",
+            "refresh",
+            "begin",
+            "begin_nested",
+            "close",
+            "expire",
+        ):
+            with self.subTest(method=method):
+                getattr(self.session, method).assert_not_called()
+
+    def test_non_list_pending_queue_is_rejected_before_classifier(
+        self,
+    ) -> None:
+        """A pending dict whose ``queue`` is not a list must fail
+        closed BEFORE the classifier is reached. The route relies
+        on :class:`PendingIntents` ``model_validate`` so any
+        schema-incompatible shape (non-list queue, missing
+        required keys, etc.) is rejected without a manual parser.
+        """
+        session = self._build_session(
+            context_type=None,
+            pending_intents={
+                "version": 1,
+                "active": None,
+                "queue": "no-es-una-lista",
+            },
+        )
+        with patch.object(
+            router_module, "IntentClassifier"
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_initial_order_status_query",
+        ) as status_query, patch.object(
+            router_module,
+            "build_customer_responses",
+        ) as mapper, patch.object(
+            router_module,
+            "process_incoming_message_with_responses",
+        ) as process_mock:
+            classifier_instance = MagicMock()
+            classifier_cls.return_value = classifier_instance
+            stack, _pedido, _exact_session = self._patched_post(
+                session=session,
+                extra_patches=[],
+            )
+            with stack:
+                response = self._post(message="estado")
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertEqual(body.get("responses"), [])
+        for forbidden in (
+            "queue",
+            "no-es-una-lista",
+            "ValidationError",
+            "pydantic",
+            "model_validate",
+            "PendingIntents",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, response.text)
+        classifier_cls.assert_not_called()
+        classifier_instance.query.assert_not_called()
+        process_mock.assert_not_called()
+        status_query.assert_not_called()
+        mapper.assert_not_called()
+        for method in (
+            "commit",
+            "rollback",
+            "flush",
+            "refresh",
+            "begin",
+            "begin_nested",
+            "close",
+            "expire",
+        ):
+            with self.subTest(method=method):
+                getattr(self.session, method).assert_not_called()
 
 
 if __name__ == "__main__":
