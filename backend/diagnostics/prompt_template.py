@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import hashlib
 
-PROMPT_TEMPLATE_VERSION = "intent-classifier/v1.7.0"
+PROMPT_TEMPLATE_VERSION = "intent-classifier/v1.8.0"
 
 _INTRO = (
     "\n"
@@ -36,8 +36,8 @@ _INTENT_CATALOG = """
 * Si el cliente se despide o da por terminada la conversación = `despedida`
 * Si responde afirmativamente a una pregunta previa = `respuesta_afirmativa`
 * Si responde negativamente a una pregunta previa = `respuesta_negativa`
-* Si quiere ver la carta o menú = `ver_menu`
-* Si consulta por un producto, precio, tamaño, variante, ingredientes o disponibilidad = `consultar_producto`
+* Si quiere ver la carta o menú, o pide ver los productos disponibles dentro de una categoría del comercio (por ejemplo pizzas, empanadas o bebidas) = `ver_menu`
+* Si consulta por un producto concreto, su precio, tamaño, variante, ingredientes o disponibilidad = `consultar_producto`
 * Si consulta por los medios de pago aceptados = `ver_metodos_de_pago`
 * Si consulta por las formas de entrega disponibles = `ver_metodos_de_entrega`
 * Si consulta el domicilio o ubicación del comercio = `consultar_domicilio_comercio`
@@ -85,6 +85,8 @@ Reglas de clasificación:
    En la duda, si el mensaje contiene un DOMICILIO o DIRECCIÓN concreta, clasificá como `set_direccion_entrega` y NUNCA como `set_observacion_pedido`. La palabra "entrega" por sí sola no implica `set_metodo_de_entrega` ni `set_observacion_pedido` cuando la intención es fijar una dirección.
 
 9. Cuando el mensaje exprese quitar, sacar, retirar o eliminar uno o más productos del pedido actual, clasificá como `quitar_producto`. Esta es una regla SEMÁNTICA: el criterio de decisión es el significado de remoción del pedido, no la pertenencia a una lista cerrada de verbos. Formulaciones representativas que mapean a `quitar_producto` incluyen, entre otras, `quita`, `quitá`, `quitar`, `saca`, `sacá`, `sacar`, `retirá`, `retirar`, `eliminá`, `eliminar`. Una solicitud clara de remoción del pedido NUNCA debe clasificarse como `agregar_producto`. Cuando el mensaje sólo pida agregar o añadir productos al pedido, mantené la clasificación `agregar_producto` sin cambios.
+
+10. Distinguí claramente `ver_menu` de `consultar_producto`. Clasificá como `ver_menu` cuando el cliente pide conocer todos los productos disponibles de una categoría del comercio (incluyendo variaciones naturales como singular/plural, ortografía o frases como "qué pizzas hay", "qué gustos de empanadas tenés", "qué bebidas están disponibles"). Clasificá como `consultar_producto` cuando el cliente pregunta por un producto específico, su precio, tamaño, ingredientes o disponibilidad puntual. Una pregunta genérica sobre una categoría NUNCA debe clasificarse como `consultar_producto`.
 
 """
 

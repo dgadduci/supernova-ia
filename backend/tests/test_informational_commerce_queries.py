@@ -118,6 +118,48 @@ def _precio(valor):
     return precio
 
 
+def _resolved(
+    *,
+    selected=None,
+    token: str | None = None,
+    nombre: str | None = None,
+    categoria_id: int | None = None,
+    candidate_count: int = 3,
+):
+    """Build a :class:`MenuCategoryResolution` for tests."""
+    from backend.llm.menu_category_resolver import (
+        MenuCategoryCandidate,
+        MenuCategoryResolution,
+    )
+
+    if selected is None and token is not None and nombre is not None:
+        candidate = MenuCategoryCandidate(
+            categoria_id=int(categoria_id or 0),
+            token=token,
+            nombre=nombre,
+        )
+        return MenuCategoryResolution(
+            selected=candidate,
+            failure_class=None,
+            attempted=True,
+            candidate_count=candidate_count,
+            latency_ms=1,
+            template_version="menu-category-resolver/v1.0.0",
+            template_fingerprint="test-fp",
+            model=None,
+        )
+    return MenuCategoryResolution(
+        selected=None,
+        failure_class=None,
+        attempted=True,
+        candidate_count=candidate_count,
+        latency_ms=1,
+        template_version="menu-category-resolver/v1.0.0",
+        template_fingerprint="test-fp",
+        model=None,
+    )
+
+
 def _producto(
     *,
     id_: int,
@@ -207,12 +249,15 @@ class IsInformationalCommerceIntentTest(unittest.TestCase):
 
 
 class ProcessInitialMenuTest(unittest.TestCase):
+    @patch.object(info_module, "_build_menu_category_resolver")
     @patch.object(info_module, "ProductoQueryService")
     def test_executed_lists_only_sellable_products_in_configured_order(
-        self, svc_cls
+        self, svc_cls, resolver_factory
     ) -> None:
         cat_pizzas = _categoria("Pizzas", orden=1)
+        cat_pizzas.id = 1
         cat_empanadas = _categoria("Empanadas", orden=2)
+        cat_empanadas.id = 2
         pres_pizza_individual = _presentacion("PI", "Individual")
         pres_pizza_grande = _presentacion("PG", "Grande")
         pres_empanada_carne = _presentacion("EC", "Unidad")
@@ -235,6 +280,8 @@ class ProcessInitialMenuTest(unittest.TestCase):
             orden=1,
         )
         svc_cls.return_value.list_vendibles.return_value = [pizza, empanada]
+        resolver_instance = resolver_factory.return_value
+        resolver_instance.resolve.return_value = _resolved(selected=None)
 
         processed = process_initial_informational_commerce_query(
             _db(), _session(id_comercio=7), _classified(IntentName.VER_MENU, "menu")
@@ -252,6 +299,7 @@ class ProcessInitialMenuTest(unittest.TestCase):
         self.assertEqual(items[0]["categoria_nombre"], "Pizzas")
         self.assertEqual(items[-1]["categoria_nombre"], "Empanadas")
         svc_cls.return_value.list_vendibles.assert_called_once_with(7)
+        resolver_instance.resolve.assert_called_once()
 
     @patch.object(info_module, "ProductoQueryService")
     def test_empty_catalog_returns_no_items_rejection(self, svc_cls) -> None:
@@ -278,6 +326,694 @@ class ProcessInitialMenuTest(unittest.TestCase):
         )
 
         svc_cls.return_value.list_vendibles.assert_called_once_with(42)
+
+
+class ProcessInitialMenuCategoryResolverTest(unittest.TestCase):
+    """Focused tests for the bounded second LLM resolver inside
+    ``_resolve_menu``. The informational orchestration must:
+
+    * invoke the resolver exactly once for ``ver_menu`` with the
+      bounded candidate projection;
+    * preserve the full menu when the resolver selects nothing or
+      fails;
+    * honour the documented candidate bounds;
+    * never query another commerce or accept a LLM-provided database
+      ID;
+    * keep the original ``list_vendibles`` call unique.
+    """
+
+    def _catalog(self) -> list:
+        cat_pizzas = _categoria("Pizzas", orden=1)
+        cat_empanadas = _categoria("Empanadas", orden=2)
+        cat_bebidas = _categoria("Bebidas", orden=3)
+        cat_pizzas.id = 1
+        cat_empanadas.id = 2
+        cat_bebidas.id = 3
+
+        pres_pizza_individual = _presentacion("PI", "Individual")
+        pres_pizza_grande = _presentacion("PG", "Grande")
+        pres_empanada_carne = _presentacion("EC", "Unidad")
+        pres_empanada_pollo = _presentacion("EP", "Unidad")
+        pres_bebida_cola = _presentacion("BC", "Botella")
+
+        pizza = _producto(
+            id_=1,
+            nombre="Muzzarella",
+            categoria=cat_pizzas,
+            presentaciones=[
+                _producto_presentacion(id_=10, presentacion=pres_pizza_individual),
+                _producto_presentacion(id_=11, presentacion=pres_pizza_grande),
+            ],
+            orden=1,
+        )
+        pizza2 = _producto(
+            id_=2,
+            nombre="Napolitana",
+            categoria=cat_pizzas,
+            presentaciones=[
+                _producto_presentacion(id_=12, presentacion=pres_pizza_individual),
+            ],
+            orden=2,
+        )
+        empanada_carne = _producto(
+            id_=3,
+            nombre="Carne picante",
+            categoria=cat_empanadas,
+            presentaciones=[
+                _producto_presentacion(id_=20, presentacion=pres_empanada_carne),
+            ],
+            orden=1,
+        )
+        empanada_pollo = _producto(
+            id_=4,
+            nombre="Pollo",
+            categoria=cat_empanadas,
+            presentaciones=[
+                _producto_presentacion(id_=21, presentacion=pres_empanada_pollo),
+            ],
+            orden=2,
+        )
+        bebida_cola = _producto(
+            id_=5,
+            nombre="Coca-Cola",
+            categoria=cat_bebidas,
+            presentaciones=[
+                _producto_presentacion(id_=30, presentacion=pres_bebida_cola),
+            ],
+            orden=1,
+        )
+        return [pizza, pizza2, empanada_carne, empanada_pollo, bebida_cola]
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_empanadas_selection_filters_only_empanadas(
+        self, svc_cls, resolver_cls
+    ) -> None:
+        svc_cls.return_value.list_vendibles.return_value = self._catalog()
+        resolver_instance = resolver_cls.return_value
+        resolver_instance.resolve.return_value = _resolved(
+            token="c2", nombre="Empanadas", categoria_id=2
+        )
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "qué gustos de empanadas tenés"),
+        )
+
+        self.assertEqual(processed.intent, "ver_menu")
+        self.assertEqual(processed.status, "executed")
+        self.assertEqual(processed.resolved_data["categoria_nombre"], "Empanadas")
+        items = processed.resolved_data["items"]
+        self.assertEqual(
+            [(i["producto_nombre"], i["categoria_nombre"]) for i in items],
+            [
+                ("Carne picante", "Empanadas"),
+                ("Pollo", "Empanadas"),
+            ],
+        )
+        resolver_instance.resolve.assert_called_once()
+        args, _ = resolver_instance.resolve.call_args
+        self.assertEqual(args[0], "qué gustos de empanadas tenés")
+        sent_candidates = args[1]
+        self.assertEqual(
+            [(c.token, c.nombre) for c in sent_candidates],
+            [("c1", "Pizzas"), ("c2", "Empanadas"), ("c3", "Bebidas")],
+        )
+        for candidate in sent_candidates:
+            self.assertNotEqual(candidate.categoria_id, 7)
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_pizzas_selection_filters_only_pizzas(
+        self, svc_cls, resolver_cls
+    ) -> None:
+        svc_cls.return_value.list_vendibles.return_value = self._catalog()
+        resolver_instance = resolver_cls.return_value
+        resolver_instance.resolve.return_value = _resolved(
+            token="c1", nombre="Pizzas", categoria_id=1
+        )
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "qué pizzas hay"),
+        )
+
+        items = processed.resolved_data["items"]
+        self.assertEqual(
+            [i["categoria_nombre"] for i in items],
+            ["Pizzas", "Pizzas", "Pizzas"],
+        )
+        self.assertEqual(
+            sorted({i["producto_nombre"] for i in items}),
+            ["Muzzarella", "Napolitana"],
+        )
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_bebidas_selection_filters_only_bebidas(
+        self, svc_cls, resolver_cls
+    ) -> None:
+        svc_cls.return_value.list_vendibles.return_value = self._catalog()
+        resolver_instance = resolver_cls.return_value
+        resolver_instance.resolve.return_value = _resolved(
+            token="c3", nombre="Bebidas", categoria_id=3
+        )
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "qué bebidas están disponibles"),
+        )
+
+        items = processed.resolved_data["items"]
+        self.assertEqual([i["categoria_nombre"] for i in items], ["Bebidas"])
+        self.assertEqual(items[0]["producto_nombre"], "Coca-Cola")
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_no_selection_keeps_full_menu_byte_for_byte(
+        self, svc_cls, resolver_cls
+    ) -> None:
+        svc_cls.return_value.list_vendibles.return_value = self._catalog()
+        resolver_instance = resolver_cls.return_value
+        resolver_instance.resolve.return_value = _resolved(selected=None)
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "qué pizzas hay"),
+        )
+
+        self.assertEqual(processed.status, "executed")
+        self.assertNotIn("categoria_nombre", processed.resolved_data)
+        self.assertEqual(len(processed.resolved_data["items"]), 6)
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_transport_failure_keeps_full_menu(
+        self, svc_cls, resolver_cls
+    ) -> None:
+        from backend.llm.menu_category_resolver import MenuCategoryResolution
+
+        svc_cls.return_value.list_vendibles.return_value = self._catalog()
+        resolver_instance = resolver_cls.return_value
+        resolver_instance.resolve.return_value = MenuCategoryResolution(
+            selected=None,
+            failure_class="transport",
+            attempted=True,
+            candidate_count=3,
+            latency_ms=10,
+            template_version="menu-category-resolver/v1.0.0",
+            template_fingerprint="fp",
+            model=None,
+        )
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "qué pizzas hay"),
+        )
+
+        self.assertEqual(processed.status, "executed")
+        self.assertNotIn("categoria_nombre", processed.resolved_data)
+        self.assertEqual(len(processed.resolved_data["items"]), 6)
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_catalog_is_loaded_only_once(self, svc_cls, resolver_cls) -> None:
+        svc_cls.return_value.list_vendibles.return_value = self._catalog()
+        resolver_instance = resolver_cls.return_value
+        resolver_instance.resolve.return_value = _resolved(selected=None)
+
+        process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "qué pizzas hay"),
+        )
+
+        svc_cls.return_value.list_vendibles.assert_called_once_with(7)
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_isolation_between_comercios(self, svc_cls, resolver_cls) -> None:
+        svc_cls.return_value.list_vendibles.return_value = self._catalog()
+        resolver_instance = resolver_cls.return_value
+        resolver_instance.resolve.return_value = _resolved(
+            token="c1", nombre="Pizzas", categoria_id=1
+        )
+
+        process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=99),
+            _classified(IntentName.VER_MENU, "qué pizzas hay"),
+        )
+
+        svc_cls.return_value.list_vendibles.assert_called_once_with(99)
+        args, _ = resolver_instance.resolve.call_args
+        sent_candidates = args[1]
+        for candidate in sent_candidates:
+            self.assertNotEqual(candidate.categoria_id, 99)
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_token_name_mismatch_falls_back_to_full_menu(
+        self, svc_cls, resolver_cls
+    ) -> None:
+        svc_cls.return_value.list_vendibles.return_value = self._catalog()
+        resolver_instance = resolver_cls.return_value
+        resolver_instance.resolve.return_value = _resolved(selected=None)
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "qué pizzas hay"),
+        )
+
+        self.assertEqual(processed.status, "executed")
+        self.assertNotIn("categoria_nombre", processed.resolved_data)
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_does_not_mutate_session_or_pending(self, svc_cls, resolver_cls) -> None:
+        svc_cls.return_value.list_vendibles.return_value = self._catalog()
+        resolver_instance = resolver_cls.return_value
+        resolver_instance.resolve.return_value = _resolved(
+            token="c1", nombre="Pizzas", categoria_id=1
+        )
+
+        session = _session(id_comercio=7)
+        session.pending_intents = {"existing": "value"}
+        snapshot_pending = dict(session.pending_intents)
+        snapshot_context = session.context_type
+
+        process_initial_informational_commerce_query(
+            _db(),
+            session,
+            _classified(IntentName.VER_MENU, "qué pizzas hay"),
+        )
+
+        self.assertEqual(session.pending_intents, snapshot_pending)
+        self.assertEqual(session.context_type, snapshot_context)
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_oversized_candidate_count_skips_resolver(
+        self, svc_cls, resolver_cls
+    ) -> None:
+        cats = []
+        products = []
+        for index in range(1, 25):
+            cat = _categoria(f"Categoria {index}", orden=index)
+            cat.id = index
+            cats.append(cat)
+            pres = _presentacion(f"C{index}", f"Pres {index}")
+            products.append(
+                _producto(
+                    id_=index,
+                    nombre=f"Prod {index}",
+                    categoria=cat,
+                    presentaciones=[
+                        _producto_presentacion(
+                            id_=index * 10, presentacion=pres
+                        )
+                    ],
+                )
+            )
+        svc_cls.return_value.list_vendibles.return_value = products
+        resolver_instance = resolver_cls.return_value
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "qué pizzas hay"),
+        )
+
+        resolver_instance.resolve.assert_not_called()
+        self.assertEqual(processed.status, "executed")
+        self.assertNotIn("categoria_nombre", processed.resolved_data)
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_no_categories_skips_resolver(self, svc_cls, resolver_cls) -> None:
+        products = []
+        for index in range(1, 3):
+            pres = _presentacion(f"C{index}", f"Pres {index}")
+            product = _producto(
+                id_=index,
+                nombre=f"Prod {index}",
+                categoria=None,
+                presentaciones=[
+                    _producto_presentacion(id_=index * 10, presentacion=pres)
+                ],
+            )
+            products.append(product)
+        svc_cls.return_value.list_vendibles.return_value = products
+        resolver_instance = resolver_cls.return_value
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "qué pizzas hay"),
+        )
+
+        resolver_instance.resolve.assert_not_called()
+        self.assertEqual(processed.status, "executed")
+
+    def test_does_not_call_commit_or_rollback(self) -> None:
+        db = _db()
+        with patch.object(info_module, "ProductoQueryService") as svc_cls:
+            svc_cls.return_value.list_vendibles.return_value = []
+            process_initial_informational_commerce_query(
+                db,
+                _session(id_comercio=7),
+                _classified(IntentName.VER_MENU, "menu"),
+            )
+        db.commit.assert_not_called()
+        db.rollback.assert_not_called()
+        db.flush.assert_not_called()
+        db.begin.assert_not_called()
+
+
+class ProcessInitialMenuCategoryIdentityTest(unittest.TestCase):
+    """Focused tests for the backend category-identity contract.
+
+    The orchestration must:
+
+    * filter in-memory items by ``categoria_id`` from the revalidated
+      candidate, never by ``categoria_nombre`` alone;
+    * honour the exact ``(token, nombre)`` match — an unknown token
+      or a token whose companion name does not belong to it falls
+      back to the full menu;
+    * keep ``categoria_id`` out of ``resolved_data``,
+      :class:`ProcessedIntent` and the rendered customer response;
+    * never include ``categoria_id`` in the LLM prompt.
+
+    These tests do NOT mock the resolver's internal ``_match_selection``:
+    they feed a controlled ``MenuCategoryResolution`` into the
+    orchestration and observe the deterministic backend behaviour.
+    """
+
+    def _homonymous_catalog(self) -> list:
+        """Catalog with two categories sharing the same ``nombre``
+        (``"Promos"``) but distinct ``categoria_id`` values (10 and
+        11). Each category owns its own sellable product so a
+        name-based filter would mix them.
+        """
+        cat_promos_a = _categoria("Promos", orden=1)
+        cat_promos_a.id = 10
+        cat_promos_b = _categoria("Promos", orden=2)
+        cat_promos_b.id = 11
+
+        pres_a = _presentacion("PA", "Unidad")
+        pres_b = _presentacion("PB", "Unidad")
+
+        producto_a = _producto(
+            id_=1,
+            nombre="Combo A",
+            categoria=cat_promos_a,
+            presentaciones=[
+                _producto_presentacion(id_=101, presentacion=pres_a),
+            ],
+        )
+        producto_b = _producto(
+            id_=2,
+            nombre="Combo B",
+            categoria=cat_promos_b,
+            presentaciones=[
+                _producto_presentacion(id_=102, presentacion=pres_b),
+            ],
+        )
+        return [producto_a, producto_b]
+
+    def _three_category_catalog(self) -> list:
+        """Three distinct categories: Pizzas, Empanadas, Bebidas."""
+        cat_pizzas = _categoria("Pizzas", orden=1)
+        cat_pizzas.id = 1
+        cat_empanadas = _categoria("Empanadas", orden=2)
+        cat_empanadas.id = 2
+        cat_bebidas = _categoria("Bebidas", orden=3)
+        cat_bebidas.id = 3
+
+        pres_pi = _presentacion("PI", "Individual")
+        pres_ec = _presentacion("EC", "Unidad")
+        pres_bc = _presentacion("BC", "Botella")
+
+        pizza = _producto(
+            id_=1,
+            nombre="Muzzarella",
+            categoria=cat_pizzas,
+            presentaciones=[
+                _producto_presentacion(id_=10, presentacion=pres_pi),
+            ],
+        )
+        empanada = _producto(
+            id_=2,
+            nombre="Carne",
+            categoria=cat_empanadas,
+            presentaciones=[
+                _producto_presentacion(id_=20, presentacion=pres_ec),
+            ],
+        )
+        bebida = _producto(
+            id_=3,
+            nombre="Coca-Cola",
+            categoria=cat_bebidas,
+            presentaciones=[
+                _producto_presentacion(id_=30, presentacion=pres_bc),
+            ],
+        )
+        return [pizza, empanada, bebida]
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_homonymous_categories_filter_by_categoria_id_not_name(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        svc_cls.return_value.list_vendibles.return_value = (
+            self._homonymous_catalog()
+        )
+        resolver_instance = resolver_factory.return_value
+        resolver_instance.resolve.return_value = _resolved(
+            token="c1",
+            nombre="Promos",
+            categoria_id=10,
+            candidate_count=2,
+        )
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "qué promos hay"),
+        )
+
+        self.assertEqual(processed.intent, "ver_menu")
+        self.assertEqual(processed.status, "executed")
+        self.assertEqual(
+            processed.resolved_data["categoria_nombre"], "Promos"
+        )
+        items = processed.resolved_data["items"]
+        self.assertEqual(
+            [(item["producto_nombre"], item["categoria_nombre"]) for item in items],
+            [("Combo A", "Promos")],
+        )
+        self.assertNotIn("categoria_id", processed.resolved_data)
+        self.assertNotIn("token", processed.resolved_data)
+        for item in items:
+            self.assertNotIn("categoria_id", item)
+            self.assertNotIn("token", item)
+
+        args, _ = resolver_instance.resolve.call_args
+        sent_candidates = args[1]
+        sent_tokens = {c.token: c.categoria_id for c in sent_candidates}
+        self.assertEqual(sent_tokens, {"c1": 10, "c2": 11})
+        for sent in sent_candidates:
+            self.assertIn(sent.token, {"c1", "c2"})
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_unknown_token_falls_back_to_full_menu(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        svc_cls.return_value.list_vendibles.return_value = (
+            self._three_category_catalog()
+        )
+        resolver_instance = resolver_factory.return_value
+        resolver_instance.resolve.return_value = _resolved(
+            token="c99",
+            nombre="Pizzas",
+            categoria_id=1,
+            candidate_count=3,
+        )
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "qué pizzas hay"),
+        )
+
+        self.assertEqual(processed.status, "executed")
+        self.assertNotIn("categoria_nombre", processed.resolved_data)
+        self.assertNotIn("categoria_id", processed.resolved_data)
+        nombres = [
+            item["categoria_nombre"]
+            for item in processed.resolved_data["items"]
+        ]
+        self.assertEqual(
+            sorted({n for n in nombres if n}),
+            ["Bebidas", "Empanadas", "Pizzas"],
+        )
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_inconsistent_token_nombre_falls_back_to_full_menu(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        svc_cls.return_value.list_vendibles.return_value = (
+            self._three_category_catalog()
+        )
+        resolver_instance = resolver_factory.return_value
+        resolver_instance.resolve.return_value = _resolved(
+            token="c1",
+            nombre="Empanadas",
+            categoria_id=1,
+            candidate_count=3,
+        )
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "qué pizzas hay"),
+        )
+
+        self.assertEqual(processed.status, "executed")
+        self.assertNotIn("categoria_nombre", processed.resolved_data)
+        self.assertNotIn("categoria_id", processed.resolved_data)
+        nombres = [
+            item["categoria_nombre"]
+            for item in processed.resolved_data["items"]
+        ]
+        self.assertEqual(
+            sorted({n for n in nombres if n}),
+            ["Bebidas", "Empanadas", "Pizzas"],
+        )
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_resolution_without_selected_falls_back_to_full_menu(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        svc_cls.return_value.list_vendibles.return_value = (
+            self._three_category_catalog()
+        )
+        resolver_instance = resolver_factory.return_value
+        resolver_instance.resolve.return_value = _resolved(selected=None)
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "qué pizzas hay"),
+        )
+
+        self.assertEqual(processed.status, "executed")
+        self.assertNotIn("categoria_nombre", processed.resolved_data)
+        self.assertNotIn("categoria_id", processed.resolved_data)
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_resolution_with_forged_categoria_id_falls_back_to_full_menu(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        """The resolver's internal match already filters unknown
+        combinations, but the orchestration must NOT trust a
+        resolution whose ``selected.categoria_id`` disagrees with
+        the in-memory candidate list either — this guards against a
+        tampered or stubbed resolver that bypasses the internal
+        match."""
+        svc_cls.return_value.list_vendibles.return_value = (
+            self._three_category_catalog()
+        )
+        resolver_instance = resolver_factory.return_value
+        resolver_instance.resolve.return_value = _resolved(
+            token="c1",
+            nombre="Pizzas",
+            categoria_id=999,
+            candidate_count=3,
+        )
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "qué pizzas hay"),
+        )
+
+        self.assertEqual(processed.status, "executed")
+        self.assertNotIn("categoria_nombre", processed.resolved_data)
+        self.assertNotIn("categoria_id", processed.resolved_data)
+        nombres = [
+            item["categoria_nombre"]
+            for item in processed.resolved_data["items"]
+        ]
+        self.assertEqual(
+            sorted({n for n in nombres if n}),
+            ["Bebidas", "Empanadas", "Pizzas"],
+        )
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_resolved_data_and_response_never_expose_categoria_id(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        svc_cls.return_value.list_vendibles.return_value = (
+            self._homonymous_catalog()
+        )
+        resolver_instance = resolver_factory.return_value
+        resolver_instance.resolve.return_value = _resolved(
+            token="c2",
+            nombre="Promos",
+            categoria_id=11,
+            candidate_count=2,
+        )
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "qué promos hay"),
+        )
+
+        resolved_serialized = repr(processed.resolved_data)
+        self.assertNotIn("10", resolved_serialized)
+        self.assertNotIn("11", resolved_serialized)
+        self.assertNotIn("categoria_id", resolved_serialized)
+        self.assertNotIn("token", resolved_serialized)
+        for item in processed.resolved_data["items"]:
+            self.assertNotIn("categoria_id", repr(item))
+            self.assertNotIn("token", repr(item))
+
+        rendered = build_informational_commerce_response(
+            _db(), _session(), processed
+        )
+        self.assertNotIn("10", rendered.message)
+        self.assertNotIn("11", rendered.message)
+        self.assertNotIn("categoria_id", rendered.message)
+        self.assertNotIn("token", rendered.message)
+        self.assertIn("Promos disponibles:", rendered.message)
+
+        args, _ = resolver_instance.resolve.call_args
+        source_text = args[0]
+        sent_candidates = args[1]
+        from backend.diagnostics.menu_category_prompt_template import (
+            build_menu_category_prompt,
+        )
+
+        rendered_prompt = build_menu_category_prompt(
+            source_text,
+            [{"token": c.token, "nombre": c.nombre} for c in sent_candidates],
+        )
+        self.assertNotIn("10", rendered_prompt)
+        self.assertNotIn("11", rendered_prompt)
+        self.assertNotIn("categoria_id", rendered_prompt)
 
 
 class ProcessInitialConsultarProductoTest(unittest.TestCase):
@@ -1319,6 +2055,78 @@ class BuildInformationalCommerceResponseTest(unittest.TestCase):
             ),
         )
         self.assertIn("problema técnico", rendered.message)
+
+    def test_ver_menu_selected_category_renders_category_heading(self) -> None:
+        rendered = build_informational_commerce_response(
+            _db(),
+            _session(),
+            ProcessedIntent(
+                intent="ver_menu",
+                source_text="qué pizzas hay",
+                status="executed",
+                handler=INFORMATIONAL_COMMERCE_HANDLER,
+                recognizer=INFORMATIONAL_COMMERCE_HANDLER,
+                resolved_data={
+                    "categoria_nombre": "Empanadas",
+                    "items": [
+                        {
+                            "categoria_nombre": "Empanadas",
+                            "producto_nombre": "Carne picante",
+                            "presentacion_codigo": "EC",
+                            "presentacion_descripcion": "Unidad",
+                        },
+                        {
+                            "categoria_nombre": "Empanadas",
+                            "producto_nombre": "Carne suave",
+                            "presentacion_codigo": "CS",
+                            "presentacion_descripcion": "Unidad",
+                        },
+                    ],
+                },
+            ),
+        )
+
+        self.assertEqual(rendered.intent, "ver_menu")
+        self.assertEqual(rendered.status, "executed")
+        self.assertIn("Empanadas disponibles:", rendered.message)
+        self.assertIn("- Carne picante (EC)", rendered.message)
+        self.assertIn("- Carne suave (CS)", rendered.message)
+        self.assertNotIn("Menú disponible:", rendered.message)
+        self.assertNotIn("Pizzas:", rendered.message)
+        self.assertNotIn("Bebidas:", rendered.message)
+
+    def test_ver_menu_full_menu_fallback_preserves_existing_output(self) -> None:
+        items = [
+            {
+                "categoria_nombre": "Pizzas",
+                "producto_nombre": "Muzzarella",
+                "presentacion_codigo": "PI",
+                "presentacion_descripcion": "Individual",
+            },
+            {
+                "categoria_nombre": "Empanadas",
+                "producto_nombre": "Carne",
+                "presentacion_codigo": "EC",
+                "presentacion_descripcion": "Unidad",
+            },
+        ]
+        rendered = build_informational_commerce_response(
+            _db(),
+            _session(),
+            ProcessedIntent(
+                intent="ver_menu",
+                source_text="menu",
+                status="executed",
+                handler=INFORMATIONAL_COMMERCE_HANDLER,
+                recognizer=INFORMATIONAL_COMMERCE_HANDLER,
+                resolved_data={"items": items},
+            ),
+        )
+
+        self.assertIn("Menú disponible:", rendered.message)
+        self.assertIn("Pizzas:", rendered.message)
+        self.assertIn("Empanadas:", rendered.message)
+        self.assertNotIn("Empanadas disponibles:", rendered.message)
 
 
 class BuildCustomerResponsesInformationalTest(unittest.TestCase):
