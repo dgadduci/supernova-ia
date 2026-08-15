@@ -14,6 +14,7 @@ class ConfiguracionComercioRepository:
             .where(Comercio.id == comercio_id)
             .options(
                 joinedload(Comercio.estado),
+                joinedload(Comercio.flavor_comunicacion),
                 selectinload(Comercio.medios_pago).joinedload(
                     ComercioMedioPago.medio_pago
                 ),

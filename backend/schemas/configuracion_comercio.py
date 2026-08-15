@@ -2,6 +2,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
+from backend.schemas.comunicacion_flavor import FlavorComunicacionSummary
+
 
 class EstadoComercioDetalleResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -86,3 +88,4 @@ class ComercioConfiguracionResponse(BaseModel):
     estado: EstadoComercioDetalleResponse
     medios_pago: list[ComercioMedioPagoDetalleResponse]
     metodos_entrega: list[ComercioMetodoEntregaDetalleResponse]
+    flavor_comunicacion: FlavorComunicacionSummary

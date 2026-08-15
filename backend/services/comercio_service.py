@@ -2,11 +2,15 @@ from sqlalchemy.orm import Session
 
 from backend.models import Comercio
 from backend.repositories.comercio_repository import ComercioRepository
+from backend.repositories.flavor_comunicacion_repository import (
+    FlavorComunicacionRepository,
+)
 from backend.services.exceptions import (
     ComercioNotFound,
     DuplicateSlug,
     DuplicateWhatsapp,
     EstadoComercioNotFound,
+    FlavorComunicacionNotFound,
 )
 
 
@@ -20,6 +24,7 @@ class ComercioService:
     def __init__(self, session: Session) -> None:
         self._session = session
         self._repo = ComercioRepository(session)
+        self._flavor_repo = FlavorComunicacionRepository(session)
 
     def list_all(self) -> list[Comercio]:
         return self._repo.list_all()
@@ -53,8 +58,16 @@ class ComercioService:
         if self._repo.get_by_slug(cleaned["slug"]) is not None:
             raise DuplicateSlug(cleaned["slug"])
 
+        cleaned.pop("flavor_comunicacion_id", None)
+        neutro = self._flavor_repo.get_by_codigo("neutro")
+        if neutro is None or not neutro.activo:
+            raise FlavorComunicacionNotFound("neutro")
+        cleaned["flavor_comunicacion_id"] = neutro.id
+
         try:
             comercio = self._repo.create(cleaned)
+            self._session.flush()
+            self._session.refresh(comercio, attribute_names=["flavor_comunicacion"])
             self._session.commit()
             return comercio
         except Exception:

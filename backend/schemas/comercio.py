@@ -2,6 +2,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.schemas.comunicacion_flavor import FlavorComunicacionSummary
+
 
 class ComercioCreate(BaseModel):
     nombre_fantasia: str = Field(min_length=1, max_length=150)
@@ -45,3 +47,4 @@ class ComercioResponse(BaseModel):
     fecha_alta: datetime
     fecha_ultima_modificacion: datetime
     fecha_baja: datetime | None
+    flavor_comunicacion: FlavorComunicacionSummary

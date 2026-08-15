@@ -657,3 +657,21 @@ class WhatsappPilotProvisioningCommerceUnavailable(LookupError):
     BEFORE any staging, so the CLI rolls back without staging any
     client or channel row.
     """
+
+
+class FlavorComunicacionNotFound(LookupError):
+    """Raised when the supplied flavor ID does not match any global
+    ``FlavorComunicacion`` row.
+
+    The Phase-1 selection service translates this exception to
+    ``HTTP 404`` without mutating the target ``Comercio``.
+    """
+
+
+class FlavorComunicacionInactivo(Exception):
+    """Raised when the supplied flavor ID is a known global
+    ``FlavorComunicacion`` but is currently inactive.
+
+    The Phase-1 selection service translates this exception to
+    ``HTTP 409`` without mutating the target ``Comercio``.
+    """
