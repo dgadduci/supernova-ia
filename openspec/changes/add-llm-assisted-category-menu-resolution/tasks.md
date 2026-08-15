@@ -34,6 +34,6 @@
 
 ## 4. Pilot gate
 
-- [ ] 4.1 After approved deploy, use the pilot to verify a category phrase,
+- [x] 4.1 After approved deploy, use the pilot to verify a category phrase,
   varied wording, unavailable/unknown category fallback, and unchanged
   concrete-product detail behavior; request explicit approval before archive.
