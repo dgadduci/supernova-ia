@@ -139,9 +139,42 @@ class ControlledCorpusShapeTest(unittest.TestCase):
         self.assertEqual(fixture.message, "cuánto sale la napolitana grande")
         self.assertNotIn(IntentName.VER_MENU, fixture.expected_intents)
 
-    def test_corpus_version_bumped_for_category_browse_fixtures(self):
+    def test_pilot_empanadas_tenes_fixture_pins_single_ver_menu_intent(self):
+        fixture = next(
+            f for f in CONTROLLED_INTENT_CORPUS
+            if f.fixture_id == "F-VER_MENU-CATEGORIA_EMPANADAS_TENES"
+        )
+        self.assertEqual(fixture.expected_intents, (IntentName.VER_MENU,))
+        self.assertEqual(fixture.message, "qué gustos de empanadas tenés")
+        self.assertNotIn(
+            IntentName.CONSULTAR_PRODUCTO, fixture.expected_intents
+        )
+
+    def test_pilot_empanadas_hay_fixture_pins_single_ver_menu_intent(self):
+        fixture = next(
+            f for f in CONTROLLED_INTENT_CORPUS
+            if f.fixture_id == "F-VER_MENU-CATEGORIA_EMPANADAS_HAY"
+        )
+        self.assertEqual(fixture.expected_intents, (IntentName.VER_MENU,))
+        self.assertEqual(fixture.message, "qué gustos de empanadas hay")
+        self.assertNotIn(
+            IntentName.CONSULTAR_PRODUCTO, fixture.expected_intents
+        )
+
+    def test_pilot_bebidas_tenes_fixture_pins_single_ver_menu_intent(self):
+        fixture = next(
+            f for f in CONTROLLED_INTENT_CORPUS
+            if f.fixture_id == "F-VER_MENU-CATEGORIA_BEBIDAS_TENES"
+        )
+        self.assertEqual(fixture.expected_intents, (IntentName.VER_MENU,))
+        self.assertEqual(fixture.message, "qué bebidas tenés")
+        self.assertNotIn(
+            IntentName.CONSULTAR_PRODUCTO, fixture.expected_intents
+        )
+
+    def test_corpus_version_bumped_for_pilot_fixtures(self):
         self.assertTrue(CORPUS_VERSION.startswith("intent-corpus/v"))
-        self.assertGreaterEqual(CORPUS_VERSION, "intent-corpus/v1.6.0")
+        self.assertGreaterEqual(CORPUS_VERSION, "intent-corpus/v1.7.0")
 
     def test_direccion_entrega_tilcara_fixture_pins_single_set_direccion_entrega(self):
         fixture = next(

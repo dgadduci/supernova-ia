@@ -353,5 +353,72 @@ class MenuCategoryResolverSurfaceTest(unittest.TestCase):
         )
 
 
+class ResolverMultiCategoryRuleTest(unittest.TestCase):
+    """Focused structural checks for the resolver prompt v1.1.0.
+
+    The resolver prompt MUST instruct the model that whenever the
+    customer message names two or more categories from the list the
+    selection MUST be both ``null``. The backend guard is the
+    authoritative gate that prevents the call from happening for an
+    explicit multi-category request, but the resolver's own prompt
+    contract must still honour the same rule when the model is
+    asked.
+    """
+
+    def _render(self, candidates=None) -> str:
+        if candidates is None:
+            candidates = [
+                {"token": "c1", "nombre": "Pizzas"},
+                {"token": "c2", "nombre": "Empanadas"},
+                {"token": "c3", "nombre": "Bebidas"},
+            ]
+        return build_menu_category_prompt(
+            "qué pizzas y empanadas hay", candidates
+        )
+
+    def test_template_version_is_bumped_to_v1_1_0(self) -> None:
+        self.assertEqual(
+            MENU_CATEGORY_PROMPT_TEMPLATE_VERSION,
+            "menu-category-resolver/v1.1.0",
+        )
+
+    def test_prompt_documents_multi_category_null_rule(self) -> None:
+        prompt = self._render()
+        lowered = prompt.casefold()
+        self.assertIn("dos o más", lowered)
+        self.assertIn("`null`", prompt)
+        self.assertIn("pizzas y empanadas", lowered)
+
+    def test_template_identity_independent_of_message_or_candidates(self) -> None:
+        first = menu_category_template_fingerprint()
+        self._render()
+        self.assertEqual(menu_category_template_fingerprint(), first)
+
+    def test_resolver_contract_returns_null_for_multi_category_payload(
+        self,
+    ) -> None:
+        """Even if a model returned a pair for a multi-category
+        request, the resolver's internal match would still return
+        ``None`` because the schema does not encode multi-selection;
+        we exercise the no-selection path explicitly here."""
+        stub = _StubQueryLlm(payload={"token": None, "nombre": None})
+        resolver = MenuCategoryResolver(query_llm=stub)
+
+        resolution = resolver.resolve(
+            "qué pizzas y empanadas hay",
+            [
+                MenuCategoryCandidate(
+                    categoria_id=1, token="c1", nombre="Pizzas"
+                ),
+                MenuCategoryCandidate(
+                    categoria_id=2, token="c2", nombre="Empanadas"
+                ),
+            ],
+        )
+
+        self.assertIsNone(resolution.selected)
+        self.assertIsNone(resolution.failure_class)
+
+
 if __name__ == "__main__":
     unittest.main()

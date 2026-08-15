@@ -45,6 +45,7 @@ from backend.intents.schemas.intent_classification import (
     IntentName,
 )
 from backend.intents.schemas.processed_intent import ProcessedIntent
+from backend.llm.menu_category_resolver import MenuCategoryCandidate
 from backend.services import outbound_response_mapper as mapper_module
 from backend.services.exceptions import ComercioNotFound
 from backend.services.outbound_response_mapper import (
@@ -1014,6 +1015,542 @@ class ProcessInitialMenuCategoryIdentityTest(unittest.TestCase):
         self.assertNotIn("10", rendered_prompt)
         self.assertNotIn("11", rendered_prompt)
         self.assertNotIn("categoria_id", rendered_prompt)
+
+
+class ProcessInitialMenuMultiCategoryGuardTest(unittest.TestCase):
+    """Focused tests for the read-only explicit multi-category guard.
+
+    The guard runs BEFORE the second LLM resolver is invoked. When
+    the normalized source text explicitly references two or more
+    distinct bounded candidate names, the resolver MUST NOT be
+    called and the full-menu outcome MUST be preserved.
+    """
+
+    def _three_category_catalog(self) -> list:
+        cat_pizzas = _categoria("Pizzas", orden=1)
+        cat_pizzas.id = 1
+        cat_empanadas = _categoria("Empanadas", orden=2)
+        cat_empanadas.id = 2
+        cat_bebidas = _categoria("Bebidas", orden=3)
+        cat_bebidas.id = 3
+
+        pres_pi = _presentacion("PI", "Individual")
+        pres_ec = _presentacion("EC", "Unidad")
+        pres_bc = _presentacion("BC", "Botella")
+
+        pizza = _producto(
+            id_=1,
+            nombre="Muzzarella",
+            categoria=cat_pizzas,
+            presentaciones=[
+                _producto_presentacion(id_=10, presentacion=pres_pi),
+            ],
+        )
+        empanada = _producto(
+            id_=2,
+            nombre="Carne",
+            categoria=cat_empanadas,
+            presentaciones=[
+                _producto_presentacion(id_=20, presentacion=pres_ec),
+            ],
+        )
+        bebida = _producto(
+            id_=3,
+            nombre="Coca-Cola",
+            categoria=cat_bebidas,
+            presentaciones=[
+                _producto_presentacion(id_=30, presentacion=pres_bc),
+            ],
+        )
+        return [pizza, empanada, bebida]
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_two_explicit_categories_skip_resolver_and_return_full_menu(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        svc_cls.return_value.list_vendibles.return_value = (
+            self._three_category_catalog()
+        )
+        resolver_instance = resolver_factory.return_value
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "qué pizzas y empanadas hay"),
+        )
+
+        resolver_instance.resolve.assert_not_called()
+        self.assertEqual(processed.intent, "ver_menu")
+        self.assertEqual(processed.status, "executed")
+        self.assertNotIn("categoria_nombre", processed.resolved_data)
+        self.assertNotIn("categoria_id", processed.resolved_data)
+        nombres = sorted(
+            {
+                item["categoria_nombre"]
+                for item in processed.resolved_data["items"]
+                if item.get("categoria_nombre")
+            }
+        )
+        self.assertEqual(nombres, ["Bebidas", "Empanadas", "Pizzas"])
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_three_explicit_categories_skip_resolver(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        svc_cls.return_value.list_vendibles.return_value = (
+            self._three_category_catalog()
+        )
+        resolver_instance = resolver_factory.return_value
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(
+                IntentName.VER_MENU,
+                "qué pizzas, empanadas y bebidas tenés",
+            ),
+        )
+
+        resolver_instance.resolve.assert_not_called()
+        self.assertEqual(processed.status, "executed")
+        self.assertNotIn("categoria_nombre", processed.resolved_data)
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_single_category_still_invokes_resolver(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        svc_cls.return_value.list_vendibles.return_value = (
+            self._three_category_catalog()
+        )
+        resolver_instance = resolver_factory.return_value
+        resolver_instance.resolve.return_value = _resolved(
+            token="c1",
+            nombre="Pizzas",
+            categoria_id=1,
+            candidate_count=3,
+        )
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "qué pizzas hay"),
+        )
+
+        resolver_instance.resolve.assert_called_once()
+        self.assertEqual(processed.status, "executed")
+        self.assertEqual(
+            processed.resolved_data["categoria_nombre"], "Pizzas"
+        )
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_unknown_category_still_invokes_resolver(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        svc_cls.return_value.list_vendibles.return_value = (
+            self._three_category_catalog()
+        )
+        resolver_instance = resolver_factory.return_value
+        resolver_instance.resolve.return_value = _resolved(selected=None)
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "qué caramelos hay"),
+        )
+
+        resolver_instance.resolve.assert_called_once()
+        self.assertEqual(processed.status, "executed")
+        self.assertNotIn("categoria_nombre", processed.resolved_data)
+        nombres = sorted(
+            {
+                item["categoria_nombre"]
+                for item in processed.resolved_data["items"]
+                if item.get("categoria_nombre")
+            }
+        )
+        self.assertEqual(nombres, ["Bebidas", "Empanadas", "Pizzas"])
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_guard_runs_only_once_per_catalog(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        svc_cls.return_value.list_vendibles.return_value = (
+            self._three_category_catalog()
+        )
+        resolver_instance = resolver_factory.return_value
+
+        process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "qué pizzas y empanadas hay"),
+        )
+
+        svc_cls.return_value.list_vendibles.assert_called_once_with(7)
+        resolver_instance.resolve.assert_not_called()
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_guard_does_not_mutate_session(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        svc_cls.return_value.list_vendibles.return_value = (
+            self._three_category_catalog()
+        )
+        session = _session(id_comercio=7)
+        session.pending_intents = {"existing": "value"}
+        snapshot_pending = dict(session.pending_intents)
+        snapshot_context = session.context_type
+
+        process_initial_informational_commerce_query(
+            _db(),
+            session,
+            _classified(IntentName.VER_MENU, "qué pizzas y empanadas hay"),
+        )
+
+        self.assertEqual(session.pending_intents, snapshot_pending)
+        self.assertEqual(session.context_type, snapshot_context)
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_guard_uses_only_visible_candidate_names_no_ids(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        svc_cls.return_value.list_vendibles.return_value = (
+            self._three_category_catalog()
+        )
+        resolver_instance = resolver_factory.return_value
+
+        db = _db()
+        process_initial_informational_commerce_query(
+            db,
+            _session(id_comercio=7),
+            _classified(
+                IntentName.VER_MENU,
+                "qué pizzas y empanadas hay",
+            ),
+        )
+
+        resolver_instance.resolve.assert_not_called()
+        db.commit.assert_not_called()
+        db.rollback.assert_not_called()
+        db.flush.assert_not_called()
+        db.begin.assert_not_called()
+
+    def test_guard_helper_counts_distinct_names(self) -> None:
+        candidates = [
+            MenuCategoryCandidate(categoria_id=1, token="c1", nombre="Pizzas"),
+            MenuCategoryCandidate(categoria_id=2, token="c2", nombre="Empanadas"),
+        ]
+        self.assertTrue(
+            info_module._is_explicit_multi_category(
+                "qué pizzas y empanadas hay", candidates
+            )
+        )
+        self.assertFalse(
+            info_module._is_explicit_multi_category(
+                "qué pizzas hay", candidates
+            )
+        )
+        self.assertFalse(
+            info_module._is_explicit_multi_category(
+                "qué caramelos hay", candidates
+            )
+        )
+        self.assertFalse(
+            info_module._is_explicit_multi_category("", candidates)
+        )
+
+    def test_guard_helper_treats_homonymous_categories_as_one_name(self) -> None:
+        candidates = [
+            MenuCategoryCandidate(categoria_id=10, token="c1", nombre="Promos"),
+            MenuCategoryCandidate(categoria_id=11, token="c2", nombre="Promos"),
+        ]
+        self.assertFalse(
+            info_module._is_explicit_multi_category(
+                "qué promos hay", candidates
+            )
+        )
+
+    def test_guard_helper_requires_contiguous_in_order_match(self) -> None:
+        """Composite-category regression: scattered or reordered
+        tokens must NOT trigger the guard even when the same words
+        appear somewhere in the source.
+        """
+        candidates = [
+            MenuCategoryCandidate(
+                categoria_id=1, token="c1", nombre="Bebidas sin alcohol"
+            ),
+            MenuCategoryCandidate(
+                categoria_id=2, token="c2", nombre="Bebidas con alcohol"
+            ),
+        ]
+        self.assertFalse(
+            info_module._is_explicit_multi_category(
+                "qué alcohol sin tenés", candidates
+            ),
+            "Out-of-order tokens must not trigger the guard",
+        )
+        self.assertFalse(
+            info_module._is_explicit_multi_category(
+                "qué alcohol y sin alcohol sin bebidas tenés", candidates
+            ),
+            "Missing category head word must not trigger the guard",
+        )
+        self.assertFalse(
+            info_module._is_explicit_multi_category(
+                "qué alcohol y alcohol tenés", candidates
+            ),
+            "Repeated generic tokens with no head word must not "
+            "trigger the guard",
+        )
+
+    def test_guard_helper_matches_single_composite_contiguously(self) -> None:
+        candidates = [
+            MenuCategoryCandidate(
+                categoria_id=1, token="c1", nombre="Bebidas sin alcohol"
+            ),
+            MenuCategoryCandidate(
+                categoria_id=2, token="c2", nombre="Bebidas con alcohol"
+            ),
+        ]
+        self.assertFalse(
+            info_module._is_explicit_multi_category(
+                "qué hay de bebidas sin alcohol", candidates
+            )
+        )
+
+    def test_guard_helper_matches_two_composite_contiguously(self) -> None:
+        candidates = [
+            MenuCategoryCandidate(
+                categoria_id=1, token="c1", nombre="Bebidas sin alcohol"
+            ),
+            MenuCategoryCandidate(
+                categoria_id=2, token="c2", nombre="Bebidas con alcohol"
+            ),
+        ]
+        self.assertTrue(
+            info_module._is_explicit_multi_category(
+                "qué hay de bebidas sin alcohol y bebidas con alcohol",
+                candidates,
+            )
+        )
+
+    def test_contiguous_subsequence_helper_rejects_scattered_tokens(
+        self,
+    ) -> None:
+        self.assertFalse(
+            info_module._is_contiguous_subsequence(
+                ["a", "c"],
+                ["a", "b", "c"],
+            )
+        )
+
+    def test_contiguous_subsequence_helper_accepts_exact_window(self) -> None:
+        self.assertTrue(
+            info_module._is_contiguous_subsequence(
+                ["a", "b"],
+                ["a", "b", "c"],
+            )
+        )
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_two_composite_names_contiguous_in_message_skip_resolver(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        cat_sin = _categoria("Bebidas sin alcohol", orden=1)
+        cat_sin.id = 1
+        cat_con = _categoria("Bebidas con alcohol", orden=2)
+        cat_con.id = 2
+        pres_sin = _presentacion("BS", "Botella")
+        pres_con = _presentacion("BC", "Botella")
+        producto_sin = _producto(
+            id_=1,
+            nombre="Agua",
+            categoria=cat_sin,
+            presentaciones=[
+                _producto_presentacion(id_=10, presentacion=pres_sin),
+            ],
+        )
+        producto_con = _producto(
+            id_=2,
+            nombre="Coca-Cola",
+            categoria=cat_con,
+            presentaciones=[
+                _producto_presentacion(id_=20, presentacion=pres_con),
+            ],
+        )
+        svc_cls.return_value.list_vendibles.return_value = [
+            producto_sin,
+            producto_con,
+        ]
+        resolver_instance = resolver_factory.return_value
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(
+                IntentName.VER_MENU,
+                "qué hay de bebidas sin alcohol y bebidas con alcohol",
+            ),
+        )
+
+        resolver_instance.resolve.assert_not_called()
+        self.assertEqual(processed.status, "executed")
+        self.assertNotIn("categoria_nombre", processed.resolved_data)
+        nombres = sorted(
+            {
+                item["categoria_nombre"]
+                for item in processed.resolved_data["items"]
+                if item.get("categoria_nombre")
+            }
+        )
+        self.assertEqual(
+            nombres, ["Bebidas con alcohol", "Bebidas sin alcohol"]
+        )
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_scattered_composite_words_do_not_trigger_guard(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        cat_sin = _categoria("Bebidas sin alcohol", orden=1)
+        cat_sin.id = 1
+        cat_con = _categoria("Bebidas con alcohol", orden=2)
+        cat_con.id = 2
+        pres_sin = _presentacion("BS", "Botella")
+        pres_con = _presentacion("BC", "Botella")
+        producto_sin = _producto(
+            id_=1,
+            nombre="Agua",
+            categoria=cat_sin,
+            presentaciones=[
+                _producto_presentacion(id_=10, presentacion=pres_sin),
+            ],
+        )
+        producto_con = _producto(
+            id_=2,
+            nombre="Coca-Cola",
+            categoria=cat_con,
+            presentaciones=[
+                _producto_presentacion(id_=20, presentacion=pres_con),
+            ],
+        )
+        svc_cls.return_value.list_vendibles.return_value = [
+            producto_sin,
+            producto_con,
+        ]
+        resolver_instance = resolver_factory.return_value
+        resolver_instance.resolve.return_value = _resolved(
+            token="c1",
+            nombre="Bebidas sin alcohol",
+            categoria_id=1,
+            candidate_count=2,
+        )
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(
+                IntentName.VER_MENU,
+                "qué alcohol y sin tenés",  # words scattered, no head
+            ),
+        )
+
+        resolver_instance.resolve.assert_called_once()
+        self.assertEqual(processed.status, "executed")
+        self.assertEqual(
+            processed.resolved_data["categoria_nombre"],
+            "Bebidas sin alcohol",
+        )
+        nombres = sorted(
+            {
+                item["categoria_nombre"]
+                for item in processed.resolved_data["items"]
+                if item.get("categoria_nombre")
+            }
+        )
+        self.assertEqual(nombres, ["Bebidas sin alcohol"])
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_single_composite_category_still_invokes_resolver(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        cat_sin = _categoria("Bebidas sin alcohol", orden=1)
+        cat_sin.id = 1
+        cat_con = _categoria("Bebidas con alcohol", orden=2)
+        cat_con.id = 2
+        pres_sin = _presentacion("BS", "Botella")
+        pres_con = _presentacion("BC", "Botella")
+        producto_sin = _producto(
+            id_=1,
+            nombre="Agua",
+            categoria=cat_sin,
+            presentaciones=[
+                _producto_presentacion(id_=10, presentacion=pres_sin),
+            ],
+        )
+        producto_con = _producto(
+            id_=2,
+            nombre="Coca-Cola",
+            categoria=cat_con,
+            presentaciones=[
+                _producto_presentacion(id_=20, presentacion=pres_con),
+            ],
+        )
+        svc_cls.return_value.list_vendibles.return_value = [
+            producto_sin,
+            producto_con,
+        ]
+        resolver_instance = resolver_factory.return_value
+        resolver_instance.resolve.return_value = _resolved(
+            token="c1",
+            nombre="Bebidas sin alcohol",
+            categoria_id=1,
+            candidate_count=2,
+        )
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(
+                IntentName.VER_MENU,
+                "qué hay de bebidas sin alcohol",
+            ),
+        )
+
+        resolver_instance.resolve.assert_called_once()
+        self.assertEqual(processed.status, "executed")
+        self.assertEqual(
+            processed.resolved_data["categoria_nombre"],
+            "Bebidas sin alcohol",
+        )
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_simple_two_categories_still_skip_resolver(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        svc_cls.return_value.list_vendibles.return_value = (
+            self._three_category_catalog()
+        )
+        resolver_instance = resolver_factory.return_value
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "qué pizzas y empanadas hay"),
+        )
+
+        resolver_instance.resolve.assert_not_called()
+        self.assertEqual(processed.status, "executed")
+        self.assertNotIn("categoria_nombre", processed.resolved_data)
 
 
 class ProcessInitialConsultarProductoTest(unittest.TestCase):

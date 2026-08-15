@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import hashlib
 
-MENU_CATEGORY_PROMPT_TEMPLATE_VERSION = "menu-category-resolver/v1.0.0"
+MENU_CATEGORY_PROMPT_TEMPLATE_VERSION = "menu-category-resolver/v1.1.0"
 
 _INTRO = (
     "\n"
@@ -56,13 +56,15 @@ Reglas de decisión:
 
 2. Si el mensaje del cliente nombra o describe de forma inequívoca UNA sola categoría presente en la lista, devolvé esa categoría usando el mismo `token` y el mismo `nombre` exacto que aparecen en la lista. No inventes tokens ni transformes los nombres.
 
-3. Si el mensaje nombra ninguna categoría de la lista, o más de una, o la coincidencia es ambigua, devolvé ambos campos en `null`. La incertidumbre también es `null`.
+3. Si el mensaje nombra DOS o MÁS categorías distintas presentes en la lista (por ejemplo "qué pizzas y empanadas hay" o "qué pizzas, empanadas y bebidas tenés"), devolvé ambos campos en `null`. La presencia de más de una categoría visible nunca debe reducirse a una sola.
 
-4. No inventes categorías, productos ni subcategorías que no estén en la lista.
+4. Si el mensaje nombra ninguna categoría de la lista, o la coincidencia es ambigua, devolvé ambos campos en `null`. La incertidumbre también es `null`.
 
-5. Considerá variaciones naturales de lenguaje, singular/plural y diferencias menores de ortografía o acentuación, pero solo dentro de los nombres efectivamente listados.
+5. No inventes categorías, productos ni subcategorías que no estén en la lista.
 
-6. No devuelvas nunca un token sin su nombre ni un nombre sin su token. Deben corresponder siempre al mismo candidato de la lista.
+6. Considerá variaciones naturales de lenguaje, singular/plural y diferencias menores de ortografía o acentuación, pero solo dentro de los nombres efectivamente listados.
+
+7. No devuelvas nunca un token sin su nombre ni un nombre sin su token. Deben corresponder siempre al mismo candidato de la lista.
 
 """
 
