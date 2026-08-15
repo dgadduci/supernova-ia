@@ -8,6 +8,7 @@ from backend.routers import (
     comercios,
     configuracion_comercio,
     estados_comercios,
+    flavors_comunicacion,
     health,
     incoming_messages,
     medios_pago,
@@ -34,6 +35,7 @@ app.include_router(presentaciones.router)
 app.include_router(productos.router)
 app.include_router(precios.router)
 app.include_router(configuracion_comercio.router)
+app.include_router(flavors_comunicacion.router)
 app.include_router(producto_queries.router)
 app.include_router(pedidos.router)
 app.include_router(clientes.router)

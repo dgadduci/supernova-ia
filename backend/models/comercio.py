@@ -1,10 +1,16 @@
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, ForeignKey, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.models.base import Base
 from backend.models.estado_comercio import EstadoComercio
+
+if TYPE_CHECKING:
+    from backend.models.comercio_medios_pago import ComercioMedioPago
+    from backend.models.comercio_metodos_entrega import ComercioMetodoEntrega
+    from backend.models.flavor_comunicacion import FlavorComunicacion
 
 
 class Comercio(Base):
@@ -29,6 +35,15 @@ class Comercio(Base):
 
     estado_id: Mapped[int] = mapped_column(ForeignKey("estado_comercio.id"), nullable=False)
     estado: Mapped[EstadoComercio] = relationship(EstadoComercio)
+
+    flavor_comunicacion_id: Mapped[int] = mapped_column(
+        ForeignKey("flavors_comunicacion.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    flavor_comunicacion: Mapped["FlavorComunicacion"] = relationship(
+        "FlavorComunicacion",
+        back_populates="comercios",
+    )
 
     zona_horaria: Mapped[str] = mapped_column(
         String(100),
