@@ -38,6 +38,37 @@ into an observation update. Prompt wording and corpus examples are LLM
 guidance, not mutation authority; the existing own-draft recognizer and
 handler remain the write boundary.
 
+## Identity recovery amendment for declarative observations
+
+The classifier amendment deliberately preserves the full literal message, and
+that full text is also the observation value to store. It must not be split on
+Spanish grammar: declarative forms are open-ended and future observation
+phrasing cannot be captured by an allowlist of verbs or separators.
+
+The existing order-line fuzzy recognizer remains the primary, bounded candidate
+producer. Only if it produces zero candidates for an already-classified
+`set_observacion_producto` turn, the observation recognizer may run a narrow
+deterministic identity-evidence recovery against the *same active draft line
+catalog*. It compares normalized full-token evidence from the raw message with
+the candidate line's already-projected category, product, presentation and
+existing aliases. It does not extract a substring, remove a condition, or
+classify wording.
+
+```text
+"La pizza de mozzarella chica es sin aceitunas"
+  -> classifier: set_observacion_producto, original message unchanged
+  -> existing own-line fuzzy: zero candidates
+  -> bounded identity evidence: Pizza + Mozzarella + Chica matches #82 only
+  -> ready handler stores the full original message on #82
+```
+
+The identity-recovery result is fed into the existing unique/pending/rejected
+path. One candidate may execute; more than one remains an
+`order_line_selection` pending context; zero remains rejected. It cannot use a
+commerce catalog, foreign order, recent line, LLM reference extraction, or
+grammatical guess. This is a candidate-recovery refinement within the existing
+recognizer path, not a parallel mutation pipeline.
+
 ## Intent data
 
 The initial orchestrator creates a `ProcessedIntent` with
@@ -122,3 +153,12 @@ assertion. Those tests do not claim to prove live LLM behavior; the post-deploy
 gate proves the actual classification and resulting line update. Tests also
 pin that an explicit `quiero una ... sin aceitunas` request remains add,
 without implementing combined add-with-observation.
+
+The identity-recovery amendment adds focused tests with an active own-line
+catalog containing Mozzarella Grande and Mozzarella Chica. A complete
+declarative message with a condition must select only Chica and preserve its
+full raw text; a second product/condition proves the behavior is not a
+literal-pizza special case. Tests also prove that missing evidence remains
+rejected and shared identity remains pending without candidate widening. No
+test claims support for imperative `poné`/`agregale`/`sacale` phrasing; that is
+separate product semantics work.

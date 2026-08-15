@@ -101,3 +101,32 @@ observation text, raw classifier/LLM output, database ids, or session ids.
 - **WHEN** a set action succeeds with a free-text observation
 - **THEN** the response confirms that the product clarification was updated
   without reproducing that text
+
+### Requirement: Declarative observation lookup uses bounded line identity evidence
+
+For an already-classified `set_observacion_producto` action, the recognizer
+SHALL first retain the existing current-draft order-line fuzzy candidate path.
+Only when that path yields zero candidates, it MAY recover candidates from
+normalized identity evidence present in the complete raw message and in the
+same active draft line catalog. It SHALL use only existing category, product,
+presentation and alias data already projected for those lines. It SHALL NOT
+split or rewrite the message based on declarative verbs or condition words,
+consult a commerce catalog, invoke an LLM, select a most-recent line, widen
+the candidate universe, or alter the full raw observation value.
+
+#### Scenario: Qualified declarative observation finds one own line
+
+- **WHEN** the active draft contains Mozzarella Grande and Mozzarella Chica
+- **AND** the classifier has already produced `set_observacion_producto` for
+  `La pizza de mozzarella chica es sin aceitunas`
+- **AND** the existing fuzzy path yields zero candidates
+- **THEN** bounded identity evidence yields only the Mozzarella Chica line
+- **AND** the stored set value remains the complete original message
+
+#### Scenario: Insufficient identity evidence remains safe
+
+- **WHEN** bounded identity evidence yields zero or more than one active-draft
+  line
+- **THEN** zero remains rejected and more than one uses the existing pending
+  order-line selection path
+- **AND** no catalog, foreign line, recent line, or LLM-derived target is used

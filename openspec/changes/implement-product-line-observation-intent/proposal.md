@@ -23,6 +23,14 @@ not inspect the current Pedido to reinterpret an add request. In particular,
 `quiero una pizza de mozzarella chica sin aceitunas` remains an add request;
 combined add-with-observation is deferred to a separately approved change.
 
+The deployed classifier amendment now reaches the observation path, but the
+pilot proved a second, independent boundary failure: an active draft containing
+`Mozzarella / Chica` rejected `La pizza de mozzarella chica es sin aceitunas`
+as absent. The observation recognizer delegates the entire free-text message
+to the current order-line fuzzy recognizer; the condition suffix prevents it
+from recovering the otherwise-present line. This is not a classifier, service,
+or ownership failure.
+
 ## Current execution path
 
 `IntentName`, the classifier prompt/corpus, initial dispatcher, order-line
@@ -60,6 +68,11 @@ to deterministic builders after processing.
 - Calibrate only the static classifier prompt and controlled corpus for the
   observed declarative wording, then prove the existing dispatcher receives
   the classified intent unchanged.
+- When the existing bounded order-line fuzzy recognizer returns no candidate
+  for an already-classified observation, recover candidates only from
+  deterministic identity evidence already present in the complete raw message
+  and in the active draft's own line catalog. This is not grammatical clause
+  extraction and does not enumerate observation verbs.
 
 ## Non-goals
 
@@ -75,6 +88,11 @@ to deterministic builders after processing.
   rewrite, or fallback from `agregar_producto` to
   `set_observacion_producto`. Combined add-with-observation remains out of
   scope.
+- No deterministic parsing of declarative verbs or separators such as `es`,
+  `va`, `lleva`, `con`, or `sin`; no broad support for imperative wording
+  such as `poné`, `agregale`, or `sacale`; no LLM extraction of a product
+  reference; and no most-recent-line heuristic. Those broader language
+  decisions remain deferred.
 
 ## Shared boundary and authoritative outcomes
 
@@ -104,6 +122,14 @@ For this amendment, `La pizza de mozzarella chica es sin aceitunas` SHALL
 classify as one `set_observacion_producto` intent. `quiero una pizza de
 mozzarella chica sin aceitunas` SHALL remain `agregar_producto`; an existing
 matching line must not silently change that action.
+
+For the same classified declarative observation, candidate recovery SHALL use
+the full raw message unchanged. It may consider only normalized identity tokens
+already projected by the current draft's own line catalog (product,
+presentation, category and existing aliases). It SHALL never split the message
+on an observation verb or condition. Exactly one bounded candidate may become
+ready; multiple candidates remain pending and zero candidates remain rejected.
+The raw full message remains the value persisted for a set action.
 
 Fallback is deliberately safe: fuzzy recognition remains the existing
 order-line recognizer and its result is accepted only after intersection with
@@ -143,6 +169,9 @@ stored observation.
 - `backend/diagnostics/prompt_template.py`,
   `backend/diagnostics/intent_corpus.py`, and focused classifier/dispatcher
   tests for the regression amendment.
+- `backend/intents/recognizers/set_observacion_producto_recognizer.py` and
+  focused observation-recognizer/end-to-end tests for the bounded identity
+  recovery amendment.
 - Focused tests beside the existing quitar/modificar, pending-context, mapper,
   and transaction-regression tests.
 
@@ -152,18 +181,20 @@ Run in the user's local terminal (the Codex sandbox cannot load this project's
 Homebrew-backed `venv`):
 
 ```text
-PYTHONPATH=. venv/bin/python -m pytest backend/tests/test_set_observacion_producto_initial.py backend/tests/test_set_observacion_producto_handler.py backend/tests/test_set_observacion_producto_response.py backend/tests/test_set_observacion_producto_end_to_end.py backend/tests/test_initial_intent_dispatcher.py backend/tests/test_intent_classifier.py backend/tests/test_prompt_template_grounding.py backend/tests/test_order_line_selection_resolver.py backend/tests/test_pending_context_execution.py backend/tests/test_outbound_response_mapper.py -q
-PYTHONPATH=. venv/bin/python -m ruff check backend/diagnostics/prompt_template.py backend/diagnostics/intent_corpus.py backend/tests/test_intent_classifier.py backend/tests/test_prompt_template_grounding.py backend/tests/test_initial_intent_dispatcher.py
-PYTHONPATH=. venv/bin/python -m compileall -q backend/diagnostics/prompt_template.py backend/diagnostics/intent_corpus.py backend/llm/intent_classifier.py backend/intents/orchestration/initial_intent_dispatcher.py
+PYTHONPATH=. venv/bin/python -m pytest backend/tests/test_set_observacion_producto_initial.py backend/tests/test_set_observacion_producto_handler.py backend/tests/test_set_observacion_producto_response.py backend/tests/test_set_observacion_producto_end_to_end.py backend/tests/test_set_observacion_producto_recognizer.py backend/tests/test_quitar_producto_recognizer.py backend/tests/test_initial_intent_dispatcher.py backend/tests/test_intent_classifier.py backend/tests/test_prompt_template_grounding.py backend/tests/test_order_line_selection_resolver.py backend/tests/test_pending_context_execution.py backend/tests/test_outbound_response_mapper.py -q
+PYTHONPATH=. venv/bin/python -m ruff check backend/intents/recognizers/set_observacion_producto_recognizer.py backend/tests/test_set_observacion_producto_recognizer.py backend/diagnostics/prompt_template.py backend/diagnostics/intent_corpus.py backend/tests/test_intent_classifier.py backend/tests/test_prompt_template_grounding.py backend/tests/test_initial_intent_dispatcher.py
+PYTHONPATH=. venv/bin/python -m compileall -q backend/intents/recognizers/set_observacion_producto_recognizer.py backend/diagnostics/prompt_template.py backend/diagnostics/intent_corpus.py backend/llm/intent_classifier.py backend/intents/orchestration/initial_intent_dispatcher.py
 openspec validate implement-product-line-observation-intent --strict
 ```
 
 ## Rollback and deferred limitations
 
-The amendment is reversible by reverting the static prompt/corpus revision;
-it changes no persisted state. Combined add-with-observation, rich structured
-extraction, pedido-level observations, and broader clear grammar remain
-deferred to separately approved work.
+The amendments are reversible by reverting the static prompt/corpus revision
+and the candidate-recovery fallback; neither changes existing persisted rows
+outside a successful observation turn. Combined add-with-observation, rich
+structured extraction, pedido-level observations, imperative observation
+language, and broader clear grammar remain deferred to separately approved
+work.
 
 ## Hold and archive gate
 

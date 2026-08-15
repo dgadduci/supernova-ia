@@ -58,3 +58,20 @@
 - [ ] 6.4 After approved deploy, verify unique declarative set and explicit
   clear on a known own line: no quantity change, no extra line, and cleared
   context/pending.
+
+## 7. Regression amendment: bounded declarative line-identity recovery
+
+- [x] 7.1 Extend only the existing observation recognizer: after its bounded
+  order-line fuzzy path yields zero candidates, recover candidates from
+  deterministic identity evidence in the complete raw message and the same
+  active-draft line catalog. Do not parse grammar, enumerate verbs, consult an
+  LLM/catalog, widen candidates, or alter the stored raw observation text.
+- [x] 7.2 Add focused own-line tests for qualified Mozzarella Chica and a
+  second product/condition, plus zero/multiple evidence safety and no
+  transaction-control regressions.
+- [x] 7.3 Run the focused pytest, Ruff, compileall, strict OpenSpec validation
+  and `git diff --check`; report complete output and pre-existing failures.
+- [ ] 7.4 After approved deploy, repeat the declarative set gate on a known
+  own line; verify only its observation changes, no quantity/line change, and
+  context/pending clear. Keep 6.4 pending until its explicit clear is also
+  verified.
