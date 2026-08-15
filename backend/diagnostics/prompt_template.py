@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import hashlib
 
-PROMPT_TEMPLATE_VERSION = "intent-classifier/v1.6.0"
+PROMPT_TEMPLATE_VERSION = "intent-classifier/v1.7.0"
 
 _INTRO = (
     "\n"
@@ -47,8 +47,6 @@ _INTENT_CATALOG = """
 * Si quiere quitar uno o más productos del pedido = `quitar_producto`
 * Si quiere sustituir o modificar un producto por otro producto distinto, se debe generar un único intent `modificar_producto` con el mensaje original completo del cliente. NO se debe descomponer en `quitar_producto` + `agregar_producto`; el orquestador `modificar_producto` se encarga de la sustitución atómica en una sola operación.
 * Si quiere eliminar todos los productos del pedido actual = `vaciar_pedido`
-* Si quiere agregar, modificar o eliminar una aclaración sobre un producto = `set_observacion_producto`
-* Si quiere agregar, modificar o eliminar una aclaración general del pedido = `set_observacion_pedido`
 * Si quiere consultar los productos cargados, cantidades, subtotal o resumen del pedido actual = `consultar_resumen_pedido`
 * Si establece o cambia la forma de entrega, como delivery, retiro en local o consumo en salón = `set_metodo_de_entrega`
 * Si establece o cambia el domicilio de entrega = `set_direccion_entrega`
@@ -88,11 +86,6 @@ Reglas de clasificación:
 
 9. Cuando el mensaje exprese quitar, sacar, retirar o eliminar uno o más productos del pedido actual, clasificá como `quitar_producto`. Esta es una regla SEMÁNTICA: el criterio de decisión es el significado de remoción del pedido, no la pertenencia a una lista cerrada de verbos. Formulaciones representativas que mapean a `quitar_producto` incluyen, entre otras, `quita`, `quitá`, `quitar`, `saca`, `sacá`, `sacar`, `retirá`, `retirar`, `eliminá`, `eliminar`. Una solicitud clara de remoción del pedido NUNCA debe clasificarse como `agregar_producto`. Cuando el mensaje sólo pida agregar o añadir productos al pedido, mantené la clasificación `agregar_producto` sin cambios.
 
-10. Distinguí `set_observacion_producto` de `agregar_producto` cuando el mensaje describe una condición, aclaración o restricción sobre un producto ya presente o por pedir. Esta es una regla SEMÁNTICA basada únicamente en el texto del mensaje; NO inspecciones el pedido actual ni la línea existente para decidir.
-    * Clasificá como `set_observacion_producto` cuando el mensaje sea una instrucción DECLARATIVA específica de un producto y NO contenga un verbo de agregado (`quiero`, `quisiera`, `dame`, `poné`, `sumá`, `agregá`, `agregar`, `añadí`, `añadir`, `me gustaría`). Formas declarativas representativas incluyen, entre otras: "La <producto> es <condición>", "La <producto> va <condición>", "La <producto> sin <ingrediente>", "<producto> con <condición>", "Para la <producto>, <condición>", "El <producto> lleva <condición>". El mensaje debe preservar su forma literal en el campo `mensaje` del intent.
-    * Clasificá como `agregar_producto` cuando el mensaje pida EXPLÍCITAMENTE incorporar uno o más productos al pedido, aunque incluya una condición o aclaración accesoria. La presencia de un verbo de agregado prevalece sobre la condición accesoria.
-    * Una instrucción declarativa NUNCA debe clasificarse como `agregar_producto` por el solo hecho de mencionar una condición. Una solicitud explícita de agregado NUNCA debe reescribirse a `set_observacion_producto` por la sola presencia de una condición accesoria, ni siquiera si existe una línea coincidente en el pedido.
-
 """
 
 _EXAMPLES = """
@@ -111,70 +104,6 @@ Salida:
     }
   ],
   "mensaje": "Cómo puedo recibir el pedido?"
-}
-```
-
-Mensaje:
-`La pizza es sin aceitunas`
-
-Salida:
-```json
-{
-  "intents": [
-    {
-      "intent": "set_observacion_producto",
-      "mensaje": "La pizza es sin aceitunas"
-    }
-  ],
-  "mensaje": "La pizza es sin aceitunas"
-}
-```
-
-Mensaje:
-`La pizza de mozzarella chica es sin aceitunas`
-
-Salida:
-```json
-{
-  "intents": [
-    {
-      "intent": "set_observacion_producto",
-      "mensaje": "La pizza de mozzarella chica es sin aceitunas"
-    }
-  ],
-  "mensaje": "La pizza de mozzarella chica es sin aceitunas"
-}
-```
-
-Mensaje:
-`La empanada de pollo va sin salsa`
-
-Salida:
-```json
-{
-  "intents": [
-    {
-      "intent": "set_observacion_producto",
-      "mensaje": "La empanada de pollo va sin salsa"
-    }
-  ],
-  "mensaje": "La empanada de pollo va sin salsa"
-}
-```
-
-Mensaje:
-`quiero una pizza de mozzarella chica sin aceitunas`
-
-Salida:
-```json
-{
-  "intents": [
-    {
-      "intent": "agregar_producto",
-      "mensaje": "quiero una pizza de mozzarella chica sin aceitunas"
-    }
-  ],
-  "mensaje": "quiero una pizza de mozzarella chica sin aceitunas"
 }
 ```
 

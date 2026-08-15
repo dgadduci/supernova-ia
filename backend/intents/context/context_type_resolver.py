@@ -41,11 +41,17 @@ def resolve_context_type(
             if not has_pending_confirmation:
                 return None
             return ContextType.ORDER_CLEAR_CONFIRMATION
+        if intent.intent == "confirmar_pedido":
+            has_pending_observation = any(
+                req.name == "observacion_pedido" and req.status == "pending"
+                for req in intent.requirements
+            )
+            if not has_pending_observation:
+                return None
+            return ContextType.ORDER_CONFIRMATION_OBSERVATION
         if not intent.candidate_ids:
             return None
         if intent.intent == "quitar_producto":
-            return ContextType.ORDER_LINE_SELECTION
-        if intent.intent == "set_observacion_producto":
             return ContextType.ORDER_LINE_SELECTION
         has_pending_pp = any(
             req.name == "producto_presentacion_id" and req.status == "pending"

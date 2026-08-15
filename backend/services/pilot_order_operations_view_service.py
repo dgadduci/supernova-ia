@@ -61,6 +61,7 @@ SUPPORTED_CONTEXT_LITERALS: frozenset[str] = frozenset(
         ContextType.ORDER_LINE_SELECTION.value,
         ContextType.PRODUCT_MODIFICATION.value,
         ContextType.ORDER_CLEAR_CONFIRMATION.value,
+        ContextType.ORDER_CONFIRMATION_OBSERVATION.value,
     }
 )
 
@@ -75,7 +76,6 @@ CLOSED_ACTIVE_INTENT_LITERALS: frozenset[str] = frozenset(
         "confirmar_pedido",
         "set_observacion_pedido",
         "set_direccion_entrega",
-        "set_observacion_producto",
         "saludo",
         "agradecimiento",
         "despedida",

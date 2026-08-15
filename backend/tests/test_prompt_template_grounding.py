@@ -121,23 +121,6 @@ class PromptGroundedIntentsRuleTest(unittest.TestCase):
             ],
         )
 
-    def test_observation_product_fixture_pins_single_intent(self):
-        stub = _StubQueryLlm(
-            {
-                "intents": [
-                    {
-                        "intent": "set_observacion_producto",
-                        "mensaje": "La pizza es sin aceitunas",
-                    },
-                ],
-                "mensaje": "La pizza es sin aceitunas",
-            }
-        )
-        classifier = IntentClassifier(query_llm=stub)
-        result = classifier.query("La pizza es sin aceitunas")
-        self.assertEqual(len(result.intents), 1)
-        self.assertEqual(result.intents[0].intent, IntentName.SET_OBSERVACION_PRODUCTO)
-
     def test_observation_order_fixture_pins_single_intent(self):
         stub = _StubQueryLlm(
             {
@@ -603,7 +586,6 @@ class SecondPromptCorrectionStructureTest(unittest.TestCase):
         prompt = self._build_prompt()
         cases = [
             ("Cómo puedo recibir el pedido?", "ver_metodos_de_entrega"),
-            ("La pizza es sin aceitunas", "set_observacion_producto"),
             (
                 "Por favor que la entrega sea sin demorarse mucho",
                 "set_observacion_pedido",
@@ -649,7 +631,7 @@ class SecondPromptCorrectionStructureTest(unittest.TestCase):
     def test_template_version_bumped_for_declarative_amendment(self):
         from backend.diagnostics import PROMPT_TEMPLATE_VERSION
 
-        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.6.0")
+        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.7.0")
 
 
 class BoundaryCalibrationStructureTest(unittest.TestCase):
@@ -766,8 +748,8 @@ class BoundaryCalibrationStructureTest(unittest.TestCase):
             with self.subTest(message=message):
                 self.assertIn(message, prompt)
 
-    def test_template_version_bumped_to_v1_6_0(self):
-        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.6.0")
+    def test_template_version_bumped_to_v1_7_0(self):
+        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.7.0")
 
 
 if __name__ == "__main__":

@@ -11,6 +11,10 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session as DatabaseSession
 
+from backend.intents.context.order_confirmation_observation_resolver import (
+    ORDER_CONFIRMATION_OBSERVATION_PROMPT,
+    ORDER_CONFIRMATION_OBSERVATION_RETRY_PROMPT,
+)
 from backend.intents.schemas.customer_response import CustomerResponse
 from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.models.session import Session as ConversationSession
@@ -269,7 +273,11 @@ def build_confirmar_pedido_response(
         )
     if intent.status == "rejected":
         reason = intent.resolved_data.get("reason")
-        if reason == "no_draft":
+        if (
+            reason == "session_not_active"
+            or reason == "no_draft"
+            or reason == "session_mismatch"
+        ):
             message = _NO_DRAFT_MESSAGE
         elif reason == "pedido_not_borrador":
             message = _NOT_BORRADOR_MESSAGE
@@ -289,6 +297,17 @@ def build_confirmar_pedido_response(
             message=message,
             intent="confirmar_pedido",
             status="rejected",
+        )
+    if intent.status == "pending_resolution":
+        capture_outcome = intent.resolved_data.get("capture_outcome")
+        if capture_outcome == "invalid_capture_length":
+            message = ORDER_CONFIRMATION_OBSERVATION_RETRY_PROMPT
+        else:
+            message = ORDER_CONFIRMATION_OBSERVATION_PROMPT
+        return CustomerResponse(
+            message=message,
+            intent="confirmar_pedido",
+            status="pending_resolution",
         )
     if intent.status == "executed":
         return CustomerResponse(
@@ -313,6 +332,28 @@ _OBSERVATION_SUCCESS_MESSAGE = "Listo, guardé tu observación."
 _OBSERVATION_REJECTION_MESSAGE = (
     "No pude guardar tu observación. Tu pedido no fue modificado."
 )
+_DIRECT_OBSERVATION_GUIDANCE = (
+    "Por favor, confirmá el pedido para poder agregar una observación."
+)
+_DIRECT_OBSERVATION_REJECTION_REASON = "direct_observation_disabled"
+
+
+def _is_direct_observation_rejection(intent: ProcessedIntent) -> bool:
+    """Return ``True`` when the intent is the documented
+    direct-observation rejection.
+
+    The dispatcher marks every direct ``set_observacion_producto`` or
+    ``set_observacion_pedido`` classification outside the bounded
+    confirmation context with
+    ``resolved_data["reason"] == "direct_observation_disabled"`` and
+    status ``rejected``. The mapper must render the fixed guidance
+    for this shape and must never echo the customer content or
+    generic fallback.
+    """
+    if intent.status != "rejected":
+        return False
+    reason = intent.resolved_data.get("reason")
+    return reason == _DIRECT_OBSERVATION_REJECTION_REASON
 
 
 def build_set_observacion_pedido_response(
@@ -327,6 +368,12 @@ def build_set_observacion_pedido_response(
             status=intent.status,
         )
     if intent.status == "rejected":
+        if _is_direct_observation_rejection(intent):
+            return CustomerResponse(
+                message=_DIRECT_OBSERVATION_GUIDANCE,
+                intent="set_observacion_pedido",
+                status="rejected",
+            )
         return CustomerResponse(
             message=_OBSERVATION_REJECTION_MESSAGE,
             intent="set_observacion_pedido",
@@ -347,6 +394,50 @@ def build_set_observacion_pedido_response(
     return CustomerResponse(
         message=_FAILED_MESSAGE,
         intent="set_observacion_pedido",
+        status=intent.status,
+    )
+
+
+def build_set_observacion_producto_response(
+    db: DatabaseSession,
+    session: ConversationSession,
+    intent: ProcessedIntent,
+) -> CustomerResponse:
+    """Render the deterministic fixed message for ``set_observacion_producto``.
+
+    The product-line observation capability is no longer active. The
+    only path that should reach the mapper is the dispatcher
+    rejection with ``reason="direct_observation_disabled"``. Any
+    other payload is rendered with the safe fallback and never with a
+    fake success message.
+    """
+    if intent.intent != "set_observacion_producto":
+        return CustomerResponse(
+            message=_FAILED_MESSAGE,
+            intent=intent.intent,
+            status=intent.status,
+        )
+    if intent.status == "rejected":
+        if _is_direct_observation_rejection(intent):
+            return CustomerResponse(
+                message=_DIRECT_OBSERVATION_GUIDANCE,
+                intent="set_observacion_producto",
+                status="rejected",
+            )
+        return CustomerResponse(
+            message=_FAILED_MESSAGE,
+            intent="set_observacion_producto",
+            status="rejected",
+        )
+    if intent.status == "failed":
+        return CustomerResponse(
+            message=_FAILED_MESSAGE,
+            intent="set_observacion_producto",
+            status="failed",
+        )
+    return CustomerResponse(
+        message=_FAILED_MESSAGE,
+        intent="set_observacion_producto",
         status=intent.status,
     )
 
@@ -465,4 +556,5 @@ __all__ = [
     "build_set_metodo_de_entrega_response",
     "build_set_metodo_de_pago_response",
     "build_set_observacion_pedido_response",
+    "build_set_observacion_producto_response",
 ]

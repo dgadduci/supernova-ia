@@ -308,9 +308,20 @@ class OutboundMapperBoundariesTest(unittest.TestCase):
 
 
 class SetObservacionProductoMapperTest(unittest.TestCase):
-    """The mapper must route ``set_observacion_producto`` to the dedicated
-    builder so the local endpoint and the staged outbox share the same
-    private deterministic message."""
+    """``set_observacion_producto`` is no longer an active capability.
+
+    The dispatcher produces a single ``rejected`` outcome with the
+    ``direct_observation_disabled`` reason for the direct intent
+    outside the bounded confirmation context. The mapper renders the
+    documented fixed guidance for that shape. Any other payload
+    (legacy executed state, unexpected rejection reasons, technical
+    failure) reaches the safe fallback with no fake success message
+    and no customer content leakage.
+    """
+
+    _DIRECT_GUIDANCE = (
+        "Por favor, confirmá el pedido para poder agregar una observación."
+    )
 
     def _intent(
         self,
@@ -320,7 +331,7 @@ class SetObservacionProductoMapperTest(unittest.TestCase):
         producto_nombre: str | None = "Pizza Mozzarella",
         presentacion_codigo: str | None = "grande",
         observation_text: str | None = "obs-secret",
-        candidate_ids: list[int] | None = None,
+        reason: str | None = None,
     ) -> ProcessedIntent:
         resolved: dict = {
             "observation_action": observation_action,
@@ -331,6 +342,8 @@ class SetObservacionProductoMapperTest(unittest.TestCase):
             resolved["producto_nombre"] = producto_nombre
         if presentacion_codigo is not None:
             resolved["presentacion_codigo"] = presentacion_codigo
+        if reason is not None:
+            resolved["reason"] = reason
         return ProcessedIntent(
             intent="set_observacion_producto",
             source_text="La pizza es sin aceitunas",
@@ -338,50 +351,27 @@ class SetObservacionProductoMapperTest(unittest.TestCase):
             recognizer="recognizer_set_observacion_producto",
             handler="set_observacion_producto",
             resolved_data=resolved,
-            candidate_ids=list(candidate_ids) if candidate_ids is not None else [],
         )
 
-    def test_set_executed_renders_confirmation_without_text(self) -> None:
-        intent = self._intent(status="executed")
-        mapped = build_customer_responses(
-            MagicMock(), MagicMock(), [intent]
-        )[0]
-        self.assertEqual(mapped.status, "executed")
-        self.assertEqual(mapped.intent, "set_observacion_producto")
-        self.assertIn("Actualicé", mapped.message)
-        self.assertNotIn("obs-secret", mapped.message)
-
-    def test_clear_executed_renders_removal_message(self) -> None:
+    def test_direct_rejection_renders_fixed_guidance(self) -> None:
         intent = self._intent(
-            status="executed",
-            observation_action="clear",
-            observation_text=None,
+            status="rejected",
+            reason="direct_observation_disabled",
         )
         mapped = build_customer_responses(
             MagicMock(), MagicMock(), [intent]
         )[0]
-        self.assertEqual(mapped.status, "executed")
-        self.assertIn("Eliminé", mapped.message)
-
-    def test_rejected_renders_safe_message(self) -> None:
-        intent = self._intent(status="rejected")
-        mapped = build_customer_responses(
-            MagicMock(), MagicMock(), [intent]
-        )[0]
-        self.assertEqual(mapped.status, "rejected")
+        self.assertEqual(mapped.message, self._DIRECT_GUIDANCE)
         self.assertEqual(mapped.intent, "set_observacion_producto")
+        self.assertEqual(mapped.status, "rejected")
         self.assertNotIn("obs-secret", mapped.message)
+        self.assertNotIn("Pizza Mozzarella", mapped.message)
 
-    def test_failed_renders_generic_message(self) -> None:
-        intent = self._intent(status="failed")
-        mapped = build_customer_responses(
-            MagicMock(), MagicMock(), [intent]
-        )[0]
-        self.assertEqual(mapped.status, "failed")
-        self.assertIn("Intentá de nuevo", mapped.message)
-
-    def test_outbox_staging_uses_the_same_message(self) -> None:
-        intent = self._intent(status="executed")
+    def test_outbox_stages_fixed_guidance(self) -> None:
+        intent = self._intent(
+            status="rejected",
+            reason="direct_observation_disabled",
+        )
         db = MagicMock()
         session = MagicMock()
         expected = build_customer_responses(db, session, [intent])[0]
@@ -406,7 +396,23 @@ class SetObservacionProductoMapperTest(unittest.TestCase):
         self.assertEqual(
             outbox_repo.stage.call_args.kwargs["cuerpo"], expected.message
         )
-        self.assertNotIn("obs-secret", expected.message)
+        self.assertEqual(expected.message, self._DIRECT_GUIDANCE)
+
+    def test_unexpected_payloads_fall_back_without_fake_success(self) -> None:
+        for status in ("executed", "rejected", "failed"):
+            with self.subTest(status=status):
+                intent = self._intent(status=status)
+                mapped = build_customer_responses(
+                    MagicMock(), MagicMock(), [intent]
+                )[0]
+                self.assertEqual(mapped.intent, "set_observacion_producto")
+                self.assertEqual(mapped.status, status)
+                self.assertNotEqual(mapped.message, self._DIRECT_GUIDANCE)
+                self.assertNotIn("obs-secret", mapped.message)
+                self.assertNotEqual(
+                    mapped.message,
+                    "Listo, guardé tu observación.",
+                )
 
 
 class SetDireccionEntregaMapperTest(unittest.TestCase):

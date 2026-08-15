@@ -382,6 +382,7 @@ class DraftOrderClosureBoundariesTest(unittest.TestCase):
                 "build_set_metodo_de_entrega_response",
                 "build_set_metodo_de_pago_response",
                 "build_set_observacion_pedido_response",
+                "build_set_observacion_producto_response",
             ],
         )
 
@@ -389,6 +390,7 @@ class DraftOrderClosureBoundariesTest(unittest.TestCase):
         self.assertEqual(
             closure_module.__all__,
             [
+                "finalize_confirmar_pedido",
                 "process_initial_confirmar_pedido",
                 "process_initial_consultar_resumen_pedido",
                 "process_initial_set_direccion_entrega",
@@ -1077,15 +1079,16 @@ class DraftOrderClosureConfirmTest(unittest.TestCase):
                 intent = process_initial_confirmar_pedido(
                     db, session_row, "confirmar"
                 )
-                self.assertEqual(intent.status, "executed")
-                self.assertEqual(
-                    intent.resolved_data.get("pedido_id"), ids["pedido_id"]
-                )
-                db.commit()
-            with TestingSessionLocal() as db:
+                self.assertEqual(intent.status, "pending_resolution")
+                self.assertEqual(intent.resolved_data, {})
+                pending_names = {r.name for r in intent.requirements}
+                self.assertEqual(pending_names, {"observacion_pedido"})
+                # No state mutation yet: the pedido is still borrador.
                 pedido = db.get(Pedido, ids["pedido_id"])
                 assert pedido is not None
-                self.assertEqual(pedido.estado_pedido, EstadoPedido.INGRESADO)
+                self.assertEqual(
+                    pedido.estado_pedido, EstadoPedido.BORRADOR
+                )
         finally:
             _cleanup(ids)
 
@@ -1104,24 +1107,32 @@ class DraftOrderClosureConfirmTest(unittest.TestCase):
                 first = process_initial_confirmar_pedido(
                     db, session_row, "confirmar"
                 )
-                self.assertEqual(first.status, "executed")
+                self.assertEqual(first.status, "pending_resolution")
+                # The new flow orders the confirmation through the
+                # observation capture so the second turn sees the
+                # not-borrador state only after the finalizer ran.
                 db.commit()
             with TestingSessionLocal() as db:
                 session_row = db.get(SessionModel, ids["session_id"])
                 assert session_row is not None
-                # Reload pedido to observe persisted state in a fresh session.
                 pedido = db.get(Pedido, ids["pedido_id"])
                 assert pedido is not None
-                self.assertEqual(pedido.estado_pedido, EstadoPedido.INGRESADO)
-                # Simulate a second-turn attempt with a fresh session.
+                self.assertEqual(pedido.estado_pedido, EstadoPedido.BORRADOR)
+                # The initial orchestrator still validates the
+                # borrador precondition before yielding the pending
+                # context, so a second explicit confirmation attempt
+                # against the same borrador also stages the pending
+                # context (deterministic; the second attempt is
+                # just a no-op duplicate).
                 second = process_initial_confirmar_pedido(
                     db, session_row, "confirmar de nuevo"
                 )
-                self.assertEqual(second.status, "rejected")
+                self.assertEqual(second.status, "pending_resolution")
+                pedido = db.get(Pedido, ids["pedido_id"])
+                assert pedido is not None
                 self.assertEqual(
-                    second.resolved_data.get("reason"), "pedido_not_borrador"
+                    pedido.estado_pedido, EstadoPedido.BORRADOR
                 )
-                db.commit()
         finally:
             _cleanup(ids)
 

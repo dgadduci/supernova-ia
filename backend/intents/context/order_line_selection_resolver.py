@@ -1,19 +1,18 @@
 """Order-line selection resolver.
 
-Refines an active order-line ``pending_resolution`` intent when the
-customer replies with a more specific order-line identifier (size,
-product name, etc.). Today this is used by both ``quitar_producto``
-and ``set_observacion_producto`` pending intents; the resolver is
-generic over the intent name and only the deterministic
+Refines an active ``quitar_producto`` ``pending_resolution`` intent
+when the customer replies with a more specific order-line identifier
+(size, product name, etc.). The product-line observation capability
+was removed so the resolver is now exclusively responsible for
+``quitar_producto`` pending intents and only the deterministic
 ``pedido_producto_id`` narrowing.
 
 The resolver restricts the refinement strictly to the current
 ``candidate_ids`` (no broadening back to the commerce catalog) and
 never mutates ``session``, the pedido, or any persisted state. The
 resolver preserves each pending intent's existing ``resolved_data``
-(``observation_action``, ``observation_text``, ``cantidad``, etc.) so a
-follow-up clarification does not reclassify or rewrite the original
-intent.
+(``cantidad``, etc.) so a follow-up clarification does not
+reclassify or rewrite the original intent.
 
 When the refinement narrows to exactly one candidate, populates
 ``resolved_data["pedido_producto_id"]``, sets ``status="ready"``, and

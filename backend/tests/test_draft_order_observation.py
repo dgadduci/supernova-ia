@@ -697,20 +697,19 @@ class SetObservationPedidoMapperTest(unittest.TestCase):
 
 
 class SetObservationPedidoDispatcherTest(unittest.TestCase):
-    def test_dispatcher_routes_set_observacion_pedido_to_orchestrator(self) -> None:
+    def test_dispatcher_direct_observacion_pedido_returns_deterministic_rejection(
+        self,
+    ) -> None:
+        """A direct ``set_observacion_pedido`` outside the confirmation
+        context is rejected with the fixed guidance to confirm first.
+        The product-line observation capability is removed so the
+        new flow only accepts pedido observations through the bounded
+        confirmation context.
+        """
         from backend.intents.orchestration import (
             initial_intent_dispatcher as dispatcher_module,
         )
 
-        orchestrator = MagicMock()
-        orchestrator.return_value = ProcessedIntent(
-            intent="set_observacion_pedido",
-            source_text="entregar a las 19",
-            status="executed",
-            recognizer="draft_order_closure",
-            handler="set_observacion_pedido",
-            resolved_data={"accepted_length": 17},
-        )
         classification = IntentClassificationResult(
             intents=[
                 ClassifiedIntent(
@@ -731,8 +730,6 @@ class SetObservationPedidoDispatcherTest(unittest.TestCase):
         session.estado_session = EstadoSession.ACTIVA
 
         with patch.object(
-            dispatcher_module, "process_initial_set_observacion_pedido", orchestrator
-        ), patch.object(
             dispatcher_module, "IntentClassifier"
         ) as classifier_cls:
             classifier_cls.return_value = classifier_instance
@@ -740,13 +737,15 @@ class SetObservationPedidoDispatcherTest(unittest.TestCase):
                 db, session, "entregar a las 19"
             )
 
-        orchestrator.assert_called_once_with(
-            db, session, "entregar a las 19"
-        )
         self.assertEqual(len(processed), 1)
-        self.assertEqual(processed[0].status, "executed")
+        self.assertEqual(processed[0].status, "rejected")
+        self.assertEqual(processed[0].intent, "set_observacion_pedido")
         self.assertEqual(
-            processed[0].resolved_data.get("accepted_length"), 17
+            processed[0].resolved_data.get("reason"),
+            "direct_observation_disabled",
+        )
+        self.assertIn(
+            "confirmá", processed[0].resolved_data.get("guidance", "")
         )
 
     def test_pending_context_short_circuits_initial_dispatch(self) -> None:
@@ -1065,10 +1064,13 @@ class SetObservationPedidoIntegrationTest(unittest.TestCase):
             self.assertEqual(
                 responses[0].intent, "set_observacion_pedido"
             )
-            self.assertEqual(responses[0].status, "executed")
-            self.assertNotIn("observation-text", responses[0].message)
+            self.assertEqual(responses[0].status, "rejected")
+            # The pedido must NOT be mutated: the direct observation
+            # intent is rejected with the deterministic guidance so
+            # the customer is asked to confirm the order first.
             pedido = _load_pedido(ids["pedido_id"])
-            self.assertEqual(pedido.observaciones, "observation-text")
+            assert pedido is not None
+            self.assertIsNone(pedido.observaciones)
             self.assertEqual(pedido.estado_pedido, EstadoPedido.BORRADOR)
         finally:
             _cleanup(ids)
