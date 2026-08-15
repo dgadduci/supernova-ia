@@ -21,6 +21,25 @@ or identity/ownership inconsistency using the existing generic rejection. It
 SHALL NOT invoke the normal message processor, global dispatcher, mutating
 handler, provider, worker, outbox, or Twilio path for a non-draft order.
 
+#### Scenario: Valid test message follows normal business processing without Twilio
+
+- **WHEN** an authenticated operator submits a valid local-test message for
+  the selected active draft
+- **THEN** the exact session is processed once through the existing response
+  orchestration and mapped responses are returned to the browser-only
+  transcript
+- **AND THEN** no provider receipt, provider work item, outbound row, lease,
+  worker invocation or Twilio delivery is created
+
+#### Scenario: Mismatched target cannot be redirected to another session
+
+- **WHEN** the selected Pedido has a closed/missing Session, a different
+  `session.id_pedido`, or a client/comercio mismatch
+- **THEN** the route rejects without invoking either the draft message pipeline
+  or the confirmed-order status branch
+- **AND THEN** it does not search for another active session or mutate any
+  record
+
 #### Scenario: Flexible status language is allowed only for the exact confirmed order
 
 - **WHEN** an authenticated operator submits a local message for an exact
