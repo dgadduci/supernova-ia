@@ -354,10 +354,10 @@ class IntentClassifierRemovalSemanticRuleTest(unittest.TestCase):
         self.assertIn("lista cerrada", self._PROMPT)
 
     def test_prompt_template_version_is_bumped_monotonically(self):
-        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.5.0")
+        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.6.0")
         self.assertGreater(
             PROMPT_TEMPLATE_VERSION,
-            "intent-classifier/v1.4.0",
+            "intent-classifier/v1.5.0",
         )
 
 
@@ -472,6 +472,228 @@ class IntentClassifierPromptTemplateFingerprintTest(unittest.TestCase):
         finally:
             prompt_template_module._PROMPT_TEMPLATE_BODY = original_body
             prompt_template_module._PROMPT_TEMPLATE_HASH = original_hash
+
+
+class IntentClassifierDeclarativeObservationRuleTest(unittest.TestCase):
+    """Verifies the static prompt instructs that a declarative
+    product-specific instruction without an add verb maps to a single
+    ``set_observacion_producto`` intent and that an explicit add request
+    that contains an accessory condition remains ``agregar_producto``.
+    The decision criterion is the meaning of the message wording; the
+    classifier MUST NOT inspect the current Pedido or the existing
+    order-line identity to make this distinction.
+    """
+
+    _PROMPT = build_intent_prompt("__placeholder__")
+
+    def test_prompt_documents_rule_10_for_declarative_vs_add(self):
+        lowered = self._PROMPT.casefold()
+        self.assertIn("10.", self._PROMPT)
+        for marker in (
+            "set_observacion_producto",
+            "agregar_producto",
+            "declarativa",
+            "verbo de agregado",
+            "no inspecciones el pedido actual",
+            "ni siquiera si existe una línea coincidente",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, lowered)
+
+    def test_prompt_lists_representative_add_verbs(self):
+        for verb in (
+            "quiero",
+            "quisiera",
+            "dame",
+            "poné",
+            "sumá",
+            "agregá",
+            "agregar",
+            "añadí",
+            "añadir",
+            "me gustaría",
+        ):
+            with self.subTest(verb=verb):
+                self.assertIn(verb, self._PROMPT)
+
+    def test_prompt_lists_representative_declarative_patterns(self):
+        for pattern in (
+            "La <producto> es <condición>",
+            "La <producto> va <condición>",
+            "La <producto> sin <ingrediente>",
+            "<producto> con <condición>",
+            "Para la <producto>, <condición>",
+            "El <producto> lleva <condición>",
+        ):
+            with self.subTest(pattern=pattern):
+                self.assertIn(pattern, self._PROMPT)
+
+    def test_prompt_includes_qualified_declarative_observation_example(self):
+        message = "La pizza de mozzarella chica es sin aceitunas"
+        self.assertIn(message, self._PROMPT)
+        message_pos = self._PROMPT.find(message)
+        salta_pos = self._PROMPT.find("Salida:", message_pos)
+        json_pos = self._PROMPT.find("```json", salta_pos)
+        end_pos = self._PROMPT.find("```", json_pos + len("```json"))
+        block = self._PROMPT[json_pos:end_pos]
+        self.assertIn("set_observacion_producto", block)
+        self.assertNotIn("agregar_producto", block)
+
+    def test_prompt_includes_second_declarative_observation_example(self):
+        message = "La empanada de pollo va sin salsa"
+        self.assertIn(message, self._PROMPT)
+        message_pos = self._PROMPT.find(message)
+        salta_pos = self._PROMPT.find("Salida:", message_pos)
+        json_pos = self._PROMPT.find("```json", salta_pos)
+        end_pos = self._PROMPT.find("```", json_pos + len("```json"))
+        block = self._PROMPT[json_pos:end_pos]
+        self.assertIn("set_observacion_producto", block)
+
+    def test_prompt_includes_explicit_add_with_condition_example(self):
+        message = "quiero una pizza de mozzarella chica sin aceitunas"
+        self.assertIn(message, self._PROMPT)
+        message_pos = self._PROMPT.find(message)
+        salta_pos = self._PROMPT.find("Salida:", message_pos)
+        json_pos = self._PROMPT.find("```json", salta_pos)
+        end_pos = self._PROMPT.find("```", json_pos + len("```json"))
+        block = self._PROMPT[json_pos:end_pos]
+        self.assertIn("agregar_producto", block)
+        self.assertNotIn("set_observacion_producto", block)
+
+
+class IntentClassifierDeclarativeObservationPayloadTest(unittest.TestCase):
+    """Verifies that the controlled classifier contract round-trips the
+    observed declarative qualified observation and the add-with-condition
+    cases through the existing ``IntentClassificationResult`` schema. These
+    checks verify the schema contract, not the live LLM behavior.
+    """
+
+    def test_qualified_declarative_observation_pins_single_intent(self):
+        message = "La pizza de mozzarella chica es sin aceitunas"
+        stub = _StubQueryLlm(
+            payload={
+                "intents": [
+                    {
+                        "intent": "set_observacion_producto",
+                        "mensaje": message,
+                    }
+                ],
+                "mensaje": message,
+            }
+        )
+        classifier = IntentClassifier(query_llm=stub)
+
+        result = classifier.query(message)
+
+        self.assertEqual(len(result.intents), 1)
+        classified = result.intents[0]
+        self.assertEqual(classified.intent, IntentName.SET_OBSERVACION_PRODUCTO)
+        self.assertEqual(classified.mensaje, message)
+        self.assertEqual(result.mensaje, message)
+        self.assertEqual(len(stub.calls), 1)
+
+    def test_second_declarative_observation_pins_single_intent(self):
+        message = "La empanada de pollo va sin salsa"
+        stub = _StubQueryLlm(
+            payload={
+                "intents": [
+                    {
+                        "intent": "set_observacion_producto",
+                        "mensaje": message,
+                    }
+                ],
+                "mensaje": message,
+            }
+        )
+        classifier = IntentClassifier(query_llm=stub)
+
+        result = classifier.query(message)
+
+        self.assertEqual(len(result.intents), 1)
+        self.assertEqual(
+            result.intents[0].intent, IntentName.SET_OBSERVACION_PRODUCTO
+        )
+        self.assertEqual(result.intents[0].mensaje, message)
+
+    def test_explicit_add_with_condition_remains_agregar_producto(self):
+        message = "quiero una pizza de mozzarella chica sin aceitunas"
+        stub = _StubQueryLlm(
+            payload={
+                "intents": [
+                    {
+                        "intent": "agregar_producto",
+                        "mensaje": message,
+                    }
+                ],
+                "mensaje": message,
+            }
+        )
+        classifier = IntentClassifier(query_llm=stub)
+
+        result = classifier.query(message)
+
+        self.assertEqual(len(result.intents), 1)
+        self.assertEqual(result.intents[0].intent, IntentName.AGREGAR_PRODUCTO)
+        self.assertEqual(result.intents[0].mensaje, message)
+        self.assertNotIn(
+            IntentName.SET_OBSERVACION_PRODUCTO,
+            [item.intent for item in result.intents],
+        )
+
+    def test_declarative_observation_payload_does_not_emit_add_intent(self):
+        message = "La pizza de mozzarella chica es sin aceitunas"
+        stub = _StubQueryLlm(
+            payload={
+                "intents": [
+                    {
+                        "intent": "set_observacion_producto",
+                        "mensaje": message,
+                    }
+                ],
+                "mensaje": message,
+            }
+        )
+        classifier = IntentClassifier(query_llm=stub)
+
+        result = classifier.query(message)
+
+        names = {item.intent for item in result.intents}
+        self.assertNotIn(IntentName.AGREGAR_PRODUCTO, names)
+
+
+class IntentClassifierDeclarativeObservationFingerprintTest(unittest.TestCase):
+    """Confirms the static-only fingerprint contract holds for the
+    declarative observation amendment: the fingerprint is derived from
+    the static template body only, the version is bumped, and the runtime
+    diagnostics never include the customer message.
+    """
+
+    def test_template_version_is_bumped_for_declarative_amendment(self):
+        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.6.0")
+        self.assertGreater(
+            PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.5.0"
+        )
+
+    def test_template_fingerprint_excludes_customer_message(self):
+        from backend.diagnostics.prompt_template import template_fingerprint
+
+        sentinel = "DECLARATIVE-CUSTOMER-MESSAGE-SENTINEL-987654321"
+        with_prompt = build_intent_prompt(sentinel)
+        self.assertIn(sentinel, with_prompt)
+        self.assertNotIn(sentinel, prompt_template_module._PROMPT_TEMPLATE_BODY)
+        fingerprint = template_fingerprint()
+        self.assertEqual(len(fingerprint), 64)
+        self.assertNotIn(sentinel, fingerprint)
+
+    def test_template_identity_pins_version_and_fingerprint(self):
+        from backend.diagnostics.prompt_template import template_identity
+
+        identity = template_identity()
+        self.assertEqual(identity["prompt_template_version"], PROMPT_TEMPLATE_VERSION)
+        self.assertEqual(
+            identity["prompt_template_hash"], prompt_template_module._PROMPT_TEMPLATE_HASH
+        )
+        self.assertEqual(len(identity["prompt_template_hash"]), 64)
 
 
 if __name__ == "__main__":

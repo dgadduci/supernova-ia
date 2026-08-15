@@ -294,6 +294,82 @@ class DispatchInitialMessageRejectionTest(unittest.TestCase):
 
         self.assertEqual(result, [sentinel])
 
+    @patch.object(dispatcher_module, "process_initial_set_observacion_producto")
+    @patch.object(dispatcher_module, "IntentClassifier")
+    def test_qualified_declarative_observation_routes_unchanged(
+        self, classifier_cls, orchestrator
+    ):
+        sentinel = ProcessedIntent(
+            intent="set_observacion_producto",
+            source_text="La pizza de mozzarella chica es sin aceitunas",
+            status="ready",
+            recognizer="recognizer_set_observacion_producto",
+            handler="set_observacion_producto",
+        )
+        orchestrator.return_value = sentinel
+        classifier_instance = MagicMock()
+        classifier_instance.query.return_value = _build_result(
+            (
+                IntentName.SET_OBSERVACION_PRODUCTO,
+                "La pizza de mozzarella chica es sin aceitunas",
+            )
+        )
+        classifier_cls.return_value = classifier_instance
+
+        db = MagicMock(name="DatabaseSession")
+        session = _session(context_type=None)
+
+        result = dispatch_initial_message(
+            db, session, "La pizza de mozzarella chica es sin aceitunas"
+        )
+
+        classifier_instance.query.assert_called_once_with(
+            "La pizza de mozzarella chica es sin aceitunas"
+        )
+        orchestrator.assert_called_once_with(
+            db, session, "La pizza de mozzarella chica es sin aceitunas"
+        )
+        self.assertEqual(result, [sentinel])
+
+    @patch.object(dispatcher_module, "process_initial_set_observacion_producto")
+    @patch.object(dispatcher_module, "process_initial_agregar_producto")
+    @patch.object(dispatcher_module, "IntentClassifier")
+    def test_explicit_add_with_condition_routes_to_agregar_producto(
+        self, classifier_cls, agregar_orch, observacion_orch
+    ):
+        sentinel = ProcessedIntent(
+            intent="agregar_producto",
+            source_text="quiero una pizza de mozzarella chica sin aceitunas",
+            status="ready",
+            recognizer="recognizer_productos",
+            handler="agregar_producto",
+        )
+        agregar_orch.return_value = sentinel
+        classifier_instance = MagicMock()
+        classifier_instance.query.return_value = _build_result(
+            (
+                IntentName.AGREGAR_PRODUCTO,
+                "quiero una pizza de mozzarella chica sin aceitunas",
+            )
+        )
+        classifier_cls.return_value = classifier_instance
+
+        db = MagicMock(name="DatabaseSession")
+        session = _session(context_type=None)
+
+        result = dispatch_initial_message(
+            db, session, "quiero una pizza de mozzarella chica sin aceitunas"
+        )
+
+        classifier_instance.query.assert_called_once_with(
+            "quiero una pizza de mozzarella chica sin aceitunas"
+        )
+        agregar_orch.assert_called_once_with(
+            db, session, "quiero una pizza de mozzarella chica sin aceitunas"
+        )
+        observacion_orch.assert_not_called()
+        self.assertEqual(result, [sentinel])
+
 
 class DispatchInitialMessageGuardTest(unittest.TestCase):
     @patch.object(dispatcher_module, "process_initial_agregar_producto")

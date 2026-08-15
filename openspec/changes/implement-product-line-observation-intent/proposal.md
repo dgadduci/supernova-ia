@@ -8,12 +8,29 @@ modern incoming-message path. It will set or explicitly clear the
 active conversation's own draft Pedido, and will return a deterministic
 customer response.
 
+## Regression amendment: declarative product instructions
+
+Pilot traffic showed that `La pizza de mozzarella chica es sin aceitunas`
+reached the `agregar_producto` fallback and returned `No pude procesar tu
+pedido, ¿podrías reformularlo?`. The product-line-observation mapper does not
+emit that response, so the failure occurs in classification before the
+existing order-line recognizer runs.
+
+The bounded correction is static classifier calibration: a declarative,
+product-specific instruction with no add verb must produce exactly one
+`set_observacion_producto` intent and preserve the original message. It must
+not inspect the current Pedido to reinterpret an add request. In particular,
+`quiero una pizza de mozzarella chica sin aceitunas` remains an add request;
+combined add-with-observation is deferred to a separately approved change.
+
 ## Current execution path
 
-`IntentName` and the classifier prompt/corpus already contain
-`set_observacion_producto`. `dispatch_initial_message` has no branch for it,
-so it reaches the generic rejected fallback. No handler, response builder, or
-pending-context rule exists for this intent.
+`IntentName`, the classifier prompt/corpus, initial dispatcher, order-line
+recognizer, orchestrator, handler, response mapper and caller-owned
+`PedidoProducto.observaciones` seam already exist and are deployed. The
+remaining production failure is that the static classifier guidance has only
+the generic `La pizza es sin aceitunas` example and did not reliably classify
+the observed qualified declarative phrasing.
 
 The analogous `quitar_producto` path recognizes only lines loaded from
 `session.id_pedido`, persists ambiguous line ids in `order_line_selection`,
@@ -40,10 +57,13 @@ to deterministic builders after processing.
   and leaves commit/rollback/flush ownership to the caller.
 - Map pending, executed, rejected and failed outcomes to fixed Spanish
   responses without exposing ids or the stored observation content.
+- Calibrate only the static classifier prompt and controlled corpus for the
+  observed declarative wording, then prove the existing dispatcher receives
+  the classified intent unchanged.
 
 ## Non-goals
 
-- No change to the classifier enum, prompt, corpus, LLM schema, catalog,
+- No change to the classifier enum, LLM schema, catalog,
   product-recognition policy, HTTP endpoint, CLI, outbox contract, migration,
   pedido-level observation intent, or temporal-delivery programming spec.
 - No catalog lookup, candidate widening, new pending context type, queue
@@ -51,10 +71,15 @@ to deterministic builders after processing.
   mutation target.
 - No repair of the legacy `add`, `update`, or `delete` service transaction
   behavior outside the new seam.
+- No state-aware classifier rule, current-Pedido lookup, post-classification
+  rewrite, or fallback from `agregar_producto` to
+  `set_observacion_producto`. Combined add-with-observation remains out of
+  scope.
 
 ## Shared boundary and authoritative outcomes
 
-The classifier only selects the existing intent branch; it is not authority
+The classifier selects the existing intent branch from message wording only;
+it never reads the current Pedido and is not authority
 for line selection, clear/set action, stored value normalization, or mutation.
 The user-supplied `classified.mensaje` is preserved as the raw observation
 text for a set action after local trimming. A local deterministic clear grammar
@@ -74,6 +99,11 @@ Authoritative outcomes are:
   candidate set. No row changes.
 - `failed`: an unexpected technical failure; it reaches the existing outer
   transactional owner, which rolls back the turn.
+
+For this amendment, `La pizza de mozzarella chica es sin aceitunas` SHALL
+classify as one `set_observacion_producto` intent. `quiero una pizza de
+mozzarella chica sin aceitunas` SHALL remain `agregar_producto`; an existing
+matching line must not silently change that action.
 
 Fallback is deliberately safe: fuzzy recognition remains the existing
 order-line recognizer and its result is accepted only after intersection with
@@ -110,6 +140,9 @@ stored observation.
 - `backend/services/pedido_producto_service.py` and
   `backend/repositories/pedido_producto_repository.py` for the dedicated
   caller-owned mutation seam.
+- `backend/diagnostics/prompt_template.py`,
+  `backend/diagnostics/intent_corpus.py`, and focused classifier/dispatcher
+  tests for the regression amendment.
 - Focused tests beside the existing quitar/modificar, pending-context, mapper,
   and transaction-regression tests.
 
@@ -119,39 +152,28 @@ Run in the user's local terminal (the Codex sandbox cannot load this project's
 Homebrew-backed `venv`):
 
 ```text
-PYTHONPATH=. venv/bin/python -m pytest backend/tests/test_set_observacion_producto_initial.py backend/tests/test_set_observacion_producto_handler.py backend/tests/test_set_observacion_producto_response.py backend/tests/test_set_observacion_producto_end_to_end.py backend/tests/test_initial_intent_dispatcher.py backend/tests/test_order_line_selection_resolver.py backend/tests/test_pending_context_execution.py backend/tests/test_outbound_response_mapper.py -q
-PYTHONPATH=. venv/bin/python -m ruff check backend/intents/recognizers/set_observacion_producto_recognizer.py backend/intents/orchestration/set_observacion_producto_initial.py backend/intents/handlers/set_observacion_producto_handler.py backend/intents/responses/set_observacion_producto_response.py backend/intents/orchestration/initial_intent_dispatcher.py backend/intents/context/context_type_resolver.py backend/intents/orchestration/pending_context_execution.py backend/services/outbound_response_mapper.py backend/services/pedido_producto_service.py backend/repositories/pedido_producto_repository.py
-PYTHONPATH=. venv/bin/python -m compileall -q backend/intents/recognizers/set_observacion_producto_recognizer.py backend/intents/orchestration/set_observacion_producto_initial.py backend/intents/handlers/set_observacion_producto_handler.py backend/intents/responses/set_observacion_producto_response.py backend/intents/orchestration/initial_intent_dispatcher.py backend/intents/context/context_type_resolver.py backend/intents/orchestration/pending_context_execution.py backend/services/outbound_response_mapper.py backend/services/pedido_producto_service.py backend/repositories/pedido_producto_repository.py
+PYTHONPATH=. venv/bin/python -m pytest backend/tests/test_set_observacion_producto_initial.py backend/tests/test_set_observacion_producto_handler.py backend/tests/test_set_observacion_producto_response.py backend/tests/test_set_observacion_producto_end_to_end.py backend/tests/test_initial_intent_dispatcher.py backend/tests/test_intent_classifier.py backend/tests/test_prompt_template_grounding.py backend/tests/test_order_line_selection_resolver.py backend/tests/test_pending_context_execution.py backend/tests/test_outbound_response_mapper.py -q
+PYTHONPATH=. venv/bin/python -m ruff check backend/diagnostics/prompt_template.py backend/diagnostics/intent_corpus.py backend/tests/test_intent_classifier.py backend/tests/test_prompt_template_grounding.py backend/tests/test_initial_intent_dispatcher.py
+PYTHONPATH=. venv/bin/python -m compileall -q backend/diagnostics/prompt_template.py backend/diagnostics/intent_corpus.py backend/llm/intent_classifier.py backend/intents/orchestration/initial_intent_dispatcher.py
 openspec validate implement-product-line-observation-intent --strict
 ```
 
 ## Rollback and deferred limitations
 
-This is source-only and reversible: removing its dispatcher/mapper branches
-returns the intent to its current rejected behavior; data already stored in
-the nullable `observaciones` field requires no rollback migration. The initial
-grammar intentionally favors safety over broad natural-language parsing;
-unsupported deletion phrasings become a set action or a business rejection
-rather than deleting data. Rich structured observation extraction, editing
-pedido-level observations, and a broader natural-language clear grammar are
+The amendment is reversible by reverting the static prompt/corpus revision;
+it changes no persisted state. Combined add-with-observation, rich structured
+extraction, pedido-level observations, and broader clear grammar remain
 deferred to separately approved work.
 
 ## Hold and archive gate
 
 ## Operational pause
 
-This change remains paused. Its production-message test must not begin until
-`fix-pilot-product-add-execution` has passed its own catalog/WhatsApp gate
-and the corrective pending-context change has then resumed and passed its
-three-step production gate. This is a pause only: it neither archives this
-change nor authorizes any implementation or manual data operation.
+The prerequisite product-add and pending-context gates have passed in the
+pilot. This amendment authorizes only bounded prompt/corpus calibration after
+user approval; it neither archives this change nor authorizes combined
+add-with-observation behavior.
 
-This change is intentionally **not ready to archive**. The separate active
-change `fix-pending-context-recovery-and-status-query` MUST first be
-implemented, locally validated, reviewed, deployed through the normal
-approved path, and verified in production with real WhatsApp messages. Only
-after that production verification demonstrates both a successful product
-selection and recovery/status behavior may this observation change be resumed
-for its own production-message test. Archive is permitted only after that
-resumed test succeeds and the user explicitly approves archiving; neither
-change may be archived merely because its code or focused tests pass.
+This change is intentionally **not ready to archive**. It needs review of the
+deployed implementation, this classifier amendment, focused validation and a
+controlled production set/clear test before explicit user archive approval.

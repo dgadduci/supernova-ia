@@ -646,10 +646,10 @@ class SecondPromptCorrectionStructureTest(unittest.TestCase):
         self.assertIn('"intent": "<', prompt)
         self.assertIn('"mensaje": "<', prompt)
 
-    def test_template_version_bumped_for_second_correction(self):
+    def test_template_version_bumped_for_declarative_amendment(self):
         from backend.diagnostics import PROMPT_TEMPLATE_VERSION
 
-        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.3.0")
+        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.6.0")
 
 
 class BoundaryCalibrationStructureTest(unittest.TestCase):
@@ -766,8 +766,8 @@ class BoundaryCalibrationStructureTest(unittest.TestCase):
             with self.subTest(message=message):
                 self.assertIn(message, prompt)
 
-    def test_template_version_bumped_to_v1_3_0(self):
-        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.3.0")
+    def test_template_version_bumped_to_v1_6_0(self):
+        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.6.0")
 
 
 if __name__ == "__main__":
