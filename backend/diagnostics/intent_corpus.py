@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from backend.intents.schemas.intent_classification import IntentName
 
-CORPUS_VERSION = "intent-corpus/v1.3.0"
+CORPUS_VERSION = "intent-corpus/v1.4.0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,6 +212,32 @@ CONTROLLED_INTENT_CORPUS: tuple[IntentFixture, ...] = (
         "set_observacion_pedido intent",
         "Cuidado con el perro",
         (IntentName.SET_OBSERVACION_PEDIDO,),
+    ),
+    _fixture(
+        "F-REG-DECLARATIVE-PIZZA_MOZARELLA_CHICA",
+        "Regression: declarative qualified product instruction without "
+        "an add verb must remain a single set_observacion_producto intent",
+        "La pizza de mozzarella chica es sin aceitunas",
+        (IntentName.SET_OBSERVACION_PRODUCTO,),
+        ("La pizza de mozzarella chica es sin aceitunas",),
+    ),
+    _fixture(
+        "F-REG-DECLARATIVE-EMPANADA_POLLO_SIN_SALSA",
+        "Regression: declarative qualified product instruction with a "
+        "different product/condition must remain a single "
+        "set_observacion_producto intent",
+        "La empanada de pollo va sin salsa",
+        (IntentName.SET_OBSERVACION_PRODUCTO,),
+        ("La empanada de pollo va sin salsa",),
+    ),
+    _fixture(
+        "F-REG-AGREGAR-CON-CONDICION-PIZZA_MOZARELLA_CHICA",
+        "Regression: explicit add request that includes a product "
+        "condition must remain a single agregar_producto intent "
+        "(no silent re-write to set_observacion_producto)",
+        "quiero una pizza de mozzarella chica sin aceitunas",
+        (IntentName.AGREGAR_PRODUCTO,),
+        ("quiero una pizza de mozzarella chica sin aceitunas",),
     ),
     _fixture(
         "F-REG-METODO_DE_ENTREGA-ENVIO_DOMICILIO",

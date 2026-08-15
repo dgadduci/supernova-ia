@@ -20,6 +20,24 @@ built from `PedidoProductoService.list_by_pedido(session.id_pedido)` and emits
 handler validates the id again immediately before assignment, so neither a
 classifier response nor stale candidate state can authorize a write.
 
+## Classifier calibration amendment
+
+The observed failure occurs before this path: the classifier selected
+`agregar_producto` for `La pizza de mozzarella chica es sin aceitunas`, so the
+order-line recognizer never ran. Amend only the existing static classifier
+prompt and controlled corpus. They SHALL distinguish:
+
+- a declarative product-specific instruction without an add verb → exactly one
+  `set_observacion_producto`, preserving the literal message;
+- an explicit request to add a product, even if it contains a condition → the
+  existing `agregar_producto` path.
+
+The classifier does not read current order lines. No post-classification
+rewrite is allowed, so an existing line never turns an explicit add request
+into an observation update. Prompt wording and corpus examples are LLM
+guidance, not mutation authority; the existing own-draft recognizer and
+handler remain the write boundary.
+
 ## Intent data
 
 The initial orchestrator creates a `ProcessedIntent` with
@@ -97,3 +115,10 @@ catalog access; service/handler transaction non-ownership; mapper routing and
 no observation disclosure; full transactional rollback on a technical error.
 Existing `quitar_producto`, `modificar_producto`, and `agregar_producto`
 regressions remain the compatibility coverage; no migration test is needed.
+
+The amendment adds focused static prompt/corpus tests and controlled classifier
+payload tests for the declarative sentence, plus an existing-dispatcher routing
+assertion. Those tests do not claim to prove live LLM behavior; the post-deploy
+gate proves the actual classification and resulting line update. Tests also
+pin that an explicit `quiero una ... sin aceitunas` request remains add,
+without implementing combined add-with-observation.

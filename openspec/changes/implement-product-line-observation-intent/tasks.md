@@ -45,3 +45,16 @@
   content or identifiers.
 - [ ] 5.3 Request explicit user approval before archiving this change. Passing
   focused tests or merging code is not archive authorization.
+
+## 6. Regression amendment: declarative observation classification
+
+- [x] 6.1 Add only static prompt/corpus guidance for declarative,
+  product-specific observations without an add verb; bump their versions.
+- [x] 6.2 Add focused classifier and dispatcher coverage for `La pizza de
+  mozzarella chica es sin aceitunas` → one `set_observacion_producto`, while
+  `quiero una pizza de mozzarella chica sin aceitunas` remains add.
+- [x] 6.3 Run the focused validation commands from `proposal.md`, including
+  strict OpenSpec validation and `git diff --check`.
+- [ ] 6.4 After approved deploy, verify unique declarative set and explicit
+  clear on a known own line: no quantity change, no extra line, and cleared
+  context/pending.
