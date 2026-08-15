@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from backend.intents.schemas.intent_classification import IntentName
 
-CORPUS_VERSION = "intent-corpus/v1.6.0"
+CORPUS_VERSION = "intent-corpus/v1.7.0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +102,27 @@ CONTROLLED_INTENT_CORPUS: tuple[IntentFixture, ...] = (
         "Category browse: asks which beverages are available (must "
         "remain ver_menu, not consultar_producto)",
         "qué bebidas están disponibles",
+        (IntentName.VER_MENU,),
+    ),
+    _fixture(
+        "F-VER_MENU-CATEGORIA_EMPANADAS_TENES",
+        "Pilot regression: 'qué gustos de empanadas tenés' must remain "
+        "ver_menu and must NOT be classified as consultar_producto",
+        "qué gustos de empanadas tenés",
+        (IntentName.VER_MENU,),
+    ),
+    _fixture(
+        "F-VER_MENU-CATEGORIA_EMPANADAS_HAY",
+        "Pilot regression: 'qué gustos de empanadas hay' must remain "
+        "ver_menu and must NOT be classified as consultar_producto",
+        "qué gustos de empanadas hay",
+        (IntentName.VER_MENU,),
+    ),
+    _fixture(
+        "F-VER_MENU-CATEGORIA_BEBIDAS_TENES",
+        "Pilot regression: 'qué bebidas tenés' must remain ver_menu "
+        "and must NOT be classified as consultar_producto",
+        "qué bebidas tenés",
         (IntentName.VER_MENU,),
     ),
     _fixture(

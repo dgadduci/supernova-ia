@@ -155,7 +155,7 @@ def _resolve_menu(
     owned by the existing service. The commerce comes exclusively from
     ``session.id_comercio``.
 
-    When the catalog has at least one sellable item and the bounded
+When the catalog has at least one sellable item and the bounded
     category candidate projection fits the documented budget, the
     dedicated :class:`MenuCategoryResolver` is invoked exactly once to
     decide which single category, if any, the customer menu browse
@@ -165,12 +165,21 @@ def _resolve_menu(
     uses the backend-held category identity to filter the
     already-loaded catalog. ``categoria_id`` is **never** exposed to
     the prompt, the resolver output, ``resolved_data``,
-    ``ProcessedIntent`` or the rendered customer response; it is
+    :class:`ProcessedIntent` or the rendered customer response; it is
     kept as a transient local key for in-memory filtering only.
+
+    Before invoking the resolver, a bounded, read-only explicit
+    multi-category guard counts how many distinct bounded candidate
+    names are explicitly present in the normalized source text. When
+    two or more distinct visible category names match, the resolver
+    is **not** called and the full-menu outcome is preserved. The
+    guard may prevent a category selection but it never selects one,
+    never adds aliases, and never widens the candidate set.
+
     On any no-selection, mismatched/invalid/unknown-token/oversize
-    candidate set or technical resolver failure, the existing
-    deterministic full-menu outcome is returned byte-for-byte
-    unchanged.
+    candidate set, multi-category request, or technical resolver
+    failure, the existing deterministic full-menu outcome is returned
+    byte-for-byte unchanged.
     """
     comercio_id = _require_comercio_id(session)
     products = ProductoQueryService(db).list_vendibles(comercio_id)
@@ -204,6 +213,12 @@ def _resolve_menu(
     candidates = _build_category_candidates(products)
     bounded_candidates, oversize_class = _bound_candidates(candidates)
     if oversize_class is None and bounded_candidates:
+        if _is_explicit_multi_category(source_text, bounded_candidates):
+            return _executed(
+                IntentName.VER_MENU.value,
+                source_text,
+                resolved_data={"items": full_items},
+            )
         resolution = _build_menu_category_resolver().resolve(
             source_text,
             bounded_candidates,
@@ -271,6 +286,80 @@ def _revalidate_menu_category_selection(
     if len(matched) != 1:
         return None
     return matched[0]
+
+
+def _is_explicit_multi_category(
+    source_text: str,
+    bounded_candidates: list[MenuCategoryCandidate],
+) -> bool:
+    """Return ``True`` when the normalized source text explicitly
+    mentions two or more distinct bounded candidate names as
+    **contiguous, in-order** token subsequences.
+
+    The guard is read-only and conservative. After the project's
+    standard normalization (lowercase, accent-stripped,
+    punctuation-collapsed, whitespace-separated) it operates on the
+    ordered token lists and accepts a candidate name only when **all**
+    its tokens appear in the source tokens as a contiguous
+    subsequence in the same order. Scattered or reordered words do
+    NOT count: ``qué alcohol sin tenés`` never matches the
+    ``Bebidas sin alcohol`` candidate because ``bebidas sin alcohol``
+    is not a contiguous subsequence of the source. The guard never
+    falls back to aliases, stemming, pluralization, fuzzy/vector
+    matching, partial tokens, product information or additional LLM
+    calls, and it never selects a category.
+
+    Two candidates that share the same display name (homonymous
+    categories with distinct ``categoria_id``) count as a single
+    reference: the customer only mentioned one name. The guard
+    returns ``True`` only when the source text contains two or more
+    distinct visible category names that each satisfy the strict
+    contiguous subsequence match.
+
+    A single visible category match leaves the normal flow to the
+    resolver untouched. Zero matches also leaves the normal flow to
+    the resolver untouched so unknown / misspelled categories still
+    go through the resolver contract and fall back to the full menu
+    when the model returns no selection.
+    """
+    normalized_source = _normalize(source_text)
+    if not normalized_source:
+        return False
+    source_tokens = normalized_source.split()
+    seen_names: set[str] = set()
+    for candidate in bounded_candidates:
+        normalized_name = _normalize(candidate.nombre)
+        if not normalized_name or normalized_name in seen_names:
+            continue
+        candidate_tokens = normalized_name.split()
+        if _is_contiguous_subsequence(candidate_tokens, source_tokens):
+            seen_names.add(normalized_name)
+    return len(seen_names) >= 2
+
+
+def _is_contiguous_subsequence(
+    needle: list[str],
+    haystack: list[str],
+) -> bool:
+    """Return ``True`` when ``needle`` occurs in ``haystack`` as a
+    contiguous, in-order subsequence.
+
+    This is the strict token-level matching primitive used by the
+    explicit multi-category guard. It rejects scattered or reordered
+    matches: ``["a", "c"]`` is NOT a contiguous subsequence of
+    ``["a", "b", "c"]``. The helper never falls back to fuzzy,
+    stemming or any non-exact match.
+    """
+    if not needle:
+        return False
+    needle_len = len(needle)
+    haystack_len = len(haystack)
+    if needle_len > haystack_len:
+        return False
+    for start in range(haystack_len - needle_len + 1):
+        if haystack[start:start + needle_len] == needle:
+            return True
+    return False
 
 
 def _build_menu_category_resolver() -> MenuCategoryResolver:

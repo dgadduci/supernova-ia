@@ -15,14 +15,20 @@
   full-menu behavior for null, invalid, oversized, empty or failed resolution.
 - [x] 2.3 Add static primary-classifier prompt/corpus guidance distinguishing
   category browsing (`ver_menu`) from concrete product detail
-  (`consultar_producto`) and update static template identity/version.
+  (`consultar_producto`), including the pilot category-browse wording, and
+  update static template identity/version.
+- [x] 2.4 Add a bounded, read-only explicit multi-category guard based only on
+  the current candidate names. It must preserve the full menu and skip the
+  second resolver for two or more explicit category references; it must not
+  select a category, add aliases, or use fuzzy/vector matching.
 
 ## 3. Focused proof and validation
 
 - [x] 3.1 Add focused resolver/orchestration/response/classifier tests for
   Pizzas, Empanadas and Bebidas; token/name mismatch; invalid/null/failure
-  fallback; bounds; privacy; commerce isolation; one catalog read; no pending
-  bypass; and no mutation/transaction controls.
+  fallback; bounds; privacy; commerce isolation; one catalog read; explicit
+  multi-category fallback without a resolver call; no pending bypass; and no
+  mutation/transaction controls.
 - [x] 3.2 Run every focused pytest, Ruff, compileall, strict OpenSpec
   validation and `git diff --check` command in `proposal.md`.
 

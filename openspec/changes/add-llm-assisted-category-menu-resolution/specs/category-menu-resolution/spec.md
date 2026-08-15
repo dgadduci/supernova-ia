@@ -53,3 +53,20 @@ mutation, pending-context change, or technical customer message.
 - **THEN** the response is the existing full current-commerce menu
 - **AND THEN** the session, pedido, lines, pending state and transaction state
   are unchanged.
+
+### Requirement: Explicit multi-category browse never narrows through the LLM
+
+When a classified `ver_menu` message explicitly identifies two or more
+distinct visible category names from the bounded current-commerce candidate
+set, the backend SHALL preserve the existing full-menu outcome and SHALL NOT
+invoke the category resolver. This guard SHALL be read-only and conservative:
+it may prevent a category selection, but SHALL NOT select one, add aliases,
+widen candidates, or use fuzzy/vector matching.
+
+#### Scenario: Two visible categories preserve the full menu
+
+- **WHEN** the current visible categories include `Pizzas` and `Empanadas`
+- **AND WHEN** the customer asks `qué pizzas y empanadas hay`
+- **THEN** the system renders the existing full menu
+- **AND THEN** the category resolver is not invoked
+- **AND THEN** no session, pedido, pending state or transaction state changes.

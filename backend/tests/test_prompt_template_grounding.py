@@ -631,7 +631,7 @@ class SecondPromptCorrectionStructureTest(unittest.TestCase):
     def test_template_version_bumped_for_declarative_amendment(self):
         from backend.diagnostics import PROMPT_TEMPLATE_VERSION
 
-        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.8.0")
+        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.9.0")
 
 
 class CategoryBrowseGuidanceStructureTest(unittest.TestCase):
@@ -673,8 +673,46 @@ class CategoryBrowseGuidanceStructureTest(unittest.TestCase):
         self.assertIn("qué bebidas están disponibles", lowered)
         self.assertIn("nunca debe clasificarse como", lowered)
 
+    def test_pilot_phrases_are_pinned_as_ver_menu(self):
+        prompt = self._build_prompt()
+        lowered = prompt.casefold()
+        self.assertIn("qué gustos de empanadas tenés", lowered)
+        self.assertIn("qué gustos de empanadas hay", lowered)
+        self.assertIn("qué bebidas tenés", lowered)
+        self.assertIn("qué pizzas hay", lowered)
+        self.assertIn("qué bebidas están disponibles", lowered)
+
+    def test_pilot_phrases_are_pinned_to_consultar_producto_for_product_detail(
+        self,
+    ):
+        prompt = self._build_prompt()
+        lowered = prompt.casefold()
+        self.assertIn("napolitana grande", lowered)
+        self.assertIn("jamón y queso", lowered)
+
+    def test_template_fingerprint_changes_only_with_static_template(self):
+        sentinel_message = "RAW-CUSTOMER-MESSAGE-SENTINEL-987654321"
+        sink = CollectingDiagnosticSink()
+        classifier = IntentClassifier(
+            query_llm=_StubQueryLlm(
+                {
+                    "intents": [{"intent": "saludo", "mensaje": "hola"}],
+                    "mensaje": "hola",
+                }
+            ),
+            sink=sink,
+        )
+
+        classifier.query(sentinel_message)
+        first_fp = template_fingerprint()
+        classifier.query("a totally different customer message")
+        second_fp = template_fingerprint()
+
+        self.assertEqual(first_fp, second_fp)
+        self.assertNotIn(sentinel_message, first_fp)
+
     def test_template_version_bumped_for_category_browse_guidance(self):
-        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.8.0")
+        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.9.0")
 
 
 class BoundaryCalibrationStructureTest(unittest.TestCase):
@@ -791,8 +829,8 @@ class BoundaryCalibrationStructureTest(unittest.TestCase):
             with self.subTest(message=message):
                 self.assertIn(message, prompt)
 
-    def test_template_version_bumped_to_v1_8_0(self):
-        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.8.0")
+    def test_template_version_bumped_to_v1_9_0(self):
+        self.assertEqual(PROMPT_TEMPLATE_VERSION, "intent-classifier/v1.9.0")
 
 
 if __name__ == "__main__":

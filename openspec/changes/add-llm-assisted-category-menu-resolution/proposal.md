@@ -34,9 +34,17 @@ Keep `ver_menu` as the only intent. After the existing classifier emits one
 5. On no-selection, invalid/mismatched result, bounded-context overflow, or
    technical resolver failure, render the existing full-menu outcome unchanged.
 
-The primary classifier receives new static guidance that browsing all products
-of one category is `ver_menu`, while a request about one concrete product,
-price, presentation, ingredient or availability remains `consultar_producto`.
+The primary classifier receives calibrated static guidance that browsing all
+products of one category is `ver_menu`, including ordinary wording such as
+“qué gustos de empanadas tenés” and “qué bebidas tenés”, while a request about
+one concrete product, price, presentation, ingredient or availability remains
+`consultar_producto`.
+
+For a query that explicitly names two or more current visible category names,
+the backend SHALL conservatively preserve the full-menu result without calling
+the secondary resolver. This bounded, read-only guard prevents an ambiguous
+multi-category request from being reduced to the first category by a
+non-deterministic model.
 
 ## Current execution path
 
@@ -79,6 +87,7 @@ No product/category list is passed to the first classifier.
 | Resolver timeout, connection, HTTP or schema failure | Existing full menu; no technical detail exposed |
 | No sellable items | Existing `no_items` outcome; no category resolver call |
 | Candidate list exceeds its documented bounds | Existing full menu; no category resolver call |
+| Query explicitly identifies two or more current visible categories | Existing full menu; no category resolver call |
 | Pending context active | Existing pending dispatcher remains authoritative; no category resolver call |
 
 The resolver is an interpreter only. It cannot supply a database ID or a

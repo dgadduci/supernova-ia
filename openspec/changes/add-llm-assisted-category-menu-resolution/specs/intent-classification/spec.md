@@ -16,6 +16,13 @@ runtime commerce category names or product catalog data in the primary prompt.
 - **AND THEN** its `mensaje` remains a literal substring of the customer
   message.
 
+#### Scenario: Natural category-browse wording remains a menu intent
+
+- **WHEN** the customer asks `qué gustos de empanadas tenés` or
+  `qué bebidas tenés`
+- **THEN** the classifier returns `ver_menu`
+- **AND THEN** it does not classify the message as `consultar_producto`.
+
 #### Scenario: Concrete product detail remains distinct
 
 - **WHEN** the customer asks `cuánto sale la napolitana grande`

@@ -49,6 +49,14 @@ possible with any language model; the resulting response explicitly names the
 chosen category, while null/failure preserves the complete menu rather than
 guessing a new category.
 
+Before the secondary call, the orchestration applies one conservative,
+deterministic ambiguity guard to the already-built current-commerce candidate
+names. If the normalized source text explicitly identifies two or more
+distinct visible category names, it skips the resolver and preserves the full
+menu. This guard does not resolve a single category, add aliases, perform
+fuzzy/vector search, or change the candidate set; it only prevents an explicit
+multi-category request from being narrowed by the LLM.
+
 ## Execution sequence
 
 ```text
@@ -58,6 +66,7 @@ pending dispatcher (unchanged priority)
   → list_vendibles(session.id_comercio) once
   → no items: existing no_items
   → bounded category candidate projection
+  → explicit multi-category guard: full menu, no second call
   → dedicated category resolver once
   → exact token + name validation
   → filter in-memory vendible result by backend identity OR full-menu fallback
@@ -90,15 +99,16 @@ transaction ownership remain unchanged.
 ## Tests
 
 - Primary static prompt/corpus classifies category browsing as `ver_menu` and
-  preserves concrete product detail as `consultar_producto`; prompt version
-  and static fingerprint change intentionally without incorporating customer
-  text.
+  preserves concrete product detail as `consultar_producto`, including the
+  pilot wording `qué gustos de empanadas tenés`, `qué gustos de empanadas hay`
+  and `qué bebidas tenés`; prompt version and static fingerprint change
+  intentionally without incorporating customer text.
 - Dedicated resolver tests cover valid pair, null, malformed/extra output,
   token-name mismatch, unknown token/name, candidate bounds, prompt privacy,
   and no raw text/category/ID diagnostics.
 - Informational-query tests cover Pizzas/Empanadas/Bebidas filtering, one
   `list_vendibles` call, current-commerce isolation, no second resolver for
-  non-menu/pending/no-items/oversize cases, and full-menu fallback on every
-  invalid or technical resolver outcome.
+  non-menu/pending/no-items/oversize/explicit-multi-category cases, and
+  full-menu fallback on every invalid or technical resolver outcome.
 - Response tests cover selected-category heading and unchanged full-menu
   rendering fallback.
