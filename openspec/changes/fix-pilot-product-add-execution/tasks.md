@@ -29,7 +29,7 @@
   the panel. If unavailable, stop for separately approved catalog remediation.
 - [x] 4.2 If available, run WhatsApp ambiguity → `Grande` and verify one line
   and success response in the panel.
-- [ ] 4.3 Resume the three production checks of
+- [x] 4.3 Resume the three production checks of
   `fix-pending-context-recovery-and-status-query` only after 4.2 succeeds.
 - [ ] 4.4 Resume `implement-product-line-observation-intent` only after 4.3;
   do not archive any change without explicit user approval.

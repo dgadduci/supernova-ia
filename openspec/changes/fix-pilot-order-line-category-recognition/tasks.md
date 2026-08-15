@@ -56,9 +56,9 @@
 
 ## 3. Production gate and dependent changes
 
-- [ ] 3.1 After approved deploy, send the controlled remove request and prove
+- [x] 3.1 After approved deploy, send the controlled remove request and prove
   it asks between the two Mozzarella lines while leaving the Pedido unchanged.
-- [ ] 3.2 Send the outside-candidate `Napolitana chica` clarification, verify
+- [x] 3.2 Send the outside-candidate `Napolitana chica` clarification, verify
   one rejection, no line mutation and context cleanup; then send the explicit
   status question to prove initial dispatch resumed.
 - [ ] 3.3 Resume the remaining gate of
