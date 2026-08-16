@@ -1582,5 +1582,661 @@ class StyleResponsesVersionTest(unittest.TestCase):
         )
 
 
+class ExpressiveWrapperCalibrationTest(unittest.TestCase):
+    """Subphase 6 — expressive wrapper calibration.
+
+    The wrapper expands from ``<=24`` characters per field to
+    ``<=96`` characters per field with a combined length bound of
+    ``<=140`` characters. The LLM still receives only the
+    ``response_type`` token and the persisted ``instruccion_llm``;
+    the backend composes ``prefix + exact factual message +
+    suffix``. The validator keeps rejecting digits, question
+    marks, newlines and control characters. Empty wrappers remain
+    an ``empty_wrapper`` per-item fallback.
+
+    The tests below lock down the expanded expressive envelope
+    while preserving the factual, privacy, one-call and
+    transaction-boundary contracts of the restored wrapper.
+    """
+
+    _SALUDO = (
+        "¡Hola! Puedo ayudarte a armar tu pedido. Decime qué querés."
+    )
+    _AGG_SUCCESS = "Listo, agregué 1 Pizza Mozzarella (grande)."
+
+    def test_accepts_expressive_multi_word_prefix_within_ninety_six(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            )
+        ]
+        phrase = "¡Hola, qué gusto verte por acá otra vez! "
+        self.assertLessEqual(len(phrase), 96)
+        client = _llm(
+            {"items": [{"index": 0, "prefix": phrase, "suffix": ""}]}
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, f"{phrase}{self._SALUDO}")
+        self.assertEqual(styled[0].intent, "saludo")
+        self.assertEqual(styled[0].status, "executed")
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_APPLIED)
+        self.assertEqual(last_event["applied_count"], 1)
+
+    def test_accepts_expressive_multi_word_suffix_within_ninety_six(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        phrase = " ¡Listo, pedí tranquilo y avisame si querés algo más!"
+        self.assertLessEqual(len(phrase), 96)
+        client = _llm(
+            {"items": [{"index": 0, "prefix": "", "suffix": phrase}]}
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, f"{self._AGG_SUCCESS}{phrase}")
+        self.assertEqual(styled[0].intent, "agregar_producto")
+        self.assertEqual(styled[0].status, "executed")
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_APPLIED)
+
+    def test_accepts_unicode_emoji_within_per_field_bound(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        prefix = "¡Excelente! 🍕🍕🍕 "
+        suffix = " 🥳🎉"
+        self.assertLessEqual(len(prefix), 96)
+        self.assertLessEqual(len(suffix), 96)
+        self.assertLessEqual(len(prefix) + len(suffix), 140)
+        client = _llm(
+            {"items": [{"index": 0, "prefix": prefix, "suffix": suffix}]}
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(
+            styled[0].message, f"{prefix}{self._AGG_SUCCESS}{suffix}"
+        )
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_APPLIED)
+
+    def test_rejects_field_exactly_ninety_seven_characters(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            )
+        ]
+        long_prefix = "a" * 97
+        client = _llm(
+            {"items": [{"index": 0, "prefix": long_prefix, "suffix": ""}]}
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._SALUDO)
+        self.assertEqual(styled[0].intent, "saludo")
+        self.assertEqual(styled[0].status, "executed")
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+        )
+        self.assertNotIn("outcome", last_event)
+
+    def test_accepts_field_exactly_ninety_six_characters(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            )
+        ]
+        long_prefix = "a" * 96
+        client = _llm(
+            {"items": [{"index": 0, "prefix": long_prefix, "suffix": ""}]}
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, f"{long_prefix}{self._SALUDO}")
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_APPLIED)
+
+    def test_rejects_combined_length_one_forty_one(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            )
+        ]
+        prefix = "a" * 96
+        suffix = "b" * 45
+        self.assertEqual(len(prefix), 96)
+        self.assertEqual(len(suffix), 45)
+        self.assertEqual(len(prefix) + len(suffix), 141)
+        client = _llm(
+            {"items": [{"index": 0, "prefix": prefix, "suffix": suffix}]}
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._SALUDO)
+        self.assertEqual(styled[0].intent, "saludo")
+        self.assertEqual(styled[0].status, "executed")
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+        )
+        self.assertNotIn("outcome", last_event)
+
+    def test_accepts_combined_length_exactly_one_forty(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            )
+        ]
+        prefix = "a" * 96
+        suffix = "b" * 44
+        self.assertEqual(len(prefix) + len(suffix), 140)
+        client = _llm(
+            {"items": [{"index": 0, "prefix": prefix, "suffix": suffix}]}
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(
+            styled[0].message, f"{prefix}{self._SALUDO}{suffix}"
+        )
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_APPLIED)
+
+    def test_digit_still_rejected_under_expressive_bounds(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            )
+        ]
+        client = _llm(
+            {"items": [{"index": 0, "prefix": "Hola 1 vez más", "suffix": ""}]}
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._SALUDO)
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+        )
+
+    def test_question_mark_still_rejected_under_expressive_bounds(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Buenas, cómo andás hoy?",
+                        "suffix": "",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._SALUDO)
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+        )
+
+    def test_newline_still_rejected_under_expressive_bounds(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            )
+        ]
+        client = _llm(
+            {"items": [{"index": 0, "prefix": "Hola\namigo", "suffix": ""}]}
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._SALUDO)
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+        )
+
+    def test_control_character_still_rejected_under_expressive_bounds(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {"index": 0, "prefix": "Hola\x07amigo", "suffix": ""}
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._SALUDO)
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+        )
+
+    def test_factual_message_remains_intact_substring_with_expressive_wrapper(
+        self,
+    ) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        prefix = "¡Sumá y seguí eligiendo! "
+        suffix = " 🍕🥳"
+        client = _llm(
+            {"items": [{"index": 0, "prefix": prefix, "suffix": suffix}]}
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        composed = styled[0].message
+        self.assertTrue(composed.startswith(prefix))
+        self.assertTrue(composed.endswith(suffix))
+        self.assertIn(self._AGG_SUCCESS, composed)
+        # The factual sentence is a contiguous substring; the order
+        # of the prefix, original message and suffix is preserved.
+        self.assertEqual(
+            composed, f"{prefix}{self._AGG_SUCCESS}{suffix}"
+        )
+        self.assertEqual(styled[0].intent, "agregar_producto")
+        self.assertEqual(styled[0].status, "executed")
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_APPLIED)
+
+    def test_mixed_batch_keeps_invalid_item_factual_and_applies_valid_item(
+        self,
+    ) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            ),
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            ),
+        ]
+        valid_prefix = "¡Qué bueno tenerte de vuelta! "
+        client = _llm(
+            {
+                "items": [
+                    # Exceeds the combined length bound: invalid item.
+                    {
+                        "index": 0,
+                        "prefix": "a" * 96,
+                        "suffix": "b" * 45,
+                    },
+                    # Valid expressive wrapper with emojis.
+                    {
+                        "index": 1,
+                        "prefix": valid_prefix,
+                        "suffix": " 🍕✨",
+                    },
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._SALUDO)
+        self.assertEqual(
+            styled[1].message,
+            f"{valid_prefix}{self._AGG_SUCCESS} 🍕✨",
+        )
+        self.assertEqual(styled[0].intent, "saludo")
+        self.assertEqual(styled[1].intent, "agregar_producto")
+        # Only one batch LLM call was made.
+        self.assertEqual(client.request.call_count, 1)
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_APPLIED)
+        self.assertEqual(last_event["eligible_count"], 2)
+        self.assertEqual(last_event["applied_count"], 1)
+
+    def test_runtime_prompt_carries_no_factual_or_business_data(self) -> None:
+        flavor = _flavor(
+            codigo="joven",
+            instruccion="Tono joven. Usá emojis cuando aporten calidez.",
+        )
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message="Pizza Mozzarella grande",
+                intent="agregar_producto",
+                status="executed",
+            ),
+            CustomerResponse(
+                message="Tu pedido está en preparación.",
+                intent="consultar_estado_pedido",
+                status="executed",
+            ),
+            CustomerResponse(
+                message="Av. Secreta 1234",
+                intent="set_direccion_entrega",
+                status="executed",
+            ),
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {"index": 0, "prefix": "¡Buena!", "suffix": ""},
+                    {"index": 1, "prefix": "", "suffix": " 🚀"},
+                ]
+            }
+        )
+        style_responses(db, 1, responses, query_llm=client)
+        self.assertEqual(client.request.call_count, 1)
+        prompt = client.request.call_args.args[0]
+        for forbidden in (
+            "Pizza Mozzarella",
+            "Mozzarella",
+            "grande",
+            "preparación",
+            "Av. Secreta 1234",
+            "session-7",
+            "pedido-9",
+            "comercio-42",
+            "+5491100000000",
+            "secret-customer-message",
+            # Inbound raw text is never sent to the LLM.
+            "agregar",
+            "hola",
+            # Ineligible free-text intents stay out of the batch.
+            "response_type: set_direccion_entrega",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, prompt)
+        # Only the bounded internal directive and the allowlisted
+        # response_type tokens for eligible responses are present.
+        self.assertIn("Tono joven. Usá emojis cuando aporten calidez.", prompt)
+        self.assertIn("response_type: product_add_success", prompt)
+        self.assertIn("response_type: order_status", prompt)
+
+    def test_expressive_prompt_does_not_hardcode_joven_specific_emoji_or_phrase(
+        self,
+    ) -> None:
+        # The static prompt is flavor-agnostic. The persisted
+        # `instruccion_llm` is the sole source of tone/emoji; the
+        # prompt body must not assert a flavor-specific word list.
+        prompt = build_outbound_style_prompt(
+            instruccion_llm="Tono serio. Sin emojis.",
+            items=[{"index": 0, "response_type": "social_greeting"}],
+        )
+        for hardcoded in (
+            "¡Hola",
+            "¡Buenas",
+            "🍕",
+            "🥳",
+            "genial",
+        ):
+            with self.subTest(hardcoded=hardcoded):
+                self.assertNotIn(hardcoded, prompt)
+
+    def test_one_call_batch_with_expressive_wrappers_across_eligible_only(
+        self,
+    ) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            ),
+            CustomerResponse(
+                message="rejection-text",
+                intent="agregar_producto",
+                status="rejected",
+            ),
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            ),
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Hola, bienvenido de nuevo! ",
+                        "suffix": " 👋",
+                    },
+                    {
+                        "index": 1,
+                        "prefix": "¡Listo, pedido en marcha! ",
+                        "suffix": " 🍕✨",
+                    },
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        # The rejection is never sent to the LLM and stays intact.
+        self.assertEqual(styled[0].message, "¡Hola, bienvenido de nuevo! " + self._SALUDO + " 👋")
+        self.assertEqual(styled[1].message, "rejection-text")
+        self.assertEqual(styled[2].message, "¡Listo, pedido en marcha! " + self._AGG_SUCCESS + " 🍕✨")
+        # Single batch call for the two eligible items.
+        self.assertEqual(client.request.call_count, 1)
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_APPLIED)
+        self.assertEqual(last_event["eligible_count"], 2)
+        self.assertEqual(last_event["applied_count"], 2)
+
+    def test_neutro_flavor_makes_zero_llm_calls_even_with_expressive_prompt(
+        self,
+    ) -> None:
+        db = _db_with_flavor(1, flavor=_flavor(NEUTRO_FLAVOR_CODE))
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            ),
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            ),
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {"index": 0, "prefix": "¡Buenas!", "suffix": ""},
+                    {"index": 1, "prefix": "¡Listo!", "suffix": ""},
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(client.request.call_count, 0)
+        self.assertEqual(styled[0].message, self._SALUDO)
+        self.assertEqual(styled[1].message, self._AGG_SUCCESS)
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_NOT_ATTEMPTED)
+
+    def test_ineligible_responses_make_zero_llm_calls_under_expressive_envelope(
+        self,
+    ) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message="rejection",
+                intent="agregar_producto",
+                status="rejected",
+            ),
+            CustomerResponse(
+                message="Av. Secreta 1234",
+                intent="set_direccion_entrega",
+                status="executed",
+            ),
+            CustomerResponse(
+                message="observacion-confidencial",
+                intent="set_observacion_pedido",
+                status="executed",
+            ),
+        ]
+        client = _llm({"items": []})
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(client.request.call_count, 0)
+        self.assertEqual(styled[0].message, "rejection")
+        self.assertEqual(styled[1].message, "Av. Secreta 1234")
+        self.assertEqual(styled[2].message, "observacion-confidencial")
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_NOT_ATTEMPTED)
+        self.assertEqual(last_event["eligible_count"], 0)
+
+    def test_no_database_transaction_control_for_expressive_wrapper(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Qué bueno verte por acá! ",
+                        "suffix": " 👋",
+                    }
+                ]
+            }
+        )
+        style_responses(db, 1, responses, query_llm=client)
+        for method in (
+            "commit",
+            "rollback",
+            "begin",
+            "begin_nested",
+            "flush",
+            "refresh",
+            "close",
+        ):
+            getattr(db, method).assert_not_called()
+
+    def test_template_version_reflects_expressive_calibration(self) -> None:
+        self.assertEqual(
+            OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION,
+            "outbound-response-styler/v1.2.0",
+        )
+        self.assertEqual(styler_version(), "outbound-response-styler/v1.2.0")
+
+    def test_template_fingerprint_changes_with_static_body_only(self) -> None:
+        # The fingerprint must depend only on the static template
+        # body and never on the rendered prompt, the flavor
+        # instruction or any customer/pedido/session data.
+        identity = outbound_style_template_identity()
+        self.assertEqual(len(identity["outbound_style_prompt_template_hash"]), 64)
+        first = identity["outbound_style_prompt_template_hash"]
+        # Different flavor instruction must NOT change the
+        # fingerprint.
+        prompt_a = build_outbound_style_prompt(
+            instruccion_llm="Tono serio.",
+            items=[{"index": 0, "response_type": "social_greeting"}],
+        )
+        prompt_b = build_outbound_style_prompt(
+            instruccion_llm="Tono joven, súper cálido y con emojis.",
+            items=[
+                {"index": 0, "response_type": "social_greeting"},
+                {"index": 1, "response_type": "product_add_success"},
+            ],
+        )
+        # Fingerprint stays stable across rendered prompts.
+        self.assertEqual(
+            outbound_style_template_fingerprint(),
+            first,
+        )
+        # The rendered prompts differ when the items change, but
+        # the static fingerprint does not.
+        self.assertNotEqual(prompt_a, prompt_b)
+        # Fingerprint must NOT embed any runtime data.
+        for forbidden in (
+            "Tono joven",
+            "Tono serio",
+            "social_greeting",
+            "product_add_success",
+            "Pizza Mozzarella",
+            "Av. Secreta 1234",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, first)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -55,3 +55,17 @@
   intact substring with a visible wrapper; under `neutro`, verify exact
   deterministic no-op. Record the experimental full-message pilot failure
   without archiving it as success.
+
+## 6. Expressive wrapper calibration
+
+- [x] 6.1 Expand wrapper validation and prompt wording to allow a short
+  complete generic phrase (96 characters per field, 140 combined) while
+  retaining one-line, non-numeric, question-free and factual-free constraints.
+- [x] 6.2 Preserve the persisted flavor instruction as the sole source for
+  tone and emoji choices; do not edit flavor rows, migrations, seeds or API
+  configuration.
+- [x] 6.3 Add focused boundary, emoji, exact-factual-substring, privacy,
+  one-call and no-transaction tests; run focused validation.
+- [ ] 6.4 After approved deploy, under `joven` verify longer expressive
+  wrappers and contextually appropriate emojis around intact factual messages;
+  under `neutro` verify exact deterministic no-op.
