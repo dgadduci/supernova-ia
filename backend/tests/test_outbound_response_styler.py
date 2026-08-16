@@ -68,15 +68,7 @@ from backend.services.outbound_response_styler import (
     RESPONSE_TYPE_INFO_HOURS,
     RESPONSE_TYPE_INFO_PAYMENT_METHODS,
     RESPONSE_TYPE_MENU_FULL,
-    RESPONSE_TYPE_ORDER_CONFIRMED,
-    RESPONSE_TYPE_ORDER_EMPTIED,
-    RESPONSE_TYPE_ORDER_STARTED,
-    RESPONSE_TYPE_ORDER_STATUS,
-    RESPONSE_TYPE_ORDER_SUMMARY,
-    RESPONSE_TYPE_PRODUCT_ADD_SUCCESS,
     RESPONSE_TYPE_PRODUCT_INFO,
-    RESPONSE_TYPE_PRODUCT_MODIFY_SUCCESS,
-    RESPONSE_TYPE_PRODUCT_REMOVE_SUCCESS,
     RESPONSE_TYPE_SOCIAL_GOODBYE,
     RESPONSE_TYPE_SOCIAL_GREETING,
     RESPONSE_TYPE_SOCIAL_NO,
@@ -172,14 +164,6 @@ class ResponseTypeMappingTest(unittest.TestCase):
             ): RESPONSE_TYPE_INFO_DELIVERY_METHODS,
             ("consultar_domicilio_comercio", EXECUTED_STATUS): RESPONSE_TYPE_INFO_ADDRESS,
             ("consultar_horarios_comercio", EXECUTED_STATUS): RESPONSE_TYPE_INFO_HOURS,
-            ("agregar_producto", EXECUTED_STATUS): RESPONSE_TYPE_PRODUCT_ADD_SUCCESS,
-            ("quitar_producto", EXECUTED_STATUS): RESPONSE_TYPE_PRODUCT_REMOVE_SUCCESS,
-            ("modificar_producto", EXECUTED_STATUS): RESPONSE_TYPE_PRODUCT_MODIFY_SUCCESS,
-            ("consultar_estado_pedido", EXECUTED_STATUS): RESPONSE_TYPE_ORDER_STATUS,
-            ("consultar_resumen_pedido", EXECUTED_STATUS): RESPONSE_TYPE_ORDER_SUMMARY,
-            ("confirmar_pedido", EXECUTED_STATUS): RESPONSE_TYPE_ORDER_CONFIRMED,
-            ("iniciar_pedido", EXECUTED_STATUS): RESPONSE_TYPE_ORDER_STARTED,
-            ("vaciar_pedido", EXECUTED_STATUS): RESPONSE_TYPE_ORDER_EMPTIED,
         }
         for (intent, status), token in cases.items():
             with self.subTest(intent=intent, status=status):
@@ -204,9 +188,9 @@ class ResponseTypeMappingTest(unittest.TestCase):
         for status in ("rejected", "failed", "pending_resolution", "ready"):
             for intent in (
                 "saludo",
-                "agregar_producto",
-                "consultar_resumen_pedido",
-                "confirmar_pedido",
+                "consultar_producto",
+                "ver_metodos_de_pago",
+                "ver_metodos_de_entrega",
                 "ver_menu",
             ):
                 with self.subTest(intent=intent, status=status):
@@ -237,7 +221,7 @@ class SelectEligibleTest(unittest.TestCase):
         responses = [
             CustomerResponse(message="A", intent="saludo", status="executed"),
             CustomerResponse(message="B", intent="desconocida", status="rejected"),
-            CustomerResponse(message="C", intent="agregar_producto", status="executed"),
+            CustomerResponse(message="C", intent="consultar_producto", status="executed"),
             CustomerResponse(message="D", intent="set_direccion_entrega", status="executed"),
         ]
         eligible = select_eligible(responses)
@@ -245,7 +229,7 @@ class SelectEligibleTest(unittest.TestCase):
             [(item.index, item.response_type) for item in eligible],
             [
                 (0, RESPONSE_TYPE_SOCIAL_GREETING),
-                (2, RESPONSE_TYPE_PRODUCT_ADD_SUCCESS),
+                (2, RESPONSE_TYPE_PRODUCT_INFO),
             ],
         )
         self.assertEqual(eligible[0].response, responses[0])
@@ -403,7 +387,7 @@ class StyleResponsesHappyPathTest(unittest.TestCase):
         responses = [
             CustomerResponse(message="Mensaje 1", intent="saludo", status="executed"),
             CustomerResponse(message="Mensaje 2", intent="agradecimiento", status="executed"),
-            CustomerResponse(message="Mensaje 3", intent="iniciar_pedido", status="executed"),
+            CustomerResponse(message="Mensaje 3", intent="consultar_producto", status="executed"),
         ]
         client = _llm(
             {
@@ -526,7 +510,7 @@ class StyleResponsesHappyPathTest(unittest.TestCase):
             ),
             CustomerResponse(
                 message="Mensaje C",
-                intent="iniciar_pedido",
+                intent="consultar_producto",
                 status="executed",
             ),
             CustomerResponse(
@@ -577,7 +561,7 @@ class StyleResponsesHappyPathTest(unittest.TestCase):
                 intent="set_metodo_de_pago",
                 status="executed",
             ),
-            CustomerResponse(message="E", intent="agregar_producto", status="executed"),
+            CustomerResponse(message="E", intent="consultar_producto", status="executed"),
         ]
         client = _llm(
             {
@@ -590,7 +574,7 @@ class StyleResponsesHappyPathTest(unittest.TestCase):
         style_responses(db, 1, responses, query_llm=client)
         prompt = client.request.call_args.args[0]
         self.assertIn("response_type: social_greeting", prompt)
-        self.assertIn("response_type: product_add_success", prompt)
+        self.assertIn("response_type: product_info", prompt)
         self.assertNotIn("response_type: set_observacion_pedido", prompt)
         self.assertNotIn("response_type: set_direccion_entrega", prompt)
         self.assertNotIn("response_type: set_metodo_de_pago", prompt)
@@ -603,12 +587,12 @@ class StyleResponsesPrivacyTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message="Pizza Mozzarella grande",
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             ),
             CustomerResponse(
-                message="Tú pedido está en preparación.",
-                intent="consultar_estado_pedido",
+                message="Av. Secreta 1234",
+                intent="consultar_domicilio_comercio",
                 status="executed",
             ),
         ]
@@ -808,7 +792,7 @@ class StyleResponsesFailureTest(unittest.TestCase):
         responses = [
             CustomerResponse(message="A", intent="saludo", status="executed"),
             CustomerResponse(
-                message="B", intent="agregar_producto", status="executed"
+                message="B", intent="consultar_producto", status="executed"
             ),
         ]
         client = _llm({"items": [{"index": 0, "prefix": "", "suffix": ""}]})
@@ -853,7 +837,7 @@ class StyleResponsesFailureTest(unittest.TestCase):
         responses = [
             CustomerResponse(message="A", intent="saludo", status="executed"),
             CustomerResponse(
-                message="B", intent="agregar_producto", status="executed"
+                message="B", intent="consultar_producto", status="executed"
             ),
         ]
         client = _llm(
@@ -933,7 +917,7 @@ class StyleResponsesFailureTest(unittest.TestCase):
         responses = [
             CustomerResponse(message="A", intent="saludo", status="executed"),
             CustomerResponse(
-                message="B", intent="agregar_producto", status="executed"
+                message="B", intent="consultar_producto", status="executed"
             ),
         ]
         client = _llm(
@@ -1090,7 +1074,7 @@ class StyleResponsesFailureTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message="Pizza Mozzarella grande",
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             ),
         ]
@@ -1111,7 +1095,7 @@ class StyleResponsesFailureTest(unittest.TestCase):
         for forbidden in (
             "INSTRUCCION-SECRETA",
             "Pizza Mozzarella",
-            "agregar_producto",
+            "consultar_producto",
             "session-7",
             "pedido-9",
             "comercio-42",
@@ -1140,7 +1124,7 @@ class StyleResponsesFailureTest(unittest.TestCase):
             with self.subTest(prompt_forbidden=forbidden):
                 self.assertNotIn(forbidden, prompt)
         self.assertIn("INSTRUCCION-SECRETA", prompt)
-        self.assertIn("response_type: product_add_success", prompt)
+        self.assertIn("response_type: product_info", prompt)
 
 
 class StyleResponsesSecurityTest(unittest.TestCase):
@@ -1309,7 +1293,7 @@ class EmptyWrapperContractTest(unittest.TestCase):
             ),
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             ),
         ]
@@ -1328,7 +1312,7 @@ class EmptyWrapperContractTest(unittest.TestCase):
         self.assertEqual(styled[0].message, self._SALUDO)
         self.assertEqual(styled[1].message, f"¡Listo! {self._AGG_SUCCESS}")
         self.assertEqual(styled[0].intent, "saludo")
-        self.assertEqual(styled[1].intent, "agregar_producto")
+        self.assertEqual(styled[1].intent, "consultar_producto")
         self.assertEqual(client.request.call_count, 1)
         last_event = _last_event(stream)
         self.assertEqual(last_event["outcome"], OUTCOME_APPLIED)
@@ -1344,7 +1328,7 @@ class EmptyWrapperContractTest(unittest.TestCase):
             ),
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             ),
         ]
@@ -1408,13 +1392,13 @@ class EmptyWrapperContractTest(unittest.TestCase):
         self.assertEqual(last_event["flavor_code"], "joven")
         self.assertEqual(last_event["outcome"], OUTCOME_APPLIED)
 
-    def test_joven_flavor_applies_visible_style_to_add_success(self) -> None:
+    def test_joven_flavor_applies_visible_style_to_product_info(self) -> None:
         flavor = _flavor(codigo="joven")
         db = _db_with_flavor(1, flavor=flavor)
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -1439,7 +1423,7 @@ class EmptyWrapperContractTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message="Pizza Mozzarella grande",
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -1537,7 +1521,7 @@ class EmptyWrapperContractTest(unittest.TestCase):
             ),
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             ),
         ]
@@ -1643,7 +1627,7 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -1657,7 +1641,7 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
             db, 1, responses, query_llm=client, stream=stream
         )
         self.assertEqual(styled[0].message, f"{self._AGG_SUCCESS}{phrase}")
-        self.assertEqual(styled[0].intent, "agregar_producto")
+        self.assertEqual(styled[0].intent, "consultar_producto")
         self.assertEqual(styled[0].status, "executed")
         last_event = _last_event(stream)
         self.assertEqual(last_event["outcome"], OUTCOME_APPLIED)
@@ -1668,7 +1652,7 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -1892,7 +1876,7 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -1914,7 +1898,7 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
         self.assertEqual(
             composed, f"{prefix}{self._AGG_SUCCESS}{suffix}"
         )
-        self.assertEqual(styled[0].intent, "agregar_producto")
+        self.assertEqual(styled[0].intent, "consultar_producto")
         self.assertEqual(styled[0].status, "executed")
         last_event = _last_event(stream)
         self.assertEqual(last_event["outcome"], OUTCOME_APPLIED)
@@ -1930,7 +1914,7 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
             ),
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             ),
         ]
@@ -1963,7 +1947,7 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
             f"{valid_prefix}{self._AGG_SUCCESS} 🍕✨",
         )
         self.assertEqual(styled[0].intent, "saludo")
-        self.assertEqual(styled[1].intent, "agregar_producto")
+        self.assertEqual(styled[1].intent, "consultar_producto")
         # Only one batch LLM call was made.
         self.assertEqual(client.request.call_count, 1)
         last_event = _last_event(stream)
@@ -1980,17 +1964,17 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message="Pizza Mozzarella grande",
-                intent="agregar_producto",
-                status="executed",
-            ),
-            CustomerResponse(
-                message="Tu pedido está en preparación.",
-                intent="consultar_estado_pedido",
+                intent="consultar_producto",
                 status="executed",
             ),
             CustomerResponse(
                 message="Av. Secreta 1234",
-                intent="set_direccion_entrega",
+                intent="consultar_domicilio_comercio",
+                status="executed",
+            ),
+            CustomerResponse(
+                message="+5491100000000",
+                intent="set_metodo_de_pago",
                 status="executed",
             ),
         ]
@@ -2019,15 +2003,26 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
             "agregar",
             "hola",
             # Ineligible free-text intents stay out of the batch.
-            "response_type: set_direccion_entrega",
+            "response_type: set_metodo_de_pago",
+            # Closed eligibility boundary keeps order / add / remove
+            # / modify / confirm / start / empty / status tokens
+            # out of the prompt.
+            "response_type: product_add_success",
+            "response_type: product_remove_success",
+            "response_type: product_modify_success",
+            "response_type: order_status",
+            "response_type: order_summary",
+            "response_type: order_confirmed",
+            "response_type: order_started",
+            "response_type: order_emptied",
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, prompt)
         # Only the bounded internal directive and the allowlisted
         # response_type tokens for eligible responses are present.
         self.assertIn("Tono joven. Usá emojis cuando aporten calidez.", prompt)
-        self.assertIn("response_type: product_add_success", prompt)
-        self.assertIn("response_type: order_status", prompt)
+        self.assertIn("response_type: product_info", prompt)
+        self.assertIn("response_type: info_address", prompt)
 
     def test_expressive_prompt_does_not_hardcode_joven_specific_emoji_or_phrase(
         self,
@@ -2065,7 +2060,7 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
             ),
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             ),
         ]
@@ -2110,7 +2105,7 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
             ),
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             ),
         ]
@@ -2753,7 +2748,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -2773,7 +2768,7 @@ class FactualClaimGuardTest(unittest.TestCase):
             db, 1, responses, query_llm=client, stream=stream
         )
         self.assertEqual(styled[0].message, self._AGG_SUCCESS)
-        self.assertEqual(styled[0].intent, "agregar_producto")
+        self.assertEqual(styled[0].intent, "consultar_producto")
         self.assertEqual(styled[0].status, "executed")
         last_event = _last_event(stream)
         self.assertEqual(
@@ -2791,7 +2786,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -2822,7 +2817,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -2853,7 +2848,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -2884,7 +2879,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -2915,7 +2910,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -2946,7 +2941,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -2977,7 +2972,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -3008,7 +3003,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -3039,7 +3034,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -3073,7 +3068,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -3102,12 +3097,12 @@ class FactualClaimGuardTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             ),
             CustomerResponse(
                 message=self._STATUS_MESSAGE,
-                intent="consultar_estado_pedido",
+                intent="ver_menu",
                 status="executed",
             ),
         ]
@@ -3155,7 +3150,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -3213,7 +3208,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -3240,7 +3235,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -3274,7 +3269,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -3417,7 +3412,7 @@ class FactualClaimGuardNormalizationTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -3453,7 +3448,7 @@ class FactualClaimGuardNormalizationTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -3488,7 +3483,7 @@ class FactualClaimGuardNormalizationTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -3523,7 +3518,7 @@ class FactualClaimGuardNormalizationTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -3557,7 +3552,7 @@ class FactualClaimGuardNormalizationTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -3591,7 +3586,7 @@ class FactualClaimGuardNormalizationTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -3622,7 +3617,7 @@ class FactualClaimGuardNormalizationTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -3663,7 +3658,7 @@ class FactualClaimGuardNormalizationTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -3699,7 +3694,7 @@ class FactualClaimGuardNormalizationTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -3730,7 +3725,7 @@ class FactualClaimGuardNormalizationTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -3776,7 +3771,7 @@ class FactualClaimGuardNormalizationTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -3845,7 +3840,7 @@ class WrapperFallbackReasonSplitTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -3886,7 +3881,7 @@ class WrapperFallbackReasonSplitTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -3929,12 +3924,12 @@ class WrapperFallbackReasonSplitTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             ),
             CustomerResponse(
                 message=self._STATUS_MESSAGE,
-                intent="consultar_estado_pedido",
+                intent="ver_menu",
                 status="executed",
             ),
         ]
@@ -3980,7 +3975,7 @@ class WrapperFallbackReasonSplitTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -4018,12 +4013,12 @@ class WrapperFallbackReasonSplitTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             ),
             CustomerResponse(
                 message=self._STATUS_MESSAGE,
-                intent="consultar_estado_pedido",
+                intent="ver_menu",
                 status="executed",
             ),
         ]
@@ -4070,7 +4065,7 @@ class WrapperFallbackReasonSplitTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -4096,7 +4091,7 @@ class WrapperFallbackReasonSplitTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -4133,7 +4128,7 @@ class WrapperFallbackReasonSplitTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -4177,7 +4172,7 @@ class WrapperFallbackReasonSplitTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -4331,19 +4326,22 @@ class StyleResponsesWithDiagnosticTest(unittest.TestCase):
         self.assertEqual(diagnostic.template_version, OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION)
         self.assertEqual(styled[0].message, f"¡Buenas!{self._VER_MENU_FULL}")
 
-    def test_status_eligible_under_usable_flavor_is_attempted_not_neutro(self) -> None:
-        """The executed status response is an eligible normal
-        response under a usable selected flavor. The diagnostic
-        MUST carry ``applied`` or a bounded ``fallback``; it
-        MUST NEVER masquerade as ``neutro`` by reporting
-        ``not_attempted``.
+    def test_menu_full_eligible_under_usable_flavor_is_attempted_not_neutro(self) -> None:
+        """The ``menu_full`` eligible response under a usable
+        selected flavor MUST record ``applied`` in the diagnostic;
+        it MUST NEVER masquerade as ``neutro`` by reporting
+        ``not_attempted``. The same diagnostic surface is
+        available for any other eligible presentation-safe
+        response type (the closed eligibility boundary excludes
+        ``order_status``, ``product_add_success`` and the other
+        seven order-lifecycle tokens).
         """
         flavor = _flavor(codigo="joven")
         db = _db_with_flavor(1, flavor=flavor)
         responses = [
             CustomerResponse(
-                message=self._STATUS_MESSAGE,
-                intent="consultar_estado_pedido",
+                message=self._VER_MENU_FULL,
+                intent="ver_menu",
                 status="executed",
             )
         ]
@@ -4354,7 +4352,7 @@ class StyleResponsesWithDiagnosticTest(unittest.TestCase):
         )
         self.assertEqual(diagnostic.outcome, "applied")
         self.assertEqual(diagnostic.flavor_code, "joven")
-        self.assertEqual(diagnostic.response_types, (RESPONSE_TYPE_ORDER_STATUS,))
+        self.assertEqual(diagnostic.response_types, (RESPONSE_TYPE_MENU_FULL,))
 
     def test_fallback_outcome_preserves_flavor_and_keeps_factual_intact(self) -> None:
         flavor = _flavor(codigo="joven")
@@ -4426,7 +4424,7 @@ class StyleResponsesWithDiagnosticTest(unittest.TestCase):
         responses = [
             CustomerResponse(
                 message="Pizza Mozzarella grande",
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             )
         ]
@@ -4472,7 +4470,7 @@ class StyleResponsesWithDiagnosticTest(unittest.TestCase):
             ),
             CustomerResponse(
                 message=self._AGG_SUCCESS,
-                intent="agregar_producto",
+                intent="consultar_producto",
                 status="executed",
             ),
         ]
@@ -4505,7 +4503,7 @@ class StyleResponsesWithDiagnosticTest(unittest.TestCase):
         self.assertEqual(diagnostic.flavor_code, "joven")
         self.assertEqual(
             diagnostic.response_types,
-            (RESPONSE_TYPE_SOCIAL_GREETING, RESPONSE_TYPE_PRODUCT_ADD_SUCCESS),
+            (RESPONSE_TYPE_SOCIAL_GREETING, RESPONSE_TYPE_PRODUCT_INFO),
         )
 
     def test_diagnostic_does_not_control_database_transactions(self) -> None:
@@ -4528,6 +4526,534 @@ class StyleResponsesWithDiagnosticTest(unittest.TestCase):
             "close",
         ):
             getattr(db, method).assert_not_called()
+
+
+class ClosedEligibilityBoundaryTest(unittest.TestCase):
+    """Subphase 11 — closed eligibility boundary for order facts.
+
+    The primary safety boundary for the styler moves from
+    per-wrapper wording validation to a closed eligibility set of
+    presentation-safe response types. Only social conversation,
+    menu, product information, payment/delivery-method
+    information, commerce address and commerce hours are sent to
+    the style LLM. The eight response types that report a
+    mutation, lifecycle result or state of the customer's order
+    are deterministic output and never reach the LLM.
+
+    A turn containing only excluded response types must make no
+    style request and must report the existing ``not_attempted``
+    diagnostic with ``eligible_count=0``, ``applied_count=0``
+    and ``response_types=()``. Mixed turns must keep order,
+    intent and status, make at most one call carrying only the
+    approved types and preserve the excluded response byte-for-byte
+    in its original position. Valid wrappers for approved types
+    remain the only successful styling outcome.
+
+    These tests do NOT touch the LLM client, the prompt
+    template, the mapper, the event schema, the diagnostic
+    projection or any transaction control.
+    """
+
+    _AGG_SUCCESS = "Listo, agregué 1 Pizza Mozzarella (grande)."
+    _REMOVE_SUCCESS = "Listo, quité la Pizza Mozzarella de tu pedido."
+    _MODIFY_SUCCESS = "Listo, cambié tu pedido a 2 Pizzas Mozzarella (grandes)."
+    _STATUS_MESSAGE = "Tu pedido está en preparación."
+    _SUMMARY_MESSAGE = "Tu pedido tiene 1 Pizza Mozzarella (grande)."
+    _CONFIRMED_MESSAGE = "Tu pedido fue confirmado y está en preparación."
+    _STARTED_MESSAGE = "Listo, empecé tu pedido."
+    _EMPTIED_MESSAGE = "Listo, vacié tu pedido."
+
+    def test_each_excluded_intent_with_executed_returns_none(self) -> None:
+        """The eight excluded intent/status pairs must all return
+        ``None`` from :func:`response_type_for`. Their exclusion
+        is a normal eligibility decision, not a styling fallback.
+        """
+        excluded = (
+            "agregar_producto",
+            "quitar_producto",
+            "modificar_producto",
+            "consultar_estado_pedido",
+            "consultar_resumen_pedido",
+            "confirmar_pedido",
+            "iniciar_pedido",
+            "vaciar_pedido",
+        )
+        for intent in excluded:
+            with self.subTest(intent=intent):
+                self.assertIsNone(response_type_for(intent, EXECUTED_STATUS))
+                self.assertFalse(
+                    is_eligible_response(
+                        CustomerResponse(
+                            message="X",
+                            intent=intent,
+                            status=EXECUTED_STATUS,
+                        )
+                    )
+                )
+
+    def test_eligible_intents_still_map_to_their_tokens(self) -> None:
+        """The eleven approved presentation-safe response types
+        must still map to their existing tokens. The amendment
+        only narrows the eligibility boundary; it must NOT
+        widen, shift or relabel the approved set.
+        """
+        eligible = {
+            ("saludo", EXECUTED_STATUS): RESPONSE_TYPE_SOCIAL_GREETING,
+            ("agradecimiento", EXECUTED_STATUS): RESPONSE_TYPE_SOCIAL_THANKS,
+            ("despedida", EXECUTED_STATUS): RESPONSE_TYPE_SOCIAL_GOODBYE,
+            ("respuesta_afirmativa", EXECUTED_STATUS): RESPONSE_TYPE_SOCIAL_YES,
+            ("respuesta_negativa", EXECUTED_STATUS): RESPONSE_TYPE_SOCIAL_NO,
+            ("ver_menu", EXECUTED_STATUS): RESPONSE_TYPE_MENU_FULL,
+            ("consultar_producto", EXECUTED_STATUS): RESPONSE_TYPE_PRODUCT_INFO,
+            (
+                "ver_metodos_de_pago",
+                EXECUTED_STATUS,
+            ): RESPONSE_TYPE_INFO_PAYMENT_METHODS,
+            (
+                "ver_metodos_de_entrega",
+                EXECUTED_STATUS,
+            ): RESPONSE_TYPE_INFO_DELIVERY_METHODS,
+            (
+                "consultar_domicilio_comercio",
+                EXECUTED_STATUS,
+            ): RESPONSE_TYPE_INFO_ADDRESS,
+            (
+                "consultar_horarios_comercio",
+                EXECUTED_STATUS,
+            ): RESPONSE_TYPE_INFO_HOURS,
+        }
+        self.assertEqual(len(eligible), 11)
+        for (intent, status), token in eligible.items():
+            with self.subTest(intent=intent):
+                self.assertEqual(response_type_for(intent, status), token)
+
+    def test_excluded_only_turn_makes_zero_llm_calls(self) -> None:
+        """A turn containing only excluded response types MUST
+        make no style request and MUST preserve the exact
+        deterministic text for every item.
+        """
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status=EXECUTED_STATUS,
+            ),
+            CustomerResponse(
+                message=self._REMOVE_SUCCESS,
+                intent="quitar_producto",
+                status=EXECUTED_STATUS,
+            ),
+            CustomerResponse(
+                message=self._MODIFY_SUCCESS,
+                intent="modificar_producto",
+                status=EXECUTED_STATUS,
+            ),
+            CustomerResponse(
+                message=self._STATUS_MESSAGE,
+                intent="consultar_estado_pedido",
+                status=EXECUTED_STATUS,
+            ),
+            CustomerResponse(
+                message=self._SUMMARY_MESSAGE,
+                intent="consultar_resumen_pedido",
+                status=EXECUTED_STATUS,
+            ),
+            CustomerResponse(
+                message=self._CONFIRMED_MESSAGE,
+                intent="confirmar_pedido",
+                status=EXECUTED_STATUS,
+            ),
+            CustomerResponse(
+                message=self._STARTED_MESSAGE,
+                intent="iniciar_pedido",
+                status=EXECUTED_STATUS,
+            ),
+            CustomerResponse(
+                message=self._EMPTIED_MESSAGE,
+                intent="vaciar_pedido",
+                status=EXECUTED_STATUS,
+            ),
+        ]
+        client = _llm({"items": [{"index": 0, "prefix": "", "suffix": ""}]})
+        stream = io.StringIO()
+        styled, diagnostic = style_responses_with_diagnostic(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        # Zero LLM calls.
+        self.assertEqual(client.request.call_count, 0)
+        # Exact deterministic messages preserved in their order.
+        self.assertEqual(
+            [r.message for r in styled],
+            [
+                self._AGG_SUCCESS,
+                self._REMOVE_SUCCESS,
+                self._MODIFY_SUCCESS,
+                self._STATUS_MESSAGE,
+                self._SUMMARY_MESSAGE,
+                self._CONFIRMED_MESSAGE,
+                self._STARTED_MESSAGE,
+                self._EMPTIED_MESSAGE,
+            ],
+        )
+        # Intent and status preserved for every excluded item.
+        expected_intents = (
+            "agregar_producto",
+            "quitar_producto",
+            "modificar_producto",
+            "consultar_estado_pedido",
+            "consultar_resumen_pedido",
+            "confirmar_pedido",
+            "iniciar_pedido",
+            "vaciar_pedido",
+        )
+        for response, expected_intent in zip(styled, expected_intents):
+            with self.subTest(intent=expected_intent):
+                self.assertEqual(response.intent, expected_intent)
+                self.assertEqual(response.status, EXECUTED_STATUS)
+        # Bounded diagnostic contract for excluded-only turns.
+        self.assertEqual(diagnostic.outcome, "not_attempted")
+        self.assertEqual(diagnostic.eligible_count, 0)
+        self.assertEqual(diagnostic.applied_count, 0)
+        self.assertEqual(diagnostic.response_types, ())
+        self.assertIsNone(diagnostic.fallback_category)
+        # ``flavor_code`` is hidden when the attempt never reached
+        # the prompt stage (zero eligible items); this is the
+        # existing bounded privacy contract.
+        self.assertIsNone(diagnostic.flavor_code)
+        # The observability event matches the same contract.
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_NOT_ATTEMPTED)
+        self.assertEqual(last_event["eligible_count"], 0)
+        self.assertEqual(last_event["applied_count"], 0)
+        # ``flavor_code`` is omitted from the event when the
+        # attempt never reached the prompt stage (zero eligible
+        # items); this is the existing bounded privacy contract.
+        self.assertNotIn("flavor_code", last_event)
+
+    def test_mixed_batch_styles_only_approved_positions(self) -> None:
+        """A mixed turn with both an approved response and an
+        excluded order-result response must issue exactly one
+        batch request carrying only the approved token, must
+        apply the wrapper only to the approved item and must
+        keep the excluded item byte-for-byte in its original
+        position.
+        """
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status=EXECUTED_STATUS,
+            ),
+            CustomerResponse(
+                message="¡Hola! Puedo ayudarte a armar tu pedido. Decime qué querés.",
+                intent="saludo",
+                status=EXECUTED_STATUS,
+            ),
+            CustomerResponse(
+                message=self._STATUS_MESSAGE,
+                intent="consultar_estado_pedido",
+                status=EXECUTED_STATUS,
+            ),
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Hey! ",
+                        "suffix": " 👋",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        # Single batch LLM call, only for the approved token.
+        self.assertEqual(client.request.call_count, 1)
+        prompt = client.request.call_args.args[0]
+        self.assertIn("response_type: social_greeting", prompt)
+        # No excluded token is sent to the LLM.
+        for excluded in (
+            "product_add_success",
+            "order_status",
+            "product_remove_success",
+            "product_modify_success",
+            "order_summary",
+            "order_confirmed",
+            "order_started",
+            "order_emptied",
+        ):
+            with self.subTest(forbidden_token=excluded):
+                self.assertNotIn(f"response_type: {excluded}", prompt)
+        # Excluded positions keep their exact deterministic text
+        # in their original positions.
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        self.assertEqual(styled[0].intent, "agregar_producto")
+        self.assertEqual(styled[2].message, self._STATUS_MESSAGE)
+        self.assertEqual(styled[2].intent, "consultar_estado_pedido")
+        # The approved position is wrapped around its exact
+        # deterministic substring.
+        self.assertTrue(styled[1].message.startswith("¡Hey! "))
+        self.assertTrue(styled[1].message.endswith(" 👋"))
+        self.assertIn(
+            "¡Hola! Puedo ayudarte a armar tu pedido. Decime qué querés.",
+            styled[1].message,
+        )
+        self.assertEqual(styled[1].intent, "saludo")
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_APPLIED)
+        self.assertEqual(last_event["eligible_count"], 1)
+        self.assertEqual(last_event["applied_count"], 1)
+        self.assertEqual(last_event["flavor_code"], "joven")
+
+    def test_excluded_only_turn_invokes_no_database_transactions(self) -> None:
+        """The closed eligibility boundary does not require any
+        database transaction control. The styler remains a pure
+        presentation transform with zero transaction ownership.
+        """
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status=EXECUTED_STATUS,
+            ),
+            CustomerResponse(
+                message=self._STATUS_MESSAGE,
+                intent="consultar_estado_pedido",
+                status=EXECUTED_STATUS,
+            ),
+        ]
+        client = _llm({"items": [{"index": 0, "prefix": "", "suffix": ""}]})
+        style_responses(db, 1, responses, query_llm=client)
+        for method in (
+            "commit",
+            "rollback",
+            "begin",
+            "begin_nested",
+            "flush",
+            "refresh",
+            "close",
+        ):
+            getattr(db, method).assert_not_called()
+
+    def test_mixed_batch_invokes_no_database_transactions(self) -> None:
+        """The mixed-batch path also does not require any
+        database transaction control.
+        """
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status=EXECUTED_STATUS,
+            ),
+            CustomerResponse(
+                message="¡Hola! Puedo ayudarte a armar tu pedido. Decime qué querés.",
+                intent="saludo",
+                status=EXECUTED_STATUS,
+            ),
+        ]
+        client = _llm(
+            {"items": [{"index": 0, "prefix": "¡Hey! ", "suffix": ""}]}
+        )
+        style_responses(db, 1, responses, query_llm=client)
+        for method in (
+            "commit",
+            "rollback",
+            "begin",
+            "begin_nested",
+            "flush",
+            "refresh",
+            "close",
+        ):
+            getattr(db, method).assert_not_called()
+
+    def test_valid_wrapper_for_approved_type_still_applies(self) -> None:
+        """The closed eligibility boundary MUST keep valid
+        wrapper behavior for approved presentation-safe types.
+        A greeting under ``joven`` still receives a visible
+        wrapper around its exact deterministic message.
+        """
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        saludo = (
+            "¡Hola! Puedo ayudarte a armar tu pedido. Decime qué querés."
+        )
+        responses = [
+            CustomerResponse(
+                message=saludo, intent="saludo", status=EXECUTED_STATUS
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Buenas! ",
+                        "suffix": " 👋",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled, diagnostic = style_responses_with_diagnostic(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(client.request.call_count, 1)
+        self.assertEqual(styled[0].message, f"¡Buenas! {saludo} 👋")
+        self.assertEqual(styled[0].intent, "saludo")
+        self.assertEqual(styled[0].status, EXECUTED_STATUS)
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_APPLIED)
+        self.assertEqual(last_event["eligible_count"], 1)
+        self.assertEqual(last_event["applied_count"], 1)
+        self.assertEqual(last_event["flavor_code"], "joven")
+        self.assertEqual(diagnostic.outcome, "applied")
+        self.assertEqual(
+            diagnostic.response_types, (RESPONSE_TYPE_SOCIAL_GREETING,)
+        )
+        self.assertEqual(diagnostic.eligible_count, 1)
+        self.assertEqual(diagnostic.applied_count, 1)
+        self.assertEqual(diagnostic.flavor_code, "joven")
+
+    def test_neutro_keeps_excluded_responses_byte_for_byte(self) -> None:
+        """Under ``neutro`` the closed eligibility boundary does
+        not introduce any new behavior: the styler is an exact
+        no-op, no LLM call is made, and every excluded
+        response is preserved byte-for-byte.
+        """
+        db = _db_with_flavor(1, flavor=_flavor(NEUTRO_FLAVOR_CODE))
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status=EXECUTED_STATUS,
+            ),
+            CustomerResponse(
+                message=self._STATUS_MESSAGE,
+                intent="consultar_estado_pedido",
+                status=EXECUTED_STATUS,
+            ),
+            CustomerResponse(
+                message=self._CONFIRMED_MESSAGE,
+                intent="confirmar_pedido",
+                status=EXECUTED_STATUS,
+            ),
+        ]
+        client = _llm({"items": [{"index": 0, "prefix": "", "suffix": ""}]})
+        stream = io.StringIO()
+        styled, diagnostic = style_responses_with_diagnostic(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(client.request.call_count, 0)
+        self.assertEqual([r.message for r in styled], [
+            self._AGG_SUCCESS,
+            self._STATUS_MESSAGE,
+            self._CONFIRMED_MESSAGE,
+        ])
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_NOT_ATTEMPTED)
+        # ``neutro`` reports the eligible count from the bounded
+        # selection pass so the panel can surface it without
+        # revealing a flavor decision; the three excluded items
+        # still contribute zero eligible_count.
+        self.assertEqual(last_event["eligible_count"], 0)
+        self.assertEqual(last_event["applied_count"], 0)
+        self.assertEqual(diagnostic.outcome, "not_attempted")
+        self.assertEqual(diagnostic.eligible_count, 0)
+        self.assertEqual(diagnostic.applied_count, 0)
+        self.assertEqual(diagnostic.response_types, ())
+        self.assertIsNone(diagnostic.flavor_code)
+
+    def test_prompt_does_not_carry_excluded_intents_or_factual_text(self) -> None:
+        """Even when a mixed turn contains excluded responses,
+        the prompt MUST NOT include any excluded response-type
+        token, the deterministic factual text or any business
+        identifier. Privacy remains a secondary defense.
+        """
+        flavor = _flavor(
+            codigo="joven",
+            instruccion="Tono joven. Usá emojis cuando aporten calidez.",
+        )
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message="Pizza Mozzarella grande",
+                intent="agregar_producto",
+                status=EXECUTED_STATUS,
+            ),
+            CustomerResponse(
+                message="Tú pedido está en preparación.",
+                intent="consultar_estado_pedido",
+                status=EXECUTED_STATUS,
+            ),
+            CustomerResponse(
+                message="Av. Secreta 1234",
+                intent="set_direccion_entrega",
+                status=EXECUTED_STATUS,
+            ),
+        ]
+        client = _llm({"items": []})
+        style_responses(db, 1, responses, query_llm=client)
+        self.assertEqual(client.request.call_count, 0)
+        # No prompt is even rendered when the turn has zero
+        # eligible items; the eligible-only batch would have
+        # been empty. The privacy check is enforced at selection
+        # time: no excluded token ever reaches the prompt.
+        eligible = select_eligible(responses)
+        self.assertEqual(eligible, [])
+
+    def test_select_eligible_keeps_only_approved_positions(self) -> None:
+        """The selection helper must project an arbitrary mixed
+        list to the closed approved set while preserving the
+        original ``index`` of every preserved item.
+        """
+        responses = [
+            CustomerResponse(message="A", intent="saludo", status=EXECUTED_STATUS),
+            CustomerResponse(
+                message="B", intent="agregar_producto", status=EXECUTED_STATUS
+            ),
+            CustomerResponse(
+                message="C", intent="consultar_producto", status=EXECUTED_STATUS
+            ),
+            CustomerResponse(
+                message="D",
+                intent="consultar_estado_pedido",
+                status=EXECUTED_STATUS,
+            ),
+            CustomerResponse(
+                message="E", intent="ver_menu", status=EXECUTED_STATUS
+            ),
+            CustomerResponse(
+                message="F",
+                intent="confirmar_pedido",
+                status=EXECUTED_STATUS,
+            ),
+        ]
+        eligible = select_eligible(responses)
+        self.assertEqual(
+            [(item.index, item.response_type) for item in eligible],
+            [
+                (0, RESPONSE_TYPE_SOCIAL_GREETING),
+                (2, RESPONSE_TYPE_PRODUCT_INFO),
+                (4, RESPONSE_TYPE_MENU_FULL),
+            ],
+        )
+        # Every batch position is the contiguous 0..N-1 wire
+        # index used by the LLM contract.
+        self.assertEqual(
+            [item.batch_position for item in eligible],
+            list(range(len(eligible))),
+        )
 
 
 if __name__ == "__main__":

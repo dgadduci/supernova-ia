@@ -374,6 +374,85 @@ deferred and must fail closed through future, separately approved work.
 
 ## Deferred Limitations
 
+## Closed Eligibility Boundary for Order Facts Amendment
+
+Pilot evidence shows that preserving the factual message as a contiguous
+substring does not make it appropriate to style every successful business
+response: a wrapper can still add an unsupported execution claim. This
+amendment moves the primary safety boundary from rejected wording to a closed
+set of response types that may receive presentation styling.
+
+### Objective and authoritative outcomes
+
+Only the following existing response types remain eligible for the one-call
+wrapper path: `social_greeting`, `social_thanks`, `social_goodbye`,
+`social_yes`, `social_no`, `menu_full`, `product_info`,
+`info_payment_methods`, `info_delivery_methods`, `info_address`, and
+`info_hours`.
+
+The following existing response types become ineligible and are authoritative
+deterministic output: `product_add_success`, `product_remove_success`,
+`product_modify_success`, `order_status`, `order_summary`,
+`order_confirmed`, `order_started`, and `order_emptied`. They SHALL NOT be
+sent to the style LLM, wrapped, retried, or otherwise presentation-transformed.
+
+A turn containing only excluded response types makes no style request and
+uses the existing `not_attempted` diagnostic with zero eligible response
+types. In a mixed turn, the existing single request may contain only the
+remaining approved types; excluded responses retain exact deterministic text,
+intent, status, and ordering. Valid wrappers for approved types remain the
+only business-valid styling outcome. Model/contract failure for approved types
+retains the existing factual fallback. Exclusion itself is normal policy, not
+a wrapper failure.
+
+### Scope and non-goals
+
+Scope is limited to the existing eligibility map and its focused tests. The
+shared mapper remains the sole styling boundary; local and provider delivery
+continue to consume the same result. The existing claim/shape guard remains a
+secondary defence for the approved types.
+
+This amendment does not change deterministic response builders, intent
+classification, order execution, prompt text or version, persisted flavor
+instructions, LLM client behavior, diagnostics schema, events, endpoints,
+migrations, outbox behavior, transactions, or flavor selection. It does not
+add semantic classification, a second model call, a retry, or hardcoded
+customer-facing phrases.
+
+### Transaction ownership, observability, and rollback
+
+The styler continues to own no transaction controls. Existing diagnostics stay
+closed and PII-safe: excluded-only turns report only the existing bounded
+`not_attempted` result; mixed turns report only the actually eligible approved
+response-type tokens. No factual message or policy-internal detail is exposed.
+
+Rollback is restoring the previous eligibility entries; no persisted data or
+business result changes. The deliberate limitation is that only the currently
+mapped response types are classified by this amendment; newly introduced
+response types remain ineligible by default until separately reviewed.
+
+### Expected files, tests, and validation
+
+- `backend/services/outbound_response_styler.py`
+- `backend/tests/test_outbound_response_styler.py`
+- `backend/tests/test_outbound_response_mapper.py` only if existing shared-path
+  coverage needs an assertion
+- This change's `proposal.md`, `design.md`, spec delta, and `tasks.md`
+
+Focused coverage must prove all eight excluded types do not map to an eligible
+token, excluded-only turns make no LLM call and remain exactly deterministic,
+mixed batches submit only approved types while preserving excluded output, and
+the approved social/catalog types retain current valid-wrapper behavior. The
+implementer must run and report complete output from:
+
+```bash
+PYTHONPATH=. venv/bin/python -m pytest backend/tests/test_outbound_response_styler.py backend/tests/test_outbound_response_mapper.py backend/tests/test_order_status_query.py -q
+PYTHONPATH=. venv/bin/python -m ruff check backend/services/outbound_response_styler.py backend/tests/test_outbound_response_styler.py backend/tests/test_outbound_response_mapper.py
+PYTHONPATH=. venv/bin/python -m compileall -q backend/services/outbound_response_styler.py
+openspec validate add-safe-outbound-response-styling --strict
+git diff --check
+```
+
 ## Bounded Invalid-Wrapper Diagnostic Amendment
 
 The pilot panel currently reports every per-item rejection as
