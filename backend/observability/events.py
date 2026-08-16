@@ -197,8 +197,8 @@ _FAILURE_CATEGORIES_BY_EVENT: dict[str, frozenset[str]] = {
             "http_error",
             "response_error",
             "malformed_batch",
-            "message_invalid",
-            "empty_message",
+            "wrapper_invalid",
+            "empty_wrapper",
             "unexpected",
         }
     ),
