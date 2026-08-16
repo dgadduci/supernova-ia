@@ -127,7 +127,7 @@
   local/provider, and no-transaction tests.
 - [x] 10.3 Run focused pytest, impacted observability tests, Ruff, compileall,
   strict OpenSpec validation, and `git diff --check`.
-- [ ] 10.4 After approved deploy under `joven`, verify a fallback visibly
+- [x] 10.4 After approved deploy under `joven`, verify a fallback visibly
   distinguishes `wrapper_claim_guard` from `wrapper_shape_invalid` without
   exposing wrapper content or private data; then repeat the affected 9.4
   greeting/product-add checks.

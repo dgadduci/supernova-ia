@@ -61,6 +61,6 @@
   legacy-final-only, invalid-data, pure-rendering, and no-transaction tests.
 - [x] 6.3 Run the focused pytest, Ruff, compileall, strict OpenSpec validation,
   and `git diff --check` commands from `proposal.md`.
-- [ ] 6.4 After approved deploy, add one known presentation to a line at six
+- [x] 6.4 After approved deploy, add one known presentation to a line at six
   and verify the response states one added and seven total while the panel
   shows the same durable line total.
