@@ -94,3 +94,24 @@ uses the same exact Pedido and verifies its JSON-safe snapshot exposes `6`.
 Focused unit tests continue to assert no transaction control in the modern
 seam. Existing environment-authentication failures in provider E2E tests are
 reported separately and do not justify weakening the sequential invariant.
+
+## Added quantity versus total wording
+
+The handler already projects two distinct values after an executed modern add:
+`cantidad_agregada` is the requested delta and `cantidad_final` is the
+durable line total. The response builder will consume both without querying or
+changing state.
+
+```text
+line at 6 + requested 1
+  -> handler: cantidad_agregada=1, cantidad_final=7
+  -> response: added 1; line now contains 7
+```
+
+When the line is newly created and delta equals final total, the existing
+concise confirmation remains sufficient. For compatibility, an older executed
+intent with only `cantidad_final` keeps the existing final-quantity wording;
+the builder never guesses a delta. Invalid quantities preserve the existing
+generic response. This is a pure rendering change and leaves the caller-owned
+transaction, handler, service, repository, styling boundary, and panel
+snapshot untouched.

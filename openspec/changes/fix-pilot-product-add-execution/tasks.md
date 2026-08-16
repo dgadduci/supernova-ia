@@ -50,3 +50,17 @@
   for the same draft/presentation; verify one line at `6`, responses with
   totals `1`, `3`, `6`, and empty pending/context. Resume the product-flow
   TODO only after this gate; do not archive without explicit approval.
+
+## 6. Added Quantity Versus Total Wording Amendment
+
+- [x] 6.1 Change only the deterministic executed add response to use
+  `cantidad_agregada` as the customer-visible delta and `cantidad_final` as a
+  separate resulting-total clause when they differ; retain legacy final-only
+  compatibility and existing malformed fallback.
+- [x] 6.2 Add focused created/incremented singular/plural, one-to-seven,
+  legacy-final-only, invalid-data, pure-rendering, and no-transaction tests.
+- [x] 6.3 Run the focused pytest, Ruff, compileall, strict OpenSpec validation,
+  and `git diff --check` commands from `proposal.md`.
+- [ ] 6.4 After approved deploy, add one known presentation to a line at six
+  and verify the response states one added and seven total while the panel
+  shows the same durable line total.

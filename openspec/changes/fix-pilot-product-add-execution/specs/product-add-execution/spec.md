@@ -64,3 +64,28 @@ browser-local arithmetic.
 - **THEN** it does not reset, replace, duplicate or otherwise change the
   existing line
 - **AND THEN** existing typed rejection or outer rollback behavior applies
+
+### Requirement: Product-add confirmation distinguishes delta from durable total
+
+For an executed modern `agregar_producto` intent with valid
+`cantidad_agregada` and `cantidad_final`, the deterministic customer response
+SHALL describe the added delta. When the final line total differs from that
+delta, it SHALL also state the resulting total without describing it as newly
+added. The response builder SHALL not query or mutate state. An executed
+legacy intent lacking `cantidad_agregada` SHALL retain the existing
+final-quantity wording; invalid quantities retain the existing generic
+technical fallback.
+
+#### Scenario: Incrementing six units by one states one added and seven total
+
+- **WHEN** an exact presentation has a durable line quantity of `6` and an
+  executed modern add carries `cantidad_agregada=1` and `cantidad_final=7`
+- **THEN** the deterministic response states that one unit was added
+- **AND THEN** it states that the line now has seven units
+- **AND THEN** it does not state that seven units were added.
+
+#### Scenario: Newly created line remains concise
+
+- **WHEN** an executed modern add carries equal valid delta and final values
+- **THEN** the deterministic response retains the concise existing add
+  confirmation without a redundant total clause.
