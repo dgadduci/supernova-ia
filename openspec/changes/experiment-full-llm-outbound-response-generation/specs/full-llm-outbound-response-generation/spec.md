@@ -27,7 +27,12 @@ The experimental full-message prompt SHALL include the deterministic factual
 message and response type for eligible items, plus the selected internal flavor
 instruction. It SHALL require the LLM to preserve all supplied concrete facts
 and menu lines, add no facts, and return a closed JSON envelope. Raw inbound
-text and ineligible response text SHALL NOT be sent to the LLM.
+text and ineligible response text SHALL NOT be sent to the LLM. Full and
+category menus SHALL retain every category, line, product, presentation/unit,
+price and factual order from the deterministic message; the LLM may add only
+non-factual natural framing around that inventory. Status output SHALL NOT
+state preparation, dispatch, delivery, estimated timing or another logistics
+fact unless that fact appears explicitly in the deterministic message.
 
 #### Scenario: Menu is supplied intact for natural presentation
 
@@ -38,6 +43,15 @@ text and ineligible response text SHALL NOT be sent to the LLM.
 - **AND THEN** it instructs the LLM to preserve every menu line
 - **AND THEN** runtime diagnostics do not expose that menu text or rendered
   prompt.
+
+#### Scenario: Status response does not infer logistics absent from factual text
+
+- **WHEN** an eligible order-status response is styled under a non-neutral
+  flavor
+- **THEN** the prompt instructs the LLM to retain only status and logistics
+  facts explicitly present in its deterministic factual message
+- **AND THEN** it prohibits inferred preparation, dispatch, arrival or timing
+  claims.
 
 ### Requirement: Experimental generation has structural fallback but no semantic output validator
 

@@ -66,6 +66,14 @@ output schema, after the flavor directive, so tone cannot displace facts:
   or customer-specific assumptions.
 - Return only JSON with full `message` values.
 
+The menu rule is deliberately stronger than ordinary paraphrase: categories,
+individual lines, product names, presentation/unit labels, prices and order
+are immutable visible content. A generated introduction or closing is allowed,
+but the list itself must not be summarized, re-grouped or flattened. Likewise,
+an order-status response may only repeat the state wording explicitly present
+in `factual_message`; dispatch, delivery, timing and future-action language
+are prohibited unless supplied factually.
+
 The factual message is intentionally transmitted to the LLM for eligible
 responses. Raw inbound text is not transmitted. Ineligible response text is
 not transmitted.
@@ -101,5 +109,8 @@ Pilot gates must test each approved response family under at least `joven`,
 `serio`, and `neutro`. For every generated response, compare client-visible
 text manually against the deterministic panel/order state, specifically:
 products/presentations, quantities, prices, menu completeness, order state,
-dates and times. Any deviation is a prompt-calibration defect. The branch is
-discarded if calibration cannot reach reliable results.
+dates and times. Full and category menus additionally require line-by-line
+comparison, including presentation/unit labels and order. Status output must
+not introduce preparation, dispatch, delivery or timing absent from the
+deterministic factual message. Any deviation is a prompt-calibration defect.
+The branch is discarded if calibration cannot reach reliable results.

@@ -14,6 +14,17 @@ output schema AND immediately after the flavor directive so the
 directive can never displace the authoritative facts supplied by the
 deterministic backend.
 
+The contract is calibrated for menu / category inventory rendering
+and status non-inference: a structurally valid generated message can
+still summarize a complete menu or invent logistics absent from the
+deterministic ``factual_message``. The static prompt is therefore
+strengthened (v2.2.0) so every category, line, product,
+presentation / unit, price, punctuation and ordering of a
+``menu_full`` / ``menu_category`` ``factual_message`` is preserved
+verbatim, and status output may only repeat the wording explicitly
+present in the ``factual_message`` without inferring preparation,
+dispatch, arrival, timing, urgency or a promise of future action.
+
 The runtime prompt contains **only**:
 
 * the selected flavor's bounded internal ``instruccion_llm`` text;
@@ -64,7 +75,7 @@ import hashlib
 import json
 from typing import Any
 
-OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION = "outbound-response-styler/v2.1.0"
+OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION = "outbound-response-styler/v2.2.0"
 
 _INTRO = (
     "\n"
@@ -90,7 +101,7 @@ Reglas inquebrantables:
 1. La única fuente autorizada de hechos es el `factual_message` recibido. Todo hecho concreto presente en él debe aparecer en tu salida, sin agregar, omitir, sustituir, transformar ni reordenar hechos.
 
 2. Hechos concretos que debés preservar cuando estén presentes en el `factual_message`:
-   * productos y sus presentaciones;
+   * productos y sus presentaciones (por ejemplo: grande, chica, lata, litro, 2 litros, unidad, kilo);
    * cantidades;
    * precios;
    * fechas y horarios;
@@ -98,11 +109,17 @@ Reglas inquebrantables:
    * opciones, condiciones y elecciones;
    * cada línea de menú cuando el `factual_message` es un menú completo o por categoría.
 
-3. NO inventes ni agregues: productos, promociones, descuentos, tiempos estimados, promesas, instrucciones, preguntas, comandos, datos de entrega, datos de pago ni información del comercio. NO hagas suposiciones sobre el cliente.
+3. NO inventes ni agregues: productos, presentaciones, unidades, variantes, promociones, descuentos, tiempos estimados, promesas, instrucciones, preguntas, comandos, datos de entrega, datos de pago ni información del comercio. NO hagas suposiciones sobre el cliente.
 
 4. NO modifiques el contenido factual. Tu trabajo es reescribir el mismo mensaje en lenguaje natural y breve, respetando el orden y la cantidad de hechos.
 
-5. Devolvé EXACTAMENTE el JSON indicado en la sección "Estructura de salida". No expliques nada. No uses Markdown. Cada ítem debe llevar únicamente `index` y `message`.
+5. Menú completo (`menu_full`) y menú por categoría (`menu_category`): el inventario factual del `factual_message` es inmutable. Debés conservar cada categoría, cada línea, cada producto, su presentación/unidad, su precio, su puntuación y el orden exacto del `factual_message`. Está prohibido resumir, reagrupar, aplanar a prosa, omitir variantes, fusionar líneas o reemplazar la lista por una versión agregada. Sólo se admite agregar una introducción o un cierre breve y no factual; el cuerpo del menú debe permanecer intacto y completo.
+
+6. Respuestas de estado (`order_status` y cualquier `factual_message` que describa el estado o la logística del pedido): sólo podés repetir el estado y la logística expresamente presentes en el `factual_message`. Está terminantemente prohibido inferir o prometer preparación, despacho, entrega, llegada, tiempos estimados, urgencia o cualquier acción futura que no esté escrita de manera explícita en el `factual_message`.
+
+7. La directriz interna de tono que figura más abajo (la `instruccion_llm`) ajusta exclusivamente vocabulario, calidez, registro y, eventualmente, el uso de emojis. Nunca puede desplazar, debilitar ni contradecir las reglas 1 a 6. Si la directriz entra en conflicto con cualquiera de estas reglas, estas reglas prevalecen sin excepción.
+
+8. Devolvé EXACTAMENTE el JSON indicado en la sección "Estructura de salida". No expliques nada. No uses Markdown. Cada ítem debe llevar únicamente `index` y `message`.
 
 """
 
@@ -141,13 +158,17 @@ Reafirmación factual (prevalece sobre la directriz de tono):
 
 A. La única fuente autorizada de hechos es el `factual_message` que aparece serializado en el bloque JSON inferior. Tu salida debe contener exactamente esos hechos y ningún otro.
 
-B. Debés preservar, cuando estén presentes en el `factual_message`: productos y sus presentaciones, cantidades, precios, fechas, horarios, estados del pedido, opciones, condiciones y cada línea de menú cuando el `factual_message` sea un menú completo o por categoría.
+B. Debés preservar, cuando estén presentes en el `factual_message`: productos y sus presentaciones (incluyendo variantes de presentación o unidad como grande/chica, lata, litro, 2 litros, unidad, kilo, etc.), cantidades, precios, fechas, horarios, estados del pedido, opciones, condiciones y cada línea de menú cuando el `factual_message` sea un menú completo o por categoría.
 
-C. NO agregues, omitas, sustituyas, transformes ni reordenes hechos. NO inventes descuentos, promesas, tiempos, instrucciones, preguntas, comandos, datos de pago o entrega ni información del comercio.
+C. NO agregues, omitas, sustituyas, transformes ni reordenes hechos. NO inventes presentaciones, unidades, variantes, descuentos, promesas, tiempos, instrucciones, preguntas, comandos, datos de pago o entrega ni información del comercio.
 
-D. La directriz de tono ajusta exclusivamente vocabulario, calidez y registro. Si la directriz entra en conflicto con estas reglas, estas reglas prevalecen sin excepción.
+D. Menú completo (`menu_full`) y menú por categoría (`menu_category`): el inventario factual del `factual_message` es inmutable. Debés conservar cada categoría, cada línea, cada producto, su presentación/unidad, su precio, su puntuación y el orden exacto del `factual_message`. Está prohibido resumir, reagrupar, aplanar a prosa, omitir variantes, fusionar líneas o reemplazar la lista por una versión agregada. Sólo se admite una introducción o un cierre breve y no factual; el cuerpo del menú debe permanecer intacto y completo.
 
-E. Devolvé únicamente el JSON indicado, sin Markdown ni explicaciones adicionales. Cada ítem lleva sólo `index` y `message` (cadena no vacía que puede contener saltos de línea cuando el `factual_message` sea un menú).
+E. Respuestas de estado (`order_status` y cualquier `factual_message` que describa el estado o la logística del pedido): sólo podés repetir el estado y la logística expresamente presentes en el `factual_message`. Está terminantemente prohibido inferir o prometer preparación, despacho, entrega, llegada, tiempos estimados, urgencia o cualquier acción futura que no esté escrita de manera explícita en el `factual_message`.
+
+F. La directriz de tono ajusta exclusivamente vocabulario, calidez, registro y, eventualmente, el uso de emojis. Si la directriz entra en conflicto con estas reglas, estas reglas prevalecen sin excepción.
+
+G. Devolvé únicamente el JSON indicado, sin Markdown ni explicaciones adicionales. Cada ítem lleva sólo `index` y `message` (cadena no vacía que puede contener saltos de línea cuando el `factual_message` sea un menú).
 
 """
 

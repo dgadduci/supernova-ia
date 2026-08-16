@@ -821,7 +821,7 @@ class StyleResponsesPrivacyTest(unittest.TestCase):
         """
         self.assertEqual(
             OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION,
-            "outbound-response-styler/v2.1.0",
+            "outbound-response-styler/v2.2.0",
         )
 
     def test_rendering_is_pure_function_of_inputs(self) -> None:
@@ -1770,7 +1770,7 @@ class PromptOrderTest(unittest.TestCase):
             "estados del pedido",
             "cada línea de menú",
             "NO agregues",
-            "NO inventes descuentos",
+            "NO inventes presentaciones, unidades, variantes, descuentos",
             "prevalecen sin excepción",
             "Devolvé únicamente el JSON",
         ):
@@ -1802,11 +1802,12 @@ class PromptVersionTest(unittest.TestCase):
     def test_template_version_bumped_for_contract_refinement(self) -> None:
         """Version must be bumped from the previous v2.0.0 because
         the contract was refined (JSON serialization + reaffirmation
-        + newline policy).
+        + newline policy) and again for the menu / status calibration
+        amendment (v2.2.0).
         """
         self.assertEqual(
             OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION,
-            "outbound-response-styler/v2.1.0",
+            "outbound-response-styler/v2.2.0",
         )
 
     def test_template_fingerprint_is_valid_sha256_hex(self) -> None:
@@ -2091,6 +2092,349 @@ class GeneratedMessagePolicyTest(unittest.TestCase):
         client = _llm({"items": [{"index": 0, "message": "Línea 1\nLínea 2"}]})
         styled = style_responses(db, 1, responses, query_llm=client)
         self.assertEqual(styled[0].message, "Línea 1\nLínea 2")
+
+
+class PromptCalibrationAmendmentTest(unittest.TestCase):
+    """Task 1.4 / 3.4: the static full-message prompt is calibrated
+    so that a ``menu_full`` / ``menu_category`` ``factual_message`` is
+    an immutable factual inventory (every category, line, product,
+    presentation/unit, price, punctuation and order) and an
+    ``order_status`` response may only repeat status / logistics
+    wording explicitly present in the ``factual_message``.
+
+    These tests assert the prompt CONTRACT only. They never assert
+    that a live LLM will obey them: the manual pilot gate is the
+    authority for semantic compliance.
+    """
+
+    def _render_prompt(
+        self,
+        *,
+        flavor_instruccion: str = "Tono serio.",
+        response_type: str = "menu_full",
+        factual_message: str | None = None,
+    ) -> str:
+        if factual_message is None:
+            factual_message = (
+                "Menú disponible:\n"
+                "- Pizza Mozzarella (grande): $5000\n"
+                "- Pizza Mozzarella (chica): $3200\n"
+                "- Pizza Napolitana (2 litros): $5200\n"
+                "- Empanadas de Pollo (docena): $1200"
+            )
+        flavor = _flavor(instruccion=flavor_instruccion)
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=factual_message,
+                intent=("ver_menu" if response_type == "menu_full"
+                        else ("consultar_estado_pedido"
+                              if response_type == "order_status"
+                              else "saludo")),
+                status="executed",
+            )
+        ]
+        client = _llm({"items": [{"index": 0, "message": "Versión"}]})
+        style_responses(db, 1, responses, query_llm=client)
+        return client.request.call_args.args[0]
+
+    def test_prompt_documents_immutable_menu_inventory_rule(self) -> None:
+        prompt = self._render_prompt(response_type="menu_full")
+        for clause in (
+            "`menu_full`",
+            "`menu_category`",
+            "inventario factual",
+            "inmutable",
+            "cada categoría",
+            "cada línea",
+            "cada producto",
+            "presentación/unidad",
+            "precio",
+            "puntuación",
+            "orden exacto",
+        ):
+            with self.subTest(clause=clause):
+                self.assertIn(clause, prompt)
+
+    def test_prompt_prohibits_summarizing_regrouping_flattening_menu(
+        self,
+    ) -> None:
+        prompt = self._render_prompt(response_type="menu_full")
+        self.assertIn("resumir", prompt)
+        self.assertIn("reagrupar", prompt)
+        self.assertIn("aplanar a prosa", prompt)
+        self.assertIn("omitir variantes", prompt)
+        self.assertIn("fusionar líneas", prompt)
+        self.assertIn("reemplazar la lista", prompt)
+        self.assertIn("introducción o un cierre breve y no factual", prompt)
+        self.assertIn("cuerpo del menú debe permanecer intacto y completo", prompt)
+
+    def test_prompt_documents_immutable_menu_inventory_in_reaffirmation(
+        self,
+    ) -> None:
+        prompt = self._render_prompt(response_type="menu_full")
+        idx_reaffirmation = prompt.find("Reafirmación factual")
+        idx_runtime = prompt.find('"factual_message":')
+        self.assertGreater(idx_reaffirmation, 0)
+        self.assertGreater(idx_runtime, 0)
+        reaffirmation_block = prompt[idx_reaffirmation:idx_runtime]
+        for clause in (
+            "`menu_full`",
+            "`menu_category`",
+            "inventario factual",
+            "inmutable",
+            "resumir",
+            "reagrupar",
+            "aplanar a prosa",
+            "omitir variantes",
+        ):
+            with self.subTest(clause=clause):
+                self.assertIn(clause, reaffirmation_block)
+
+    def test_prompt_names_presentation_and_unit_variants(self) -> None:
+        prompt = self._render_prompt()
+        self.assertIn("presentaciones", prompt)
+        self.assertIn("grande/chica", prompt)
+        self.assertIn("lata", prompt)
+        self.assertIn("litro", prompt)
+        self.assertIn("2 litros", prompt)
+        self.assertIn("unidad", prompt)
+        self.assertIn("kilo", prompt)
+
+    def test_prompt_documents_status_non_inference_rule(self) -> None:
+        prompt = self._render_prompt(response_type="order_status")
+        for clause in (
+            "`order_status`",
+            "estado y la logística expresamente presentes",
+            "inferir o prometer",
+            "preparación, despacho, entrega",
+            "llegada",
+            "tiempos estimados",
+            "urgencia",
+            "acción futura",
+        ):
+            with self.subTest(clause=clause):
+                self.assertIn(clause, prompt)
+
+    def test_prompt_documents_status_non_inference_in_reaffirmation(
+        self,
+    ) -> None:
+        prompt = self._render_prompt(response_type="order_status")
+        idx_reaffirmation = prompt.find("Reafirmación factual")
+        idx_runtime = prompt.find('"factual_message":')
+        self.assertGreater(idx_reaffirmation, 0)
+        self.assertGreater(idx_runtime, 0)
+        reaffirmation_block = prompt[idx_reaffirmation:idx_runtime]
+        for clause in (
+            "`order_status`",
+            "estado y la logística expresamente presentes",
+            "preparación, despacho, entrega",
+            "tiempos estimados",
+            "acción futura",
+        ):
+            with self.subTest(clause=clause):
+                self.assertIn(clause, reaffirmation_block)
+
+    def test_prompt_subordinates_flavor_directive_to_factual_rules(
+        self,
+    ) -> None:
+        prompt = self._render_prompt(
+            flavor_instruccion="INSTRUCCION-CALIDA-QUE-PUEDE-TENTAR-A-DRIFT",
+        )
+        self.assertIn("INSTRUCCION-CALIDA-QUE-PUEDE-TENTAR-A-DRIFT", prompt)
+        idx_directive = prompt.find("INSTRUCCION-CALIDA-QUE-PUEDE-TENTAR-A-DRIFT")
+        idx_reaffirmation = prompt.find("Reafirmación factual")
+        idx_runtime = prompt.find('"factual_message":')
+        self.assertGreater(idx_directive, 0)
+        self.assertGreater(idx_reaffirmation, 0)
+        self.assertGreater(idx_runtime, 0)
+        self.assertLess(idx_directive, idx_reaffirmation)
+        self.assertLess(idx_reaffirmation, idx_runtime)
+        reaffirmation_block = prompt[idx_reaffirmation:idx_runtime]
+        self.assertIn("prevalecen sin excepción", reaffirmation_block)
+        self.assertIn("ajusta exclusivamente vocabulario", reaffirmation_block)
+
+    def test_reaffirmation_block_survives_flavor_directive_change(
+        self,
+    ) -> None:
+        """The menu and status clauses belong to the static body
+        and remain present regardless of the runtime flavor
+        directive.
+        """
+        for instruccion in (
+            "Tono serio.",
+            "Tono joven y cálido.",
+            "DIRECTRIZ-QUE-PROMETE-ENTREGAS",
+        ):
+            with self.subTest(instruccion=instruccion):
+                prompt = self._render_prompt(
+                    flavor_instruccion=instruccion,
+                    response_type="menu_full",
+                )
+                idx_reaffirmation = prompt.find("Reafirmación factual")
+                idx_runtime = prompt.find('"factual_message":')
+                reaffirmation_block = prompt[idx_reaffirmation:idx_runtime]
+                self.assertIn("inventario factual", reaffirmation_block)
+                self.assertIn("resumir", reaffirmation_block)
+
+    def test_status_non_inference_survives_flavor_directive_change(self) -> None:
+        for instruccion in (
+            "Tono serio.",
+            "Tono joven y cálido.",
+            "DIRECTRIZ-QUE-INVENTA-EN-CAMINO",
+        ):
+            with self.subTest(instruccion=instruccion):
+                prompt = self._render_prompt(
+                    flavor_instruccion=instruccion,
+                    response_type="order_status",
+                )
+                idx_reaffirmation = prompt.find("Reafirmación factual")
+                idx_runtime = prompt.find('"factual_message":')
+                reaffirmation_block = prompt[idx_reaffirmation:idx_runtime]
+                self.assertIn("`order_status`", reaffirmation_block)
+                self.assertIn("tiempos estimados", reaffirmation_block)
+                self.assertIn("acción futura", reaffirmation_block)
+
+    def test_runtime_factual_block_uses_safe_json_serialization(self) -> None:
+        """The strengthened rules do NOT change the safe-JSON
+        serialization of the runtime block: quotes, backslashes,
+        accents and newlines are still escaped / preserved as
+        documented.
+        """
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message='Menú: {"a": 1}\nLínea 2 con "comillas"',
+                intent="ver_menu",
+                status="executed",
+            )
+        ]
+        client = _llm({"items": [{"index": 0, "message": "Versión"}]})
+        style_responses(db, 1, responses, query_llm=client)
+        prompt = client.request.call_args.args[0]
+        self.assertIn(r"{\"a\": 1}", prompt)
+        self.assertIn(r"\"comillas\"", prompt)
+        self.assertIn(r"\nLínea 2 con \"comillas\"", prompt)
+        self.assertNotIn('Menú: {"a": 1}\nLínea 2 con "comillas"', prompt)
+
+    def test_template_version_reflects_calibration_amendment(self) -> None:
+        """The template version must reflect the calibration
+        amendment so operators can correlate drift with the menu /
+        status strengthening.
+        """
+        self.assertEqual(
+            OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION,
+            "outbound-response-styler/v2.2.0",
+        )
+
+    def test_template_fingerprint_changes_only_with_static_body(self) -> None:
+        """Fingerprint must remain stable when the static body is
+        unchanged and independent of any runtime flavor directive or
+        factual message.
+        """
+        first = outbound_style_template_fingerprint()
+        for instruccion, message in (
+            ("Tono A.", "Menú A"),
+            ("Tono B bien cálido.", "Estado B en camino"),
+            ("", ""),
+        ):
+            with self.subTest(instruccion=instruccion, message=message):
+                self.assertEqual(
+                    outbound_style_template_fingerprint(), first
+                )
+                self.assertEqual(
+                    build_outbound_style_prompt(
+                        instruccion_llm=instruccion,
+                        items=[
+                            {
+                                "index": 0,
+                                "response_type": "menu_full",
+                                "factual_message": message,
+                            }
+                        ],
+                    ).find(first),
+                    -1,
+                )
+
+    def test_no_semantic_validator_was_added_to_styler(self) -> None:
+        """The amendment is a prompt-only calibration. The styler
+        MUST still be a strict structural parser with no semantic
+        fact comparison and no second LLM call.
+        """
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(message="A", intent="saludo", status="executed"),
+            CustomerResponse(
+                message="B", intent="agregar_producto", status="executed"
+            ),
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {"index": 0, "message": "Texto arbitrario X"},
+                    {"index": 1, "message": "Texto arbitrario Y"},
+                ]
+            }
+        )
+        styled = style_responses(db, 1, responses, query_llm=client)
+        self.assertEqual(client.request.call_count, 1)
+        self.assertEqual(styled[0].message, "Texto arbitrario X")
+        self.assertEqual(styled[1].message, "Texto arbitrario Y")
+
+    def test_no_database_transaction_control_was_added(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=_MENU_MULTILINE,
+                intent="ver_menu",
+                status="executed",
+            )
+        ]
+        client = _llm({"items": [{"index": 0, "message": "Versión menú"}]})
+        style_responses(db, 1, responses, query_llm=client)
+        for method in (
+            "commit",
+            "rollback",
+            "begin",
+            "begin_nested",
+            "flush",
+            "refresh",
+            "close",
+        ):
+            getattr(db, method).assert_not_called()
+
+    def test_no_second_llm_call_on_menu_failure(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=_MENU_MULTILINE,
+                intent="ver_menu",
+                status="executed",
+            )
+        ]
+        client = _llm(QueryLlmTimeoutError("boom"))
+        styled = style_responses(db, 1, responses, query_llm=client)
+        self.assertEqual(client.request.call_count, 1)
+        self.assertEqual(styled[0].message, _MENU_MULTILINE)
+
+    def test_no_second_llm_call_on_status_failure(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=_ORDER_STATUS,
+                intent="consultar_estado_pedido",
+                status="executed",
+            )
+        ]
+        client = _llm(QueryLlmTimeoutError("boom"))
+        styled = style_responses(db, 1, responses, query_llm=client)
+        self.assertEqual(client.request.call_count, 1)
+        self.assertEqual(styled[0].message, _ORDER_STATUS)
 
 
 if __name__ == "__main__":

@@ -96,6 +96,28 @@ The static prompt SHALL make the following hierarchy unmistakable:
 5. Return one complete non-empty `message` per ordered item in a closed JSON
    object.
 
+## Calibration Amendment: menu and status factual fidelity
+
+Pilot validation showed that a structurally valid full LLM message can still
+summarize a complete menu or infer logistics absent from the factual response.
+This amendment strengthens the static prompt; it does not add a semantic
+output validator.
+
+- A full or category menu is an immutable factual inventory: every line,
+  category, product, presentation, unit, price, punctuation and ordering from
+  `factual_message` must remain visible. The LLM may add a brief natural
+  introduction or closing, but must not summarize, regroup, flatten into prose
+  or omit variants.
+- A status response may state only the order-state wording explicitly present
+  in `factual_message`. It must not infer preparation, dispatch, arrival,
+  estimated time, urgency or a promise of future action.
+- In every eligible family, numeric values, product labels and presentation or
+  unit labels are immutable factual tokens. Tone may add warmth, but cannot
+  replace or normalize them.
+- The existing one-call batch, structural-only parser, deterministic technical
+  fallback, privacy boundary and no-hardcoded-flavor-phrase constraints remain
+  unchanged.
+
 ## Fallback Behavior
 
 - `neutro`, absent/inactive/invalid flavor, empty instruction, and zero
@@ -145,6 +167,9 @@ instruction, generated output, inbound text, or customer/order/session IDs.
   retain deterministic output with no transaction control.
 - A fake LLM response demonstrates full natural rephrasing rather than wrapper
   composition, while preserving `CustomerResponse.intent`, `status`, and order.
+- Prompt-contract regressions explicitly assert immutable full/category menu
+  line handling and status non-inference instructions; they do not attempt to
+  validate semantic compliance of a live LLM response.
 - Event payloads contain only safe metadata and template identity.
 
 ## Validation
