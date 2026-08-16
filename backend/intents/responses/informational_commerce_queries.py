@@ -62,7 +62,11 @@ def _format_menu_item(item: dict) -> str | None:
     codigo = item.get("presentacion_codigo")
     if not isinstance(nombre, str) or not isinstance(codigo, str):
         return None
-    return f"{nombre} ({codigo})"
+    base = f"{nombre} ({codigo})"
+    precio = item.get("precio")
+    if isinstance(precio, str) and precio:
+        return f"{base} — ${precio}"
+    return base
 
 
 def _format_option(opcion: dict) -> str | None:
