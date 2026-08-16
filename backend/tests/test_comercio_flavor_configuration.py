@@ -1,7 +1,8 @@
-"""Focused tests for the ``/comercios/{comercio_id}/flavor-comunicacion``
-administrative endpoint.
+"""Focused tests for the ``/flavors-comunicacion`` and
+``/comercios/{comercio_id}/flavor-comunicacion`` administrative
+endpoints.
 
-The Phase-1 contract is:
+The Phase-1 contract for the assignment endpoint is:
 
 * the endpoint is authenticated by the existing admin header token;
 * the payload accepts only ``flavor_comunicacion_id`` (a global flavor
@@ -14,6 +15,19 @@ The Phase-1 contract is:
   ``404`` for unknown comercio);
 * the response is the standard ``ComercioResponse``, which embeds
   the safe flavor summary (no ``instruccion_llm``).
+
+The Phase-1 contract for the administrative listing endpoint is:
+
+* the endpoint is authenticated by the existing admin header token;
+* the response lists every active global flavor and includes the
+  persisted ``instruccion_llm`` exactly, bounded by the catalog
+  column shape (non-empty, max 2000 characters);
+* inactive flavors remain absent from the listing;
+* the listing performs no mutation and does not control the session
+  transaction;
+* the listing is the only surface that exposes
+  ``instruccion_llm``; every commerce and configuration read keeps
+  the safe ``FlavorComunicacionSummary`` projection.
 """
 
 from __future__ import annotations
@@ -333,6 +347,170 @@ class AssignFlavorAuthTest(unittest.TestCase):
                 headers={"X-Admin-Token": "anything"},
             )
         self.assertEqual(response.status_code, 503)
+
+
+class ListFlavorsAuthTest(unittest.TestCase):
+    """The ``GET /flavors-comunicacion`` listing must remain behind
+    the existing admin header token. When the token is missing or
+    wrong, the router returns the documented 401 / 503 without
+    invoking the service or returning any catalog data."""
+
+    def setUp(self) -> None:
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = _override_session
+        self.client = TestClient(self.app)
+
+    def test_missing_token_yields_401_without_service(self) -> None:
+        with patch.object(
+            router_module, "ComunicacionFlavorService"
+        ) as service_cls:
+            with patch.object(
+                dependencies_module,
+                "load_settings",
+                return_value=_settings(),
+            ):
+                response = self.client.get("/flavors-comunicacion")
+        self.assertEqual(response.status_code, 401)
+        service_cls.assert_not_called()
+
+    def test_wrong_token_yields_401_without_service(self) -> None:
+        with patch.object(
+            router_module, "ComunicacionFlavorService"
+        ) as service_cls:
+            with patch.object(
+                dependencies_module,
+                "load_settings",
+                return_value=_settings(),
+            ):
+                response = self.client.get(
+                    "/flavors-comunicacion",
+                    headers={"X-Admin-Token": "wrong-token"},
+                )
+        self.assertEqual(response.status_code, 401)
+        service_cls.assert_not_called()
+
+    def test_missing_admin_config_yields_503(self) -> None:
+        with patch.object(
+            dependencies_module, "load_settings", return_value=_settings(None)
+        ):
+            response = self.client.get(
+                "/flavors-comunicacion",
+                headers={"X-Admin-Token": "anything"},
+            )
+        self.assertEqual(response.status_code, 503)
+
+
+class ListFlavorsAuthenticatedTest(unittest.TestCase):
+    """With the matching admin token the listing returns each active
+    flavor's persisted ``instruccion_llm`` exactly, matches the
+    historical active-only behaviour, and never mutates the catalog."""
+
+    def setUp(self) -> None:
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = _override_session
+        self.client = TestClient(self.app)
+        self.inactive_flavor_id = _add_temporary_inactive_flavor()
+        self.addCleanup(
+            _delete_temporary_flavor, self.inactive_flavor_id
+        )
+
+    def test_listing_includes_instruccion_llm_for_active_flavors(self) -> None:
+        with patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        ):
+            response = self.client.get(
+                "/flavors-comunicacion",
+                headers={"X-Admin-Token": CONFIGURED_TOKEN},
+            )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertIsInstance(body, list)
+        self.assertGreater(len(body), 0)
+        for item in body:
+            self.assertIn("instruccion_llm", item)
+            self.assertGreater(len(item["instruccion_llm"]), 0)
+            self.assertLessEqual(len(item["instruccion_llm"]), 2000)
+            self.assertEqual(
+                set(item.keys()),
+                {
+                    "id",
+                    "codigo",
+                    "nombre",
+                    "descripcion",
+                    "instruccion_llm",
+                    "version",
+                    "activo",
+                },
+            )
+
+    def test_listing_excludes_inactive_flavor(self) -> None:
+        with patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        ):
+            response = self.client.get(
+                "/flavors-comunicacion",
+                headers={"X-Admin-Token": CONFIGURED_TOKEN},
+            )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        ids = [int(item["id"]) for item in body]
+        self.assertNotIn(self.inactive_flavor_id, ids)
+        self.assertTrue(all(item["activo"] for item in body))
+
+    def test_listing_does_not_mutate_session(self) -> None:
+        with patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        ):
+            with engine.connect() as conn:
+                neutros = conn.execute(
+                    __import__("sqlalchemy").text(
+                        "SELECT id, length(instruccion_llm) "
+                        "FROM flavors_comunicacion"
+                    )
+                ).all()
+            before_snapshot = {
+                int(row[0]): int(row[1]) for row in neutros
+            }
+            response = self.client.get(
+                "/flavors-comunicacion",
+                headers={"X-Admin-Token": CONFIGURED_TOKEN},
+            )
+        self.assertEqual(response.status_code, 200)
+        with engine.connect() as conn:
+            now = conn.execute(
+                __import__("sqlalchemy").text(
+                    "SELECT id, length(instruccion_llm) "
+                    "FROM flavors_comunicacion"
+                )
+            ).all()
+        after_snapshot = {int(row[0]): int(row[1]) for row in now}
+        self.assertEqual(before_snapshot, after_snapshot)
+
+    def test_listing_instruccion_llm_matches_persisted_value(self) -> None:
+        with patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        ):
+            response = self.client.get(
+                "/flavors-comunicacion",
+                headers={"X-Admin-Token": CONFIGURED_TOKEN},
+            )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        ids = [int(item["id"]) for item in body]
+        with engine.connect() as conn:
+            rows = conn.execute(
+                __import__("sqlalchemy").text(
+                    "SELECT id, instruccion_llm FROM flavors_comunicacion "
+                    "WHERE id = ANY(:ids) AND activo = true"
+                ),
+                {"ids": ids},
+            ).all()
+        persisted = {int(row[0]): str(row[1]) for row in rows}
+        for item in body:
+            self.assertEqual(
+                item["instruccion_llm"],
+                persisted[int(item["id"])],
+            )
 
 
 class AssignFlavorServiceBoundaryTest(unittest.TestCase):

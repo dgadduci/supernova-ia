@@ -4,18 +4,26 @@ The router exposes the two endpoints authorised by the OpenSpec
 proposal:
 
 * ``GET /flavors-comunicacion`` — read-only listing of active
-  flavors. The response never includes ``instruccion_llm``.
+  flavors. The administrative response includes each persisted
+  ``instruccion_llm`` so an authenticated administrator can inspect
+  the exact directive used by the outbound LLM styler. The mapping
+  is total, read-only and never mutates the catalog.
 * ``PUT /comercios/{comercio_id}/flavor-comunicacion`` — focused
   authenticated operation that mutates only one
   ``Comercio.flavor_comunicacion_id``. The payload accepts only a
   global flavor ID. Unknown or inactive global flavor IDs are
-  rejected without mutating the commerce.
+  rejected without mutating the commerce. The response remains the
+  safe ``ComercioResponse`` summary and never echoes
+  ``instruccion_llm``.
 
 Both endpoints require the existing admin header token. The router
-owns the application transaction boundary: it commits on success
-and rolls back when the service raises a domain error. The
-selection service only ``flush()`` es the change so the router can
-own the commit / rollback.
+owns the application transaction boundary for the assignment path:
+it commits on success and rolls back when the service raises a
+domain error. The selection service only ``flush()`` es the change
+so the router can own the commit / rollback. The GET listing path
+does not control the session transaction at all and must never
+issue commit, rollback, flush, refresh, begin, begin_nested or
+close.
 """
 
 from __future__ import annotations
