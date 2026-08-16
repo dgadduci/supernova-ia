@@ -303,6 +303,75 @@ openspec validate add-safe-outbound-response-styling --strict
 git diff --check
 ```
 
+## Factual-Claim Guard Amendment
+
+Pilot evidence under `joven` confirms that the backend preserves the exact
+deterministic `product_add_success` sentence, but also shows a valid-shaped
+wrapper claiming that the order is already in transit. That is an unsupported
+commercial/logistics fact and violates the wrapper-only safety boundary even
+though it is outside the deterministic substring.
+
+### Objective
+
+Fail closed when a wrapper asserts, promises, or infers an order, commerce, or
+logistics fact. Retain generic, flavor-driven presentation framing without
+allowing the LLM to author customer-facing business state.
+
+### Scope and shared boundary
+
+- Revise the static wrapper prompt and its version/fingerprint to explicitly
+  prohibit claims about order state, preparation, confirmation, shipment,
+  delivery, payment, availability, timing, or execution.
+- Add a bounded normalized lexical guard in the existing wrapper validator for
+  those high-risk commerce/logistics claim terms. A match is `wrapper_invalid`;
+  the backend preserves the original deterministic response exactly.
+- Keep `build_customer_responses` as the sole shared styling boundary for the
+  local path and provider outbox. Do not add an LLM call, semantic validator,
+  parallel pipeline, flavor-row change, migration, or response-builder change.
+
+### Authoritative outcomes and fallback
+
+- **Authoritative outcome:** the deterministic `CustomerResponse`; wrappers
+  may frame it but cannot introduce a commercial fact.
+- **Valid business outcome:** a generic, bounded, factual-free wrapper is
+  composed around the exact deterministic substring.
+- **Technical/contract failure:** a malformed wrapper or a wrapper matching a
+  guarded claim term produces the existing bounded `wrapper_invalid` fallback.
+- **Exact fallback:** preserve that item's deterministic response unchanged;
+  retain the selected flavor diagnostic; make no retry, second LLM call,
+  recognition/classification call, or transaction action.
+- **Must not trigger fallback:** a generic emotional or social framing phrase
+  with no guarded claim term and otherwise valid wrapper shape.
+
+### Transaction ownership and observability
+
+The validator remains pure and owns no transaction control. Existing bounded
+diagnostics remain sufficient: they report `wrapper_invalid` but never the
+rejected wrapper, factual message, prompt, instruction, or identifiers.
+
+### Expected files and focused tests
+
+- `backend/diagnostics/outbound_response_style_prompt_template.py`
+- `backend/services/outbound_response_styler.py`
+- `backend/tests/test_outbound_response_styler.py`
+- This change's `proposal.md`, `design.md`, spec delta, and `tasks.md`.
+
+Cover an otherwise valid wrapper that says an order is in transit and verify
+exact deterministic fallback, bounded diagnostics, one-call behavior, and no
+transaction control. Retain coverage that a generic expressive wrapper is
+accepted, and that `neutro` remains an exact no-op.
+
+### Validation, rollback, and deferred limitation
+
+Run the existing focused styler/mapper/status pytest, Ruff, compileall, strict
+OpenSpec validation, and `git diff --check` commands listed above. The user
+runs `venv`-dependent commands locally and supplies complete output.
+
+Rollback is limited to removing this validator/prompt amendment; no persisted
+state changes. This amendment does not attempt general natural-language fact
+classification: novel claims outside the bounded high-risk lexical guard remain
+deferred and must fail closed through future, separately approved work.
+
 ## Deferred Limitations
 
 - Styling error, rejection, ambiguity, or customer-free-text response families

@@ -100,3 +100,19 @@
 - [x] 8.4 After approved deploy under `joven`, verify full and category menus
   produce `outbound_style.outcome=applied` with a visible valid wrapper, while
   their deterministic menu content remains complete and exact.
+
+## 9. Factual-Claim Guard Amendment
+
+- [x] 9.1 Revise only the static wrapper prompt/version and existing validator
+  to reject bounded commerce/logistics claim terms; retain the generic,
+  flavor-driven wrapper contract and all existing bounds.
+- [x] 9.2 Add focused tests for an otherwise valid in-transit/order-state
+  claim falling back as `wrapper_invalid`, generic-wrapper acceptance, exact
+  deterministic preservation, diagnostics, one-call behavior, `neutro`, and
+  no transaction control.
+- [x] 9.3 Run the focused pytest, Ruff, compileall, strict OpenSpec validation,
+  and `git diff --check` commands from `proposal.md`.
+- [ ] 9.4 After approved deploy under `joven`, verify greeting, product add,
+  and status have visible wrappers that add no unsupported commerce/logistics
+  claims; verify a full/category menu remains complete and exact; and verify
+  `neutro` remains byte-for-byte deterministic.

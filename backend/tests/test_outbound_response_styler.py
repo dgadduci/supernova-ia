@@ -2002,7 +2002,6 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
             "Pizza Mozzarella",
             "Mozzarella",
             "grande",
-            "preparación",
             "Av. Secreta 1234",
             "session-7",
             "pedido-9",
@@ -2195,9 +2194,9 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
     def test_template_version_reflects_expressive_calibration(self) -> None:
         self.assertEqual(
             OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION,
-            "outbound-response-styler/v1.3.0",
+            "outbound-response-styler/v1.4.0",
         )
-        self.assertEqual(styler_version(), "outbound-response-styler/v1.3.0")
+        self.assertEqual(styler_version(), "outbound-response-styler/v1.4.0")
 
     def test_template_fingerprint_changes_with_static_body_only(self) -> None:
         # The fingerprint must depend only on the static template
@@ -2283,13 +2282,13 @@ class MenuWrapperCalibrationTest(unittest.TestCase):
     def test_template_version_reflects_menu_calibration(self) -> None:
         self.assertEqual(
             OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION,
-            "outbound-response-styler/v1.3.0",
+            "outbound-response-styler/v1.4.0",
         )
-        self.assertEqual(styler_version(), "outbound-response-styler/v1.3.0")
+        self.assertEqual(styler_version(), "outbound-response-styler/v1.4.0")
         identity = outbound_style_template_identity()
         self.assertEqual(
             identity["outbound_style_prompt_template_version"],
-            "outbound-response-styler/v1.3.0",
+            "outbound-response-styler/v1.4.0",
         )
 
     def test_static_prompt_documents_explicit_menu_full_rule(self) -> None:
@@ -2696,6 +2695,1097 @@ class MenuWrapperCalibrationTest(unittest.TestCase):
             response_type_for("ver_menu", EXECUTED_STATUS),
             RESPONSE_TYPE_MENU_FULL,
         )
+
+
+class FactualClaimGuardTest(unittest.TestCase):
+    """Subphase 9 — factual-claim guard.
+
+    Pilot evidence under ``joven`` confirms that the backend
+    preserves the exact deterministic ``product_add_success``
+    sentence, but also shows a valid-shaped wrapper claiming
+    that the order is already in transit. That is an unsupported
+    commercial / logistics fact and violates the wrapper-only
+    safety boundary even though it is outside the deterministic
+    substring.
+
+    The amendment adds a bounded normalized lexical guard in the
+    existing wrapper validator. A wrapper that asserts, promises,
+    or infers order state, preparation, confirmation, shipment,
+    delivery, payment, availability, timing, or execution is
+    rejected through the existing ``wrapper_invalid`` fallback;
+    the exact deterministic message is preserved, the diagnostic
+    carries the bounded fallback category, no second LLM call is
+    made, and no transaction control is invoked.
+
+    The static prompt also restates the prohibition
+    explicitly. The guard is a bounded lexical safety net, not a
+    general semantic classifier; ``neutro`` remains an exact
+    no-op and the existing 96 / 140 bounds, JSON schema, one
+    call maximum, exact factual-substring composition, privacy
+    and no-transaction contracts are unchanged.
+    """
+
+    _AGG_SUCCESS = "Listo, agregué 1 Pizza Mozzarella (grande)."
+    _STATUS_MESSAGE = "Tú pedido está en preparación."
+    _IN_TRANSIT_PREFIX = "¡Tu pedido está en camino! "
+
+    def test_in_transit_claim_on_product_add_success_falls_back(self) -> None:
+        """A wrapper that claims the order is already in transit
+        on a successful product addition MUST be rejected as
+        ``wrapper_invalid`` and the exact deterministic message
+        MUST be preserved byte-for-byte."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": self._IN_TRANSIT_PREFIX,
+                        "suffix": "",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        self.assertEqual(styled[0].intent, "agregar_producto")
+        self.assertEqual(styled[0].status, "executed")
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+        )
+        self.assertNotIn("outcome", last_event)
+        self.assertEqual(last_event["flavor_code"], "joven")
+        self.assertEqual(last_event["eligible_count"], 1)
+        self.assertEqual(last_event["applied_count"], 0)
+
+    def test_in_transit_claim_in_suffix_also_falls_back(self) -> None:
+        """The guard MUST check both ``prefix`` and ``suffix``."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Genial! ",
+                        "suffix": " Ya está en camino.",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+        )
+
+    def test_preparation_claim_falls_back(self) -> None:
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Genial! ",
+                        "suffix": " Ya estamos preparando tu pedido.",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+        )
+
+    def test_delivery_claim_falls_back(self) -> None:
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Genial! ",
+                        "suffix": " Ya entregado.",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+        )
+
+    def test_payment_claim_falls_back(self) -> None:
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Genial! ",
+                        "suffix": " Pago confirmado.",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+        )
+
+    def test_availability_claim_falls_back(self) -> None:
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Genial! ",
+                        "suffix": " En stock.",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+        )
+
+    def test_timing_claim_falls_back(self) -> None:
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Genial! ",
+                        "suffix": " Llega en 30 minutos.",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+        )
+
+    def test_confirmation_claim_falls_back(self) -> None:
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Genial! ",
+                        "suffix": " Hemos confirmado tu pedido.",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+        )
+
+    def test_shipment_claim_falls_back(self) -> None:
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Genial! ",
+                        "suffix": " Ya enviado.",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+        )
+
+    def test_execution_claim_falls_back(self) -> None:
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Genial! ",
+                        "suffix": " Procesado.",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+        )
+
+    def test_generic_expressive_wrapper_still_accepted(self) -> None:
+        """A generic expressive wrapper with no guarded claim term
+        MUST still be accepted and composed around the exact
+        deterministic message."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        prefix = "¡Qué bueno que sumaste algo! "
+        suffix = " 🍕🥳"
+        client = _llm(
+            {"items": [{"index": 0, "prefix": prefix, "suffix": suffix}]}
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(
+            styled[0].message, f"{prefix}{self._AGG_SUCCESS}{suffix}"
+        )
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_APPLIED)
+        self.assertEqual(last_event["applied_count"], 1)
+
+    def test_mixed_batch_keeps_claim_item_factual_and_valid_applied(self) -> None:
+        """In a mixed batch, the guarded item MUST fall back to the
+        exact deterministic message while the other valid item
+        MUST still be styled. Only one LLM call is made."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            ),
+            CustomerResponse(
+                message=self._STATUS_MESSAGE,
+                intent="consultar_estado_pedido",
+                status="executed",
+            ),
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": self._IN_TRANSIT_PREFIX,
+                        "suffix": "",
+                    },
+                    {
+                        "index": 1,
+                        "prefix": "¡Acá estamos! ",
+                        "suffix": "",
+                    },
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        self.assertEqual(
+            styled[1].message, f"¡Acá estamos! {self._STATUS_MESSAGE}"
+        )
+        self.assertEqual(client.request.call_count, 1)
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_APPLIED)
+        self.assertEqual(last_event["eligible_count"], 2)
+        self.assertEqual(last_event["applied_count"], 1)
+
+    def test_claim_guard_diagnostic_does_not_leak_wrapper_or_message_or_prompt(
+        self,
+    ) -> None:
+        """The diagnostic MUST record the bounded ``wrapper_invalid``
+        fallback category without exposing the rejected wrapper,
+        the factual message, the prompt or the flavor instruction."""
+        flavor = _flavor(
+            codigo="joven",
+            instruccion="INSTRUCCION-SECRETA-DEFENSA",
+        )
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": self._IN_TRANSIT_PREFIX,
+                        "suffix": "",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+        )
+        serialized = json.dumps(last_event, sort_keys=True)
+        for forbidden in (
+            # The rejected wrapper content MUST NOT leak.
+            "en camino",
+            "Tu pedido está en camino",
+            # The factual message MUST NOT leak.
+            "Pizza Mozzarella",
+            "Mozzarella",
+            # The prompt and flavor instruction MUST NOT leak.
+            "INSTRUCCION-SECRETA-DEFENSA",
+            "Directriz interna",
+            "Directriz",
+            "response_type",
+            # No business identifiers MUST leak.
+            "session-7",
+            "pedido-9",
+            "comercio-42",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, serialized)
+        # The bounded fallback category itself is allowed.
+        self.assertEqual(last_event["failure_category"], "wrapper_invalid")
+        self.assertEqual(last_event["applied_count"], 0)
+        self.assertEqual(last_event["eligible_count"], 1)
+
+    def test_one_llm_call_per_turn_preserved_under_claim_guard(self) -> None:
+        """The guard MUST NOT trigger a second LLM call. The
+        existing one-call maximum is preserved."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": self._IN_TRANSIT_PREFIX,
+                        "suffix": "",
+                    }
+                ]
+            }
+        )
+        style_responses(db, 1, responses, query_llm=client)
+        self.assertEqual(client.request.call_count, 1)
+
+    def test_neutro_flavor_remain_exact_no_op_under_claim_guard(self) -> None:
+        """``neutro`` MUST remain an exact no-op: no LLM call, the
+        original message is preserved, the event reports
+        ``not_attempted``. The guard is irrelevant for ``neutro``
+        because the LLM is never invoked."""
+        db = _db_with_flavor(1, flavor=_flavor(NEUTRO_FLAVOR_CODE))
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": self._IN_TRANSIT_PREFIX,
+                        "suffix": "",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(client.request.call_count, 0)
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_NOT_ATTEMPTED)
+        self.assertEqual(last_event["eligible_count"], 1)
+        self.assertEqual(last_event["applied_count"], 0)
+
+    def test_no_database_transaction_control_under_claim_guard(self) -> None:
+        """The guard is a pure lexical check; it MUST NOT invoke
+        any database transaction control method."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": self._IN_TRANSIT_PREFIX,
+                        "suffix": "",
+                    }
+                ]
+            }
+        )
+        style_responses(db, 1, responses, query_llm=client)
+        for method in (
+            "commit",
+            "rollback",
+            "begin",
+            "begin_nested",
+            "flush",
+            "refresh",
+            "close",
+        ):
+            getattr(db, method).assert_not_called()
+
+    def test_static_prompt_documents_explicit_factual_claim_rule(self) -> None:
+        """The static prompt body MUST restate the explicit
+        prohibition of order state, preparation, confirmation,
+        shipment, delivery, payment, availability, timing, and
+        execution claims in ``prefix`` and ``suffix``."""
+        prompt = build_outbound_style_prompt(
+            instruccion_llm="Tono joven.",
+            items=[{"index": 0, "response_type": "product_add_success"}],
+        )
+        # The amendment introduces a dedicated rule in the
+        # sections the LLM receives.
+        self.assertIn("NO afirmes, prometas ni infieras", prompt)
+        # All bounded high-risk categories are listed explicitly.
+        for category in (
+            "estado del pedido",
+            "preparación",
+            "confirmación",
+            "envío",
+            "entrega",
+            "pago",
+            "disponibilidad",
+            "tiempos",
+            "ejecución",
+        ):
+            with self.subTest(category=category):
+                self.assertIn(category, prompt)
+        # The fallback category is named explicitly.
+        self.assertIn("wrapper_invalid", prompt)
+
+    def test_template_version_reflects_factual_claim_guard(self) -> None:
+        """The static template version MUST be bumped to
+        ``v1.4.0`` when the factual-claim guard rule is added."""
+        self.assertEqual(
+            OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION,
+            "outbound-response-styler/v1.4.0",
+        )
+        self.assertEqual(styler_version(), "outbound-response-styler/v1.4.0")
+        identity = outbound_style_template_identity()
+        self.assertEqual(
+            identity["outbound_style_prompt_template_version"],
+            "outbound-response-styler/v1.4.0",
+        )
+
+    def test_template_fingerprint_changes_with_factual_claim_rule(self) -> None:
+        """The static fingerprint MUST change when the
+        factual-claim guard rule is added. The fingerprint is
+        derived only from the static body and never embeds
+        runtime data."""
+        identity = outbound_style_template_identity()
+        serialized = identity["outbound_style_prompt_template_hash"]
+        self.assertEqual(len(serialized), 64)
+        for forbidden in (
+            "Tono joven",
+            "Tono serio",
+            "product_add_success",
+            "Pizza Mozzarella",
+            "Av. Secreta 1234",
+            "INSTRUCCION-SECRETA",
+            "en camino",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, serialized)
+        self.assertTrue(
+            all(c in "0123456789abcdef" for c in serialized)
+        )
+
+    def test_prompt_carries_no_in_transit_phrase_from_template(self) -> None:
+        """The static template body MUST NOT hardcode a
+        customer-facing phrase or emoji. The guard is a lexical
+        safety net; the prompt body only describes the
+        prohibition."""
+        prompt = build_outbound_style_prompt(
+            instruccion_llm="Tono joven.",
+            items=[{"index": 0, "response_type": "product_add_success"}],
+        )
+        for forbidden_phrase in (
+            "¡Tu pedido está en camino!",
+            "Tu pedido está en camino",
+            "Ya está en camino",
+            "Llega en",
+        ):
+            with self.subTest(phrase=forbidden_phrase):
+                self.assertNotIn(forbidden_phrase, prompt)
+
+
+class FactualClaimGuardNormalizationTest(unittest.TestCase):
+    """Subphase 9 — accent-insensitive, case-insensitive guard.
+
+    The bounded lexical guard MUST compare fragments in a
+    case-insensitive AND accent-insensitive way. Variants like
+    "Confirmación recibida" / "Confirmacion recibida" and
+    "Entrega confirmada" MUST fall back as ``wrapper_invalid``
+    exactly like the already-covered "en camino" claim. The
+    customer-facing text is never mutated by the comparison:
+    the deterministic message is preserved byte-for-byte.
+
+    The guard remains a finite lexical list. This amendment
+    only adds the minimal morphological variants needed within
+    the already-approved categories (notably ``confirmada``)
+    and the Unicode normalization helper used for the
+    comparison. No additional LLM call, open semantic regex,
+    intent classification, flavor change, DB migration, prompt
+    rewrite, mapper change, outbox change, transaction control
+    or endpoint change is introduced.
+    """
+
+    _AGG_SUCCESS = "Listo, agregué 1 Pizza Mozzarella (grande)."
+
+    def test_accented_confirmacion_recibida_falls_back(self) -> None:
+        """A wrapper that says "Confirmación recibida" (with the
+        canonical accent) MUST fall back as ``wrapper_invalid``."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Genial! ",
+                        "suffix": " Confirmación recibida.",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+        )
+        self.assertNotIn("outcome", last_event)
+
+    def test_unaccented_confirmacion_recibida_falls_back(self) -> None:
+        """A wrapper that says "Confirmacion recibida" (without
+        the accent) MUST also fall back as ``wrapper_invalid``.
+        This is the variant that previously evaded the
+        ``lower()``-only normalization."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Genial! ",
+                        "suffix": " Confirmacion recibida.",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+        )
+        self.assertNotIn("outcome", last_event)
+
+    def test_entrega_confirmada_falls_back(self) -> None:
+        """The feminine past participle "confirmada" MUST be
+        covered. A wrapper that says "Entrega confirmada" MUST
+        fall back as ``wrapper_invalid``."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Genial! ",
+                        "suffix": " Entrega confirmada.",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+        )
+        self.assertNotIn("outcome", last_event)
+
+    def test_in_transit_claim_still_falls_back(self) -> None:
+        """The previously-covered "en camino" claim MUST still
+        fall back as ``wrapper_invalid`` after the normalization
+        change."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Tu pedido está en camino! ",
+                        "suffix": "",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+        )
+        self.assertNotIn("outcome", last_event)
+
+    def test_uppercase_accented_confirmacion_falls_back(self) -> None:
+        """Case + accent variation: "CONFIRMACIÓN RECIBIDA" MUST
+        also fall back as ``wrapper_invalid``."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "",
+                        "suffix": " CONFIRMACIÓN RECIBIDA.",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+        )
+
+    def test_generic_safe_wrapper_still_applied(self) -> None:
+        """A safe generic wrapper with no guarded claim term
+        MUST still be applied. The normalization MUST NOT
+        produce false positives on ordinary greetings."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        prefix = "¡Qué bueno que sumaste algo! "
+        suffix = " 🍕🥳"
+        client = _llm(
+            {"items": [{"index": 0, "prefix": prefix, "suffix": suffix}]}
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(
+            styled[0].message, f"{prefix}{self._AGG_SUCCESS}{suffix}"
+        )
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_APPLIED)
+        self.assertEqual(last_event["applied_count"], 1)
+
+    def test_customer_facing_text_is_not_mutated_by_guard(self) -> None:
+        """The Unicode normalization MUST be confined to the
+        guard comparison. The composed customer-facing text
+        preserves the original characters of the wrapper and
+        the deterministic message byte-for-byte."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        original = "¡Confirmación recibida!"
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": original,
+                        "suffix": "",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        # The guard rejected the wrapper, so the deterministic
+        # message is preserved unchanged. The rejected wrapper
+        # itself is never mutated nor surfaced.
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        # The original characters survive untouched in the
+        # LLM client argument (the wrapper is sent verbatim);
+        # the guard only inspects a normalized copy.
+        self.assertEqual(
+            client.request.call_args.args[0].count(original),
+            0,
+            "Rejected wrapper must not be embedded in the prompt",
+        )
+
+    def test_neutro_skips_guard_entirely(self) -> None:
+        """``neutro`` MUST remain an exact no-op: no LLM call,
+        the original message is preserved, and the guard
+        normalization is irrelevant because the LLM is never
+        invoked."""
+        db = _db_with_flavor(1, flavor=_flavor(NEUTRO_FLAVOR_CODE))
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Genial! ",
+                        "suffix": " Confirmación recibida.",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(client.request.call_count, 0)
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_NOT_ATTEMPTED)
+        self.assertEqual(last_event["eligible_count"], 1)
+        self.assertEqual(last_event["applied_count"], 0)
+
+    def test_one_llm_call_per_turn_preserved_under_normalized_guard(
+        self,
+    ) -> None:
+        """The normalization MUST NOT trigger a second LLM
+        call. The existing one-call maximum is preserved."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Genial! ",
+                        "suffix": " Confirmacion recibida.",
+                    }
+                ]
+            }
+        )
+        style_responses(db, 1, responses, query_llm=client)
+        self.assertEqual(client.request.call_count, 1)
+
+    def test_bounded_diagnostic_under_normalized_guard(self) -> None:
+        """Under the normalized guard, the diagnostic MUST
+        record the bounded ``wrapper_invalid`` fallback
+        category without exposing the rejected wrapper, the
+        factual message, the prompt or the flavor instruction."""
+        flavor = _flavor(
+            codigo="joven",
+            instruccion="INSTRUCCION-SECRETA-NORMALIZACION",
+        )
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Genial! ",
+                        "suffix": " Confirmacion recibida.",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+        )
+        serialized = json.dumps(last_event, sort_keys=True)
+        for forbidden in (
+            "Confirmacion recibida",
+            "Confirmación recibida",
+            "Pizza Mozzarella",
+            "Mozzarella",
+            "INSTRUCCION-SECRETA-NORMALIZACION",
+            "Directriz",
+            "response_type",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, serialized)
+
+    def test_no_database_transaction_control_under_normalized_guard(
+        self,
+    ) -> None:
+        """The normalized guard is a pure lexical check; it
+        MUST NOT invoke any database transaction control method."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Genial! ",
+                        "suffix": " Confirmacion recibida.",
+                    }
+                ]
+            }
+        )
+        style_responses(db, 1, responses, query_llm=client)
+        for method in (
+            "commit",
+            "rollback",
+            "begin",
+            "begin_nested",
+            "flush",
+            "refresh",
+            "close",
+        ):
+            getattr(db, method).assert_not_called()
 
 
 class StyleResponsesWithDiagnosticTest(unittest.TestCase):

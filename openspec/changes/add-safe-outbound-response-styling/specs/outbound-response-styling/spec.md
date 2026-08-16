@@ -59,6 +59,34 @@ single-line, non-numeric, question-free and factual-free.
 - **AND THEN** an invalid wrapper preserves the exact deterministic menu as
   the existing fallback.
 
+### Requirement: Wrappers cannot add commerce or logistics claims
+
+The system SHALL reject a syntactically valid wrapper when its normalized
+prefix or suffix contains a bounded high-risk term that asserts, promises, or
+infers order state, preparation, confirmation, shipment, delivery, payment,
+availability, timing, or execution. The backend SHALL use the existing
+`wrapper_invalid` item fallback and preserve the exact deterministic message.
+The static prompt SHALL prohibit those claim categories. This bounded lexical
+guard SHALL NOT prescribe flavor-specific customer text or emojis.
+
+#### Scenario: In-transit claim on a successful product addition is rejected
+
+- **WHEN** the style LLM returns an otherwise valid wrapper for
+  `product_add_success` that claims the order is already in transit
+- **THEN** the customer receives the exact deterministic product-addition
+  message with no wrapper
+- **AND THEN** the diagnostic records the bounded `wrapper_invalid` fallback
+- **AND THEN** no second style request, business action, or transaction control
+  occurs.
+
+#### Scenario: Generic expressive framing remains valid
+
+- **WHEN** the style LLM returns an otherwise valid generic expressive wrapper
+  with no guarded commerce or logistics claim term
+- **THEN** the backend composes it around the intact deterministic message
+- **AND THEN** the selected persisted flavor remains the sole source of tone
+  and emoji choices.
+
 ### Requirement: Neutral and unsafe cases preserve the current output exactly
 
 The system SHALL not make a styling request for `neutro`, missing or inactive
