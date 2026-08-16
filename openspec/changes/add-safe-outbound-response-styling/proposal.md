@@ -167,8 +167,31 @@ branch. It is a targeted restoration, not a whole-branch rollback:
 - Do not deploy the old branch wholesale and do not use `git revert` on
   unrelated commits.
 - Keep `experiment-full-llm-outbound-response-generation` active and
-  unarchived as the documented failed experiment; its pilot gates remain
-  unmarked and it must not be archived as a successful change.
+unarchived as the documented failed experiment; its pilot gates remain
+unmarked and it must not be archived as a successful change.
+
+## Expressive Wrapper Amendment
+
+The restored wrapper confirms factual safety, but its current 24-character
+per-field limit and prompt wording (“a couple of words or an emoji”) leave too
+little room for the configured flavor to make messages pleasant and distinctive.
+This amendment increases expression while keeping the LLM outside factual
+content.
+
+- Allow a `prefix` and `suffix` of up to 96 characters each, with a combined
+  maximum of 140 characters per eligible response. They remain single-line,
+  printable, non-numeric and question-free.
+- Permit a short complete framing phrase, not merely one or two words. It may
+  include emojis when the selected persisted flavor instruction calls for them.
+- The wrapper must stay generic to the opaque `response_type`; it cannot
+  state, infer or promise product/order/customer facts because those facts are
+  never supplied to the LLM.
+- The current persisted `joven.instruccion_llm` is already the administrator's
+  configured source for its style and emoji choices. This change MUST NOT edit
+  flavor rows, migrations, seeds or API configuration.
+
+The result remains `prefix + exact factual message + suffix`; only the
+allowed surrounding framing becomes more expressive.
 
 ## Deferred Limitations
 

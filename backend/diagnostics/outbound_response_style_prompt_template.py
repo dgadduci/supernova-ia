@@ -27,9 +27,15 @@ embeds the fingerprint leaks no business information.
 The schema is closed: the model must return ``{"items": [...]}``
 where each item carries exactly ``index``, ``prefix`` and
 ``suffix``; extra fields are rejected. ``prefix`` and ``suffix``
-are bounded, single-line, factual-free strings; digits, line
-breaks, question marks and disallowed control characters are
-forbidden.
+are bounded, single-line, factual-free presentation fragments;
+digits, line breaks, question marks and disallowed control
+characters are forbidden. Each fragment accepts at most 96
+characters and the combined length of both fragments for the same
+eligible item is bounded to 140 characters. The wrapper may
+include flavor-appropriate emojis when the selected persisted
+flavor instruction calls for them; the wrapper itself must remain
+generic and factual-free because the model only receives the
+opaque ``response_type`` token.
 
 Empty wrappers are explicitly forbidden: every eligible item MUST
 produce at least one non-empty wrapper field so the visible style
@@ -42,14 +48,15 @@ from __future__ import annotations
 
 import hashlib
 
-OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION = "outbound-response-styler/v1.1.0"
+OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION = "outbound-response-styler/v1.2.0"
 
 _INTRO = (
     "\n"
     "Sos un asistente de presentación que añade un prefijo y/o un "
-    "sufijo muy cortos a una respuesta ya redactada por el sistema. "
+    "sufijo a una respuesta ya redactada por el sistema. "
     "La respuesta original se conserva tal cual: tu único trabajo es "
-    "sugerir un envoltorio visual ligero y visible.\n"
+    "sugerir un envoltorio visual breve, cálido y expresivo, "
+    "dentro de los límites definidos más abajo.\n"
     "Respetá estrictamente las reglas y el contrato definidos más abajo.\n"
 )
 
@@ -67,9 +74,9 @@ Reglas del envoltorio:
 
 1. Devolvé EXACTAMENTE un objeto JSON con la forma indicada en la sección "Estructura de salida". No expliques nada. No uses Markdown.
 
-2. Para cada ítem de la lista, devolvé un objeto con tres campos: `index` (entero que coincide con el orden de la lista), `prefix` (cadena corta) y `suffix` (cadena corta). No agregues ningún otro campo.
+2. Para cada ítem de la lista, devolvé un objeto con tres campos: `index` (entero que coincide con el orden de la lista), `prefix` (cadena) y `suffix` (cadena). No agregues ningún otro campo.
 
-3. `prefix` y `suffix` son fragmentos visuales. Deben ser cadenas cortas (una sola línea), sin dígitos, sin saltos de línea, sin signos de pregunta (`?`), sin caracteres de control ni caracteres no imprimibles. Como mucho un par de palabras o un emoji.
+3. `prefix` y `suffix` son fragmentos visuales. Deben ser cadenas de una sola línea, sin dígitos, sin saltos de línea, sin signos de pregunta (`?`), sin caracteres de control ni caracteres no imprimibles. Cada campo puede tener hasta 96 caracteres y la suma de las longitudes de `prefix + suffix` para el mismo ítem NO puede superar 140 caracteres. Podés proponer una frase breve, cálida y expresiva (no una sola palabra suelta) que se vista alrededor del mensaje original, e incluir uno o más emojis coherentes con la directriz de tono cuando la directriz los solicite. La frase debe ser genérica para el `response_type` recibido: no debe afirmar, inferir ni prometer hechos del cliente, comercio, pedido o sesión.
 
 4. **Visibilidad obligatoria**: para cada ítem elegible, al menos uno de los campos `prefix` o `suffix` debe ser una cadena NO vacía. Una respuesta con `prefix` y `suffix` ambos vacíos NO es una salida válida para un ítem elegible: el sistema rechazará ese ítem y la respuesta original quedará sin estilo visible.
 
@@ -95,13 +102,13 @@ El JSON debe respetar EXACTAMENTE esta forma (campos extra prohibidos):
   "items": [
     {
       "index": <entero>,
-      "prefix": "<cadena corta y no vacía, salvo que el suffix provea visibilidad>",
-      "suffix": "<cadena corta y no vacía, salvo que el prefix provea visibilidad>"
+      "prefix": "<cadena de hasta 96 caracteres, salvo que el suffix provea visibilidad>",
+      "suffix": "<cadena de hasta 96 caracteres, salvo que el prefix provea visibilidad>"
     }
   ]
 }
 
-Recordá: para cada ítem, al menos uno de `prefix` o `suffix` debe ser una cadena NO vacía. Una salida con ambos vacíos para un ítem elegible será rechazada y la respuesta original quedará sin estilo.
+Recordá: cada campo `prefix` y `suffix` admite como máximo 96 caracteres, y la suma de sus longitudes para un mismo ítem NO puede superar 140 caracteres. Para cada ítem, al menos uno de `prefix` o `suffix` debe ser una cadena NO vacía. Una salida con ambos vacíos para un ítem elegible será rechazada y la respuesta original quedará sin estilo.
 
 `items` debe tener EXACTAMENTE la misma cantidad de elementos, en el mismo orden y con los mismos `index` que la lista de tipos recibida. No omitas, no dupliques, no reordenes.
 

@@ -13,7 +13,10 @@ presentation wrapper around the exact original factual message and SHALL
 preserve response order, intent, and status. Every accepted wrapper for an
 eligible item SHALL contain a non-empty prefix or suffix so that styling is
 visible; a wrapper with both fields empty SHALL preserve that item's factual
-response and be reported as the bounded `empty_wrapper` fallback.
+response and be reported as the bounded `empty_wrapper` fallback. A prefix or
+suffix MAY be a short presentation phrase of up to 96 characters; their
+combined length SHALL NOT exceed 140 characters. The wrapper remains
+single-line, non-numeric, question-free and factual-free.
 
 #### Scenario: One batch applies only validated wrappers
 
@@ -32,6 +35,15 @@ response and be reported as the bounded `empty_wrapper` fallback.
 - **AND THEN** it does not count that item as styled
 - **AND THEN** it emits only the bounded `empty_wrapper` fallback category when
   no other item in the batch is styled.
+
+#### Scenario: Expressive wrapper stays within the factual-safe bounds
+
+- **WHEN** a non-neutral flavor returns a visible generic wrapper phrase with
+  emojis permitted by its persisted instruction
+- **THEN** each non-empty prefix or suffix of up to 96 characters is accepted
+- **AND THEN** their combined length is at most 140 characters
+- **AND THEN** the original deterministic message remains an intact contiguous
+  substring in the rendered customer response.
 
 ### Requirement: Neutral and unsafe cases preserve the current output exactly
 

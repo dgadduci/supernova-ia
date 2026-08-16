@@ -136,3 +136,22 @@ No model, migration, configuration API, global flavor data, prompt instruction
 row, intent, response builder, router, outbox owner or transaction owner is
 changed. This restoration deliberately uses the tested wrapper implementation
 instead of attempting another full-message prompt calibration.
+
+## Expressive wrapper boundary
+
+The wrapper may be a short complete phrase rather than a two-word marker. Each
+`prefix` and `suffix` accepts at most 96 characters; their combined length
+accepts at most 140 characters. The validator continues to reject digits,
+questions, line breaks and control characters. The static prompt explains
+that fragments may contain flavor-appropriate emoji but must remain generic
+and factual-free.
+
+The selected `instruccion_llm` remains the only source for whether `joven` or
+another flavor uses emojis and what tone it adopts. The application does not
+hardcode a flavor phrase or emoji, and this amendment does not write the
+already configured flavor row.
+
+Because the LLM receives only `response_type` tokens and no factual message,
+the backend's composition retains the entire deterministic response as an
+intact contiguous substring. The combined bound preserves a concise customer
+message even when both sides are non-empty.

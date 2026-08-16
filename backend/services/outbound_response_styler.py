@@ -274,7 +274,8 @@ def _is_flavor_usable(flavor: FlavorComunicacion | None) -> bool:
 
 _DIGIT_PATTERN = re.compile(r"\d")
 _DISALLOWED_TEXT_CHARS = frozenset({"\n", "\r", "\t", "?"})
-_WRAPPER_MAX_LENGTH = 24
+_WRAPPER_MAX_LENGTH = 96
+_WRAPPER_COMBINED_MAX_LENGTH = 140
 
 
 def _safe_short_wrapper(value: Any) -> tuple[str | None, str]:
@@ -284,7 +285,7 @@ def _safe_short_wrapper(value: Any) -> tuple[str | None, str]:
 
     * ``status`` is ``"ok"`` when the fragment is a safe non-empty
       wrapper (single-line printable, no digits, no disallowed
-      control characters, length bounded).
+      control characters, per-field length bounded).
     * ``status`` is ``"empty"`` when the fragment is the empty
       string. The empty fragment by itself is structurally safe but
       an eligible item MUST have at least one non-empty wrapper;
@@ -292,6 +293,14 @@ def _safe_short_wrapper(value: Any) -> tuple[str | None, str]:
     * ``status`` is ``"invalid"`` when the fragment is not a usable
       wrapper (non-string, too long, contains digits, line breaks,
       question marks or ASCII control characters).
+
+    The per-field length bound is
+    :data:`_WRAPPER_MAX_LENGTH` (96 characters). The combined
+    length bound for ``prefix + suffix`` on the same eligible item
+    is enforced separately by the caller through
+    :data:`_WRAPPER_COMBINED_MAX_LENGTH` (140 characters) so an
+    item with two individually-bounded fragments can still be
+    rejected when their sum exceeds the wrapper budget.
 
     The split between ``empty`` and ``invalid`` lets the caller
     surface a bounded, distinguishable diagnostic category for the
@@ -636,6 +645,15 @@ def style_responses(
         raw_prefix, raw_suffix = wrapper
         prefix, prefix_status = _safe_short_wrapper(raw_prefix)
         suffix, suffix_status = _safe_short_wrapper(raw_suffix)
+        if (
+            prefix is not None
+            and suffix is not None
+            and prefix_status != "invalid"
+            and suffix_status != "invalid"
+            and len(prefix) + len(suffix) > _WRAPPER_COMBINED_MAX_LENGTH
+        ):
+            prefix_status = "invalid"
+            suffix_status = "invalid"
         if prefix_status == "invalid" or suffix_status == "invalid":
             invalid_wrapper_count += 1
             continue
