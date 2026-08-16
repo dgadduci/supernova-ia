@@ -42,13 +42,13 @@
 
 ## 5. Reactivate the safe wrapper contract
 
-- [ ] 5.1 Restore only the static template, styler, bounded style event
+- [x] 5.1 Restore only the static template, styler, bounded style event
   contract and focused styler tests to the safe wrapper contract at `17d7566`;
   do not restore an old branch wholesale.
-- [ ] 5.2 Verify current mapper/local/outbox integration, one-call batching,
+- [x] 5.2 Verify current mapper/local/outbox integration, one-call batching,
   exact factual containment, neutral/ineligible behavior, privacy and
   caller-owned transactions under the restored wrapper.
-- [ ] 5.3 Run focused pytest, Ruff, compileall, strict OpenSpec validation and
+- [x] 5.3 Run focused pytest, Ruff, compileall, strict OpenSpec validation and
   `git diff --check`.
 - [ ] 5.4 After approved deploy, under `joven` verify greeting, full/category
   menu, add/remove/modify and status retain the exact factual message as an
