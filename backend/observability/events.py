@@ -44,6 +44,7 @@ COMPONENT_PRODUCT_RECOGNITION = "product_recognition"
 COMPONENT_OBSERVABILITY = "observability_helper"
 COMPONENT_PENDING_CONTEXT = "pending_context"
 COMPONENT_PRODUCT_ADD_EXECUTION = "product_add_execution"
+COMPONENT_OUTBOUND_STYLE = "outbound_styler"
 
 
 EVENT_OUTBOUND_OUTCOME = "outbound_attempt_outcome"
@@ -59,6 +60,7 @@ EVENT_SHADOW_PRODUCT_RECOGNITION = "shadow_product_recognition"
 EVENT_OBSERVABILITY_EMIT_FAILED = "observability_emit_failed"
 EVENT_PENDING_CONTEXT_TRANSITION = "pending_context_transition"
 EVENT_PRODUCT_ADD_EXECUTION = "product_add_execution"
+EVENT_OUTBOUND_STYLE = "outbound_style_attempt"
 
 
 _EVENT_CATALOGUE: dict[str, str] = {
@@ -75,6 +77,7 @@ _EVENT_CATALOGUE: dict[str, str] = {
     EVENT_OBSERVABILITY_EMIT_FAILED: COMPONENT_OBSERVABILITY,
     EVENT_PENDING_CONTEXT_TRANSITION: COMPONENT_PENDING_CONTEXT,
     EVENT_PRODUCT_ADD_EXECUTION: COMPONENT_PRODUCT_ADD_EXECUTION,
+    EVENT_OUTBOUND_STYLE: COMPONENT_OUTBOUND_STYLE,
 }
 
 
@@ -156,6 +159,9 @@ _OUTCOMES_BY_EVENT: dict[str, frozenset[str]] = {
             "rejected_price_unavailable",
         }
     ),
+    EVENT_OUTBOUND_STYLE: frozenset(
+        {"not_attempted", "applied", "fallback"}
+    ),
 }
 
 
@@ -183,6 +189,17 @@ _FAILURE_CATEGORIES_BY_EVENT: dict[str, frozenset[str]] = {
     ),
     EVENT_OBSERVABILITY_EMIT_FAILED: frozenset(
         {"validation", "internal"}
+    ),
+    EVENT_OUTBOUND_STYLE: frozenset(
+        {
+            "timeout",
+            "connection",
+            "http_error",
+            "response_error",
+            "malformed_batch",
+            "wrapper_invalid",
+            "unexpected",
+        }
     ),
 }
 
@@ -246,6 +263,17 @@ _OPTIONAL_FIELDS_BY_EVENT: dict[str, frozenset[str]] = {
     EVENT_OBSERVABILITY_EMIT_FAILED: frozenset({"exception_type"}),
     EVENT_PENDING_CONTEXT_TRANSITION: frozenset(),
     EVENT_PRODUCT_ADD_EXECUTION: frozenset(),
+    EVENT_OUTBOUND_STYLE: frozenset(
+        {
+            "flavor_code",
+            "eligible_count",
+            "applied_count",
+            "elapsed_ms",
+            "exception_type",
+            "outbound_style_prompt_template_version",
+            "outbound_style_prompt_template_hash",
+        }
+    ),
 }
 
 
@@ -280,6 +308,11 @@ _ALLOWED_PAYLOAD_KEYS: frozenset[str] = frozenset(
         "candidate_count_before",
         "candidate_count_after",
         "context_cleared",
+        "flavor_code",
+        "eligible_count",
+        "applied_count",
+        "outbound_style_prompt_template_version",
+        "outbound_style_prompt_template_hash",
     }
 )
 
@@ -297,6 +330,8 @@ _MAX_ELAPSED_MS = 24 * 60 * 60 * 1000
 _MAX_PENDING_CONTEXT_KIND = 32
 _MAX_PENDING_CONTEXT_STATUS = 32
 _MAX_PENDING_CONTEXT_CANDIDATE_COUNT = 200
+_MAX_TEMPLATE_VERSION = 64
+_MAX_SHA256_HEX = 64
 
 
 class EventValidationError(ValueError):
@@ -371,6 +406,35 @@ def _is_safe_optional_field(name: str, value: Any) -> bool:
         return value[:1].isalpha() or value[:1] == "_"
     if name == "correlation_id":
         return _is_safe_short_string(value, max_length=_MAX_CORRELATION_ID)
+    if name == "flavor_code":
+        if not _is_safe_short_string(value, max_length=_MAX_STR):
+            return False
+        return value == value.lower() and any(c.isalnum() for c in value)
+    if name == "eligible_count":
+        if isinstance(value, bool) or not isinstance(value, int):
+            return False
+        return 0 <= value <= _MAX_PENDING_CONTEXT_CANDIDATE_COUNT
+    if name == "applied_count":
+        if isinstance(value, bool) or not isinstance(value, int):
+            return False
+        return 0 <= value <= _MAX_PENDING_CONTEXT_CANDIDATE_COUNT
+    if name == "outbound_style_prompt_template_version":
+        if not isinstance(value, str):
+            return False
+        if len(value) == 0 or len(value) > _MAX_TEMPLATE_VERSION:
+            return False
+        if any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
+            return False
+        allowed_chars = set("abcdefghijklmnopqrstuvwxyz0123456789-_./")
+        return all(c in allowed_chars for c in value) and any(
+            c.isalpha() for c in value
+        )
+    if name == "outbound_style_prompt_template_hash":
+        if not isinstance(value, str):
+            return False
+        if len(value) != _MAX_SHA256_HEX:
+            return False
+        return all(c in "0123456789abcdef" for c in value)
     return False
 
 
@@ -690,6 +754,11 @@ def build_event(
     candidate_count_before: int | None = None,
     candidate_count_after: int | None = None,
     context_cleared: bool | None = None,
+    flavor_code: str | None = None,
+    eligible_count: int | None = None,
+    applied_count: int | None = None,
+    outbound_style_prompt_template_version: str | None = None,
+    outbound_style_prompt_template_hash: str | None = None,
 ) -> dict[str, Any]:
     """Validate the input and return the JSON-ready payload.
 
@@ -873,6 +942,11 @@ def build_event(
         "http_status": http_status,
         "exception_type": exception_type,
         "elapsed_ms": elapsed_ms,
+        "flavor_code": flavor_code,
+        "eligible_count": eligible_count,
+        "applied_count": applied_count,
+        "outbound_style_prompt_template_version": outbound_style_prompt_template_version,
+        "outbound_style_prompt_template_hash": outbound_style_prompt_template_hash,
     }
     for field_name, value in optional_values.items():
         if value is None:
@@ -975,6 +1049,15 @@ def parse_event(line: str) -> dict[str, Any]:
         candidate_count_before=decoded.get("candidate_count_before"),
         candidate_count_after=decoded.get("candidate_count_after"),
         context_cleared=decoded.get("context_cleared"),
+        flavor_code=decoded.get("flavor_code"),
+        eligible_count=decoded.get("eligible_count"),
+        applied_count=decoded.get("applied_count"),
+        outbound_style_prompt_template_version=decoded.get(
+            "outbound_style_prompt_template_version"
+        ),
+        outbound_style_prompt_template_hash=decoded.get(
+            "outbound_style_prompt_template_hash"
+        ),
     )
 
 
@@ -1037,6 +1120,11 @@ def emit_event(
     candidate_count_before: int | None = None,
     candidate_count_after: int | None = None,
     context_cleared: bool | None = None,
+    flavor_code: str | None = None,
+    eligible_count: int | None = None,
+    applied_count: int | None = None,
+    outbound_style_prompt_template_version: str | None = None,
+    outbound_style_prompt_template_hash: str | None = None,
     stream: Any = None,
 ) -> bool:
     """Build and emit a single JSON event line to the supplied stream.
@@ -1083,6 +1171,11 @@ def emit_event(
             candidate_count_before=candidate_count_before,
             candidate_count_after=candidate_count_after,
             context_cleared=context_cleared,
+            flavor_code=flavor_code,
+            eligible_count=eligible_count,
+            applied_count=applied_count,
+            outbound_style_prompt_template_version=outbound_style_prompt_template_version,
+            outbound_style_prompt_template_hash=outbound_style_prompt_template_hash,
         )
     except EventValidationError as exc:
         try:
@@ -1123,6 +1216,7 @@ __all__ = [
     "COMPONENT_LLM",
     "COMPONENT_OBSERVABILITY",
     "COMPONENT_OUTBOUND",
+    "COMPONENT_OUTBOUND_STYLE",
     "COMPONENT_PENDING_CONTEXT",
     "COMPONENT_PRODUCT_ADD_EXECUTION",
     "COMPONENT_PRODUCT_RECOGNITION",
@@ -1133,6 +1227,7 @@ __all__ = [
     "EVENT_LLM_REQUEST",
     "EVENT_OBSERVABILITY_EMIT_FAILED",
     "EVENT_OUTBOUND_OUTCOME",
+    "EVENT_OUTBOUND_STYLE",
     "EVENT_PENDING_CONTEXT_TRANSITION",
     "EVENT_PRODUCT_ADD_EXECUTION",
     "EVENT_SHADOW_PRODUCT_RECOGNITION",
