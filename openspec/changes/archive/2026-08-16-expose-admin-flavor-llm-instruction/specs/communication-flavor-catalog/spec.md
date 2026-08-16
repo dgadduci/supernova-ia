@@ -17,16 +17,15 @@ read models.
   description, `instruccion_llm`, version and active state
 - **AND THEN** `instruccion_llm` equals the persisted value for that flavor.
 
+#### Scenario: Safe active flavor listing excludes the internal instruction
+
+- **WHEN** the global flavor catalog is requested without a valid
+  administrative token
+- **THEN** the existing generic authentication rejection is returned
+- **AND THEN** no catalog object, including `instruccion_llm`, is returned.
+
 #### Scenario: Commerce projections exclude the internal instruction
 
 - **WHEN** a commerce or commerce configuration is read, or a flavor is
   assigned to a commerce
 - **THEN** the nested flavor projection does not contain `instruccion_llm`.
-
-#### Scenario: Unauthenticated callers cannot read the catalog instruction
-
-- **WHEN** the global flavor catalog is requested without a valid
-  administrative token
-- **THEN** the existing generic authentication rejection is returned
-- **AND THEN** neither an instruction nor an instruction-derived error detail
-  is returned.
