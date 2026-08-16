@@ -374,6 +374,68 @@ deferred and must fail closed through future, separately approved work.
 
 ## Deferred Limitations
 
+## Bounded Invalid-Wrapper Diagnostic Amendment
+
+The pilot panel currently reports every per-item rejection as
+`wrapper_invalid`. That deliberately hides the rejected wrapper, but it also
+prevents the operator from distinguishing a structural/shape failure from the
+new factual-claim guard. Pilot evidence therefore cannot establish whether an
+unstyled greeting needs prompt calibration or whether an unstyled product
+addition was safely blocked for an unsupported claim.
+
+### Objective
+
+Expose one additional closed, content-free fallback reason for an invalid
+wrapper so pilot operators can distinguish a high-risk commerce/logistics
+claim from all other wrapper-shape failures.
+
+### Scope and shared boundary
+
+- At the existing shared styler boundary, preserve the raw wrapper only in
+  memory long enough to determine its validation reason; never serialize or
+  log it.
+- Replace the externally projected generic invalid-wrapper reason with exactly
+  one of `wrapper_claim_guard` or `wrapper_shape_invalid` when no item in the
+  batch was styled. `empty_wrapper` and all transport/batch categories retain
+  their current meanings.
+- For a batch with both claim-guard and shape rejections, choose the
+  conservative `wrapper_shape_invalid` aggregate reason; do not expose item
+  counts or per-item reasons.
+- Extend the existing observability allowlist and local diagnostic projection
+  only as needed for those two bounded tokens. The local and provider paths
+  continue to use the same one-call styling pass.
+
+### Non-goals, fallback, transaction ownership, and observability
+
+No raw wrapper, matching term, response text, prompt, instruction, identifier,
+exception detail, model output, or per-item breakdown is exposed. No LLM call,
+retry, semantic classifier, configuration change, migration, mapper split, or
+transaction action is added. The deterministic response and all existing
+fallback behavior stay authoritative; only the PII-safe reason token changes.
+
+### Expected files and focused tests
+
+- `backend/services/outbound_response_styler.py`
+- `backend/observability/events.py`
+- `backend/tests/test_outbound_response_styler.py`
+- `backend/tests/test_events.py` only if it already owns fallback-token
+  allowlist coverage
+- This change's OpenSpec artifacts.
+
+Cover claim-guard, shape-invalid, mixed-batch precedence, existing empty
+wrapper, and diagnostic/event privacy. Verify local/provider compatibility,
+one-call behavior, `neutro` no-op, and no transaction control.
+
+### Validation, rollback, and deferred limitation
+
+Run focused styler/mapper tests, any impacted observability tests, Ruff,
+compileall, strict OpenSpec validation, and `git diff --check`. The user runs
+all `venv`-dependent commands locally and supplies complete output.
+
+Rollback restores the single `wrapper_invalid` token without touching business
+state. This amendment diagnoses only two bounded validation classes; it does
+not reveal or interpret model content beyond those classes.
+
 - Styling error, rejection, ambiguity, or customer-free-text response families
   requires a separately approved clarity and safety review.
 - Async delivery-time styling, retries, and provider-specific presentation are

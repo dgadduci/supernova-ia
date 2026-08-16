@@ -58,7 +58,8 @@ from backend.services.outbound_response_styler import (
     FALLBACK_RESPONSE,
     FALLBACK_TIMEOUT,
     FALLBACK_UNEXPECTED,
-    FALLBACK_WRAPPER_INVALID,
+    FALLBACK_WRAPPER_CLAIM_GUARD,
+    FALLBACK_WRAPPER_SHAPE_INVALID,
     NEUTRO_FLAVOR_CODE,
     OUTCOME_APPLIED,
     OUTCOME_NOT_ATTEMPTED,
@@ -885,7 +886,9 @@ class StyleResponsesFailureTest(unittest.TestCase):
         )
         self.assertEqual(styled[0].message, "A")
         last_event = _last_event(stream)
-        self.assertEqual(last_event["failure_category"], FALLBACK_WRAPPER_INVALID)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_SHAPE_INVALID
+        )
         self.assertNotIn("outcome", last_event)
 
     def test_wrapper_with_question_mark_falls_back(self) -> None:
@@ -901,7 +904,9 @@ class StyleResponsesFailureTest(unittest.TestCase):
         )
         self.assertEqual(styled[0].message, "A")
         last_event = _last_event(stream)
-        self.assertEqual(last_event["failure_category"], FALLBACK_WRAPPER_INVALID)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_SHAPE_INVALID
+        )
         self.assertNotIn("outcome", last_event)
 
     def test_wrapper_with_newline_falls_back(self) -> None:
@@ -917,7 +922,9 @@ class StyleResponsesFailureTest(unittest.TestCase):
         )
         self.assertEqual(styled[0].message, "A")
         last_event = _last_event(stream)
-        self.assertEqual(last_event["failure_category"], FALLBACK_WRAPPER_INVALID)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_SHAPE_INVALID
+        )
         self.assertNotIn("outcome", last_event)
 
     def test_per_item_wrapper_invalid_falls_back_for_that_item_only(self) -> None:
@@ -1704,7 +1711,7 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
         self.assertEqual(styled[0].status, "executed")
         last_event = _last_event(stream)
         self.assertEqual(
-            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+            last_event["failure_category"], FALLBACK_WRAPPER_SHAPE_INVALID
         )
         self.assertNotIn("outcome", last_event)
 
@@ -1753,7 +1760,7 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
         self.assertEqual(styled[0].status, "executed")
         last_event = _last_event(stream)
         self.assertEqual(
-            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+            last_event["failure_category"], FALLBACK_WRAPPER_SHAPE_INVALID
         )
         self.assertNotIn("outcome", last_event)
 
@@ -1799,7 +1806,7 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
         self.assertEqual(styled[0].message, self._SALUDO)
         last_event = _last_event(stream)
         self.assertEqual(
-            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+            last_event["failure_category"], FALLBACK_WRAPPER_SHAPE_INVALID
         )
 
     def test_question_mark_still_rejected_under_expressive_bounds(self) -> None:
@@ -1828,7 +1835,7 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
         self.assertEqual(styled[0].message, self._SALUDO)
         last_event = _last_event(stream)
         self.assertEqual(
-            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+            last_event["failure_category"], FALLBACK_WRAPPER_SHAPE_INVALID
         )
 
     def test_newline_still_rejected_under_expressive_bounds(self) -> None:
@@ -1849,7 +1856,7 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
         self.assertEqual(styled[0].message, self._SALUDO)
         last_event = _last_event(stream)
         self.assertEqual(
-            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+            last_event["failure_category"], FALLBACK_WRAPPER_SHAPE_INVALID
         )
 
     def test_control_character_still_rejected_under_expressive_bounds(self) -> None:
@@ -1874,7 +1881,7 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
         self.assertEqual(styled[0].message, self._SALUDO)
         last_event = _last_event(stream)
         self.assertEqual(
-            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+            last_event["failure_category"], FALLBACK_WRAPPER_SHAPE_INVALID
         )
 
     def test_factual_message_remains_intact_substring_with_expressive_wrapper(
@@ -2493,8 +2500,9 @@ class MenuWrapperCalibrationTest(unittest.TestCase):
 
     def test_menu_full_falls_back_when_wrapper_uses_digits(self) -> None:
         """A wrapper that smuggles in digits (a typical menu
-        reproduction attempt) MUST be rejected as ``wrapper_invalid``
-        and the exact deterministic menu MUST be preserved."""
+        reproduction attempt) MUST be rejected as
+        ``wrapper_shape_invalid`` and the exact deterministic menu
+        MUST be preserved."""
         flavor = _flavor(codigo="joven")
         db = _db_with_flavor(1, flavor=flavor)
         responses = [
@@ -2521,7 +2529,9 @@ class MenuWrapperCalibrationTest(unittest.TestCase):
         )
         self.assertEqual(styled[0].message, self._MENU_MESSAGE)
         last_event = _last_event(stream)
-        self.assertEqual(last_event["failure_category"], FALLBACK_WRAPPER_INVALID)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_SHAPE_INVALID
+        )
         self.assertNotIn("outcome", last_event)
         self.assertEqual(last_event["flavor_code"], "joven")
 
@@ -2554,7 +2564,9 @@ class MenuWrapperCalibrationTest(unittest.TestCase):
         )
         self.assertEqual(styled[0].message, self._MENU_MESSAGE)
         last_event = _last_event(stream)
-        self.assertEqual(last_event["failure_category"], FALLBACK_WRAPPER_INVALID)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_SHAPE_INVALID
+        )
         self.assertNotIn("outcome", last_event)
 
     def test_menu_full_falls_back_when_wrapper_contains_question(self) -> None:
@@ -2587,7 +2599,9 @@ class MenuWrapperCalibrationTest(unittest.TestCase):
         )
         self.assertEqual(styled[0].message, self._MENU_MESSAGE)
         last_event = _last_event(stream)
-        self.assertEqual(last_event["failure_category"], FALLBACK_WRAPPER_INVALID)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_SHAPE_INVALID
+        )
 
     def test_menu_full_wrapper_with_asterisks_passes_validator(self) -> None:
         """The runtime validator rejects digits, line breaks,
@@ -2732,7 +2746,7 @@ class FactualClaimGuardTest(unittest.TestCase):
     def test_in_transit_claim_on_product_add_success_falls_back(self) -> None:
         """A wrapper that claims the order is already in transit
         on a successful product addition MUST be rejected as
-        ``wrapper_invalid`` and the exact deterministic message
+        ``wrapper_claim_guard`` and the exact deterministic message
         MUST be preserved byte-for-byte."""
         flavor = _flavor(codigo="joven")
         db = _db_with_flavor(1, flavor=flavor)
@@ -2763,7 +2777,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         self.assertEqual(styled[0].status, "executed")
         last_event = _last_event(stream)
         self.assertEqual(
-            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+            last_event["failure_category"], FALLBACK_WRAPPER_CLAIM_GUARD
         )
         self.assertNotIn("outcome", last_event)
         self.assertEqual(last_event["flavor_code"], "joven")
@@ -2799,7 +2813,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         self.assertEqual(styled[0].message, self._AGG_SUCCESS)
         last_event = _last_event(stream)
         self.assertEqual(
-            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+            last_event["failure_category"], FALLBACK_WRAPPER_CLAIM_GUARD
         )
 
     def test_preparation_claim_falls_back(self) -> None:
@@ -2830,7 +2844,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         self.assertEqual(styled[0].message, self._AGG_SUCCESS)
         last_event = _last_event(stream)
         self.assertEqual(
-            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+            last_event["failure_category"], FALLBACK_WRAPPER_CLAIM_GUARD
         )
 
     def test_delivery_claim_falls_back(self) -> None:
@@ -2861,7 +2875,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         self.assertEqual(styled[0].message, self._AGG_SUCCESS)
         last_event = _last_event(stream)
         self.assertEqual(
-            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+            last_event["failure_category"], FALLBACK_WRAPPER_CLAIM_GUARD
         )
 
     def test_payment_claim_falls_back(self) -> None:
@@ -2892,7 +2906,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         self.assertEqual(styled[0].message, self._AGG_SUCCESS)
         last_event = _last_event(stream)
         self.assertEqual(
-            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+            last_event["failure_category"], FALLBACK_WRAPPER_CLAIM_GUARD
         )
 
     def test_availability_claim_falls_back(self) -> None:
@@ -2923,7 +2937,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         self.assertEqual(styled[0].message, self._AGG_SUCCESS)
         last_event = _last_event(stream)
         self.assertEqual(
-            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+            last_event["failure_category"], FALLBACK_WRAPPER_CLAIM_GUARD
         )
 
     def test_timing_claim_falls_back(self) -> None:
@@ -2942,7 +2956,7 @@ class FactualClaimGuardTest(unittest.TestCase):
                     {
                         "index": 0,
                         "prefix": "¡Genial! ",
-                        "suffix": " Llega en 30 minutos.",
+                        "suffix": " Llega en breve.",
                     }
                 ]
             }
@@ -2954,7 +2968,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         self.assertEqual(styled[0].message, self._AGG_SUCCESS)
         last_event = _last_event(stream)
         self.assertEqual(
-            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+            last_event["failure_category"], FALLBACK_WRAPPER_CLAIM_GUARD
         )
 
     def test_confirmation_claim_falls_back(self) -> None:
@@ -2985,7 +2999,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         self.assertEqual(styled[0].message, self._AGG_SUCCESS)
         last_event = _last_event(stream)
         self.assertEqual(
-            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+            last_event["failure_category"], FALLBACK_WRAPPER_CLAIM_GUARD
         )
 
     def test_shipment_claim_falls_back(self) -> None:
@@ -3016,7 +3030,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         self.assertEqual(styled[0].message, self._AGG_SUCCESS)
         last_event = _last_event(stream)
         self.assertEqual(
-            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+            last_event["failure_category"], FALLBACK_WRAPPER_CLAIM_GUARD
         )
 
     def test_execution_claim_falls_back(self) -> None:
@@ -3047,7 +3061,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         self.assertEqual(styled[0].message, self._AGG_SUCCESS)
         last_event = _last_event(stream)
         self.assertEqual(
-            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+            last_event["failure_category"], FALLBACK_WRAPPER_CLAIM_GUARD
         )
 
     def test_generic_expressive_wrapper_still_accepted(self) -> None:
@@ -3130,7 +3144,7 @@ class FactualClaimGuardTest(unittest.TestCase):
     def test_claim_guard_diagnostic_does_not_leak_wrapper_or_message_or_prompt(
         self,
     ) -> None:
-        """The diagnostic MUST record the bounded ``wrapper_invalid``
+        """The diagnostic MUST record the bounded ``wrapper_claim_guard``
         fallback category without exposing the rejected wrapper,
         the factual message, the prompt or the flavor instruction."""
         flavor = _flavor(
@@ -3162,7 +3176,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         )
         last_event = _last_event(stream)
         self.assertEqual(
-            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+            last_event["failure_category"], FALLBACK_WRAPPER_CLAIM_GUARD
         )
         serialized = json.dumps(last_event, sort_keys=True)
         for forbidden in (
@@ -3185,7 +3199,9 @@ class FactualClaimGuardTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, serialized)
         # The bounded fallback category itself is allowed.
-        self.assertEqual(last_event["failure_category"], "wrapper_invalid")
+        self.assertEqual(
+            last_event["failure_category"], "wrapper_claim_guard"
+        )
         self.assertEqual(last_event["applied_count"], 0)
         self.assertEqual(last_event["eligible_count"], 1)
 
@@ -3376,7 +3392,7 @@ class FactualClaimGuardNormalizationTest(unittest.TestCase):
     The bounded lexical guard MUST compare fragments in a
     case-insensitive AND accent-insensitive way. Variants like
     "Confirmación recibida" / "Confirmacion recibida" and
-    "Entrega confirmada" MUST fall back as ``wrapper_invalid``
+    "Entrega confirmada" MUST fall back as ``wrapper_claim_guard``
     exactly like the already-covered "en camino" claim. The
     customer-facing text is never mutated by the comparison:
     the deterministic message is preserved byte-for-byte.
@@ -3395,7 +3411,7 @@ class FactualClaimGuardNormalizationTest(unittest.TestCase):
 
     def test_accented_confirmacion_recibida_falls_back(self) -> None:
         """A wrapper that says "Confirmación recibida" (with the
-        canonical accent) MUST fall back as ``wrapper_invalid``."""
+        canonical accent) MUST fall back as ``wrapper_claim_guard``."""
         flavor = _flavor(codigo="joven")
         db = _db_with_flavor(1, flavor=flavor)
         responses = [
@@ -3423,13 +3439,13 @@ class FactualClaimGuardNormalizationTest(unittest.TestCase):
         self.assertEqual(styled[0].message, self._AGG_SUCCESS)
         last_event = _last_event(stream)
         self.assertEqual(
-            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+            last_event["failure_category"], FALLBACK_WRAPPER_CLAIM_GUARD
         )
         self.assertNotIn("outcome", last_event)
 
     def test_unaccented_confirmacion_recibida_falls_back(self) -> None:
         """A wrapper that says "Confirmacion recibida" (without
-        the accent) MUST also fall back as ``wrapper_invalid``.
+        the accent) MUST also fall back as ``wrapper_claim_guard``.
         This is the variant that previously evaded the
         ``lower()``-only normalization."""
         flavor = _flavor(codigo="joven")
@@ -3459,14 +3475,14 @@ class FactualClaimGuardNormalizationTest(unittest.TestCase):
         self.assertEqual(styled[0].message, self._AGG_SUCCESS)
         last_event = _last_event(stream)
         self.assertEqual(
-            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+            last_event["failure_category"], FALLBACK_WRAPPER_CLAIM_GUARD
         )
         self.assertNotIn("outcome", last_event)
 
     def test_entrega_confirmada_falls_back(self) -> None:
         """The feminine past participle "confirmada" MUST be
         covered. A wrapper that says "Entrega confirmada" MUST
-        fall back as ``wrapper_invalid``."""
+        fall back as ``wrapper_claim_guard``."""
         flavor = _flavor(codigo="joven")
         db = _db_with_flavor(1, flavor=flavor)
         responses = [
@@ -3494,13 +3510,13 @@ class FactualClaimGuardNormalizationTest(unittest.TestCase):
         self.assertEqual(styled[0].message, self._AGG_SUCCESS)
         last_event = _last_event(stream)
         self.assertEqual(
-            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+            last_event["failure_category"], FALLBACK_WRAPPER_CLAIM_GUARD
         )
         self.assertNotIn("outcome", last_event)
 
     def test_in_transit_claim_still_falls_back(self) -> None:
         """The previously-covered "en camino" claim MUST still
-        fall back as ``wrapper_invalid`` after the normalization
+        fall back as ``wrapper_claim_guard`` after the normalization
         change."""
         flavor = _flavor(codigo="joven")
         db = _db_with_flavor(1, flavor=flavor)
@@ -3529,13 +3545,13 @@ class FactualClaimGuardNormalizationTest(unittest.TestCase):
         self.assertEqual(styled[0].message, self._AGG_SUCCESS)
         last_event = _last_event(stream)
         self.assertEqual(
-            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+            last_event["failure_category"], FALLBACK_WRAPPER_CLAIM_GUARD
         )
         self.assertNotIn("outcome", last_event)
 
     def test_uppercase_accented_confirmacion_falls_back(self) -> None:
         """Case + accent variation: "CONFIRMACIÓN RECIBIDA" MUST
-        also fall back as ``wrapper_invalid``."""
+        also fall back as ``wrapper_claim_guard``."""
         flavor = _flavor(codigo="joven")
         db = _db_with_flavor(1, flavor=flavor)
         responses = [
@@ -3563,7 +3579,7 @@ class FactualClaimGuardNormalizationTest(unittest.TestCase):
         self.assertEqual(styled[0].message, self._AGG_SUCCESS)
         last_event = _last_event(stream)
         self.assertEqual(
-            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+            last_event["failure_category"], FALLBACK_WRAPPER_CLAIM_GUARD
         )
 
     def test_generic_safe_wrapper_still_applied(self) -> None:
@@ -3703,7 +3719,7 @@ class FactualClaimGuardNormalizationTest(unittest.TestCase):
 
     def test_bounded_diagnostic_under_normalized_guard(self) -> None:
         """Under the normalized guard, the diagnostic MUST
-        record the bounded ``wrapper_invalid`` fallback
+        record the bounded ``wrapper_claim_guard`` fallback
         category without exposing the rejected wrapper, the
         factual message, the prompt or the flavor instruction."""
         flavor = _flavor(
@@ -3735,7 +3751,7 @@ class FactualClaimGuardNormalizationTest(unittest.TestCase):
         )
         last_event = _last_event(stream)
         self.assertEqual(
-            last_event["failure_category"], FALLBACK_WRAPPER_INVALID
+            last_event["failure_category"], FALLBACK_WRAPPER_CLAIM_GUARD
         )
         serialized = json.dumps(last_event, sort_keys=True)
         for forbidden in (
@@ -3786,6 +3802,441 @@ class FactualClaimGuardNormalizationTest(unittest.TestCase):
             "close",
         ):
             getattr(db, method).assert_not_called()
+
+
+class WrapperFallbackReasonSplitTest(unittest.TestCase):
+    """Subphase 10 — split the generic ``wrapper_invalid`` into
+    two closed, content-free reasons when no eligible item is
+    applied.
+
+    The amendment re-uses the existing single styling pass and
+    the existing one-LLM-call maximum. The fallback category is
+    chosen by the following precedence, evaluated only when
+    ``applied_count == 0``:
+
+    1. Any shape/structure rejection (digits, newline, question
+       mark, control chars, combined-too-long, factual-not-
+       preserved) or a mixed batch (claim + shape) →
+       ``wrapper_shape_invalid``.
+    2. Only claim guard rejections →
+       ``wrapper_claim_guard``.
+    3. Only empty wrappers → ``empty_wrapper`` (existing).
+    4. Defensive fallback → ``wrapper_invalid`` (existing).
+
+    ``empty_wrapper``, transport failures and malformed batch
+    keep their current meaning. The customer-facing text is
+    never mutated; the existing factual-substring composition
+    is preserved exactly. The diagnostic and the observability
+    event carry the bounded category token and nothing else
+    (no wrapper, no matched term, no index, no per-reason
+    count, no prompt, no instruction, no factual message, no
+    identifier, no exception, no model output).
+    """
+
+    _AGG_SUCCESS = "Listo, agregué 1 Pizza Mozzarella (grande)."
+    _STATUS_MESSAGE = "Tú pedido está en preparación."
+
+    def test_claim_guard_only_emits_wrapper_claim_guard(self) -> None:
+        """When every rejection is a claim guard rejection, the
+        diagnostic MUST report ``wrapper_claim_guard`` and the
+        exact deterministic message MUST be preserved."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Tu pedido está en camino! ",
+                        "suffix": "",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled, diagnostic = style_responses_with_diagnostic(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        self.assertEqual(diagnostic.outcome, "fallback")
+        self.assertEqual(
+            diagnostic.fallback_category, FALLBACK_WRAPPER_CLAIM_GUARD
+        )
+        self.assertEqual(diagnostic.eligible_count, 1)
+        self.assertEqual(diagnostic.applied_count, 0)
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_CLAIM_GUARD
+        )
+        self.assertNotIn("outcome", last_event)
+        self.assertEqual(last_event["flavor_code"], "joven")
+
+    def test_shape_invalid_only_emits_wrapper_shape_invalid(self) -> None:
+        """When every rejection is a shape/structure rejection,
+        the diagnostic MUST report ``wrapper_shape_invalid``."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "Hola\namigo",
+                        "suffix": "",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled, diagnostic = style_responses_with_diagnostic(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        self.assertEqual(diagnostic.outcome, "fallback")
+        self.assertEqual(
+            diagnostic.fallback_category, FALLBACK_WRAPPER_SHAPE_INVALID
+        )
+        self.assertEqual(diagnostic.eligible_count, 1)
+        self.assertEqual(diagnostic.applied_count, 0)
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_SHAPE_INVALID
+        )
+
+    def test_mixed_claim_and_shape_batch_reports_wrapper_shape_invalid(
+        self,
+    ) -> None:
+        """When a batch mixes a claim guard rejection and a shape
+        rejection with no items applied, the diagnostic MUST
+        report ``wrapper_shape_invalid`` (shape wins over claim
+        when no items are applied)."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            ),
+            CustomerResponse(
+                message=self._STATUS_MESSAGE,
+                intent="consultar_estado_pedido",
+                status="executed",
+            ),
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Tu pedido está en camino! ",
+                        "suffix": "",
+                    },
+                    {
+                        "index": 1,
+                        "prefix": "Hola\namigo",
+                        "suffix": "",
+                    },
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled, diagnostic = style_responses_with_diagnostic(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        self.assertEqual(styled[1].message, self._STATUS_MESSAGE)
+        self.assertEqual(diagnostic.outcome, "fallback")
+        self.assertEqual(
+            diagnostic.fallback_category, FALLBACK_WRAPPER_SHAPE_INVALID
+        )
+        self.assertEqual(diagnostic.eligible_count, 2)
+        self.assertEqual(diagnostic.applied_count, 0)
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_WRAPPER_SHAPE_INVALID
+        )
+
+    def test_empty_wrapper_keeps_its_token(self) -> None:
+        """When every item is an empty wrapper (and no shape/claim
+        rejection occurs), the diagnostic MUST keep reporting
+        ``empty_wrapper``."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "",
+                        "suffix": "",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled, diagnostic = style_responses_with_diagnostic(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        self.assertEqual(diagnostic.outcome, "fallback")
+        self.assertEqual(
+            diagnostic.fallback_category, FALLBACK_EMPTY_WRAPPER
+        )
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_EMPTY_WRAPPER
+        )
+
+    def test_partial_apply_preserves_outcome_applied(self) -> None:
+        """When at least one item is applied, the event MUST
+        report the success outcome and MUST NOT reveal per-item
+        reasons or the kept factual substring."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            ),
+            CustomerResponse(
+                message=self._STATUS_MESSAGE,
+                intent="consultar_estado_pedido",
+                status="executed",
+            ),
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Tu pedido está en camino! ",
+                        "suffix": "",
+                    },
+                    {
+                        "index": 1,
+                        "prefix": "¡Acá estamos! ",
+                        "suffix": "",
+                    },
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled, diagnostic = style_responses_with_diagnostic(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        # The claim guard item falls back to the exact
+        # deterministic message; the valid item is applied.
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        self.assertEqual(
+            styled[1].message, f"¡Acá estamos! {self._STATUS_MESSAGE}"
+        )
+        self.assertEqual(diagnostic.outcome, "applied")
+        self.assertEqual(diagnostic.fallback_category, None)
+        self.assertEqual(diagnostic.applied_count, 1)
+        self.assertEqual(diagnostic.eligible_count, 2)
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_APPLIED)
+        self.assertNotIn("failure_category", last_event)
+        self.assertEqual(last_event["applied_count"], 1)
+        self.assertEqual(last_event["eligible_count"], 2)
+
+    def test_one_llm_call_preserved_per_turn(self) -> None:
+        """The amendment MUST NOT introduce a second LLM call."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Tu pedido está en camino! ",
+                        "suffix": "",
+                    }
+                ]
+            }
+        )
+        style_responses(db, 1, responses, query_llm=client)
+        self.assertEqual(client.request.call_count, 1)
+
+    def test_neutro_no_op_does_not_emit_new_categories(self) -> None:
+        """Under ``neutro`` the styler MUST remain an exact
+        no-op: zero LLM calls, ``not_attempted`` outcome, no
+        shape/claim guard category."""
+        db = _db_with_flavor(1, flavor=_flavor(NEUTRO_FLAVOR_CODE))
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Tu pedido está en camino! ",
+                        "suffix": "",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled, diagnostic = style_responses_with_diagnostic(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(client.request.call_count, 0)
+        self.assertEqual(styled[0].message, self._AGG_SUCCESS)
+        self.assertEqual(diagnostic.outcome, "not_attempted")
+        self.assertIsNone(diagnostic.fallback_category)
+        self.assertEqual(diagnostic.eligible_count, 1)
+        self.assertEqual(diagnostic.applied_count, 0)
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_NOT_ATTEMPTED)
+        self.assertNotIn("failure_category", last_event)
+
+    def test_no_database_transaction_control(self) -> None:
+        """The split MUST be a pure lexical calculation; no
+        database transaction control is invoked."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Tu pedido está en camino! ",
+                        "suffix": "",
+                    }
+                ]
+            }
+        )
+        style_responses(db, 1, responses, query_llm=client)
+        for method in (
+            "commit",
+            "rollback",
+            "begin",
+            "begin_nested",
+            "flush",
+            "refresh",
+            "close",
+        ):
+            getattr(db, method).assert_not_called()
+
+    def test_diagnostic_does_not_leak_wrapper_or_term_or_prompt(
+        self,
+    ) -> None:
+        """The diagnostic and the observability event MUST carry
+        only the bounded category token. They MUST NOT leak
+        the rejected wrapper, the matched term, the index, any
+        per-reason count, the prompt, the flavor instruction,
+        the factual message, identifiers, exception detail or
+        model output."""
+        flavor = _flavor(
+            codigo="joven",
+            instruccion="INSTRUCCION-SECRETA-ENMIENDA-10",
+        )
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¡Tu pedido está en camino! ",
+                        "suffix": "",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        _styled, diagnostic = style_responses_with_diagnostic(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(
+            diagnostic.fallback_category, FALLBACK_WRAPPER_CLAIM_GUARD
+        )
+        payload = json.dumps(
+            {
+                "outcome": diagnostic.outcome,
+                "eligible_count": diagnostic.eligible_count,
+                "applied_count": diagnostic.applied_count,
+                "fallback_category": diagnostic.fallback_category,
+                "flavor_code": diagnostic.flavor_code,
+                "response_types": list(diagnostic.response_types),
+                "template_version": diagnostic.template_version,
+            },
+            sort_keys=True,
+        )
+        last_event = _last_event(stream)
+        serialized = json.dumps(last_event, sort_keys=True)
+        for forbidden in (
+            # Rejected wrapper content MUST NOT leak.
+            "¡Tu pedido está en camino!",
+            "en camino",
+            # Factual message MUST NOT leak.
+            "Pizza Mozzarella",
+            "Mozzarella",
+            # Prompt and flavor instruction MUST NOT leak.
+            "INSTRUCCION-SECRETA-ENMIENDA-10",
+            "Directriz",
+            # Per-reason counts and matched-term detail MUST NOT leak.
+            "claim_guard_count",
+            "shape_invalid_count",
+            "matched_term",
+            "matched_index",
+            # No business identifiers MUST leak.
+            "session-7",
+            "pedido-9",
+            "comercio-42",
+        ):
+            with self.subTest(scope="diagnostic", forbidden=forbidden):
+                self.assertNotIn(forbidden, payload)
+            with self.subTest(scope="event", forbidden=forbidden):
+                self.assertNotIn(forbidden, serialized)
 
 
 class StyleResponsesWithDiagnosticTest(unittest.TestCase):
@@ -3922,7 +4373,9 @@ class StyleResponsesWithDiagnosticTest(unittest.TestCase):
         )
         self.assertEqual(diagnostic.outcome, "fallback")
         self.assertEqual(diagnostic.flavor_code, "joven")
-        self.assertEqual(diagnostic.fallback_category, FALLBACK_WRAPPER_INVALID)
+        self.assertEqual(
+            diagnostic.fallback_category, FALLBACK_WRAPPER_SHAPE_INVALID
+        )
         self.assertEqual(diagnostic.response_types, (RESPONSE_TYPE_MENU_FULL,))
         self.assertEqual(diagnostic.eligible_count, 1)
         self.assertEqual(diagnostic.applied_count, 0)

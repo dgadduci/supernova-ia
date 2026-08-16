@@ -87,6 +87,34 @@ guard SHALL NOT prescribe flavor-specific customer text or emojis.
 - **AND THEN** the selected persisted flavor remains the sole source of tone
   and emoji choices.
 
+### Requirement: Invalid wrapper diagnostics distinguish only bounded safety classes
+
+When no eligible item receives styling because wrappers are invalid, the local
+pilot diagnostic and bounded styling event SHALL report
+`wrapper_claim_guard` if every rejected item matched the high-risk claim
+guard; otherwise they SHALL report `wrapper_shape_invalid`. A batch containing
+both reasons SHALL report `wrapper_shape_invalid`. Existing `empty_wrapper`,
+transport, and malformed-batch tokens retain their current meanings. The
+system SHALL NOT expose rejected wrapper text, matching terms, item-specific
+reasons, counts, prompts, instructions, messages, identifiers, exception
+detail, or model output.
+
+#### Scenario: Claim guard is diagnosable without leaking its content
+
+- **WHEN** a sole eligible wrapper is rejected by the high-risk claim guard
+- **THEN** the deterministic response is preserved exactly
+- **AND THEN** the bounded diagnostic and event report
+  `wrapper_claim_guard`
+- **AND THEN** neither output contains the rejected wrapper or matching term.
+
+#### Scenario: Shape invalidity is distinct and mixed batches remain closed
+
+- **WHEN** an invalid wrapper fails a structural/shape check, or a batch has
+  both a shape-invalid wrapper and a claim-guard wrapper, with no applied item
+- **THEN** the bounded diagnostic and event report
+  `wrapper_shape_invalid`
+- **AND THEN** no item-level reason or model content is exposed.
+
 ### Requirement: Neutral and unsafe cases preserve the current output exactly
 
 The system SHALL not make a styling request for `neutro`, missing or inactive
