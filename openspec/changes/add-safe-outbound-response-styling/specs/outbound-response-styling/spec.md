@@ -185,3 +185,39 @@ substituted.
   and static template version
 - **AND THEN** they do not show customer text, menu text, prompts, flavor
   instruction, IDs, exception details, or model output.
+
+### Requirement: Only presentation-safe response types are eligible for styling
+
+The system SHALL send only these executed response types to the styling LLM:
+`social_greeting`, `social_thanks`, `social_goodbye`, `social_yes`,
+`social_no`, `menu_full`, `product_info`, `info_payment_methods`,
+`info_delivery_methods`, `info_address`, and `info_hours`.
+
+The system SHALL keep these executed response types entirely deterministic and
+out of the styling request: `product_add_success`, `product_remove_success`,
+`product_modify_success`, `order_status`, `order_summary`,
+`order_confirmed`, `order_started`, and `order_emptied`. Their exclusion is a
+normal eligibility decision, not a wrapper fallback. Existing error,
+rejection, pending/ambiguous, and customer-free-text exclusions remain
+unchanged.
+
+#### Scenario: Order-result response is never styled
+
+- **WHEN** an executed response has type `product_add_success`,
+  `product_remove_success`, `product_modify_success`, `order_status`,
+  `order_summary`, `order_confirmed`, `order_started`, or `order_emptied`
+- **THEN** it is not sent to the style LLM
+- **AND THEN** its deterministic text, intent, status, and response position
+  remain exact
+- **AND THEN** a turn containing only such excluded responses makes no style
+  request and reports the existing `not_attempted` diagnostic.
+
+#### Scenario: Mixed response batch styles only approved positions
+
+- **WHEN** one turn contains both an approved presentation-safe response and
+  an excluded order-result response
+- **THEN** the system makes at most one styling request containing only the
+  approved response-type token
+- **AND THEN** any accepted wrapper applies only to that approved response
+- **AND THEN** the excluded response remains exact deterministic output in its
+  original position.

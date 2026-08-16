@@ -253,3 +253,28 @@ diagnostic projection. No raw wrapper, matched word, item index, count,
 prompt, instruction, message, identifier, exception detail, or model output
 is serialized. The diagnostic remains request-scoped for the local panel and
 the provider path continues to share the same single styling pass.
+
+## Closed eligibility boundary for order facts
+
+The response-type mapping is the authoritative styling admission boundary.
+The following mapped types remain eligible because they are social or provide
+catalog/comercio information: `social_greeting`, `social_thanks`,
+`social_goodbye`, `social_yes`, `social_no`, `menu_full`, `product_info`,
+`info_payment_methods`, `info_delivery_methods`, `info_address`, and
+`info_hours`.
+
+The following mapped types are deliberately excluded because they report a
+mutation, lifecycle result, or state of the customer's order:
+`product_add_success`, `product_remove_success`, `product_modify_success`,
+`order_status`, `order_summary`, `order_confirmed`, `order_started`, and
+`order_emptied`. The styler returns no eligibility token for them. Therefore
+they are never included in the prompt and their deterministic response is
+returned unchanged; their exclusion is not a styling fallback.
+
+For a turn that contains only excluded responses, normal selection produces an
+empty eligible set: it makes no LLM call and reports the existing
+`not_attempted` diagnostic. For mixed turns, selection retains response order
+but sends only approved items in the one existing batch. The mapper composes
+wrappers only for those approved positions; excluded positions retain exact
+text, intent, and status. There is no parallel pipeline, retry, transaction
+operation, diagnostic expansion, or customer-facing hardcoded phrase.
