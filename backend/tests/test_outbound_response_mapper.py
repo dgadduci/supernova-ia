@@ -44,6 +44,7 @@ from backend.intents.responses.social_conversation_response import (
     build_social_conversation_response,
     is_social_conversation_intent,
 )
+from backend.intents.schemas.customer_response import CustomerResponse
 from backend.intents.schemas.processed_intent import (
     IntentStatus,
     ProcessedIntent,
@@ -305,6 +306,185 @@ class OutboundMapperBoundariesTest(unittest.TestCase):
                 "stage_outbound_rows",
             },
         )
+
+
+class OutboundMapperStylerIntegrationTest(unittest.TestCase):
+    """The mapper integrates the bounded styler as the shared
+    presentation-only post-processor. The local endpoint and the
+    staged outbox both consume the styled ``CustomerResponse``
+    list produced by :func:`build_customer_responses`; the
+    styler is therefore invoked once per turn inside the mapper
+    and never from ``stage_outbound_rows``.
+
+    These tests patch the styler entry point exposed by the
+    mapper module so the assertions stay at the mapper boundary
+    and the styler's own focused tests cover the contract in
+    depth.
+    """
+
+    _SALUDO_INTENT = "saludo"
+    _SALUDO_STATUS = "executed"
+    _SALUDO_MESSAGE = (
+        "¡Hola! Puedo ayudarte a armar tu pedido. Decime qué querés."
+    )
+
+    def _saludo_intent(self) -> ProcessedIntent:
+        return ProcessedIntent(
+            intent=self._SALUDO_INTENT,
+            source_text="hola",
+            status=self._SALUDO_STATUS,
+            recognizer="intent_classifier",
+            handler=SOCIAL_CONVERSATION_HANDLER,
+        )
+
+    def test_neutral_flavor_does_not_invoke_styler(self) -> None:
+        from backend.services import outbound_response_styler
+
+        with patch.object(
+            outbound_response_styler, "QueryLlm"
+        ) as query_llm_cls:
+            query_llm_cls.return_value.request.side_effect = AssertionError(
+                "QueryLlm must not be called for neutro"
+            )
+            db = MagicMock()
+            session = MagicMock(id_comercio=1)
+            db.get.side_effect = [
+                MagicMock(flavor_comunicacion_id=1),
+                MagicMock(activo=True, codigo="neutro", instruccion_llm="neutro"),
+            ]
+            responses = build_customer_responses(
+                db, session, [self._saludo_intent()]
+            )
+            self.assertEqual(responses[0].message, self._SALUDO_MESSAGE)
+            self.assertEqual(query_llm_cls.return_value.request.call_count, 0)
+
+    def test_absent_session_id_comercio_does_not_invoke_styler_with_real_commerce(self) -> None:
+        with patch.object(
+            mapper_module, "style_responses"
+        ) as styler:
+            captured: dict = {}
+
+            def _capture(*args, **kwargs):
+                captured["comercio_id"] = args[1] if len(args) > 1 else kwargs.get("comercio_id")
+                return args[2] if len(args) > 2 else kwargs.get("responses")
+
+            styler.side_effect = _capture
+            db = MagicMock()
+            session = MagicMock(spec=[])
+            build_customer_responses(db, session, [self._saludo_intent()])
+            self.assertIsNone(captured.get("comercio_id"))
+
+    def test_stage_outbound_rows_reuses_styler_output_and_does_not_re_invoke_styler(self) -> None:
+        with patch.object(mapper_module, "style_responses") as styler:
+            def _style(*args, **kwargs):
+                responses = (
+                    args[2] if len(args) > 2 else kwargs.get("responses")
+                ) or []
+                styled = []
+                for r in responses:
+                    styled.append(
+                        CustomerResponse(
+                            message=f"[X] {r.message}",
+                            intent=r.intent,
+                            status=r.status,
+                        )
+                    )
+                return styled
+
+            styler.side_effect = _style
+            db = MagicMock()
+            session = MagicMock(id_comercio=42)
+            intent = self._saludo_intent()
+            outbox_repo = MagicMock()
+            staged_row = MagicMock()
+            staged_row.id = 7
+            outbox_repo.stage.return_value = staged_row
+
+            result = stage_outbound_rows(
+                db,
+                session,
+                proveedor="twilio",
+                recepcion_mensaje_proveedor_id=1,
+                destinatario_e164="+5491100000000",
+                intents=[intent],
+                outbox_repo=outbox_repo,
+            )
+
+            self.assertEqual(styler.call_count, 1)
+            self.assertEqual(len(result), 1)
+            self.assertEqual(
+                result[0].customer_response.message, f"[X] {self._SALUDO_MESSAGE}"
+            )
+            self.assertEqual(
+                outbox_repo.stage.call_args.kwargs["cuerpo"],
+                f"[X] {self._SALUDO_MESSAGE}",
+            )
+
+    def test_mapper_invokes_styler_with_session_id_comercio(self) -> None:
+        with patch.object(
+            mapper_module, "style_responses"
+        ) as styler:
+            styler.side_effect = lambda *_args, **_kwargs: (
+                _args[2] if len(_args) > 2 else _kwargs.get("responses")
+            )
+            db = MagicMock()
+            session = MagicMock(id_comercio=99)
+            build_customer_responses(
+                db, session, [self._saludo_intent()]
+            )
+            self.assertEqual(styler.call_count, 1)
+            self.assertEqual(styler.call_args.args[1], 99)
+
+    def test_mapper_preserves_order_intent_status_when_styler_returns_baseline(self) -> None:
+        with patch.object(mapper_module, "style_responses") as styler:
+            styler.side_effect = lambda *_args, **_kwargs: (
+                _args[2] if len(_args) > 2 else _kwargs.get("responses")
+            )
+            intents = [
+                ProcessedIntent(
+                    intent="agregar_producto",
+                    source_text="x",
+                    status="ready",
+                    handler="agregar_producto",
+                    recognizer="recognizer_productos",
+                ),
+                self._saludo_intent(),
+                ProcessedIntent(
+                    intent="set_direccion_entrega",
+                    source_text="y",
+                    status="executed",
+                    handler="set_direccion_entrega",
+                    recognizer="draft_order_closure",
+                    resolved_data={"accepted_length": 12},
+                ),
+            ]
+            db = MagicMock()
+            session = MagicMock(id_comercio=1)
+            responses = build_customer_responses(db, session, intents)
+            self.assertEqual(len(responses), 3)
+            self.assertEqual(responses[0].intent, "agregar_producto")
+            self.assertEqual(responses[1].intent, "saludo")
+            self.assertEqual(responses[2].intent, "set_direccion_entrega")
+            self.assertNotIn("Tilcara", responses[2].message)
+
+    def test_mapper_does_not_control_database_transactions(self) -> None:
+        with patch.object(mapper_module, "style_responses") as styler:
+            styler.side_effect = lambda *_args, **_kwargs: (
+                _args[2] if len(_args) > 2 else _kwargs.get("responses")
+            )
+            db = MagicMock()
+            session = MagicMock(id_comercio=1)
+            build_customer_responses(db, session, [self._saludo_intent()])
+            for method in (
+                "commit",
+                "rollback",
+                "begin",
+                "begin_nested",
+                "flush",
+                "refresh",
+                "close",
+            ):
+                getattr(db, method).assert_not_called()
 
 
 class SetObservacionProductoMapperTest(unittest.TestCase):

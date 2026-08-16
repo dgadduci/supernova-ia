@@ -1,0 +1,176 @@
+"""Versioned static prompt template for the safe outbound response styler.
+
+The styler is the bounded second LLM interpreter that adds a short
+presentation wrapper (``prefix`` / ``suffix``) around the exact
+deterministic customer response. The prompt template body lives in
+this module so the runtime diagnostic fingerprint can be derived
+exclusively from the static template contract. Runtime diagnostics
+never persist, emit, log or correlate the rendered prompt, the
+``FlavorComunicacion.instruccion_llm`` payload, the customer
+message, the deterministic response text or the model output; only
+the static template fingerprint is exposed.
+
+The runtime prompt contains **only**:
+
+* the selected flavor's bounded internal ``instruccion_llm`` text;
+* the ordered, allowlisted ``response_type`` tokens for every
+  eligible ``CustomerResponse`` in the current turn.
+
+It MUST NOT contain the inbound customer message, the deterministic
+customer response text, product names, prices, presentation codes,
+quantities, addresses, observations, payment/delivery values, IDs,
+session data, pedido data, comercio data or any other customer or
+business identifier. The fingerprint is therefore stable across
+comercios, customers and inputs, so a runtime diagnostic that
+embeds the fingerprint leaks no business information.
+
+The schema is closed: the model must return ``{"items": [...]}``
+where each item carries exactly ``index``, ``prefix`` and
+``suffix``; extra fields are rejected. ``prefix`` and ``suffix``
+are bounded, single-line, factual-free strings; digits, line
+breaks, question marks and disallowed control characters are
+forbidden.
+"""
+from __future__ import annotations
+
+import hashlib
+
+OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION = "outbound-response-styler/v1.0.0"
+
+_INTRO = (
+    "\n"
+    "Sos un asistente de presentación que añade un prefijo y/o un "
+    "sufijo muy cortos y opcionales a una respuesta ya redactada por "
+    "el sistema. La respuesta original se conserva tal cual: tu único "
+    "trabajo es sugerir un envoltorio visual ligero.\n"
+    "Respetá estrictamente las reglas y el contrato definidos más abajo.\n"
+)
+
+_CONTEXT = """
+Contexto limitado:
+
+* Recibís una instrucción interna de tono (la "directriz") que describe el estilo global seleccionado por el comercio. Esa directriz NO contiene pedidos, productos, clientes ni datos privados.
+* Recibís una lista acotada de tipos de respuesta, en el orden en que deben renderizarse. Cada tipo es un token opaco que identifica una categoría de mensaje (por ejemplo un saludo, un agregado exitoso, una confirmación de pedido).
+* No tenés acceso al mensaje del cliente, al texto de la respuesta original, al catálogo, al menú, al pedido, a la dirección, a la observación, al medio de pago o entrega, a IDs, a datos de sesión ni a credenciales. No los infieras ni los pidas.
+
+"""
+
+_RULES = """
+Reglas del envoltorio:
+
+1. Devolvé EXACTAMENTE un objeto JSON con la forma indicada en la sección "Estructura de salida". No expliques nada. No uses Markdown.
+
+2. Para cada ítem de la lista, devolvé un objeto con tres campos: `index` (entero que coincide con el orden de la lista), `prefix` (cadena opcional corta) y `suffix` (cadena opcional corta). No agregues ningún otro campo.
+
+3. `prefix` y `suffix` deben ser cadenas cortas (una sola línea), sin dígitos, sin saltos de línea, sin signos de pregunta (`?`), sin caracteres de control ni caracteres no imprimibles. Si no querés añadir nada, devolvé una cadena vacía para ese campo. Como mucho un par de palabras o un emoji.
+
+4. NO inventes hechos, productos, cantidades, precios, descuentos, promesas, fechas, horas, direcciones, observaciones, medios de pago ni métodos de entrega. NO hagas preguntas ni des instrucciones. NO pidas confirmación ni des comandos.
+
+5. NO traduzcas, NO corrijas ni alteres el contenido del mensaje original. La respuesta original la conserva el sistema: tu `prefix` y `suffix` sólo la visten.
+
+6. NO generes contenido que dependa de un cliente, comercio, pedido o turno específico. Tu sugerencia debe servir para cualquier instancia del mismo `response_type`.
+
+7. Si la directriz de tono entra en conflicto con las reglas anteriores, las reglas anteriores prevalecen. Ante la duda, devolvé `prefix` y `suffix` vacíos para mantener la respuesta original intacta.
+
+"""
+
+_OUTPUT_STRUCT = """
+Estructura de salida:
+
+Devolvé únicamente JSON válido.
+No expliques nada.
+No uses Markdown.
+El JSON debe respetar EXACTAMENTE esta forma (campos extra prohibidos):
+
+{
+  "items": [
+    {
+      "index": <entero>,
+      "prefix": "<cadena corta o vacía>",
+      "suffix": "<cadena corta o vacía>"
+    }
+  ]
+}
+
+`items` debe tener EXACTAMENTE la misma cantidad de elementos, en el mismo orden y con los mismos `index` que la lista de tipos recibida. No omitas, no dupliques, no reordenes.
+
+"""
+
+_FLAVOR_PROMPT = (
+    "\n"
+    "Directriz interna de tono (NO contiene datos privados):\n"
+    "\n"
+    "{instruccion_llm}\n"
+)
+
+_ITEMS_PROMPT = (
+    "\n"
+    "Tipos de respuesta a vestir, en orden estricto:\n"
+    "\n"
+    "{items}\n"
+)
+
+_PROMPT_TEMPLATE_BODY = (
+    _INTRO
+    + _CONTEXT
+    + _RULES
+    + _OUTPUT_STRUCT
+    + _FLAVOR_PROMPT
+    + _ITEMS_PROMPT
+)
+
+_PROMPT_TEMPLATE_HASH = hashlib.sha256(_PROMPT_TEMPLATE_BODY.encode("utf-8")).hexdigest()
+
+
+def outbound_style_template_fingerprint() -> str:
+    """Return the static SHA-256 fingerprint of the active styler prompt.
+
+    The fingerprint is derived only from the static template body
+    (never from a rendered prompt or the selected flavor instruction)
+    and is therefore safe to expose in runtime diagnostics. Inputs
+    that share the same template version produce the same fingerprint;
+    changing the template body is detected by a different fingerprint
+    even when ``OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION`` is left
+    untouched.
+    """
+    return _PROMPT_TEMPLATE_HASH
+
+
+def build_outbound_style_prompt(
+    *,
+    instruccion_llm: str,
+    items: list[dict[str, object]],
+) -> str:
+    """Render the active styler prompt for the given flavor directive
+    and bounded response-type list.
+
+    The items list must already be projected to the documented
+    ``{"index": <int>, "response_type": <token>}`` shape in the
+    intended render order. The returned string is what production
+    would send to the upstream LLM; runtime diagnostics MUST NOT
+    persist or stream it.
+    """
+    item_lines: list[str] = []
+    for item in items:
+        index = item.get("index", "")
+        response_type = item.get("response_type", "")
+        item_lines.append(f"- index: {index} | response_type: {response_type}")
+    items_block = "\n".join(item_lines) if item_lines else "(sin elementos)"
+    rendered = _PROMPT_TEMPLATE_BODY.replace("{instruccion_llm}", instruccion_llm)
+    return rendered.replace("{items}", items_block)
+
+
+def outbound_style_template_identity() -> dict[str, str]:
+    """Return non-secret identity metadata for the active styler prompt."""
+    return {
+        "outbound_style_prompt_template_version": OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION,
+        "outbound_style_prompt_template_hash": _PROMPT_TEMPLATE_HASH,
+    }
+
+
+__all__ = [
+    "OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION",
+    "build_outbound_style_prompt",
+    "outbound_style_template_fingerprint",
+    "outbound_style_template_identity",
+]

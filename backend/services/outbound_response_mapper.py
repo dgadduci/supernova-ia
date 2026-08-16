@@ -86,6 +86,7 @@ from backend.repositories.mensaje_proveedor_saliente_repository import (
     MensajeProveedorSalienteRepository,
 )
 from backend.services.exceptions import InvalidOutboundProviderMessage
+from backend.services.outbound_response_styler import style_responses
 
 GENERIC_MESSAGE = (
     "Disculpá, no pude procesar tu mensaje. ¿Podrías reformularlo?"
@@ -199,7 +200,11 @@ def build_customer_responses(
                     status=intent.status,
                 )
             )
-    return responses
+    return style_responses(
+        db,
+        getattr(session, "id_comercio", None),
+        responses,
+    )
 
 
 def stage_outbound_rows(
