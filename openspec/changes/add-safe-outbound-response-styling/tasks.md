@@ -97,6 +97,6 @@
 - [x] 8.3 Add focused prompt-identity and `menu_full` wrapper tests; run this
   amendment's focused pytest, Ruff, compileall, strict validation and diff
   check.
-- [ ] 8.4 After approved deploy under `joven`, verify full and category menus
+- [x] 8.4 After approved deploy under `joven`, verify full and category menus
   produce `outbound_style.outcome=applied` with a visible valid wrapper, while
   their deterministic menu content remains complete and exact.

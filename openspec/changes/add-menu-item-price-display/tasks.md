@@ -22,5 +22,5 @@
 
 ## 4. Pilot Gate (post-deploy only)
 
-- [ ] 4.1 Verify the complete menu and one category menu show expected
+- [x] 4.1 Verify the complete menu and one category menu show expected
   current prices in the pilot, with no missing/foreign products.
