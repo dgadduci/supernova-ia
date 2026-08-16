@@ -319,13 +319,14 @@ class ComunicacionFlavorRepositoryReadOnlyTest(unittest.TestCase):
         session.rollback.assert_not_called()
 
 
-class ComunicacionFlavorSafeExposureTest(unittest.TestCase):
-    """The service exposes only ``id``, ``codigo``, ``nombre``,
-    ``descripcion``, ``version`` and ``activo`` through the response
-    schemas. The internal ``instruccion_llm`` must never be returned
-    by the active listing endpoint."""
+class ComunicacionFlavorAdministrativeListingTest(unittest.TestCase):
+    """The administrative ``GET /flavors-comunicacion`` listing
+    exposes the persisted ``instruccion_llm`` exactly, includes only
+    active flavors, and the response schema keeps the field bounded
+    by the documented column limit so the listing cannot leak
+    arbitrarily long text."""
 
-    def test_active_listing_excludes_instruccion_llm(self) -> None:
+    def test_active_listing_includes_instruccion_llm(self) -> None:
         from backend.schemas.comunicacion_flavor import (
             FlavorComunicacionResponse,
         )
@@ -337,7 +338,13 @@ class ComunicacionFlavorSafeExposureTest(unittest.TestCase):
             for flavor in flavors:
                 payload = FlavorComunicacionResponse.model_validate(flavor)
                 dumped = payload.model_dump()
-                self.assertNotIn("instruccion_llm", dumped)
+                self.assertIn("instruccion_llm", dumped)
+                self.assertEqual(
+                    dumped["instruccion_llm"],
+                    flavor.instruccion_llm,
+                )
+                self.assertGreater(len(dumped["instruccion_llm"]), 0)
+                self.assertLessEqual(len(dumped["instruccion_llm"]), 2000)
                 self.assertEqual(
                     set(dumped.keys()),
                     {
@@ -345,10 +352,41 @@ class ComunicacionFlavorSafeExposureTest(unittest.TestCase):
                         "codigo",
                         "nombre",
                         "descripcion",
+                        "instruccion_llm",
                         "version",
                         "activo",
                     },
                 )
+
+    def test_inactive_flavor_is_omitted_from_listing(self) -> None:
+        inactive_id = _add_temporary_inactive_flavor()
+        self.addCleanup(_delete_temporary_flavor, inactive_id)
+        with TestingSessionLocal() as session:
+            service = ComunicacionFlavorService(session)
+            listed = service.list_active_flavors()
+            listed_ids = [int(flavor.id) for flavor in listed]
+        self.assertNotIn(inactive_id, listed_ids)
+
+    def test_response_schema_bounds_instruccion_llm_to_2000(self) -> None:
+        from annotated_types import MaxLen, MinLen
+
+        from backend.schemas.comunicacion_flavor import (
+            FlavorComunicacionResponse,
+        )
+
+        field = FlavorComunicacionResponse.model_fields["instruccion_llm"]
+        max_lengths = [
+            int(meta.max_length)
+            for meta in field.metadata
+            if isinstance(meta, MaxLen)
+        ]
+        min_lengths = [
+            int(meta.min_length)
+            for meta in field.metadata
+            if isinstance(meta, MinLen)
+        ]
+        self.assertEqual(max_lengths, [2000])
+        self.assertEqual(min_lengths, [1])
 
 
 if __name__ == "__main__":
