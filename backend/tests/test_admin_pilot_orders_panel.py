@@ -35,6 +35,9 @@ import backend.routers.admin_pilot_orders as router_module
 from backend.config import settings as settings_module
 from backend.config.settings import Settings
 from backend.dependencies import get_session
+from backend.diagnostics.outbound_response_style_prompt_template import (
+    OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION,
+)
 from backend.intents.schemas.intent_classification import IntentName
 from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.models import EstadoPedido, EstadoSession
@@ -68,7 +71,7 @@ def _style_diagnostic_not_attempted():
         eligible_count=0,
         applied_count=0,
         response_types=(),
-        template_version="outbound-response-styler/v1.2.0",
+        template_version=OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION,
     )
 
 
@@ -5644,7 +5647,7 @@ class PanelOutboundStyleDiagnosticTest(unittest.TestCase):
         flavor_code=None,
         response_types=(),
         fallback_category=None,
-        template_version="outbound-response-styler/v1.2.0",
+        template_version=OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION,
     ):
         from backend.services.outbound_response_styler import StyleDiagnostic
         return StyleDiagnostic(
@@ -5892,9 +5895,12 @@ class PanelOutboundStyleDiagnosticTest(unittest.TestCase):
         )
         response, _ = self._mock_successful_turn(diagnostic=diagnostic)
         body = response.json()
+        # The wire payload MUST mirror the static prompt template
+        # version imported from the prompt template module, never
+        # a hard-coded literal that could drift across amendments.
         self.assertEqual(
             body["outbound_style"]["template_version"],
-            "outbound-response-styler/v1.2.0",
+            OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION,
         )
 
     def test_diagnostic_does_not_persist_on_session_or_pedido(self) -> None:

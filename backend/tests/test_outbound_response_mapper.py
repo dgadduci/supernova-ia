@@ -35,6 +35,9 @@ import importlib
 import unittest
 from unittest.mock import MagicMock, patch
 
+from backend.diagnostics.outbound_response_style_prompt_template import (
+    OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION,
+)
 from backend.intents.responses.draft_order_closure import (
     build_set_direccion_entrega_response,
     build_set_fecha_hora_entrega_response,
@@ -541,7 +544,7 @@ class OutboundMapperWithDiagnosticTest(unittest.TestCase):
             applied_count=1,
             flavor_code="joven",
             response_types=(RESPONSE_TYPE_SOCIAL_GREETING,),
-            template_version="outbound-response-styler/v1.2.0",
+            template_version=OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION,
         )
 
         def _style(*args, **kwargs):
@@ -703,7 +706,7 @@ class OutboundMapperWithDiagnosticTest(unittest.TestCase):
                     applied_count=1,
                     flavor_code="joven",
                     response_types=(RESPONSE_TYPE_SOCIAL_GREETING,),
-                    template_version="outbound-response-styler/v1.2.0",
+                    template_version=OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION,
                 ),
             )
             list_only = build_customer_responses(

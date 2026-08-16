@@ -5,6 +5,9 @@ from unittest.mock import MagicMock, patch
 
 import pydantic
 
+from backend.diagnostics.outbound_response_style_prompt_template import (
+    OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION,
+)
 from backend.intents.orchestration import (
     incoming_message_response_orchestrator as response_module,
 )
@@ -975,7 +978,7 @@ class ProcessIncomingMessageWithStyleDiagnosticTest(unittest.TestCase):
             applied_count=1,
             flavor_code="joven",
             response_types=(RESPONSE_TYPE_SOCIAL_GREETING,),
-            template_version="outbound-response-styler/v1.2.0",
+            template_version=OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION,
         )
         companion.return_value = ([rendered], diagnostic)
 
@@ -1032,7 +1035,7 @@ class ProcessIncomingMessageWithStyleDiagnosticTest(unittest.TestCase):
                 eligible_count=0,
                 applied_count=0,
                 response_types=(),
-                template_version="outbound-response-styler/v1.2.0",
+                template_version=OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION,
             ),
         )
         list_only.side_effect = AssertionError(
@@ -1057,7 +1060,7 @@ class ProcessIncomingMessageWithStyleDiagnosticTest(unittest.TestCase):
             eligible_count=0,
             applied_count=0,
             response_types=(),
-            template_version="outbound-response-styler/v1.2.0",
+            template_version=OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION,
         )
         with patch.object(
             response_module, "build_customer_responses_with_diagnostic"

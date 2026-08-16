@@ -194,3 +194,25 @@ never receive this local UI projection.
 non-neutral selected flavor. An `outcome=fallback` means the selected flavor
 was attempted but no valid wrapper was applied; it never means that the
 application silently selected `neutro`.
+
+## Menu wrapper calibration
+
+`menu_full` is an eligible opaque response-type token, not an invitation for
+the LLM to author a menu. The deterministic renderer remains the sole source
+of headings, categories, products, presentations and prices. The static
+wrapper prompt will make this boundary explicit: a `menu_full` wrapper may
+only add a generic one-line framing phrase around the already-rendered menu.
+It must not reproduce, summarize, enumerate, title, format or describe any
+menu content.
+
+The selected persisted flavor instruction remains the sole source of tone and
+emoji choices. The static prompt may enforce the generic/factual-free boundary
+but shall not prescribe a particular phrase or emoji for `joven` or any other
+flavor. Updating this static rule increments the template version and changes
+only the static fingerprint.
+
+No validator is weakened. The existing strict JSON schema, 96 characters per
+field, 140-character combined bound, no digits/questions/newlines/control
+characters, one-request maximum and exact factual-substring composition remain
+authoritative. An invalid menu wrapper continues to preserve the exact
+deterministic menu as a `wrapper_invalid` fallback.
