@@ -11,6 +11,7 @@ from backend.intents.orchestration import (
 from backend.intents.orchestration.incoming_message_response_orchestrator import (
     GENERIC_MESSAGE,
     process_incoming_message_with_responses,
+    process_incoming_message_with_style_diagnostic,
 )
 from backend.intents.schemas.customer_response import CustomerResponse
 from backend.intents.schemas.processed_intent import ProcessedIntent
@@ -465,22 +466,29 @@ class ProcessIncomingMessageWithResponsesPublicSurfaceTest(unittest.TestCase):
     def test_module_all_is_limited_to_response_orchestrator(self):
         importlib.reload(response_module)
         self.assertEqual(
-            response_module.__all__,
-            ["process_incoming_message_with_responses"],
+            set(response_module.__all__),
+            {
+                "process_incoming_message_with_responses",
+                "process_incoming_message_with_style_diagnostic",
+            },
         )
 
-    def test_module_has_no_additional_public_functions(self):
+    def test_module_has_no_unrelated_public_functions(self):
         import ast
 
         with open(response_module.__file__, encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
-        function_names = [
+        function_names = {
             node.name
             for node in tree.body
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        ]
+        }
         self.assertEqual(
-            function_names, ["process_incoming_message_with_responses"]
+            function_names,
+            {
+                "process_incoming_message_with_responses",
+                "process_incoming_message_with_style_diagnostic",
+            },
         )
 
 
@@ -918,6 +926,159 @@ class ProcessIncomingMessageWithResponsesCoalescingTest(unittest.TestCase):
         self.assertEqual(builder.call_count, 2)
         builder.assert_any_call(db, session, first)
         builder.assert_any_call(db, session, later)
+
+
+class ProcessIncomingMessageWithStyleDiagnosticTest(unittest.TestCase):
+    """Subphase 7 — local pilot styling diagnostic handoff.
+
+    The opt-in companion
+    :func:`process_incoming_message_with_style_diagnostic`
+    must follow the same classification, orchestration and
+    mapper path as the list-only API. It only switches the
+    final mapper call to the opt-in companion so the response
+    list and the closed styling diagnostic come from the same
+    single styling pass.
+
+    The companion is request-scoped, ephemeral, never persisted
+    and never sent to the provider outbox. The transactional
+    message processor remains the sole commit/rollback authority.
+    """
+
+    @patch.object(
+        response_module, "build_customer_responses_with_diagnostic"
+    )
+    @patch.object(response_module, "process_incoming_message_transactional")
+    def test_routes_through_diagnostic_companion_returns_tuple(
+        self, inner, companion
+    ) -> None:
+        from backend.services.outbound_response_styler import (
+            RESPONSE_TYPE_SOCIAL_GREETING,
+            StyleDiagnostic,
+        )
+
+        processed = ProcessedIntent(
+            intent="saludo",
+            source_text="hola",
+            status="executed",
+            handler="social_conversation_response",
+            recognizer="intent_classifier",
+        )
+        inner.return_value = [processed]
+        rendered = CustomerResponse(
+            message=_SALUDO_FIXED_MESSAGE,
+            intent="saludo",
+            status="executed",
+        )
+        diagnostic = StyleDiagnostic(
+            outcome="applied",
+            eligible_count=1,
+            applied_count=1,
+            flavor_code="joven",
+            response_types=(RESPONSE_TYPE_SOCIAL_GREETING,),
+            template_version="outbound-response-styler/v1.2.0",
+        )
+        companion.return_value = ([rendered], diagnostic)
+
+        db = _db()
+        session = _session()
+        responses, returned_diagnostic = (
+            process_incoming_message_with_style_diagnostic(
+                db, session, "hola"
+            )
+        )
+
+        self.assertEqual(len(responses), 1)
+        self.assertEqual(responses[0], rendered)
+        self.assertIs(returned_diagnostic, diagnostic)
+        inner.assert_called_once()
+        companion.assert_called_once()
+        # The orchestrator must forward the exact selected session
+        # to the diagnostic companion so the styling pass targets
+        # the same session as the ordinary processor path.
+        self.assertIs(companion.call_args.args[1], session)
+        # The companion must also receive the same processed
+        # intent list produced by the classic transactional
+        # message processor.
+        self.assertEqual(companion.call_args.args[2], [processed])
+
+    @patch.object(response_module, "build_customer_responses")
+    @patch.object(
+        response_module, "build_customer_responses_with_diagnostic"
+    )
+    @patch.object(response_module, "process_incoming_message_transactional")
+    def test_does_not_invoke_list_only_companion(
+        self, inner, with_diagnostic, list_only
+    ) -> None:
+        from backend.services.outbound_response_styler import StyleDiagnostic
+
+        processed = ProcessedIntent(
+            intent="saludo",
+            source_text="hola",
+            status="executed",
+            handler="social_conversation_response",
+            recognizer="intent_classifier",
+        )
+        inner.return_value = [processed]
+        with_diagnostic.return_value = (
+            [
+                CustomerResponse(
+                    message=_SALUDO_FIXED_MESSAGE,
+                    intent="saludo",
+                    status="executed",
+                )
+            ],
+            StyleDiagnostic(
+                outcome="not_attempted",
+                eligible_count=0,
+                applied_count=0,
+                response_types=(),
+                template_version="outbound-response-styler/v1.2.0",
+            ),
+        )
+        list_only.side_effect = AssertionError(
+            "list-only mapper must not be invoked by the diagnostic companion"
+        )
+        process_incoming_message_with_style_diagnostic(
+            _db(), _session(), "hola"
+        )
+        self.assertEqual(with_diagnostic.call_count, 1)
+        self.assertEqual(list_only.call_count, 0)
+
+    def test_does_not_control_database_transactions(self) -> None:
+        from backend.services.outbound_response_styler import StyleDiagnostic
+
+        styled = CustomerResponse(
+            message=_SALUDO_FIXED_MESSAGE,
+            intent="saludo",
+            status="executed",
+        )
+        diagnostic = StyleDiagnostic(
+            outcome="not_attempted",
+            eligible_count=0,
+            applied_count=0,
+            response_types=(),
+            template_version="outbound-response-styler/v1.2.0",
+        )
+        with patch.object(
+            response_module, "build_customer_responses_with_diagnostic"
+        ) as companion, patch.object(
+            response_module, "process_incoming_message_transactional"
+        ):
+            companion.return_value = ([styled], diagnostic)
+            process_incoming_message_with_style_diagnostic(
+                _db(), _session(), "hola"
+            )
+        db = _db()
+        for method in (
+            "commit",
+            "rollback",
+            "begin",
+            "begin_nested",
+            "flush",
+            "refresh",
+            "close",
+        ):
+            getattr(db, method).assert_not_called()
 
 
 if __name__ == "__main__":

@@ -61,6 +61,19 @@ from backend.services.pilot_order_operations_view_service import (
 CONFIGURED_TOKEN = "pilot-panel-token-for-tests"
 
 
+def _style_diagnostic_not_attempted():
+    from backend.services.outbound_response_styler import StyleDiagnostic
+    return StyleDiagnostic(
+        outcome="not_attempted",
+        eligible_count=0,
+        applied_count=0,
+        response_types=(),
+        template_version="outbound-response-styler/v1.2.0",
+    )
+
+
+
+
 def _settings(token: str | None = CONFIGURED_TOKEN) -> Settings:
     base = settings_module.load_settings()
     return Settings(
@@ -1714,19 +1727,22 @@ class PanelExecutionStateResponseTest(unittest.TestCase):
             return_value=(exact_pedido, exact_session),
         ) as snapshot_loader, patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             from backend.intents.schemas.customer_response import (
                 CustomerResponse,
             )
 
-            process_mock.return_value = [
-                CustomerResponse(
+            process_mock.return_value = (
+                [
+                    CustomerResponse(
                     message="Hola",
                     intent="saludo",
                     status="executed",
-                )
-            ]
+                    )
+                ],
+                _style_diagnostic_not_attempted(),
+            )
             response = self._post()
         self.assertEqual(response.status_code, 200)
         self.assertEqual(loader.call_count, 1)
@@ -1794,19 +1810,22 @@ class PanelExecutionStateResponseTest(unittest.TestCase):
             return_value=(exact_pedido, exact_session),
         ), patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             from backend.intents.schemas.customer_response import (
                 CustomerResponse,
             )
 
-            process_mock.return_value = [
-                CustomerResponse(
+            process_mock.return_value = (
+                [
+                    CustomerResponse(
                     message="ok",
                     intent="saludo",
                     status="executed",
-                )
-            ]
+                    )
+                ],
+                _style_diagnostic_not_attempted(),
+            )
             response = self._post()
         body_text = response.text
         self.assertEqual(response.status_code, 200)
@@ -1843,19 +1862,22 @@ class PanelExecutionStateResponseTest(unittest.TestCase):
             return_value=(exact_pedido, exact_session),
         ), patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             from backend.intents.schemas.customer_response import (
                 CustomerResponse,
             )
 
-            process_mock.return_value = [
-                CustomerResponse(
+            process_mock.return_value = (
+                [
+                    CustomerResponse(
                     message="ok",
                     intent="saludo",
                     status="executed",
-                )
-            ]
+                    )
+                ],
+                _style_diagnostic_not_attempted(),
+            )
             response = self._post()
         self.assertEqual(response.status_code, 200)
         state = response.json()["execution_state"]
@@ -1886,19 +1908,22 @@ class PanelExecutionStateResponseTest(unittest.TestCase):
             return_value=(exact_pedido, exact_session),
         ), patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             from backend.intents.schemas.customer_response import (
                 CustomerResponse,
             )
 
-            process_mock.return_value = [
-                CustomerResponse(
+            process_mock.return_value = (
+                [
+                    CustomerResponse(
                     message="ok",
                     intent="saludo",
                     status="executed",
-                )
-            ]
+                    )
+                ],
+                _style_diagnostic_not_attempted(),
+            )
             response = self._post()
         self.assertEqual(response.status_code, 200)
         state = response.json()["execution_state"]
@@ -1924,19 +1949,22 @@ class PanelExecutionStateResponseTest(unittest.TestCase):
             return_value=(exact_pedido, exact_session),
         ), patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             from backend.intents.schemas.customer_response import (
                 CustomerResponse,
             )
 
-            process_mock.return_value = [
-                CustomerResponse(
+            process_mock.return_value = (
+                [
+                    CustomerResponse(
                     message="ok",
                     intent="saludo",
                     status="executed",
-                )
-            ]
+                    )
+                ],
+                _style_diagnostic_not_attempted(),
+            )
             response = self._post()
         self.assertEqual(response.status_code, 200)
         self.session.commit.assert_not_called()
@@ -1984,19 +2012,22 @@ class PanelExecutionStateResponseTest(unittest.TestCase):
             return_value=(exact_pedido, exact_session),
         ) as snapshot_loader, patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             from backend.intents.schemas.customer_response import (
                 CustomerResponse,
             )
 
-            process_mock.return_value = [
-                CustomerResponse(
+            process_mock.return_value = (
+                [
+                    CustomerResponse(
                     message="Pedido confirmado",
                     intent="confirmar_pedido",
                     status="executed",
-                )
-            ]
+                    )
+                ],
+                _style_diagnostic_not_attempted(),
+            )
             response = self._post()
         self.assertEqual(response.status_code, 200)
         # Pre-turn loader is invoked once; the post-turn snapshot
@@ -2079,19 +2110,22 @@ class PanelExecutionStateResponseTest(unittest.TestCase):
             return_value=None,
         ) as snapshot_loader, patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             from backend.intents.schemas.customer_response import (
                 CustomerResponse,
             )
 
-            process_mock.return_value = [
-                CustomerResponse(
+            process_mock.return_value = (
+                [
+                    CustomerResponse(
                     message="ok",
                     intent="saludo",
                     status="executed",
-                )
-            ]
+                    )
+                ],
+                _style_diagnostic_not_attempted(),
+            )
             response = self._post()
         self.assertEqual(response.status_code, 400)
         self.assertEqual(snapshot_loader.call_count, 1)
@@ -2119,24 +2153,27 @@ class PanelExecutionStateResponseTest(unittest.TestCase):
             return_value=(exact_pedido, exact_session),
         ), patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             from backend.intents.schemas.customer_response import (
                 CustomerResponse,
             )
 
-            process_mock.return_value = [
-                CustomerResponse(
+            process_mock.return_value = (
+                [
+                    CustomerResponse(
                     message="ok",
                     intent="saludo",
                     status="executed",
-                )
-            ]
+                    )
+                ],
+                _style_diagnostic_not_attempted(),
+            )
             response = self._post()
         body = response.json()
         self.assertEqual(
             set(body.keys()),
-            {"responses", "execution_state", "order_lines"},
+            {"responses", "execution_state", "order_lines", "outbound_style"},
         )
 
 
@@ -2704,19 +2741,22 @@ class PanelLocalTestAuthExactTargetNoProviderRegressionTest(
             return_value=(exact_pedido, exact_session),
         ), patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             from backend.intents.schemas.customer_response import (
                 CustomerResponse,
             )
 
-            process_mock.return_value = [
-                CustomerResponse(
+            process_mock.return_value = (
+                [
+                    CustomerResponse(
                     message="ok",
                     intent="saludo",
                     status="executed",
-                )
-            ]
+                    )
+                ],
+                _style_diagnostic_not_attempted(),
+            )
             headers = _basic_auth_header("ignored", CONFIGURED_TOKEN)
             headers["X-Local-Test-Origin"] = "same-origin"
             response = self.client.post(
@@ -2730,7 +2770,7 @@ class PanelLocalTestAuthExactTargetNoProviderRegressionTest(
         # The body must contain exactly the three documented keys.
         self.assertEqual(
             set(body.keys()),
-            {"responses", "execution_state", "order_lines"},
+            {"responses", "execution_state", "order_lines", "outbound_style"},
         )
         for forbidden in (
             "SECRET-TEXT",
@@ -2839,7 +2879,7 @@ class PanelLocalTestRouteHeaderTest(unittest.TestCase):
     def test_missing_origin_header_returns_generic_rejection(self) -> None:
         with patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             response = self._post(origin_value=None)
         self.assertEqual(response.status_code, 400)
@@ -2851,7 +2891,7 @@ class PanelLocalTestRouteHeaderTest(unittest.TestCase):
     def test_wrong_origin_header_returns_generic_rejection(self) -> None:
         with patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             response = self._post(origin_value="attacker.example")
         self.assertEqual(response.status_code, 400)
@@ -2889,7 +2929,7 @@ class PanelLocalTestRouteBodyValidationTest(unittest.TestCase):
     def test_empty_body_returns_422(self) -> None:
         with patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             response = self._post(body=None, json={})
         self.assertEqual(response.status_code, 422)
@@ -2898,7 +2938,7 @@ class PanelLocalTestRouteBodyValidationTest(unittest.TestCase):
     def test_non_string_message_returns_422(self) -> None:
         with patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             response = self._post(body=None, json={"message": 123})
         self.assertEqual(response.status_code, 422)
@@ -2907,7 +2947,7 @@ class PanelLocalTestRouteBodyValidationTest(unittest.TestCase):
     def test_extra_field_returns_422(self) -> None:
         with patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             response = self._post(
                 body=None, json={"message": "hola", "extra": "x"}
@@ -2918,7 +2958,7 @@ class PanelLocalTestRouteBodyValidationTest(unittest.TestCase):
     def test_oversized_message_returns_422(self) -> None:
         with patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             response = self._post(
                 body=None,
@@ -2930,7 +2970,7 @@ class PanelLocalTestRouteBodyValidationTest(unittest.TestCase):
     def test_empty_string_message_returns_422(self) -> None:
         with patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             response = self._post(body=None, json={"message": ""})
         self.assertEqual(response.status_code, 422)
@@ -2989,7 +3029,7 @@ class PanelLocalTestRouteRevalidationTest(unittest.TestCase):
     def test_invalid_pedido_id_returns_generic_rejection(self) -> None:
         with patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock, self._stub_loader_returning(None):
             response = self._post(pedido_id="abc")
         self.assertEqual(response.status_code, 400)
@@ -2998,7 +3038,7 @@ class PanelLocalTestRouteRevalidationTest(unittest.TestCase):
     def test_missing_pedido_returns_generic_rejection(self) -> None:
         with patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock, self._stub_loader_returning(None):
             response = self._post(pedido_id="9999")
         self.assertEqual(response.status_code, 400)
@@ -3007,7 +3047,7 @@ class PanelLocalTestRouteRevalidationTest(unittest.TestCase):
     def test_loader_rejection_returns_generic_rejection(self) -> None:
         with patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock, self._stub_loader_returning(None):
             response = self._post(pedido_id="42")
         self.assertEqual(response.status_code, 400)
@@ -3016,7 +3056,7 @@ class PanelLocalTestRouteRevalidationTest(unittest.TestCase):
     def test_loader_rejection_returns_generic_message(self) -> None:
         with patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock, self._stub_loader_returning(None):
             response = self._post(pedido_id="42")
         body = response.json()
@@ -3047,7 +3087,7 @@ class PanelLocalTestRouteRevalidationTest(unittest.TestCase):
         # for "pedido ya no es borrador".
         with patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock, self._stub_loader_returning(None):
             response = self._post(pedido_id="42")
         self.assertEqual(response.status_code, 400)
@@ -3116,23 +3156,26 @@ class PanelLocalTestRouteHappyPathTest(unittest.TestCase):
             return_value=(exact_pedido, exact_session),
         ), patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             from backend.intents.schemas.customer_response import CustomerResponse
 
-            process_mock.return_value = [
-                CustomerResponse(
+            process_mock.return_value = (
+                [
+                    CustomerResponse(
                     message="Hola, soy el cliente",
                     intent="saludo",
                     status="executed",
-                )
-            ]
+                    )
+                ],
+                _style_diagnostic_not_attempted(),
+            )
             response = self._post()
         self.assertEqual(response.status_code, 200)
         self.assertEqual(loader.call_count, 1)
         process_mock.assert_called_once()
         called_args = process_mock.call_args.args
-        # Signature is ``process_incoming_message_with_responses(db, session, message)``
+        # Signature is ``process_incoming_message_with_style_diagnostic(db, session, message)``
         # so the second positional must be the exact selected Session.
         self.assertIs(called_args[1], exact_session)
         self.assertEqual(called_args[2], "hola")
@@ -3185,17 +3228,20 @@ class PanelLocalTestRouteHappyPathTest(unittest.TestCase):
             return_value=(exact_pedido, exact_session),
         ), patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             from backend.intents.schemas.customer_response import CustomerResponse
 
-            process_mock.return_value = [
-                CustomerResponse(
+            process_mock.return_value = (
+                [
+                    CustomerResponse(
                     message="ok",
                     intent="saludo",
                     status="executed",
-                )
-            ]
+                    )
+                ],
+                _style_diagnostic_not_attempted(),
+            )
             response = self._post()
         self.assertEqual(response.status_code, 200)
         # The route never imports or references the provider
@@ -3275,17 +3321,20 @@ class PanelLocalTestRouteNoMutationTest(unittest.TestCase):
             return_value=(exact_pedido, exact_session),
         ), patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             from backend.intents.schemas.customer_response import CustomerResponse
 
-            process_mock.return_value = [
-                CustomerResponse(
+            process_mock.return_value = (
+                [
+                    CustomerResponse(
                     message="ok",
                     intent="saludo",
                     status="executed",
-                )
-            ]
+                    )
+                ],
+                _style_diagnostic_not_attempted(),
+            )
             response = self._post(body={"message": "hola"})
         self.assertEqual(response.status_code, 200)
 
@@ -3408,7 +3457,7 @@ class PanelLocalTestRouteOrderLinesSnapshotTest(unittest.TestCase):
             return_value=(exact_pedido, exact_session),
         ), patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             from backend.intents.schemas.customer_response import (
                 CustomerResponse,
@@ -3417,13 +3466,16 @@ class PanelLocalTestRouteOrderLinesSnapshotTest(unittest.TestCase):
             service_cls.return_value = _stub_service(
                 order_lines_snapshot=snapshots,
             )
-            process_mock.return_value = [
-                CustomerResponse(
+            process_mock.return_value = (
+                [
+                    CustomerResponse(
                     message="ok",
                     intent="saludo",
                     status="executed",
-                )
-            ]
+                    )
+                ],
+                _style_diagnostic_not_attempted(),
+            )
             return self._post(), service_cls.return_value, process_mock
 
     def test_happy_path_returns_order_lines_snapshot(self) -> None:
@@ -3450,7 +3502,7 @@ class PanelLocalTestRouteOrderLinesSnapshotTest(unittest.TestCase):
         body = response.json()
         self.assertEqual(
             set(body.keys()),
-            {"responses", "execution_state", "order_lines"},
+            {"responses", "execution_state", "order_lines", "outbound_style"},
         )
         self.assertEqual(len(body["order_lines"]), 2)
         first = body["order_lines"][0]
@@ -3608,7 +3660,7 @@ class PanelLocalTestRouteOrderLinesSnapshotTest(unittest.TestCase):
         headers = _basic_auth_header("ignored", CONFIGURED_TOKEN)
         with patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock, patch.object(
             router_module,
             "PilotOrderOperationsViewService",
@@ -4593,22 +4645,25 @@ class PanelLocalTestConfirmedOrderStatusTest(unittest.TestCase):
             return_value=processed_intent,
         ) as status_query, patch.object(
             router_module,
-            "build_customer_responses",
-            return_value=[
-                MagicMock(
+            "build_customer_responses_with_diagnostic",
+            return_value=(
+                [
+                    MagicMock(
                     name="CustomerResponse",
                     message="Tu pedido fue recibido y está confirmado.",
                     intent="consultar_estado_pedido",
                     status="executed",
-                )
-            ],
+                    )
+                ],
+                _style_diagnostic_not_attempted(),
+            )
         ) as mapper, patch.object(
             router_module,
             "_reload_exact_session_for_snapshot",
             return_value=(self._build_pedido(), session),
         ) as snapshot_loader, patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock, patch.object(
             router_module, "PilotOrderOperationsViewService"
         ) as service_cls:
@@ -4673,7 +4728,7 @@ class PanelLocalTestConfirmedOrderStatusTest(unittest.TestCase):
                 self.assertNotIn(forbidden, response.text)
         self.assertEqual(
             set(body.keys()),
-            {"responses", "execution_state", "order_lines"},
+            {"responses", "execution_state", "order_lines", "outbound_style"},
         )
 
     def test_confirmed_order_does_not_call_transaction_control_methods(
@@ -4704,22 +4759,25 @@ class PanelLocalTestConfirmedOrderStatusTest(unittest.TestCase):
             return_value=processed_intent,
         ), patch.object(
             router_module,
-            "build_customer_responses",
-            return_value=[
-                MagicMock(
+            "build_customer_responses_with_diagnostic",
+            return_value=(
+                [
+                    MagicMock(
                     name="CustomerResponse",
                     message="ok",
                     intent="consultar_estado_pedido",
                     status="executed",
-                )
-            ],
+                    )
+                ],
+                _style_diagnostic_not_attempted(),
+            )
         ), patch.object(
             router_module,
             "_reload_exact_session_for_snapshot",
             return_value=(self._build_pedido(), session),
         ), patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ):
             classifier_instance = MagicMock()
             classifier_instance.query.return_value = classification
@@ -4758,10 +4816,10 @@ class PanelLocalTestConfirmedOrderStatusTest(unittest.TestCase):
             "process_initial_order_status_query",
         ) as status_query, patch.object(
             router_module,
-            "build_customer_responses",
+            "build_customer_responses_with_diagnostic",
         ) as mapper, patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             classifier_instance = MagicMock()
             classifier_instance.query.return_value = classification
@@ -4804,10 +4862,10 @@ class PanelLocalTestConfirmedOrderStatusTest(unittest.TestCase):
                     "process_initial_order_status_query",
                 ) as status_query, patch.object(
                     router_module,
-                    "build_customer_responses",
+                    "build_customer_responses_with_diagnostic",
                 ) as mapper, patch.object(
                     router_module,
-                    "process_incoming_message_with_responses",
+                    "process_incoming_message_with_style_diagnostic",
                 ) as process_mock:
                     classifier_instance = MagicMock()
                     classifier_instance.query.return_value = classification
@@ -4838,10 +4896,10 @@ class PanelLocalTestConfirmedOrderStatusTest(unittest.TestCase):
             "process_initial_order_status_query",
         ) as status_query, patch.object(
             router_module,
-            "build_customer_responses",
+            "build_customer_responses_with_diagnostic",
         ) as mapper, patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             classifier_instance = MagicMock()
             classifier_instance.query.return_value = classification
@@ -4881,10 +4939,10 @@ class PanelLocalTestConfirmedOrderStatusTest(unittest.TestCase):
             "process_initial_order_status_query",
         ) as status_query, patch.object(
             router_module,
-            "build_customer_responses",
+            "build_customer_responses_with_diagnostic",
         ) as mapper, patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             classifier_instance = MagicMock()
             classifier_instance.query.side_effect = RuntimeError(
@@ -4941,10 +4999,10 @@ class PanelLocalTestConfirmedOrderStatusTest(unittest.TestCase):
             "process_initial_order_status_query",
         ) as status_query, patch.object(
             router_module,
-            "build_customer_responses",
+            "build_customer_responses_with_diagnostic",
         ) as mapper, patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             classifier_instance = MagicMock()
             classifier_cls.return_value = classifier_instance
@@ -4987,10 +5045,10 @@ class PanelLocalTestConfirmedOrderStatusTest(unittest.TestCase):
             "process_initial_order_status_query",
         ) as status_query, patch.object(
             router_module,
-            "build_customer_responses",
+            "build_customer_responses_with_diagnostic",
         ) as mapper, patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             classifier_instance = MagicMock()
             classifier_cls.return_value = classifier_instance
@@ -5020,10 +5078,10 @@ class PanelLocalTestConfirmedOrderStatusTest(unittest.TestCase):
             "process_initial_order_status_query",
         ) as status_query, patch.object(
             router_module,
-            "build_customer_responses",
+            "build_customer_responses_with_diagnostic",
         ) as mapper, patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             classifier_instance = MagicMock()
             classifier_cls.return_value = classifier_instance
@@ -5053,10 +5111,10 @@ class PanelLocalTestConfirmedOrderStatusTest(unittest.TestCase):
             "process_initial_order_status_query",
         ) as status_query, patch.object(
             router_module,
-            "build_customer_responses",
+            "build_customer_responses_with_diagnostic",
         ) as mapper, patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             classifier_instance = MagicMock()
             classifier_cls.return_value = classifier_instance
@@ -5094,10 +5152,10 @@ class PanelLocalTestConfirmedOrderStatusTest(unittest.TestCase):
             "process_initial_order_status_query",
         ) as status_query, patch.object(
             router_module,
-            "build_customer_responses",
+            "build_customer_responses_with_diagnostic",
         ) as mapper, patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             classifier_instance = MagicMock()
             classifier_cls.return_value = classifier_instance
@@ -5150,22 +5208,25 @@ class PanelLocalTestConfirmedOrderStatusTest(unittest.TestCase):
             return_value=processed_intent,
         ), patch.object(
             router_module,
-            "build_customer_responses",
-            return_value=[
-                MagicMock(
+            "build_customer_responses_with_diagnostic",
+            return_value=(
+                [
+                    MagicMock(
                     name="CustomerResponse",
                     message="ok",
                     intent="consultar_estado_pedido",
                     status="executed",
-                )
-            ],
+                    )
+                ],
+                _style_diagnostic_not_attempted(),
+            )
         ), patch.object(
             router_module,
             "_reload_exact_session_for_snapshot",
             return_value=(self._build_pedido(), session),
         ) as snapshot_loader, patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ):
             classifier_instance = MagicMock()
             classifier_instance.query.return_value = classification
@@ -5206,7 +5267,7 @@ class PanelLocalTestConfirmedOrderStatusTest(unittest.TestCase):
             router_module, "IntentClassifier"
         ) as classifier_cls, patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock, patch.object(
             router_module,
             "_reload_exact_session_for_snapshot",
@@ -5216,19 +5277,22 @@ class PanelLocalTestConfirmedOrderStatusTest(unittest.TestCase):
             "process_initial_order_status_query",
         ) as status_query, patch.object(
             router_module,
-            "build_customer_responses",
+            "build_customer_responses_with_diagnostic",
         ) as mapper:
             from backend.intents.schemas.customer_response import (
                 CustomerResponse,
             )
 
-            process_mock.return_value = [
-                CustomerResponse(
+            process_mock.return_value = (
+                [
+                    CustomerResponse(
                     message="ok",
                     intent="saludo",
                     status="executed",
-                )
-            ]
+                    )
+                ],
+                _style_diagnostic_not_attempted(),
+            )
             response = self._post(message="hola")
         self.assertEqual(response.status_code, 200)
         process_mock.assert_called_once()
@@ -5275,22 +5339,25 @@ class PanelLocalTestConfirmedOrderStatusTest(unittest.TestCase):
             return_value=processed_intent,
         ) as status_query, patch.object(
             router_module,
-            "build_customer_responses",
-            return_value=[
-                MagicMock(
+            "build_customer_responses_with_diagnostic",
+            return_value=(
+                [
+                    MagicMock(
                     name="CustomerResponse",
                     message="ok",
                     intent="consultar_estado_pedido",
                     status="executed",
-                )
-            ],
+                    )
+                ],
+                _style_diagnostic_not_attempted(),
+            )
         ) as mapper, patch.object(
             router_module,
             "_reload_exact_session_for_snapshot",
             return_value=(self._build_pedido(), session),
         ), patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             classifier_instance = MagicMock()
             classifier_instance.query.return_value = classification
@@ -5341,10 +5408,10 @@ class PanelLocalTestConfirmedOrderStatusTest(unittest.TestCase):
             "process_initial_order_status_query",
         ) as status_query, patch.object(
             router_module,
-            "build_customer_responses",
+            "build_customer_responses_with_diagnostic",
         ) as mapper, patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             classifier_instance = MagicMock()
             classifier_cls.return_value = classifier_instance
@@ -5403,10 +5470,10 @@ class PanelLocalTestConfirmedOrderStatusTest(unittest.TestCase):
             "process_initial_order_status_query",
         ) as status_query, patch.object(
             router_module,
-            "build_customer_responses",
+            "build_customer_responses_with_diagnostic",
         ) as mapper, patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             classifier_instance = MagicMock()
             classifier_cls.return_value = classifier_instance
@@ -5473,10 +5540,10 @@ class PanelLocalTestConfirmedOrderStatusTest(unittest.TestCase):
             "process_initial_order_status_query",
         ) as status_query, patch.object(
             router_module,
-            "build_customer_responses",
+            "build_customer_responses_with_diagnostic",
         ) as mapper, patch.object(
             router_module,
-            "process_incoming_message_with_responses",
+            "process_incoming_message_with_style_diagnostic",
         ) as process_mock:
             classifier_instance = MagicMock()
             classifier_cls.return_value = classifier_instance
@@ -5516,6 +5583,437 @@ class PanelLocalTestConfirmedOrderStatusTest(unittest.TestCase):
         ):
             with self.subTest(method=method):
                 getattr(self.session, method).assert_not_called()
+
+
+class PanelOutboundStyleDiagnosticTest(unittest.TestCase):
+    """Subphase 7 — local pilot styling diagnostic handoff.
+
+    The successful local-test response MUST carry a closed
+    request-scoped ``outbound_style`` projection of the latest
+    styling attempt. The projection is typed on the wire
+    (extra-forbid), never persists raw messages, prompt or
+    instruction, never leaks identifiers or exception detail
+    and never reaches the provider outbox.
+
+    The rejection path (``_reject_local_test``) MUST keep its
+    documented generic payload and MUST NOT emit the
+    diagnostic.
+    """
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def _post(self):
+        headers = _basic_auth_header("ignored", CONFIGURED_TOKEN)
+        headers["X-Local-Test-Origin"] = "same-origin"
+        return self.client.post(
+            "/admin/pilot/orders/42/local-test",
+            json={"message": "hola"},
+            headers=headers,
+        )
+
+    def _build_session(self, *, context_type, pending_intents):
+        session = MagicMock(name="ExactSession")
+        session.id = 21
+        session.id_pedido = 42
+        session.id_comercio = 1
+        session.id_cliente = 31
+        session.estado_session = "activa"
+        session.context_type = context_type
+        session.pending_intents = pending_intents
+        return session
+
+    def _build_diagnostic(
+        self,
+        *,
+        outcome,
+        eligible_count=0,
+        applied_count=0,
+        flavor_code=None,
+        response_types=(),
+        fallback_category=None,
+        template_version="outbound-response-styler/v1.2.0",
+    ):
+        from backend.services.outbound_response_styler import StyleDiagnostic
+        return StyleDiagnostic(
+            outcome=outcome,
+            eligible_count=eligible_count,
+            applied_count=applied_count,
+            flavor_code=flavor_code,
+            response_types=response_types,
+            template_version=template_version,
+            fallback_category=fallback_category,
+        )
+
+    def _mock_successful_turn(
+        self,
+        *,
+        diagnostic,
+        response_message="ok",
+        response_intent="saludo",
+        response_status="executed",
+    ):
+        from backend.intents.schemas.customer_response import (
+            CustomerResponse,
+        )
+        exact_session = self._build_session(
+            context_type=None, pending_intents=None
+        )
+        exact_pedido = MagicMock(name="ExactPedido")
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "process_incoming_message_with_style_diagnostic",
+        ) as process_mock:
+            process_mock.return_value = (
+                [
+                    CustomerResponse(
+                        message=response_message,
+                        intent=response_intent,
+                        status=response_status,
+                    )
+                ],
+                diagnostic,
+            )
+            response = self._post()
+        return response, process_mock
+
+    def test_response_includes_outbound_style_with_closed_fields(self) -> None:
+        """The local route MUST surface the closed
+        ``outbound_style`` projection on every successful turn."""
+        diagnostic = self._build_diagnostic(
+            outcome="applied",
+            eligible_count=1,
+            applied_count=1,
+            flavor_code="joven",
+            response_types=("menu_full",),
+        )
+        response, _ = self._mock_successful_turn(diagnostic=diagnostic)
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertIn("outbound_style", body)
+        self.assertEqual(
+            set(body["outbound_style"].keys()),
+            {
+                "outcome",
+                "eligible_count",
+                "applied_count",
+                "fallback_category",
+                "flavor_code",
+                "response_types",
+                "template_version",
+            },
+        )
+
+    def test_response_outbound_style_rejects_unexpected_fields(self) -> None:
+        """The wire payload MUST reject every field outside the
+        documented closed shape (extra-forbid)."""
+        diagnostic = self._build_diagnostic(
+            outcome="applied",
+            eligible_count=1,
+            applied_count=1,
+            flavor_code="joven",
+            response_types=("menu_full",),
+        )
+        response, _ = self._mock_successful_turn(diagnostic=diagnostic)
+        body = response.json()
+        self.assertEqual(
+            set(body["outbound_style"].keys()),
+            {
+                "outcome",
+                "eligible_count",
+                "applied_count",
+                "fallback_category",
+                "flavor_code",
+                "response_types",
+                "template_version",
+            },
+        )
+
+    def test_response_outbound_style_does_not_carry_pii(self) -> None:
+        """The closed projection must never carry the prompt,
+        the flavor instruction, customer text, factual
+        response text, prefix/suffix, identifiers, exception
+        detail, model output or arbitrary event payloads."""
+        diagnostic = self._build_diagnostic(
+            outcome="applied",
+            eligible_count=1,
+            applied_count=1,
+            flavor_code="joven",
+            response_types=("menu_full",),
+        )
+        response, _ = self._mock_successful_turn(
+            diagnostic=diagnostic,
+            response_message="Pizza Mozzarella grande",
+        )
+        # The privacy check is on the outbound_style projection
+        # only. The closed projection must not embed any of the
+        # documented forbidden tokens (PII, prompt, instruction,
+        # exception detail, etc.). The rendered ``responses``
+        # payload is intentionally left to carry the customer
+        # message bytes (the proposal preserves the factual
+        # contract byte-for-byte).
+        body = response.json()
+        diagnostic_text = json.dumps(body["outbound_style"], sort_keys=True)
+        for forbidden in (
+            "INSTRUCCION-SECRETA",
+            "Pizza Mozzarella",
+            "Mozzarella",
+            "secret-customer-message",
+            "session-7",
+            "pedido-9",
+            "comercio-42",
+            "+5491100000000",
+            "Av. Secreta 1234",
+            "QueryLlm",
+            "ApplyError",
+            "AttributeError",
+            "Exception",
+            "elapsed_ms",
+            "timestamp",
+            "prompt",
+            "JSON",
+            "session_id",
+            "pedido_id",
+            "comercio_id",
+            "id_cliente",
+            "id_pedido",
+            "id_comercio",
+            "id_session",
+            "+54",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, diagnostic_text)
+
+    def test_menu_full_eligible_under_usable_flavor_reports_applied(self) -> None:
+        """A ``ver_menu`` eligible response under a usable
+        non-neutral flavor MUST be reported as ``applied`` or
+        bounded ``fallback``; it MUST NEVER be reported as
+        ``not_attempted`` (which would masquerade as a flavor
+        substitution to ``neutro``)."""
+        diagnostic = self._build_diagnostic(
+            outcome="applied",
+            eligible_count=1,
+            applied_count=1,
+            flavor_code="joven",
+            response_types=("menu_full",),
+        )
+        response, _ = self._mock_successful_turn(diagnostic=diagnostic)
+        body = response.json()
+        self.assertEqual(body["outbound_style"]["outcome"], "applied")
+        self.assertEqual(body["outbound_style"]["flavor_code"], "joven")
+
+    def test_status_eligible_under_usable_flavor_reports_fallback(self) -> None:
+        """An eligible status response under a usable flavor
+        that hits a wrapper failure MUST report ``fallback``
+        with the bounded category, NOT ``not_attempted``."""
+        diagnostic = self._build_diagnostic(
+            outcome="fallback",
+            eligible_count=1,
+            applied_count=0,
+            flavor_code="joven",
+            fallback_category="wrapper_invalid",
+            response_types=("order_status",),
+        )
+        response, _ = self._mock_successful_turn(
+            diagnostic=diagnostic,
+            response_message="Tú pedido está en preparación.",
+            response_intent="consultar_estado_pedido",
+        )
+        body = response.json()
+        self.assertEqual(body["outbound_style"]["outcome"], "fallback")
+        self.assertEqual(body["outbound_style"]["flavor_code"], "joven")
+        self.assertEqual(
+            body["outbound_style"]["fallback_category"], "wrapper_invalid"
+        )
+        # The factual menu / status message is preserved byte-for-byte.
+        self.assertEqual(
+            body["responses"][0]["message"],
+            "Tú pedido está en preparación.",
+        )
+
+    def test_not_attempted_distinguishes_zero_eligible_from_unusable_flavor(self) -> None:
+        """``not_attempted`` cleanly distinguishes a turn with
+        zero eligible responses from a turn where the flavor
+        was unusable, without leaking configuration detail."""
+        zero_eligible = self._build_diagnostic(
+            outcome="not_attempted",
+            eligible_count=0,
+            applied_count=0,
+            response_types=(),
+        )
+        response, _ = self._mock_successful_turn(diagnostic=zero_eligible)
+        body = response.json()
+        self.assertEqual(body["outbound_style"]["outcome"], "not_attempted")
+        self.assertEqual(body["outbound_style"]["eligible_count"], 0)
+        self.assertIsNone(body["outbound_style"]["flavor_code"])
+        self.assertEqual(body["outbound_style"]["response_types"], [])
+
+    def test_rejection_path_does_not_emit_outbound_style(self) -> None:
+        """Local route rejections use the documented generic
+        payload and must NOT carry the diagnostic."""
+        missing_origin = self.client.post(
+            "/admin/pilot/orders/42/local-test",
+            json={"message": "hola"},
+            headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+        )
+        self.assertEqual(missing_origin.status_code, 400)
+        body = missing_origin.json()
+        self.assertNotIn("outbound_style", body)
+        self.assertEqual(body.get("responses"), [])
+        self.assertIn("message", body)
+
+    def test_outbound_style_template_version_is_static(self) -> None:
+        diagnostic = self._build_diagnostic(
+            outcome="applied",
+            eligible_count=1,
+            applied_count=1,
+            flavor_code="joven",
+            response_types=("menu_full",),
+        )
+        response, _ = self._mock_successful_turn(diagnostic=diagnostic)
+        body = response.json()
+        self.assertEqual(
+            body["outbound_style"]["template_version"],
+            "outbound-response-styler/v1.2.0",
+        )
+
+    def test_diagnostic_does_not_persist_on_session_or_pedido(self) -> None:
+        """The diagnostic is request-scoped: it MUST NOT be
+        persisted on the Session, the Pedido, or any outbox
+        row; it MUST NOT call any prompt or LLM call during
+        the route."""
+
+        class _ExplodingLlm:
+            def request(self, *args, **kwargs):
+                raise AssertionError(
+                    "the diagnostic MUST NOT introduce a second pipeline call"
+                )
+
+        from backend.services import outbound_response_styler as styler_module
+
+        with patch.object(
+            styler_module, "QueryLlm", return_value=_ExplodingLlm()
+        ):
+            diagnostic = self._build_diagnostic(
+                outcome="applied",
+                eligible_count=1,
+                applied_count=1,
+                flavor_code="joven",
+                response_types=("menu_full",),
+            )
+            response, _ = self._mock_successful_turn(diagnostic=diagnostic)
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertIn("outbound_style", body)
+
+    def test_response_does_not_call_commit_rollback_flush_refresh_begin_close_expire(
+        self,
+    ) -> None:
+        """The diagnostic handoff MUST NOT introduce any
+        transaction-control method on the request-session."""
+        diagnostic = self._build_diagnostic(
+            outcome="applied",
+            eligible_count=1,
+            applied_count=1,
+            flavor_code="joven",
+            response_types=("menu_full",),
+        )
+        _response, _ = self._mock_successful_turn(diagnostic=diagnostic)
+        self.session.commit.assert_not_called()
+        self.session.rollback.assert_not_called()
+        self.session.flush.assert_not_called()
+        self.session.refresh.assert_not_called()
+        self.session.begin.assert_not_called()
+        self.session.close.assert_not_called()
+        self.session.expire.assert_not_called()
+
+
+class PanelOutboundStyleTemplateTest(unittest.TestCase):
+    """The detail template exposes the closed outbound_style
+    section with a stable ``data-debug-outbound-style`` value
+    selector and the browser-side handler uses ``textContent``
+    so the latest local turn values can be rendered without
+    trusting the diagnostic payload."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def _get_detail(self):
+        with patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail(),
+                history=_build_history(),
+            )
+            return self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+
+    def test_detail_template_renders_outbound_style_section(self) -> None:
+        response = self._get_detail()
+        body = response.text
+        self.assertIn("data-debug-outbound-style", body)
+        self.assertIn("Estilo outbound", body)
+
+    def test_browser_handler_uses_textContent_for_outbound_style(self) -> None:
+        response = self._get_detail()
+        body_no_css = _strip_css(response.text)
+        # The handler must use textContent and never build HTML
+        # from the closed projection.
+        self.assertIn("updateOutboundStyle", body_no_css)
+        self.assertIn("textContent", body_no_css)
+        self.assertNotIn("innerHTML", body_no_css)
+        self.assertNotIn("outerHTML", body_no_css)
+
+    def test_browser_handler_known_field_labels(self) -> None:
+        response = self._get_detail()
+        body_no_css = _strip_css(response.text)
+        for label in (
+            "Outcome",
+            "Elegibles",
+            "Aplicados",
+            "Categoría fallback",
+            "Flavor",
+            "Tipos",
+            "Plantilla",
+        ):
+            with self.subTest(label=label):
+                self.assertIn(label, body_no_css)
 
 
 if __name__ == "__main__":

@@ -155,3 +155,42 @@ Because the LLM receives only `response_type` tokens and no factual message,
 the backend's composition retains the entire deterministic response as an
 intact contiguous substring. The combined bound preserves a concise customer
 message even when both sides are non-empty.
+
+## Local pilot diagnostic handoff
+
+The existing structured event proves the styler knows whether it was applied,
+not attempted, or fell back, but the event stream is not queryable from the
+pilot UI. For the local-test route only, the shared styling call will optionally
+produce a typed companion diagnostic alongside the normal response list.
+
+The diagnostic has a closed shape:
+
+```json
+{
+  "outcome": "applied | not_attempted | fallback",
+  "eligible_count": 0,
+  "applied_count": 0,
+  "fallback_category": "optional-allowlisted-token",
+  "flavor_code": "optional-allowlisted-code",
+  "response_types": ["allowlisted-token"],
+  "template_version": "static-version"
+}
+```
+
+It deliberately excludes raw customer text, rendered factual messages,
+prefix/suffix, prompt, flavor instruction, IDs, timestamps, latency, exception
+types, model output and arbitrary event payload fields. The route serializes
+only that typed object, and the existing panel renders name/value fields for
+the latest local turn. The diagnostic is returned only in that HTTP response;
+it is neither persisted nor reused by a later message.
+
+The ordinary mapper API remains list-compatible. Its internal shared styling
+operation is factored once so an opt-in caller can receive the same response
+list plus its diagnostic without styling twice or creating a parallel business
+pipeline. Provider/outbox callers retain the existing list-only behavior and
+never receive this local UI projection.
+
+`ver_menu` and executed status are eligible response types under an active
+non-neutral selected flavor. An `outcome=fallback` means the selected flavor
+was attempted but no valid wrapper was applied; it never means that the
+application silently selected `neutro`.

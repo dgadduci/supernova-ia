@@ -65,6 +65,23 @@ applied count, fallback category, elapsed milliseconds and the
 static prompt-template fingerprint. The payload never contains
 the rendered prompt, the ``instruccion_llm`` text, customer text,
 factual response text, model output or any business identifier.
+
+Local pilot diagnostic handoff
+------------------------------
+
+The styler also exposes a typed, request-scoped companion
+diagnostic that an opt-in caller can use to render the latest
+styling attempt in the local pilot panel without invoking a
+second pipeline. The companion is a closed
+:class:`StyleDiagnostic` dataclass exposed by
+:func:`style_responses_with_diagnostic`. The companion shares a
+single styling pass with :func:`style_responses`; the list-only
+list-only :func:`style_responses` keeps the existing
+``list[CustomerResponse]`` contract so provider and outbox callers
+are unaffected. The companion is never persisted, never included
+in the provider outbox payload and never reaches Twilio; it is
+an ephemeral, request-scoped projection of the same styling
+attempt that already powers the local JSON response.
 """
 from __future__ import annotations
 
@@ -162,6 +179,56 @@ class EligibleResponse:
     response_type: str
     response: CustomerResponse
     batch_position: int = 0
+
+
+DIAGNOSTIC_OUTCOME_APPLIED = "applied"
+DIAGNOSTIC_OUTCOME_FALLBACK = "fallback"
+DIAGNOSTIC_OUTCOME_NOT_ATTEMPTED = "not_attempted"
+
+
+@dataclass(frozen=True)
+class StyleDiagnostic:
+    """Closed, request-scoped styling diagnostic.
+
+    The companion is an ephemeral, request-scoped projection of
+    the latest styling attempt. It is built from the same
+    styling pass that produced the returned
+    ``CustomerResponse`` list, so it is delivered alongside the
+    responses without creating a second pipeline call.
+
+    The closed shape carries ONLY:
+
+    * ``outcome`` — one of ``"applied"``, ``"fallback"`` or
+      ``"not_attempted"``;
+    * ``eligible_count`` and ``applied_count`` — bounded
+      non-negative integers mirroring the observability event;
+    * ``fallback_category`` — present iff ``outcome`` is
+      ``"fallback"``; the bounded allowlisted token that
+      explains the failure mode (transport, wrapper, etc.);
+    * ``flavor_code`` — present iff the selected flavor was
+      usable for the attempt; NEVER present when the flavor was
+      ``neutro``, missing, inactive or had no instruction;
+    * ``response_types`` — the ordered allowlisted
+      ``response_type`` tokens the attempt touched (eligible
+      items only, never the rendered message text);
+    * ``template_version`` — the static template identity published
+      by :mod:`backend.diagnostics.outbound_response_style_prompt_template`.
+
+    The companion deliberately excludes raw customer text,
+    rendered factual messages, prefix/suffix, prompt,
+    ``instruccion_llm``, comercio / pedido / sesion / cliente /
+    producto identifiers, addresses, observations, payment /
+    delivery values, timestamps, latency, exception types,
+    model output and every arbitrary event payload field.
+    """
+
+    outcome: str
+    eligible_count: int
+    applied_count: int
+    response_types: tuple[str, ...]
+    template_version: str
+    fallback_category: str | None = None
+    flavor_code: str | None = None
 
 
 _ELIGIBLE_INTENT_STATUS_MAP: dict[tuple[str, str], str] = {
@@ -491,8 +558,74 @@ def style_responses(
     bounded fallback outcome. The function never calls any
     database transaction-control method on ``db``.
     """
+    styled, _diagnostic = _style_responses_and_diagnostic(
+        db,
+        comercio_id,
+        responses,
+        query_llm=query_llm,
+        clock=clock,
+        stream=stream,
+    )
+    return styled
+
+
+def style_responses_with_diagnostic(
+    db: DatabaseSession,
+    comercio_id: int | None,
+    responses: Sequence[CustomerResponse],
+    *,
+    query_llm: QueryLlm | None = None,
+    clock: Callable[[], float] | None = None,
+    stream: Any = None,
+) -> tuple[list[CustomerResponse], StyleDiagnostic]:
+    """Opt-in companion that returns the styled ``responses`` plus
+    the closed, request-scoped :class:`StyleDiagnostic`.
+
+    The companion shares a single styling pass with
+    :func:`style_responses`: the same ``QueryLlm`` call (at most
+    one per turn) and the same wrapper validation, so the two
+    outputs are always produced together. The companion is
+    ephemeral, request-scoped and never persisted, never sent to
+    the provider outbox and never used as business input.
+
+    The companion strictly contains the closed field set
+    documented in :class:`StyleDiagnostic`. It deliberately
+    excludes the rendered messages, prefix/suffix, the prompt,
+    the flavor instruction, identifiers, timing, exception
+    detail and arbitrary event payloads.
+    """
+    return _style_responses_and_diagnostic(
+        db,
+        comercio_id,
+        responses,
+        query_llm=query_llm,
+        clock=clock,
+        stream=stream,
+    )
+
+
+def _style_responses_and_diagnostic(
+    db: DatabaseSession,
+    comercio_id: int | None,
+    responses: Sequence[CustomerResponse],
+    *,
+    query_llm: QueryLlm | None = None,
+    clock: Callable[[], float] | None = None,
+    stream: Any = None,
+) -> tuple[list[CustomerResponse], StyleDiagnostic]:
+    """Shared internal that performs the single styling pass and
+    returns both the styled list and the closed companion.
+
+    Every branch returns ``(responses, diagnostic)`` so the
+    list-only API and the opt-in companion share the same
+    pass and the same observability event emission.
+    """
     materialised: list[CustomerResponse] = list(responses) if responses else []
     eligible = select_eligible(materialised)
+    response_types: tuple[str, ...] = tuple(
+        item.response_type for item in eligible
+    )
+    template_version = OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION
 
     if not eligible:
         _emit_diagnostic(
@@ -505,7 +638,13 @@ def style_responses(
             exception_type=None,
             stream=stream,
         )
-        return materialised
+        return materialised, StyleDiagnostic(
+            outcome=DIAGNOSTIC_OUTCOME_NOT_ATTEMPTED,
+            eligible_count=0,
+            applied_count=0,
+            response_types=(),
+            template_version=template_version,
+        )
 
     flavor = _resolve_flavor(db, comercio_id)
     if not _is_flavor_usable(flavor):
@@ -519,7 +658,13 @@ def style_responses(
             exception_type=None,
             stream=stream,
         )
-        return materialised
+        return materialised, StyleDiagnostic(
+            outcome=DIAGNOSTIC_OUTCOME_NOT_ATTEMPTED,
+            eligible_count=len(eligible),
+            applied_count=0,
+            response_types=response_types,
+            template_version=template_version,
+        )
 
     flavor_code = str(getattr(flavor, "codigo", "") or "")
     instruction = str(getattr(flavor, "instruccion_llm", "") or "")
@@ -536,86 +681,45 @@ def style_responses(
     client = query_llm if query_llm is not None else QueryLlm()
     started = _now(clock)
 
+    def _fallback(
+        failure_category: str,
+        exception_type: str | None,
+    ) -> tuple[list[CustomerResponse], StyleDiagnostic]:
+        elapsed_ms = int((_now(clock) - started) * 1000)
+        _emit_diagnostic(
+            outcome=None,
+            flavor_code=flavor_code,
+            eligible_count=len(eligible),
+            applied_count=0,
+            elapsed_ms=elapsed_ms,
+            failure_category=failure_category,
+            exception_type=exception_type,
+            stream=stream,
+        )
+        return materialised, StyleDiagnostic(
+            outcome=DIAGNOSTIC_OUTCOME_FALLBACK,
+            eligible_count=len(eligible),
+            applied_count=0,
+            response_types=response_types,
+            template_version=template_version,
+            fallback_category=failure_category,
+            flavor_code=flavor_code,
+        )
+
     try:
         payload = client.request(rendered_prompt)
     except QueryLlmTimeoutError:
-        elapsed_ms = int((_now(clock) - started) * 1000)
-        _emit_diagnostic(
-            outcome=None,
-            flavor_code=flavor_code,
-            eligible_count=len(eligible),
-            applied_count=0,
-            elapsed_ms=elapsed_ms,
-            failure_category=FALLBACK_TIMEOUT,
-            exception_type="QueryLlmTimeoutError",
-            stream=stream,
-        )
-        return materialised
+        return _fallback(FALLBACK_TIMEOUT, "QueryLlmTimeoutError")
     except QueryLlmConnectionError:
-        elapsed_ms = int((_now(clock) - started) * 1000)
-        _emit_diagnostic(
-            outcome=None,
-            flavor_code=flavor_code,
-            eligible_count=len(eligible),
-            applied_count=0,
-            elapsed_ms=elapsed_ms,
-            failure_category=FALLBACK_CONNECTION,
-            exception_type="QueryLlmConnectionError",
-            stream=stream,
-        )
-        return materialised
+        return _fallback(FALLBACK_CONNECTION, "QueryLlmConnectionError")
     except QueryLlmHttpError:
-        elapsed_ms = int((_now(clock) - started) * 1000)
-        _emit_diagnostic(
-            outcome=None,
-            flavor_code=flavor_code,
-            eligible_count=len(eligible),
-            applied_count=0,
-            elapsed_ms=elapsed_ms,
-            failure_category=FALLBACK_HTTP,
-            exception_type="QueryLlmHttpError",
-            stream=stream,
-        )
-        return materialised
+        return _fallback(FALLBACK_HTTP, "QueryLlmHttpError")
     except QueryLlmResponseError:
-        elapsed_ms = int((_now(clock) - started) * 1000)
-        _emit_diagnostic(
-            outcome=None,
-            flavor_code=flavor_code,
-            eligible_count=len(eligible),
-            applied_count=0,
-            elapsed_ms=elapsed_ms,
-            failure_category=FALLBACK_RESPONSE,
-            exception_type="QueryLlmResponseError",
-            stream=stream,
-        )
-        return materialised
+        return _fallback(FALLBACK_RESPONSE, "QueryLlmResponseError")
     except QueryLlmError:
-        elapsed_ms = int((_now(clock) - started) * 1000)
-        _emit_diagnostic(
-            outcome=None,
-            flavor_code=flavor_code,
-            eligible_count=len(eligible),
-            applied_count=0,
-            elapsed_ms=elapsed_ms,
-            failure_category=FALLBACK_UNEXPECTED,
-            exception_type="QueryLlmError",
-            stream=stream,
-        )
-        return materialised
+        return _fallback(FALLBACK_UNEXPECTED, "QueryLlmError")
     except Exception as exc:  # noqa: BLE001 - styler is the last-resort guard
-        elapsed_ms = int((_now(clock) - started) * 1000)
-        _emit_diagnostic(
-            outcome=None,
-            flavor_code=flavor_code,
-            eligible_count=len(eligible),
-            applied_count=0,
-            elapsed_ms=elapsed_ms,
-            failure_category=FALLBACK_UNEXPECTED,
-            exception_type=type(exc).__name__,
-            stream=stream,
-        )
-        return materialised
+        return _fallback(FALLBACK_UNEXPECTED, type(exc).__name__)
 
     parsed, batch_category = _parse_wrappers(
         payload, eligible_count=len(eligible)
@@ -632,7 +736,15 @@ def style_responses(
             exception_type=None,
             stream=stream,
         )
-        return materialised
+        return materialised, StyleDiagnostic(
+            outcome=DIAGNOSTIC_OUTCOME_FALLBACK,
+            eligible_count=len(eligible),
+            applied_count=0,
+            response_types=response_types,
+            template_version=template_version,
+            fallback_category=batch_category,
+            flavor_code=flavor_code,
+        )
 
     applied_count = 0
     empty_wrapper_count = 0
@@ -691,7 +803,15 @@ def style_responses(
             exception_type=None,
             stream=stream,
         )
-        return materialised
+        return materialised, StyleDiagnostic(
+            outcome=DIAGNOSTIC_OUTCOME_FALLBACK,
+            eligible_count=len(eligible),
+            applied_count=0,
+            response_types=response_types,
+            template_version=template_version,
+            fallback_category=failure_category,
+            flavor_code=flavor_code,
+        )
 
     _emit_diagnostic(
         outcome=OUTCOME_APPLIED,
@@ -703,7 +823,14 @@ def style_responses(
         exception_type=None,
         stream=stream,
     )
-    return styled
+    return styled, StyleDiagnostic(
+        outcome=DIAGNOSTIC_OUTCOME_APPLIED,
+        eligible_count=len(eligible),
+        applied_count=applied_count,
+        response_types=response_types,
+        template_version=template_version,
+        flavor_code=flavor_code,
+    )
 
 
 def styler_version() -> str:
@@ -719,6 +846,9 @@ def styler_fingerprint() -> str:
 
 __all__ = [
     "COMPONENT_OUTBOUND_STYLE",
+    "DIAGNOSTIC_OUTCOME_APPLIED",
+    "DIAGNOSTIC_OUTCOME_FALLBACK",
+    "DIAGNOSTIC_OUTCOME_NOT_ATTEMPTED",
     "EVENT_OUTBOUND_STYLE",
     "EXECUTED_STATUS",
     "FALLBACK_CONNECTION",
@@ -756,10 +886,12 @@ __all__ = [
     "RESPONSE_TYPE_SOCIAL_THANKS",
     "RESPONSE_TYPE_SOCIAL_YES",
     "EligibleResponse",
+    "StyleDiagnostic",
     "is_eligible_response",
     "response_type_for",
     "select_eligible",
     "style_responses",
+    "style_responses_with_diagnostic",
     "styler_fingerprint",
     "styler_version",
 ]

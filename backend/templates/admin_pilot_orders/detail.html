@@ -220,6 +220,12 @@
     {% else %}
     <p class="muted">Sin estado de pending para este pedido.</p>
     {% endif %}
+
+    <h3>Estilo outbound (último turno local)</h3>
+    <p class="muted">Proyección cerrada y efímera del intento de estilo para el último turno enviado por el canal local. Sólo contiene metadatos acotados del intento; nunca expone el mensaje, prefijos/sufijos, prompt, instrucción, identificadores, latencia ni excepciones.</p>
+    <dl class="debug-style" data-debug-outbound-style>
+      <p class="muted" data-debug-outbound-style-empty>Sin intento de estilo todavía en esta pestaña.</p>
+    </dl>
   </section>
 </div>
 {% endblock %}

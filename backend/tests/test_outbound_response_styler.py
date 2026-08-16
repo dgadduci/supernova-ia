@@ -84,6 +84,7 @@ from backend.services.outbound_response_styler import (
     response_type_for,
     select_eligible,
     style_responses,
+    style_responses_with_diagnostic,
     styler_fingerprint,
     styler_version,
 )
@@ -2236,6 +2237,295 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, first)
+
+
+class StyleResponsesWithDiagnosticTest(unittest.TestCase):
+    """Subphase 7 — local pilot styling diagnostic handoff.
+
+    The opt-in companion :func:`style_responses_with_diagnostic`
+    returns the same styled list as the list-only API plus a
+    closed, request-scoped :class:`StyleDiagnostic` companion.
+    The companion is built from the same single styling pass so
+    the responses and the diagnostic are produced together
+    without invoking the styler twice.
+
+    The companion is request-scoped and ephemeral; it never
+    carries raw customer text, the rendered messages, prefix /
+    suffix, the prompt, the flavor instruction, IDs, timing,
+    exception detail, model output or arbitrary event payloads.
+    """
+
+    _VER_MENU_FULL = "Menú disponible:"
+    _STATUS_MESSAGE = "Tú pedido está en preparación."
+    _SALUDO = "¡Hola! Puedo ayudarte a armar tu pedido. Decime qué querés."
+    _AGG_SUCCESS = "Listo, agregué 1 Pizza Mozzarella (grande)."
+
+    def test_zero_eligible_returns_not_attempted_with_empty_response_types(self) -> None:
+        db = _db_with_flavor(1, flavor=_flavor())
+        responses = [
+            CustomerResponse(
+                message="rejection",
+                intent="agregar_producto",
+                status="rejected",
+            )
+        ]
+        client = _llm({"items": [{"index": 0, "prefix": "", "suffix": ""}]})
+        stream = io.StringIO()
+        styled, diagnostic = style_responses_with_diagnostic(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(client.request.call_count, 0)
+        self.assertEqual(styled, responses)
+        self.assertEqual(diagnostic.outcome, "not_attempted")
+        self.assertEqual(diagnostic.eligible_count, 0)
+        self.assertEqual(diagnostic.applied_count, 0)
+        self.assertEqual(diagnostic.response_types, ())
+        self.assertIsNone(diagnostic.fallback_category)
+        self.assertIsNone(diagnostic.flavor_code)
+        self.assertEqual(diagnostic.template_version, OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION)
+
+    def test_flavor_not_usable_returns_not_attempted_with_response_types(self) -> None:
+        db = _db_with_flavor(1, flavor=_flavor(NEUTRO_FLAVOR_CODE))
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            )
+        ]
+        client = _llm({"items": [{"index": 0, "prefix": "", "suffix": ""}]})
+        stream = io.StringIO()
+        styled, diagnostic = style_responses_with_diagnostic(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(client.request.call_count, 0)
+        self.assertEqual(styled, responses)
+        self.assertEqual(diagnostic.outcome, "not_attempted")
+        self.assertEqual(diagnostic.eligible_count, 1)
+        self.assertEqual(diagnostic.applied_count, 0)
+        self.assertEqual(diagnostic.response_types, (RESPONSE_TYPE_SOCIAL_GREETING,))
+        self.assertIsNone(diagnostic.flavor_code)
+        self.assertIsNone(diagnostic.fallback_category)
+
+    def test_applied_outcome_carries_flavor_code_and_response_types(self) -> None:
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._VER_MENU_FULL,
+                intent="ver_menu",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {"items": [{"index": 0, "prefix": "¡Buenas!", "suffix": ""}]}
+        )
+        stream = io.StringIO()
+        styled, diagnostic = style_responses_with_diagnostic(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(diagnostic.outcome, "applied")
+        self.assertEqual(diagnostic.flavor_code, "joven")
+        self.assertEqual(diagnostic.response_types, (RESPONSE_TYPE_MENU_FULL,))
+        self.assertEqual(diagnostic.eligible_count, 1)
+        self.assertEqual(diagnostic.applied_count, 1)
+        self.assertIsNone(diagnostic.fallback_category)
+        self.assertEqual(diagnostic.template_version, OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION)
+        self.assertEqual(styled[0].message, f"¡Buenas!{self._VER_MENU_FULL}")
+
+    def test_status_eligible_under_usable_flavor_is_attempted_not_neutro(self) -> None:
+        """The executed status response is an eligible normal
+        response under a usable selected flavor. The diagnostic
+        MUST carry ``applied`` or a bounded ``fallback``; it
+        MUST NEVER masquerade as ``neutro`` by reporting
+        ``not_attempted``.
+        """
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._STATUS_MESSAGE,
+                intent="consultar_estado_pedido",
+                status="executed",
+            )
+        ]
+        client = _llm({"items": [{"index": 0, "prefix": "¡Hey!", "suffix": ""}]})
+        stream = io.StringIO()
+        _styled, diagnostic = style_responses_with_diagnostic(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(diagnostic.outcome, "applied")
+        self.assertEqual(diagnostic.flavor_code, "joven")
+        self.assertEqual(diagnostic.response_types, (RESPONSE_TYPE_ORDER_STATUS,))
+
+    def test_fallback_outcome_preserves_flavor_and_keeps_factual_intact(self) -> None:
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._VER_MENU_FULL,
+                intent="ver_menu",
+                status="executed",
+            )
+        ]
+        client = _llm({"items": [{"index": 0, "prefix": "Hello2", "suffix": ""}]})
+        stream = io.StringIO()
+        styled, diagnostic = style_responses_with_diagnostic(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(diagnostic.outcome, "fallback")
+        self.assertEqual(diagnostic.flavor_code, "joven")
+        self.assertEqual(diagnostic.fallback_category, FALLBACK_WRAPPER_INVALID)
+        self.assertEqual(diagnostic.response_types, (RESPONSE_TYPE_MENU_FULL,))
+        self.assertEqual(diagnostic.eligible_count, 1)
+        self.assertEqual(diagnostic.applied_count, 0)
+        # The factual message is preserved byte-for-byte.
+        self.assertEqual(styled[0].message, self._VER_MENU_FULL)
+
+    def test_zero_eligible_hides_flavor_code(self) -> None:
+        """``flavor_code`` must be hidden when the attempt never
+        reached the prompt stage (zero eligible)."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message="rejection",
+                intent="agregar_producto",
+                status="rejected",
+            )
+        ]
+        client = _llm({"items": [{"index": 0, "prefix": "", "suffix": ""}]})
+        _styled, diagnostic = style_responses_with_diagnostic(
+            db, 1, responses, query_llm=client
+        )
+        self.assertEqual(diagnostic.outcome, "not_attempted")
+        self.assertIsNone(diagnostic.flavor_code)
+
+    def test_flavor_unusable_hides_flavor_code(self) -> None:
+        """``flavor_code`` must be hidden when the flavor was
+        ``neutro``, inactive or had no instruction."""
+        db = _db_with_flavor(1, flavor=_flavor(NEUTRO_FLAVOR_CODE))
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            )
+        ]
+        client = _llm({"items": [{"index": 0, "prefix": "", "suffix": ""}]})
+        _styled, diagnostic = style_responses_with_diagnostic(
+            db, 1, responses, query_llm=client
+        )
+        self.assertEqual(diagnostic.outcome, "not_attempted")
+        self.assertIsNone(diagnostic.flavor_code)
+
+    def test_diagnostic_serializes_without_pii(self) -> None:
+        flavor = _flavor(
+            codigo="joven",
+            instruccion="INSTRUCCION-SECRETA",
+        )
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message="Pizza Mozzarella grande",
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm({"items": [{"index": 0, "prefix": "", "suffix": ""}]})
+        stream = io.StringIO()
+        _styled, diagnostic = style_responses_with_diagnostic(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        payload = json.dumps(
+            {
+                "outcome": diagnostic.outcome,
+                "eligible_count": diagnostic.eligible_count,
+                "applied_count": diagnostic.applied_count,
+                "fallback_category": diagnostic.fallback_category,
+                "flavor_code": diagnostic.flavor_code,
+                "response_types": list(diagnostic.response_types),
+                "template_version": diagnostic.template_version,
+            },
+            sort_keys=True,
+        )
+        for forbidden in (
+            "INSTRUCCION-SECRETA",
+            "Pizza Mozzarella",
+            "Mozzarella",
+            "Ag + Pizza",
+            "session-7",
+            "pedido-9",
+            "comercio-42",
+            "+5491100000000",
+            "secret-customer-message",
+            "Av. Secreta 1234",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, payload)
+
+    def test_diagnostic_mirrors_list_only_api_for_same_inputs(self) -> None:
+        """The opt-in companion MUST produce the same response
+        list as the list-only API when given the same inputs."""
+        flavor = _flavor(codigo="joven")
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            ),
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            ),
+        ]
+        mock_payload = {
+            "items": [
+                {"index": 0, "prefix": "¡Hey!", "suffix": ""},
+                {"index": 1, "prefix": "", "suffix": " 🎉"},
+            ]
+        }
+        # Use a fresh db and fresh client per call so the assertions
+        # stay independent of any cross-call state.
+        client_a = MagicMock(name="QueryLlmStubA")
+        client_a.request.return_value = mock_payload
+        client_b = MagicMock(name="QueryLlmStubB")
+        client_b.request.return_value = mock_payload
+        styled_only = style_responses(
+            _db_with_flavor(1, flavor=flavor),
+            1,
+            list(responses),
+            query_llm=client_a,
+        )
+        styled_with, diagnostic = style_responses_with_diagnostic(
+            _db_with_flavor(1, flavor=flavor),
+            1,
+            list(responses),
+            query_llm=client_b,
+        )
+        self.assertEqual(styled_with, styled_only)
+        self.assertEqual(diagnostic.outcome, "applied")
+        self.assertEqual(diagnostic.flavor_code, "joven")
+        self.assertEqual(
+            diagnostic.response_types,
+            (RESPONSE_TYPE_SOCIAL_GREETING, RESPONSE_TYPE_PRODUCT_ADD_SUCCESS),
+        )
+
+    def test_diagnostic_does_not_control_database_transactions(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            )
+        ]
+        client = _llm({"items": [{"index": 0, "prefix": "", "suffix": ""}]})
+        style_responses_with_diagnostic(db, 1, responses, query_llm=client)
+        for method in (
+            "commit",
+            "rollback",
+            "begin",
+            "begin_nested",
+            "flush",
+            "refresh",
+            "close",
+        ):
+            getattr(db, method).assert_not_called()
 
 
 if __name__ == "__main__":

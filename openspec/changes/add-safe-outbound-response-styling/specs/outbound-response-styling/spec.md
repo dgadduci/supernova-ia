@@ -89,3 +89,29 @@ internal flavor instruction, model output, or customer/order/session IDs.
   identity
 - **AND THEN** they do not expose any raw prompt, message, instruction, or
   business identifier.
+
+### Requirement: Local pilot exposes a bounded styling result without changing flavor selection
+
+For the authenticated local-test channel only, the system SHALL return a
+closed, request-scoped styling diagnostic alongside the ordinary mapped
+responses. It SHALL identify only styling outcome, eligible/applied counts,
+allowlisted fallback category when applicable, usable selected flavor code,
+allowlisted response-type tokens, and static template version. It SHALL NOT
+persist this diagnostic or expose messages, wrapper fragments, prompts,
+flavor instruction, identifiers, timing, exception detail, model output, or
+arbitrary event payloads. An eligible `ver_menu` or status response under a
+selected active non-neutral flavor SHALL retain that selected flavor: a
+fallback SHALL mean no valid wrapper was applied, never that `neutro` was
+substituted.
+
+#### Scenario: Local category menu exposes a safe wrapper fallback reason
+
+- **WHEN** a local-test category menu response is eligible under the selected
+  active `joven` flavor
+- **AND WHEN** the styling response is invalid
+- **THEN** the customer receives the exact deterministic menu text
+- **AND THEN** the local response and panel show `fallback`, the bounded
+  fallback category, eligible/applied counts, `joven`, the menu response type,
+  and static template version
+- **AND THEN** they do not show customer text, menu text, prompts, flavor
+  instruction, IDs, exception details, or model output.
