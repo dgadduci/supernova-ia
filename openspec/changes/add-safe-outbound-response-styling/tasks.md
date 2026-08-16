@@ -148,7 +148,7 @@
   eight excluded response types, mixed eligible/excluded batches, no-call
   excluded-only turns, and continued styling of the approved types; run the
   focused validation commands in `proposal.md`.
-- [ ] 11.4 After approved deploy under `joven`, verify a menu can still apply
+- [x] 11.4 After approved deploy under `joven`, verify a menu can still apply
   a wrapper, while add/remove/modify, status, summary, confirmation,
   start-order, and empty-order responses are exact deterministic output with
   no styling attempt for excluded-only turns.
