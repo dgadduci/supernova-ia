@@ -44,6 +44,14 @@ item falls back to the original message for that item; a malformed
 batch structure falls back to the original message for every
 item.
 
+Visibility is mandatory: every eligible item MUST receive at least
+one non-empty wrapper field. A wrapper with both ``prefix`` and
+``suffix`` empty is treated as invalid per item, keeps the
+original factual message unchanged and is recorded under the
+bounded ``empty_wrapper`` diagnostic category (distinct from the
+``wrapper_invalid`` category reserved for unsafe wrapper
+content).
+
 The styler NEVER owns database transaction control. It never calls
 ``commit``, ``rollback``, ``flush``, ``refresh``, ``begin``,
 ``begin_nested`` or ``close``. Existing callers retain their
@@ -107,6 +115,7 @@ FALLBACK_HTTP = "http_error"
 FALLBACK_RESPONSE = "response_error"
 FALLBACK_MALFORMED_BATCH = "malformed_batch"
 FALLBACK_WRAPPER_INVALID = "wrapper_invalid"
+FALLBACK_EMPTY_WRAPPER = "empty_wrapper"
 FALLBACK_UNEXPECTED = "unexpected"
 
 
@@ -268,27 +277,40 @@ _DISALLOWED_TEXT_CHARS = frozenset({"\n", "\r", "\t", "?"})
 _WRAPPER_MAX_LENGTH = 24
 
 
-def _safe_short_wrapper(value: Any) -> str | None:
-    """Return ``value`` when it is a safe wrapper fragment, else ``None``.
+def _safe_short_wrapper(value: Any) -> tuple[str | None, str]:
+    """Validate a single ``prefix`` or ``suffix`` fragment.
 
-    A safe wrapper fragment is a single-line printable string of at
-    most :data:`_WRAPPER_MAX_LENGTH` characters that contains no
-    digits, line breaks, question marks or ASCII control characters.
-    An empty string is also safe (the caller composes nothing).
+    Returns a tuple ``(sanitized_value, status)`` where:
+
+    * ``status`` is ``"ok"`` when the fragment is a safe non-empty
+      wrapper (single-line printable, no digits, no disallowed
+      control characters, length bounded).
+    * ``status`` is ``"empty"`` when the fragment is the empty
+      string. The empty fragment by itself is structurally safe but
+      an eligible item MUST have at least one non-empty wrapper;
+      the caller aggregates this signal.
+    * ``status`` is ``"invalid"`` when the fragment is not a usable
+      wrapper (non-string, too long, contains digits, line breaks,
+      question marks or ASCII control characters).
+
+    The split between ``empty`` and ``invalid`` lets the caller
+    surface a bounded, distinguishable diagnostic category for the
+    empty-wrapper case instead of conflating it with generic
+    wrapper-invalid failures.
     """
     if not isinstance(value, str):
-        return None
-    if len(value) > _WRAPPER_MAX_LENGTH:
-        return None
+        return None, "invalid"
     if value == "":
-        return value
+        return "", "empty"
+    if len(value) > _WRAPPER_MAX_LENGTH:
+        return None, "invalid"
     if any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
-        return None
+        return None, "invalid"
     if any(char in _DISALLOWED_TEXT_CHARS for char in value):
-        return None
+        return None, "invalid"
     if _DIGIT_PATTERN.search(value):
-        return None
-    return value
+        return None, "invalid"
+    return value, "ok"
 
 
 def _parse_wrappers(
@@ -604,20 +626,29 @@ def style_responses(
         return materialised
 
     applied_count = 0
+    empty_wrapper_count = 0
+    invalid_wrapper_count = 0
     styled: list[CustomerResponse] = list(materialised)
     for eligible_item in eligible:
         wrapper = parsed.get(eligible_item.batch_position)
         if wrapper is None:
             continue
         raw_prefix, raw_suffix = wrapper
-        prefix = _safe_short_wrapper(raw_prefix)
-        suffix = _safe_short_wrapper(raw_suffix)
-        if prefix is None or suffix is None:
+        prefix, prefix_status = _safe_short_wrapper(raw_prefix)
+        suffix, suffix_status = _safe_short_wrapper(raw_suffix)
+        if prefix_status == "invalid" or suffix_status == "invalid":
+            invalid_wrapper_count += 1
             continue
+        if prefix_status == "empty" and suffix_status == "empty":
+            empty_wrapper_count += 1
+            continue
+        assert prefix is not None and suffix is not None
+        assert (prefix_status, suffix_status) != ("empty", "empty")
         original = styled[eligible_item.index]
         if not _wrapper_preserves_factual(
             original, prefix=prefix, suffix=suffix
         ):
+            invalid_wrapper_count += 1
             continue
         styled[eligible_item.index] = CustomerResponse(
             message=_composed_message(original, prefix=prefix, suffix=suffix),
@@ -628,13 +659,17 @@ def style_responses(
 
     elapsed_ms = int((_now(clock) - started) * 1000)
     if applied_count == 0:
+        if invalid_wrapper_count == 0 and empty_wrapper_count > 0:
+            failure_category = FALLBACK_EMPTY_WRAPPER
+        else:
+            failure_category = FALLBACK_WRAPPER_INVALID
         _emit_diagnostic(
             outcome=None,
             flavor_code=flavor_code,
             eligible_count=len(eligible),
             applied_count=0,
             elapsed_ms=elapsed_ms,
-            failure_category=FALLBACK_WRAPPER_INVALID,
+            failure_category=failure_category,
             exception_type=None,
             stream=stream,
         )
@@ -669,6 +704,7 @@ __all__ = [
     "EVENT_OUTBOUND_STYLE",
     "EXECUTED_STATUS",
     "FALLBACK_CONNECTION",
+    "FALLBACK_EMPTY_WRAPPER",
     "FALLBACK_HTTP",
     "FALLBACK_MALFORMED_BATCH",
     "FALLBACK_NONE",

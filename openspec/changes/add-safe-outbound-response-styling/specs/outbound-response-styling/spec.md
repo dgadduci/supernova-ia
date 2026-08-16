@@ -10,7 +10,10 @@ additional LLM request for an inbound turn containing eligible normal response
 types. The request SHALL contain response-type tokens only, not raw customer
 text or deterministic response text. The backend SHALL compose any accepted
 presentation wrapper around the exact original factual message and SHALL
-preserve response order, intent, and status.
+preserve response order, intent, and status. Every accepted wrapper for an
+eligible item SHALL contain a non-empty prefix or suffix so that styling is
+visible; a wrapper with both fields empty SHALL preserve that item's factual
+response and be reported as the bounded `empty_wrapper` fallback.
 
 #### Scenario: One batch applies only validated wrappers
 
@@ -20,6 +23,15 @@ preserve response order, intent, and status.
 - **AND THEN** each accepted response contains its original factual message as
   an intact contiguous substring
 - **AND THEN** response order, intent, and status are unchanged.
+
+#### Scenario: Empty wrapper does not count as applied styling
+
+- **WHEN** the style LLM returns an otherwise valid item with both `prefix` and
+  `suffix` empty
+- **THEN** the system preserves that item's deterministic response exactly
+- **AND THEN** it does not count that item as styled
+- **AND THEN** it emits only the bounded `empty_wrapper` fallback category when
+  no other item in the batch is styled.
 
 ### Requirement: Neutral and unsafe cases preserve the current output exactly
 

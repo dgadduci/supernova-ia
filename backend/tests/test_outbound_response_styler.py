@@ -27,12 +27,16 @@ from backend.diagnostics.outbound_response_style_prompt_template import (
     outbound_style_template_fingerprint,
     outbound_style_template_identity,
 )
+from backend.intents.responses.social_conversation_response import (
+    SOCIAL_CONVERSATION_HANDLER,
+)
 
 # NOTE: `outbound_style_template_fingerprint` is used by the
 # focused test below and is re-exported from
 # `backend.services.outbound_response_styler` for the module-level
 # `__all__` boundary; the test imports the canonical definition.
 from backend.intents.schemas.customer_response import CustomerResponse
+from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.llm.query_llm import (
     QueryLlmConnectionError,
     QueryLlmError,
@@ -47,6 +51,7 @@ from backend.observability import (
 from backend.services.outbound_response_styler import (
     EXECUTED_STATUS,
     FALLBACK_CONNECTION,
+    FALLBACK_EMPTY_WRAPPER,
     FALLBACK_HTTP,
     FALLBACK_MALFORMED_BATCH,
     FALLBACK_RESPONSE,
@@ -982,7 +987,7 @@ class StyleResponsesFailureTest(unittest.TestCase):
         responses = [
             CustomerResponse(message="A", intent="saludo", status="executed"),
         ]
-        client = _llm({"items": [{"index": 0, "prefix": "", "suffix": ""}]})
+        client = _llm({"items": [{"index": 0, "prefix": "¡Hey!", "suffix": ""}]})
         stream = io.StringIO()
         style_responses(
             db, 1, responses, query_llm=client, stream=stream
@@ -1195,6 +1200,373 @@ class StyleResponsesEmptyInputTest(unittest.TestCase):
         styled = style_responses(db, 1, [], query_llm=client)
         self.assertEqual(styled, [])
         self.assertEqual(client.request.call_count, 0)
+
+
+class EmptyWrapperContractTest(unittest.TestCase):
+    """Empty wrappers are explicitly invalid per eligible item.
+
+    The pilot revealed that the LLM may return ``{"prefix": "",
+    "suffix": ""}`` for every eligible item, which was previously
+    accepted as a successful apply and produced no visible style
+    change. The corrected contract:
+
+    * at least one of ``prefix`` or ``suffix`` MUST be non-empty
+      for every eligible item;
+    * empty wrappers fall back to the original factual message;
+    * the diagnostic event records the bounded ``empty_wrapper``
+      category when ALL wrappers are empty/invalid;
+    * the prompt template documents the visibility mandate
+      explicitly.
+    """
+
+    _SALUDO = (
+        "¡Hola! Puedo ayudarte a armar tu pedido. Decime qué querés."
+    )
+    _AGG_SUCCESS = "Listo, agregué 1 Pizza Mozzarella (grande)."
+    _MENU_HEADER = "Menú disponible:"
+
+    def _saludo_intent(self) -> ProcessedIntent:
+        return ProcessedIntent(
+            intent="saludo",
+            source_text="hola",
+            status="executed",
+            recognizer="intent_classifier",
+            handler=SOCIAL_CONVERSATION_HANDLER,
+        )
+
+    def _menu_intent(self) -> ProcessedIntent:
+        return ProcessedIntent(
+            intent="ver_menu",
+            source_text="menu",
+            status="executed",
+            recognizer="menu_category_resolver",
+            handler="informational_commerce_response",
+            resolved_data={"items": []},
+        )
+
+    def _add_intent(self) -> ProcessedIntent:
+        return ProcessedIntent(
+            intent="agregar_producto",
+            source_text="agregar",
+            status="executed",
+            recognizer="recognizer_productos",
+            handler="agregar_producto",
+        )
+
+    def test_prompt_requires_visible_wrapper_per_eligible_item(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            )
+        ]
+        client = _llm({"items": [{"index": 0, "prefix": "", "suffix": ""}]})
+        style_responses(db, 1, responses, query_llm=client)
+        prompt = client.request.call_args.args[0]
+        self.assertIn("Visibilidad obligatoria", prompt)
+        self.assertIn("al menos uno de", prompt)
+        self.assertIn("NO vacía", prompt)
+
+    def test_single_empty_wrapper_keeps_factual_intact(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            )
+        ]
+        client = _llm({"items": [{"index": 0, "prefix": "", "suffix": ""}]})
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._SALUDO)
+        self.assertEqual(styled[0].intent, "saludo")
+        self.assertEqual(styled[0].status, "executed")
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["eligible_count"], 1)
+        self.assertEqual(last_event["applied_count"], 0)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_EMPTY_WRAPPER
+        )
+
+    def test_mixed_batch_only_applies_non_empty_wrappers(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            ),
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            ),
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {"index": 0, "prefix": "", "suffix": ""},
+                    {"index": 1, "prefix": "¡Listo! ", "suffix": ""},
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._SALUDO)
+        self.assertEqual(styled[1].message, f"¡Listo! {self._AGG_SUCCESS}")
+        self.assertEqual(styled[0].intent, "saludo")
+        self.assertEqual(styled[1].intent, "agregar_producto")
+        self.assertEqual(client.request.call_count, 1)
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_APPLIED)
+        self.assertEqual(last_event["eligible_count"], 2)
+        self.assertEqual(last_event["applied_count"], 1)
+
+    def test_all_empty_wrappers_emit_empty_wrapper_fallback(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            ),
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            ),
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {"index": 0, "prefix": "", "suffix": ""},
+                    {"index": 1, "prefix": "", "suffix": ""},
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._SALUDO)
+        self.assertEqual(styled[1].message, self._AGG_SUCCESS)
+        last_event = _last_event(stream)
+        self.assertNotIn("outcome", last_event)
+        self.assertEqual(
+            last_event["failure_category"], FALLBACK_EMPTY_WRAPPER
+        )
+        self.assertEqual(last_event["eligible_count"], 2)
+        self.assertEqual(last_event["applied_count"], 0)
+
+    def test_joven_flavor_applies_visible_style_to_saludo(self) -> None:
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            )
+        ]
+        client = _llm({"items": [{"index": 0, "prefix": "¡Buenas! ", "suffix": ""}]})
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, f"¡Buenas! {self._SALUDO}")
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["flavor_code"], "joven")
+        self.assertEqual(last_event["outcome"], OUTCOME_APPLIED)
+
+    def test_joven_flavor_applies_visible_style_to_menu(self) -> None:
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._MENU_HEADER,
+                intent="ver_menu",
+                status="executed",
+            )
+        ]
+        client = _llm({"items": [{"index": 0, "prefix": "", "suffix": " 🍕"}]})
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, f"{self._MENU_HEADER} 🍕")
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["flavor_code"], "joven")
+        self.assertEqual(last_event["outcome"], OUTCOME_APPLIED)
+
+    def test_joven_flavor_applies_visible_style_to_add_success(self) -> None:
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm({"items": [{"index": 0, "prefix": "¡Genial! ", "suffix": ""}]})
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(
+            styled[0].message, f"¡Genial! {self._AGG_SUCCESS}"
+        )
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["flavor_code"], "joven")
+        self.assertEqual(last_event["outcome"], OUTCOME_APPLIED)
+
+    def test_prompt_never_carries_factual_or_inbound_text(self) -> None:
+        flavor = _flavor(
+            codigo="joven",
+            instruccion="Tono joven. Cero formalidad.",
+        )
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message="Pizza Mozzarella grande",
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+        client = _llm({"items": [{"index": 0, "prefix": "¡Hey! ", "suffix": ""}]})
+        style_responses(db, 1, responses, query_llm=client)
+        prompt = client.request.call_args.args[0]
+        for forbidden in (
+            "Pizza Mozzarella",
+            "Pizza",
+            "Mozzarella",
+            "grande",
+            "Av. Secreta 1234",
+            "session-7",
+            "pedido-9",
+            "comercio-42",
+            "+5491100000000",
+            "secret-customer-message",
+            "hola",
+            "agregar",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, prompt)
+        # The prompt carries the bounded internal directive only.
+        self.assertIn("Tono joven. Cero formalidad.", prompt)
+
+    def test_neutro_flavor_skips_styling_for_saludo(self) -> None:
+        db = _db_with_flavor(1, flavor=_flavor(NEUTRO_FLAVOR_CODE))
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            )
+        ]
+        client = _llm({"items": [{"index": 0, "prefix": "", "suffix": ""}]})
+        stream = io.StringIO()
+        style_responses(db, 1, responses, query_llm=client, stream=stream)
+        self.assertEqual(client.request.call_count, 0)
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_NOT_ATTEMPTED)
+
+    def test_desconocida_skips_styling_for_saludo_baseline(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        baseline = (
+            "Disculpá, no entendí tu mensaje. "
+            "Podés pedirme el menú o decirme qué producto querés agregar."
+        )
+        responses = [
+            CustomerResponse(
+                message=baseline,
+                intent="desconocida",
+                status="executed",
+            )
+        ]
+        client = _llm({"items": [{"index": 0, "prefix": "¡Hey! ", "suffix": ""}]})
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, baseline)
+        self.assertEqual(client.request.call_count, 0)
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_NOT_ATTEMPTED)
+        self.assertEqual(last_event["eligible_count"], 0)
+
+    def test_no_database_transaction_control_on_empty_wrapper(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            )
+        ]
+        client = _llm({"items": [{"index": 0, "prefix": "", "suffix": ""}]})
+        stream = io.StringIO()
+        style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        for method in (
+            "commit",
+            "rollback",
+            "begin",
+            "begin_nested",
+            "flush",
+            "refresh",
+            "close",
+        ):
+            getattr(db, method).assert_not_called()
+
+    def test_single_llm_call_for_mixed_batch(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            ),
+            CustomerResponse(
+                message=self._AGG_SUCCESS,
+                intent="agregar_producto",
+                status="executed",
+            ),
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {"index": 0, "prefix": "", "suffix": ""},
+                    {"index": 1, "prefix": "¡Genial! ", "suffix": ""},
+                ]
+            }
+        )
+        style_responses(db, 1, responses, query_llm=client)
+        self.assertEqual(client.request.call_count, 1)
+
+    def test_all_empty_failure_event_carries_static_identity(self) -> None:
+        flavor = _flavor()
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._SALUDO, intent="saludo", status="executed"
+            )
+        ]
+        client = _llm({"items": [{"index": 0, "prefix": "", "suffix": ""}]})
+        stream = io.StringIO()
+        style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        last_event = _last_event(stream)
+        self.assertEqual(
+            last_event.get("outbound_style_prompt_template_version"),
+            OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION,
+        )
+        self.assertEqual(
+            last_event.get("outbound_style_prompt_template_hash"),
+            outbound_style_template_identity()[
+                "outbound_style_prompt_template_hash"
+            ],
+        )
 
 
 class StyleResponsesVersionTest(unittest.TestCase):

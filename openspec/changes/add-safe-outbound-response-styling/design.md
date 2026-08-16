@@ -60,10 +60,14 @@ It requests exactly:
 The response schema is strict: `items` is required; indexes must match the
 eligible input exactly once and in order; each item accepts only `index`,
 `prefix`, and `suffix`. Prefix and suffix are short single-line strings.
-Backend validation rejects wrappers with digits, line breaks, question marks,
-or disallowed control characters. The static prompt also prohibits new facts,
-products, prices, quantities, promises, discounts, dates, instructions,
-questions, or commands.
+For every eligible item, at least one of `prefix` or `suffix` MUST be
+non-empty so an active non-neutral flavor produces visible presentation style.
+Backend validation rejects wrappers with both fields empty, digits, line
+breaks, question marks, or disallowed control characters. An empty wrapper is
+an item-level `empty_wrapper` fallback; unsafe content remains
+`wrapper_invalid`. The static prompt also prohibits new facts, products,
+prices, quantities, promises, discounts, dates, instructions, questions, or
+commands.
 
 For each valid wrapper, backend code composes:
 
@@ -72,9 +76,9 @@ normalized-prefix + exact original factual_message + normalized-suffix
 ```
 
 The original factual message remains one intact contiguous substring. Therefore
-the LLM cannot rewrite or remove the deterministic business facts. Invalid
-items fall back individually; malformed batch structure falls back for the
-entire batch. There is no retry.
+the LLM cannot rewrite or remove the deterministic business facts. Invalid or
+empty-wrapper items fall back individually; malformed batch structure falls
+back for the entire batch. There is no retry.
 
 ## Failures and Transaction Semantics
 
