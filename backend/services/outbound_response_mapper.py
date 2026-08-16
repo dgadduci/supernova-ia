@@ -29,6 +29,16 @@ or the dispatch service. The mapper never invokes any SQLAlchemy
 transaction-control method directly: the staging path delegates the
 actual ``MensajeProveedorSaliente`` row insertion to the repository
 so the repository remains the sole database-boundary knowledge.
+
+Subphase 7 — local pilot styling diagnostic handoff: the mapper
+also exposes an opt-in companion
+``build_customer_responses_with_diagnostic`` that returns the same
+mapped ``CustomerResponse`` list plus the closed request-scoped
+``StyleDiagnostic`` companion. The companion shares the same
+single styling pass with the list-only API; it does not create a
+second pipeline. The list-only API keeps its
+``list[CustomerResponse]`` contract so every existing caller
+(provider, outbox, JSON API, local draft path) remains list-only.
 """
 from __future__ import annotations
 
@@ -86,7 +96,11 @@ from backend.repositories.mensaje_proveedor_saliente_repository import (
     MensajeProveedorSalienteRepository,
 )
 from backend.services.exceptions import InvalidOutboundProviderMessage
-from backend.services.outbound_response_styler import style_responses
+from backend.services.outbound_response_styler import (
+    StyleDiagnostic,
+    style_responses,
+    style_responses_with_diagnostic,
+)
 
 GENERIC_MESSAGE = (
     "Disculpá, no pude procesar tu mensaje. ¿Podrías reformularlo?"
@@ -108,23 +122,21 @@ class StagedOutboundRow:
     customer_response: CustomerResponse
 
 
-def build_customer_responses(
+def _render_customer_responses(
     db: DatabaseSession,
     session: ConversationSession,
     intents: SequenceABC[ProcessedIntent],
-    *,
-    sink: DiagnosticSink | None = None,
 ) -> list[CustomerResponse]:
-    """Translate processed intents into rendered customer responses.
+    """Translate processed intents into rendered ``CustomerResponse``
+    values, sharing the deterministic mapping between the
+    list-only API and the opt-in companion.
 
-    The mapper is intentionally pure with respect to the supplied
-    arguments. The order of the returned responses matches the
-    order of the supplied intents so the local endpoint and the
-    outbox both render the same texts in the same order. The
-    ``sink`` is reserved for symmetry with the pipeline primitive
-    but is unused at this layer.
+    The order of the returned responses matches the order of the
+    supplied intents so the local endpoint and the outbox both
+    render the same texts in the same order. The function does
+    not call any styler or query LLM: the styling pass is
+    performed once by the public mapper APIs.
     """
-    del sink
     rendered_intents = coalesce_consecutive_add_product_intents(intents)
     responses: list[CustomerResponse] = []
     for intent in rendered_intents:
@@ -200,7 +212,61 @@ def build_customer_responses(
                     status=intent.status,
                 )
             )
+    return responses
+
+
+def build_customer_responses(
+    db: DatabaseSession,
+    session: ConversationSession,
+    intents: SequenceABC[ProcessedIntent],
+    *,
+    sink: DiagnosticSink | None = None,
+) -> list[CustomerResponse]:
+    """Translate processed intents into rendered customer responses.
+
+    The mapper is intentionally pure with respect to the supplied
+    arguments. The order of the returned responses matches the
+    order of the supplied intents so the local endpoint and the
+    outbox both render the same texts in the same order. The
+    ``sink`` is reserved for symmetry with the pipeline primitive
+    but is unused at this layer.
+    """
+    del sink
+    responses = _render_customer_responses(db, session, intents)
     return style_responses(
+        db,
+        getattr(session, "id_comercio", None),
+        responses,
+    )
+
+
+def build_customer_responses_with_diagnostic(
+    db: DatabaseSession,
+    session: ConversationSession,
+    intents: SequenceABC[ProcessedIntent],
+    *,
+    sink: DiagnosticSink | None = None,
+) -> tuple[list[CustomerResponse], StyleDiagnostic]:
+    """Opt-in companion that returns the rendered ``CustomerResponse``
+    list plus the closed styling diagnostic.
+
+    The companion shares the same single styling pass with
+    :func:`build_customer_responses` (via
+    :func:`backend.services.outbound_response_styler.style_responses_with_diagnostic`),
+    so the response list and the diagnostic are produced together
+    without invoking the styler twice. The companion is the single
+    place where the local pilot panel surfaces the closed
+    request-scoped styling provenance.
+
+    The companion is ephemeral, request-scoped, never persisted,
+    never sent to the provider outbox and never used as business
+    input. Existing callers must keep using the list-only
+    :func:`build_customer_responses` so the provider and outbox
+    paths remain list-only and never receive the diagnostic.
+    """
+    del sink
+    responses = _render_customer_responses(db, session, intents)
+    return style_responses_with_diagnostic(
         db,
         getattr(session, "id_comercio", None),
         responses,
@@ -238,6 +304,10 @@ def stage_outbound_rows(
     :class:`InvalidOutboundProviderMessage` before the first
     database interaction so the coordinator can roll back its
     staged state on a clean error.
+
+    The provider/outbox path intentionally uses the list-only
+    mapper so the local styling diagnostic never reaches the
+    outbox payload.
     """
     _validate(
         proveedor=proveedor,
@@ -302,5 +372,6 @@ __all__ = [
     "GENERIC_MESSAGE",
     "StagedOutboundRow",
     "build_customer_responses",
+    "build_customer_responses_with_diagnostic",
     "stage_outbound_rows",
 ]

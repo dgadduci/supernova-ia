@@ -193,6 +193,63 @@ content.
 The result remains `prefix + exact factual message + suffix`; only the
 allowed surrounding framing becomes more expressive.
 
+## Local Pilot Styling Diagnostic Amendment
+
+An unwrapped eligible response is deliberately safe, but the pilot panel
+currently cannot distinguish an ineligible response from an attempted styling
+fallback. This amendment adds a bounded, request-scoped diagnostic handoff
+for the existing authenticated local-test channel only.
+
+- Preserve the selected active commerce flavor for every eligible normal
+  response, including `ver_menu` full/category and order-status responses;
+  this amendment MUST NOT substitute `neutro`, alter flavor selection, or
+  make an unstyled fallback look like a flavor decision.
+- The local-test success JSON and its existing execution-state panel gain a
+  closed `outbound_style` projection for the turn: attempt outcome,
+  eligible/applied counts, bounded fallback category when applicable, selected
+  flavor code when usable, allowlisted response-type tokens, and static
+  template version. It contains no messages, prompts, instruction, IDs,
+  exception detail, model output, or timing.
+- The diagnostic is ephemeral to the single local-test HTTP response and UI
+  refresh. It is not persisted on Session/Pedido, placed in provider outbox,
+  emitted as a second LLM call, or used as business input.
+- Extract a single shared mapper/styler diagnostic path so the normal local
+  processor remains the same business pipeline. Existing callers keep their
+  list-of-responses contract unless they explicitly opt into the typed
+  diagnostic companion.
+
+### Expected files for this amendment
+
+- `backend/services/outbound_response_styler.py`
+- `backend/services/outbound_response_mapper.py`
+- `backend/intents/orchestration/incoming_message_response_orchestrator.py`
+- `backend/routers/admin_pilot_orders.py`
+- `backend/templates/admin_pilot_orders/detail.html`
+- focused styler/mapper/orchestrator/pilot-panel tests
+
+### Focused tests for this amendment
+
+- An eligible `ver_menu` and order-status response under a usable selected
+  flavor records `applied` or a bounded `fallback` outcome; it never becomes
+  a neutral flavor decision.
+- `not_attempted` cleanly distinguishes no eligible response from an unusable
+  flavor without disclosing configuration detail.
+- The local route/UI receive only its closed safe projection and never raw
+  messages, prompts, instructions, IDs, exception text, model output, or
+  arbitrary diagnostic fields.
+- Existing local business processing, mapper result ordering, provider outbox
+  flow and caller-owned transaction behavior remain unchanged.
+
+### Validation for this amendment
+
+```bash
+PYTHONPATH=. venv/bin/python -m pytest backend/tests/test_outbound_response_styler.py backend/tests/test_outbound_response_mapper.py backend/tests/test_incoming_message_response_orchestrator.py backend/tests/test_admin_pilot_orders_panel.py -q
+PYTHONPATH=. venv/bin/python -m ruff check backend/services/outbound_response_styler.py backend/services/outbound_response_mapper.py backend/intents/orchestration/incoming_message_response_orchestrator.py backend/routers/admin_pilot_orders.py backend/tests/test_outbound_response_styler.py backend/tests/test_outbound_response_mapper.py backend/tests/test_incoming_message_response_orchestrator.py backend/tests/test_admin_pilot_orders_panel.py
+PYTHONPATH=. venv/bin/python -m compileall -q backend/services/outbound_response_styler.py backend/services/outbound_response_mapper.py backend/intents/orchestration/incoming_message_response_orchestrator.py backend/routers/admin_pilot_orders.py
+openspec validate add-safe-outbound-response-styling --strict
+git diff --check
+```
+
 ## Deferred Limitations
 
 - Styling error, rejection, ambiguity, or customer-free-text response families

@@ -69,3 +69,19 @@
 - [ ] 6.4 After approved deploy, under `joven` verify longer expressive
   wrappers and contextually appropriate emojis around intact factual messages;
   under `neutro` verify exact deterministic no-op.
+
+## 7. Local pilot styling diagnostics
+
+- [x] 7.1 Add one typed, request-scoped styling diagnostic companion to the
+  shared styling/mapper path without changing default response-list callers
+  or invoking a second styling request.
+- [x] 7.2 Expose only the closed PII-safe diagnostic through the authenticated
+  local-test response and render its latest values in the existing pilot panel.
+- [x] 7.3 Cover eligible menu/status attempts, bounded fallback/not-attempted
+  outcomes, selected-flavor preservation, privacy/closed-schema boundaries,
+  local/outbox compatibility and caller-owned transactions.
+- [x] 7.4 Run this amendment's focused pytest, Ruff, compileall, strict
+  OpenSpec validation and `git diff --check`.
+- [ ] 7.5 After approved deploy under `joven`, send a full/category menu and
+  status query through the local panel; verify the panel distinguishes
+  `applied`, `fallback`, or `not_attempted` without displaying private data.

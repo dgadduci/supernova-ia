@@ -55,6 +55,9 @@ from backend.services.outbound_response_mapper import (
     build_customer_responses,
     stage_outbound_rows,
 )
+from backend.services.outbound_response_styler import (
+    RESPONSE_TYPE_SOCIAL_GREETING,
+)
 
 
 def _db() -> MagicMock:
@@ -303,6 +306,7 @@ class OutboundMapperBoundariesTest(unittest.TestCase):
                 "GENERIC_MESSAGE",
                 "StagedOutboundRow",
                 "build_customer_responses",
+                "build_customer_responses_with_diagnostic",
                 "stage_outbound_rows",
             },
         )
@@ -485,6 +489,232 @@ class OutboundMapperStylerIntegrationTest(unittest.TestCase):
                 "close",
             ):
                 getattr(db, method).assert_not_called()
+
+
+class OutboundMapperWithDiagnosticTest(unittest.TestCase):
+    """Subphase 7 — local pilot styling diagnostic handoff.
+
+    The opt-in companion
+    :func:`backend.services.outbound_response_mapper.build_customer_responses_with_diagnostic`
+    must share the same intent-to-response mapping and the same
+    single styling pass with the list-only API. The companion
+    is the single place where the local pilot panel surfaces the
+    closed request-scoped styling provenance.
+
+    Contract:
+
+    * The companion MUST return the same ``CustomerResponse``
+      list as the list-only API when given the same inputs.
+    * The companion MUST return the closed
+      :class:`StyleDiagnostic` companion carrying only
+      ``outcome``, ``eligible_count``, ``applied_count``,
+      ``response_types``, ``template_version``, and the
+      optional ``fallback_category`` / ``flavor_code``.
+    * The provider/outbox path (``stage_outbound_rows``) MUST
+      keep using the list-only API and MUST NOT receive the
+      diagnostic.
+    * The companion MUST NOT control database transactions.
+    """
+
+    _SALUDO_INTENT = "saludo"
+    _SALUDO_STATUS = "executed"
+    _SALUDO_MESSAGE = (
+        "¡Hola! Puedo ayudarte a armar tu pedido. Decime qué querés."
+    )
+
+    def _saludo_intent(self) -> ProcessedIntent:
+        return ProcessedIntent(
+            intent=self._SALUDO_INTENT,
+            source_text="hola",
+            status=self._SALUDO_STATUS,
+            recognizer="intent_classifier",
+            handler=SOCIAL_CONVERSATION_HANDLER,
+        )
+
+    def test_with_diagnostic_invokes_styling_once_for_same_inputs(self) -> None:
+        from backend.services.outbound_response_styler import StyleDiagnostic
+
+        captured: dict = {}
+        diagnostic = StyleDiagnostic(
+            outcome="applied",
+            eligible_count=1,
+            applied_count=1,
+            flavor_code="joven",
+            response_types=(RESPONSE_TYPE_SOCIAL_GREETING,),
+            template_version="outbound-response-styler/v1.2.0",
+        )
+
+        def _style(*args, **kwargs):
+            captured["call_count"] = captured.get("call_count", 0) + 1
+            if len(args) > 2:
+                responses = args[2]
+            else:
+                responses = kwargs.get("responses") or []
+            return [
+                CustomerResponse(
+                    message=f"[X] {r.message}",
+                    intent=r.intent,
+                    status=r.status,
+                )
+                for r in responses
+            ]
+
+        with patch.object(
+            mapper_module, "style_responses_with_diagnostic"
+        ) as companion_styler:
+            companion_styler.side_effect = lambda *_args, **_kwargs: (
+                (
+                    _style(*_args, **_kwargs),
+                    diagnostic,
+                )
+            )
+            db = MagicMock()
+            session = MagicMock(id_comercio=1)
+            responses, returned_diagnostic = (
+                mapper_module.build_customer_responses_with_diagnostic(
+                    db, session, [self._saludo_intent()]
+                )
+            )
+            self.assertEqual(len(responses), 1)
+            self.assertEqual(
+                responses[0].message, f"[X] {self._SALUDO_MESSAGE}"
+            )
+            self.assertIs(returned_diagnostic, diagnostic)
+            self.assertEqual(captured.get("call_count"), 1)
+
+    def test_with_diagnostic_preserves_session_id_comercio(self) -> None:
+        with patch.object(
+            mapper_module, "style_responses_with_diagnostic"
+        ) as styler:
+            styler.return_value = (
+                [
+                    CustomerResponse(
+                        message="ok",
+                        intent="saludo",
+                        status="executed",
+                    )
+                ],
+                MagicMock(name="DiagnosticStub"),
+            )
+            db = MagicMock()
+            session = MagicMock(id_comercio=99)
+            mapper_module.build_customer_responses_with_diagnostic(
+                db, session, [self._saludo_intent()]
+            )
+            self.assertEqual(styler.call_count, 1)
+            self.assertEqual(styler.call_args.args[1], 99)
+
+    def test_with_diagnostic_does_not_control_database_transactions(self) -> None:
+        with patch.object(
+            mapper_module, "style_responses_with_diagnostic"
+        ) as styler:
+            styler.return_value = (
+                [
+                    CustomerResponse(
+                        message="ok",
+                        intent="saludo",
+                        status="executed",
+                    )
+                ],
+                MagicMock(name="DiagnosticStub"),
+            )
+            db = MagicMock()
+            session = MagicMock(id_comercio=1)
+            mapper_module.build_customer_responses_with_diagnostic(
+                db, session, [self._saludo_intent()]
+            )
+            for method in (
+                "commit",
+                "rollback",
+                "begin",
+                "begin_nested",
+                "flush",
+                "refresh",
+                "close",
+            ):
+                getattr(db, method).assert_not_called()
+
+    def test_stage_outbound_rows_uses_list_only_companion(self) -> None:
+        """The provider/outbox path must keep using the list-only
+        mapper and must never invoke the diagnostic companion."""
+        with patch.object(mapper_module, "style_responses") as list_styler, \
+                patch.object(
+                    mapper_module, "style_responses_with_diagnostic"
+                ) as companion_styler:
+            list_styler.side_effect = lambda *_args, **_kwargs: (
+                _args[2] if len(_args) > 2 else _kwargs.get("responses")
+            )
+            companion_styler.side_effect = AssertionError(
+                "stage_outbound_rows must not use the diagnostic companion"
+            )
+            db = MagicMock()
+            session = MagicMock(id_comercio=42)
+            intent = self._saludo_intent()
+            outbox_repo = MagicMock()
+            staged_row = MagicMock()
+            staged_row.id = 7
+            outbox_repo.stage.return_value = staged_row
+            stage_outbound_rows(
+                db,
+                session,
+                proveedor="twilio",
+                recepcion_mensaje_proveedor_id=1,
+                destinatario_e164="+5491100000000",
+                intents=[intent],
+                outbox_repo=outbox_repo,
+            )
+            self.assertEqual(list_styler.call_count, 1)
+            self.assertEqual(companion_styler.call_count, 0)
+
+    def test_with_diagnostic_mirrors_list_only_responses_for_same_inputs(self) -> None:
+        """Both APIs must render the same ``CustomerResponse``
+        list for the same processed intents using the same
+        one-shot styling pass."""
+        from backend.services.outbound_response_styler import StyleDiagnostic
+
+        def _style(responses):
+            return [
+                CustomerResponse(
+                    message=f"[X] {r.message}",
+                    intent=r.intent,
+                    status=r.status,
+                )
+                for r in responses
+            ]
+
+        db_a = MagicMock()
+        db_b = MagicMock()
+        session = MagicMock(id_comercio=1)
+        with patch.object(
+            mapper_module, "style_responses"
+        ) as list_styler, patch.object(
+            mapper_module, "style_responses_with_diagnostic"
+        ) as companion_styler:
+            list_styler.side_effect = lambda *_args, **_kwargs: _style(
+                _args[2] if len(_args) > 2 else _kwargs.get("responses")
+            )
+            companion_styler.side_effect = lambda *_args, **_kwargs: (
+                _style(
+                    _args[2] if len(_args) > 2 else _kwargs.get("responses")
+                ),
+                StyleDiagnostic(
+                    outcome="applied",
+                    eligible_count=1,
+                    applied_count=1,
+                    flavor_code="joven",
+                    response_types=(RESPONSE_TYPE_SOCIAL_GREETING,),
+                    template_version="outbound-response-styler/v1.2.0",
+                ),
+            )
+            list_only = build_customer_responses(
+                db_a, session, [self._saludo_intent()]
+            )
+            companion_responses, _diagnostic = (
+                mapper_module.build_customer_responses_with_diagnostic(
+                    db_b, session, [self._saludo_intent()]
+                )
+            )
+        self.assertEqual(list_only, companion_responses)
 
 
 class SetObservacionProductoMapperTest(unittest.TestCase):

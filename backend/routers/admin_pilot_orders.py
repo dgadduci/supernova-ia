@@ -40,12 +40,27 @@ tokens or provider data. The transactional message processor
 remains the only commit/rollback authority; the route never calls
 ``commit``, ``rollback``, ``flush``, ``refresh``, ``begin``, ``close``
 or ``expire``.
+
+Local pilot styling diagnostic handoff (subphase 7): the
+successful local-test response additionally carries a closed
+``outbound_style`` projection of the latest styling attempt for
+the exact selected Session. The projection is typed, request-scoped
+and ephemeral: it is delivered only inside the HTTP response of
+the local-test route and is never persisted, never sent to the
+provider outbox, never used as business input and never reaches
+Twilio. The projection deliberately contains only the closed
+shape documented in :class:`OutboundStyleDiagnostic` and never
+the rendered messages, prefix/suffix, the prompt, the flavor
+instruction, identifiers, timing, exception detail or arbitrary
+event payloads. The route remains list-only for every outlier
+it rejects: rejections use the documented generic payload and
+never carry the diagnostic.
 """
 from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path as PathLib
-from typing import Annotated
+from typing import Annotated, Literal, cast
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Header, Path, Query, Request
@@ -57,7 +72,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from backend.dependencies import get_session, require_admin_pilot_basic
 from backend.intents.orchestration.incoming_message_response_orchestrator import (
-    process_incoming_message_with_responses,
+    process_incoming_message_with_style_diagnostic,
 )
 from backend.intents.orchestration.order_status_query import (
     process_initial_order_status_query,
@@ -77,8 +92,9 @@ from backend.models import (
     Session as SessionModel,
 )
 from backend.services.outbound_response_mapper import (
-    build_customer_responses,
+    build_customer_responses_with_diagnostic,
 )
+from backend.services.outbound_response_styler import StyleDiagnostic
 from backend.services.pilot_order_operations_view_service import (
     ALLOWED_PAGE_SIZES,
     InvalidComercioId,
@@ -449,6 +465,49 @@ class LocalTestOrderLine(BaseModel):
     observaciones: str | None
 
 
+class OutboundStyleDiagnostic(BaseModel):
+    """Closed, request-scoped styling diagnostic for the local-test
+    channel.
+
+    The schema mirrors the documented spec field set exactly:
+
+    * ``outcome`` — one of ``"applied"``, ``"fallback"`` or
+      ``"not_attempted"`` so the operator can distinguish an
+      attempted styling from a no-op the panel would otherwise
+      conflate with an ineligible response.
+    * ``eligible_count`` and ``applied_count`` — bounded
+      non-negative integers mirroring the observability event.
+    * ``fallback_category`` — only present when ``outcome`` is
+      ``"fallback"``; the bounded allowlisted token that
+      explains the failure mode (transport, wrapper, etc.).
+    * ``flavor_code`` — only present when the selected flavor
+      was usable for the attempt; NEVER present when the flavor
+      was ``neutro``, missing, inactive or had no instruction.
+    * ``response_types`` — the ordered allowlisted
+      ``response_type`` tokens the attempt touched (eligible
+      items only, never the rendered message text).
+    * ``template_version`` — the static template identity
+      published by the styler prompt template.
+
+    The schema deliberately forbids every other field so the
+    diagnostic cannot leak the rendered prompt, the flavor
+    instruction, raw customer text, factual response text,
+    prefix/suffix, identifiers, timing, exception detail,
+    model output or arbitrary event payloads. The companion is
+    ephemeral, request-scoped and never persisted.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: Literal["applied", "fallback", "not_attempted"]
+    eligible_count: int = Field(ge=0)
+    applied_count: int = Field(ge=0)
+    fallback_category: str | None = None
+    flavor_code: str | None = None
+    response_types: list[str]
+    template_version: str
+
+
 class LocalTestResponse(BaseModel):
     """Successful local-test response payload.
 
@@ -458,9 +517,13 @@ class LocalTestResponse(BaseModel):
     carries the closed snapshot for the existing state cells;
     ``order_lines`` carries the typed, JSON-safe line snapshot for
     the exact selected Pedido so the browser can refresh the
-    centre-column lines list in place. The schema rejects any
-    extra member so a future regression that starts leaking raw
-    fields would fail at runtime.
+    centre-column lines list in place. ``outbound_style`` carries
+    the closed request-scoped styling diagnostic for the latest
+    local turn so the panel can show the operator whether an
+    active selected flavor was applied, fell back or was not
+    attempted. The schema rejects any extra member so a future
+    regression that starts leaking raw fields would fail at
+    runtime.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -468,6 +531,7 @@ class LocalTestResponse(BaseModel):
     responses: list[dict[str, str]]
     execution_state: LocalTestExecutionState
     order_lines: list[LocalTestOrderLine]
+    outbound_style: OutboundStyleDiagnostic
 
 
 def _serialize_execution_state(
@@ -673,7 +737,7 @@ def local_test_message(
     loaded = _load_local_test_session(db, parsed_id)
     if loaded is not None:
         _, exact_session = loaded
-        responses = process_incoming_message_with_responses(
+        responses, style_diagnostic = process_incoming_message_with_style_diagnostic(
             db, exact_session, payload.message
         )
     else:
@@ -703,7 +767,7 @@ def local_test_message(
         processed_intent = process_initial_order_status_query(
             db, exact_session, classified_message
         )
-        responses = build_customer_responses(
+        responses, style_diagnostic = build_customer_responses_with_diagnostic(
             db, exact_session, [processed_intent]
         )
 
@@ -744,10 +808,53 @@ def local_test_message(
             )
             for snapshot in order_lines_snapshot
         ],
+        outbound_style=_serialize_outbound_style_diagnostic(style_diagnostic),
     )
     return JSONResponse(
         status_code=200,
         content=response_payload.model_dump(),
+    )
+
+
+def _serialize_outbound_style_diagnostic(
+    diagnostic: StyleDiagnostic,
+) -> OutboundStyleDiagnostic:
+    """Project a :class:`StyleDiagnostic` into the closed
+    :class:`OutboundStyleDiagnostic` wire schema.
+
+    The serializer is the only place that builds the
+    outward-facing representation of the diagnostic. It pulls
+    the documented closed fields exclusively via the dataclass
+    surface so a future field added to :class:`StyleDiagnostic`
+    cannot leak into the wire payload. The serializer never
+    inspects the database, the configuration or the LLM.
+    """
+    allowed_outcomes: tuple[Literal["applied", "fallback", "not_attempted"], ...] = (
+        "applied",
+        "fallback",
+        "not_attempted",
+    )
+    outcome = diagnostic.outcome
+    if outcome not in allowed_outcomes:
+        raise ValueError(
+            f"unexpected outbound style outcome: {outcome!r}"
+        )
+    return OutboundStyleDiagnostic(
+        outcome=cast(
+            Literal["applied", "fallback", "not_attempted"], outcome
+        ),
+        eligible_count=int(diagnostic.eligible_count),
+        applied_count=int(diagnostic.applied_count),
+        fallback_category=(
+            diagnostic.fallback_category
+            if diagnostic.fallback_category is not None
+            else None
+        ),
+        flavor_code=(
+            diagnostic.flavor_code if diagnostic.flavor_code is not None else None
+        ),
+        response_types=list(diagnostic.response_types),
+        template_version=diagnostic.template_version,
     )
 
 
