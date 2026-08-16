@@ -115,3 +115,24 @@ No migrations, UI/configuration changes, classifier changes, provider changes,
 or response-builder rewrites are part of this change. Styling errors,
 rejections, ambiguities, or customer-free-text response families remains
 outside this privacy and factual-preservation contract.
+
+## Reactivation from the full-message experiment
+
+The full-message experiment is reverted at the styling boundary only. Restore
+the wrapper contract represented by `17d7566` in these collaborators:
+
+- `backend/diagnostics/outbound_response_style_prompt_template.py`
+- `backend/services/outbound_response_styler.py`
+- `backend/observability/events.py`
+- `backend/tests/test_outbound_response_styler.py`
+
+The wrapper LLM receives only response-type tokens and flavor instruction; it
+does not receive factual customer text. The backend composes each validated
+non-empty prefix/suffix around the exact deterministic message, leaving it an
+intact contiguous substring. Current `outbound_response_mapper.py` remains
+the existing shared boundary and is not restored from an older branch.
+
+No model, migration, configuration API, global flavor data, prompt instruction
+row, intent, response builder, router, outbox owner or transaction owner is
+changed. This restoration deliberately uses the tested wrapper implementation
+instead of attempting another full-message prompt calibration.

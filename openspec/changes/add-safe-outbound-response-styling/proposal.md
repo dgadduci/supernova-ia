@@ -148,6 +148,28 @@ behavior without migration or data rewrite. If the feature needs rollback,
 remove the shared styler invocation; all existing deterministic builders and
 outbox rows remain valid.
 
+## Reactivation Amendment: discard the full-message experiment
+
+The later `experiment-full-llm-outbound-response-generation` change replaced
+this wrapper contract on its dedicated branch. Pilot calibration repeatedly
+summarized menus, removed presentation/unit labels and added unsupported
+status/logistics wording. Without a semantic output validator, which remains
+out of scope, that experiment does not meet the factual-reliability threshold.
+
+This amendment restores this already-approved wrapper contract on the current
+branch. It is a targeted restoration, not a whole-branch rollback:
+
+- Restore the wrapper-only template, parser/composition, bounded styling event
+  contract and focused tests from the known safe wrapper state at `17d7566`.
+- Keep the current shared mapper placement, global flavors, persisted
+  `instruccion_llm`, protected administrative catalog endpoint, all later
+  intent/order changes and caller-owned transaction behavior intact.
+- Do not deploy the old branch wholesale and do not use `git revert` on
+  unrelated commits.
+- Keep `experiment-full-llm-outbound-response-generation` active and
+  unarchived as the documented failed experiment; its pilot gates remain
+  unmarked and it must not be archived as a successful change.
+
 ## Deferred Limitations
 
 - Styling error, rejection, ambiguity, or customer-free-text response families
