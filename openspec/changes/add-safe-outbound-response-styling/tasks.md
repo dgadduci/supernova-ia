@@ -116,3 +116,18 @@
   and status have visible wrappers that add no unsupported commerce/logistics
   claims; verify a full/category menu remains complete and exact; and verify
   `neutro` remains byte-for-byte deterministic.
+
+## 10. Bounded Invalid-Wrapper Diagnostic Amendment
+
+- [x] 10.1 Preserve the existing one-call shared styler path while classifying
+  invalid wrappers internally as claim-guard or shape-invalid, and project
+  only the approved bounded aggregate token.
+- [x] 10.2 Extend allowlisted event/local diagnostic tokens and add focused
+  claim, shape, mixed-batch, empty-wrapper, privacy, one-call, `neutro`,
+  local/provider, and no-transaction tests.
+- [x] 10.3 Run focused pytest, impacted observability tests, Ruff, compileall,
+  strict OpenSpec validation, and `git diff --check`.
+- [ ] 10.4 After approved deploy under `joven`, verify a fallback visibly
+  distinguishes `wrapper_claim_guard` from `wrapper_shape_invalid` without
+  exposing wrapper content or private data; then repeat the affected 9.4
+  greeting/product-add checks.

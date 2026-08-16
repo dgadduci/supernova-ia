@@ -133,6 +133,8 @@ FALLBACK_HTTP = "http_error"
 FALLBACK_RESPONSE = "response_error"
 FALLBACK_MALFORMED_BATCH = "malformed_batch"
 FALLBACK_WRAPPER_INVALID = "wrapper_invalid"
+FALLBACK_WRAPPER_CLAIM_GUARD = "wrapper_claim_guard"
+FALLBACK_WRAPPER_SHAPE_INVALID = "wrapper_shape_invalid"
 FALLBACK_EMPTY_WRAPPER = "empty_wrapper"
 FALLBACK_UNEXPECTED = "unexpected"
 
@@ -882,7 +884,8 @@ def _style_responses_and_diagnostic(
 
     applied_count = 0
     empty_wrapper_count = 0
-    invalid_wrapper_count = 0
+    shape_invalid_count = 0
+    claim_guard_count = 0
     styled: list[CustomerResponse] = list(materialised)
     for eligible_item in eligible:
         wrapper = parsed.get(eligible_item.batch_position)
@@ -891,17 +894,22 @@ def _style_responses_and_diagnostic(
         raw_prefix, raw_suffix = wrapper
         prefix, prefix_status = _safe_short_wrapper(raw_prefix)
         suffix, suffix_status = _safe_short_wrapper(raw_suffix)
+        shape_invalid = False
+        if prefix_status == "invalid" or suffix_status == "invalid":
+            shape_invalid = True
         if (
-            prefix is not None
+            not shape_invalid
+            and prefix is not None
             and suffix is not None
             and prefix_status != "invalid"
             and suffix_status != "invalid"
             and len(prefix) + len(suffix) > _WRAPPER_COMBINED_MAX_LENGTH
         ):
-            prefix_status = "invalid"
-            suffix_status = "invalid"
+            shape_invalid = True
+        claim_rejected = False
         if (
-            prefix_status != "invalid"
+            not shape_invalid
+            and prefix_status != "invalid"
             and suffix_status != "invalid"
             and isinstance(prefix, str)
             and isinstance(suffix, str)
@@ -910,10 +918,12 @@ def _style_responses_and_diagnostic(
                 or _wrapper_contains_claim_term(suffix)
             )
         ):
-            prefix_status = "invalid"
-            suffix_status = "invalid"
-        if prefix_status == "invalid" or suffix_status == "invalid":
-            invalid_wrapper_count += 1
+            claim_rejected = True
+        if shape_invalid:
+            shape_invalid_count += 1
+            continue
+        if claim_rejected:
+            claim_guard_count += 1
             continue
         if prefix_status == "empty" and suffix_status == "empty":
             empty_wrapper_count += 1
@@ -924,7 +934,7 @@ def _style_responses_and_diagnostic(
         if not _wrapper_preserves_factual(
             original, prefix=prefix, suffix=suffix
         ):
-            invalid_wrapper_count += 1
+            shape_invalid_count += 1
             continue
         styled[eligible_item.index] = CustomerResponse(
             message=_composed_message(original, prefix=prefix, suffix=suffix),
@@ -935,7 +945,11 @@ def _style_responses_and_diagnostic(
 
     elapsed_ms = int((_now(clock) - started) * 1000)
     if applied_count == 0:
-        if invalid_wrapper_count == 0 and empty_wrapper_count > 0:
+        if shape_invalid_count > 0:
+            failure_category = FALLBACK_WRAPPER_SHAPE_INVALID
+        elif claim_guard_count > 0:
+            failure_category = FALLBACK_WRAPPER_CLAIM_GUARD
+        elif empty_wrapper_count > 0:
             failure_category = FALLBACK_EMPTY_WRAPPER
         else:
             failure_category = FALLBACK_WRAPPER_INVALID
@@ -1005,7 +1019,9 @@ __all__ = [
     "FALLBACK_RESPONSE",
     "FALLBACK_TIMEOUT",
     "FALLBACK_UNEXPECTED",
+    "FALLBACK_WRAPPER_CLAIM_GUARD",
     "FALLBACK_WRAPPER_INVALID",
+    "FALLBACK_WRAPPER_SHAPE_INVALID",
     "NEUTRO_FLAVOR_CODE",
     "OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION",
     "OUTCOME_APPLIED",

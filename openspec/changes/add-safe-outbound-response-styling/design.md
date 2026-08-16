@@ -235,3 +235,21 @@ Generic emotional/social framing that passes the existing shape checks and has
 no guarded claim term remains eligible for application. The guard contains no
 prescribed customer phrase or emoji; the persisted flavor instruction remains
 the only source of tone.
+
+## Bounded invalid-wrapper diagnostics
+
+The existing `wrapper_invalid` token cannot distinguish the factual-claim
+guard from ordinary shape validation without exposing model output. The styler
+will retain only an internal enum-like reason during the existing per-item
+validation loop. If no item in a batch is styled, its closed aggregate
+diagnostic reason is `wrapper_claim_guard` only when every invalid item was
+rejected by the high-risk claim guard; otherwise it is
+`wrapper_shape_invalid`. A mixed claim/shape batch therefore reports
+`wrapper_shape_invalid`. `empty_wrapper`, transport, malformed-batch, and
+successful/mixed-applied behavior remain unchanged.
+
+These two tokens are allowlisted in the existing event and local-pilot
+diagnostic projection. No raw wrapper, matched word, item index, count,
+prompt, instruction, message, identifier, exception detail, or model output
+is serialized. The diagnostic remains request-scoped for the local panel and
+the provider path continues to share the same single styling pass.
