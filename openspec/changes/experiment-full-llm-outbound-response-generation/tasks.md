@@ -9,6 +9,9 @@
 - [x] 1.3 Retain strict structural JSON parsing, one-call batching, safe
   diagnostics, and deterministic technical fallback without semantic output
   validation or hardcoded flavor phrases.
+- [x] 1.4 Strengthen the static full-message prompt contract for immutable
+  menu/category inventory rendering, presentation/unit labels and status
+  non-inference; preserve the full-LLM experiment boundaries.
 
 ## 2. Shared Integration
 
@@ -27,6 +30,8 @@
 - [x] 3.2 Cover local/outbox equivalence, neutral behavior, and the full
   ineligible set.
 - [x] 3.3 Run all focused validation commands in `proposal.md`.
+- [x] 3.4 Cover the strengthened static menu/category and status prompt rules
+  without introducing semantic output comparison or a second LLM call.
 
 ## 4. Manual Pilot Calibration Gates (post-deploy only)
 
@@ -40,3 +45,7 @@
   deterministic under a non-neutral flavor.
 - [ ] 4.4 Record calibration defects and either approve promotion of this
   experimental branch or discard it in favor of the wrapper branch.
+- [ ] 4.5 Under `joven`, manually compare a full menu, a category menu and an
+  order-status response line by line against their deterministic factual
+  messages; confirm all presentations/units remain visible and no unsupported
+  logistics or timing claim is added.
