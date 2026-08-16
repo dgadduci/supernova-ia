@@ -216,3 +216,22 @@ field, 140-character combined bound, no digits/questions/newlines/control
 characters, one-request maximum and exact factual-substring composition remain
 authoritative. An invalid menu wrapper continues to preserve the exact
 deterministic menu as a `wrapper_invalid` fallback.
+
+## Factual-claim guard
+
+The intact-substring rule prevents replacement of deterministic facts but does
+not, by itself, prevent a wrapper from adding an unsupported claim. Before
+composition, the existing wrapper validator will normalize each candidate
+prefix/suffix and reject it when it contains a bounded high-risk
+commerce/logistics claim term. The static prompt forbids the same categories:
+order state, preparation, confirmation, shipment, delivery, payment,
+availability, timing, and execution.
+
+This is a fail-closed lexical safety guard, not general semantic analysis. A
+rejected item has the existing `wrapper_invalid` fallback: its exact
+deterministic message is returned unchanged, the selected flavor remains
+diagnostic-only, and no second model request or transaction action occurs.
+Generic emotional/social framing that passes the existing shape checks and has
+no guarded claim term remains eligible for application. The guard contains no
+prescribed customer phrase or emoji; the persisted flavor instruction remains
+the only source of tone.

@@ -61,12 +61,38 @@ flavor; tone and emoji choices stay governed by the selected
 ``instruccion_llm``. An invalid ``menu_full`` wrapper preserves
 the exact deterministic menu through the existing
 ``wrapper_invalid`` fallback.
+
+Factual-claim guard
+-------------------
+
+The intact-substring rule prevents the LLM from rewriting the
+deterministic message, but it does not, by itself, prevent a
+wrapper from introducing an unsupported commerce or logistics
+claim. For example, a wrapper that says the order is "in
+transit" when the system only knows the product was added is an
+unsupported commercial fact.
+
+The static template body MUST explicitly prohibit claims about
+order state, preparation, confirmation, shipment, delivery,
+payment, availability, timing, or execution in either
+``prefix`` or ``suffix``. The bounded lexical guard in the
+existing wrapper validator rejects any ``prefix`` or ``suffix``
+that contains a normalized high-risk term from those
+categories. The rejected item falls back to the exact
+deterministic message through the existing ``wrapper_invalid``
+fallback; no second LLM call, retry, recognition call or
+transaction action is performed.
+
+The guard is a bounded lexical safety net, not a general
+semantic classifier. The persisted ``instruccion_llm`` remains
+the sole source of tone and emoji choices; this amendment does
+not hardcode a customer-facing phrase or emoji for any flavor.
 """
 from __future__ import annotations
 
 import hashlib
 
-OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION = "outbound-response-styler/v1.3.0"
+OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION = "outbound-response-styler/v1.4.0"
 
 _INTRO = (
     "\n"
@@ -104,7 +130,9 @@ Reglas del envoltorio:
 
 7. NO generes contenido que dependa de un cliente, comercio, pedido o turno específico. Tu sugerencia debe servir para cualquier instancia del mismo `response_type`.
 
-8. Si la directriz de tono entra en conflicto con las reglas anteriores, las reglas anteriores prevalecen.
+8. NO afirmes, prometas ni infieras el estado del pedido, su preparación, confirmación, envío, entrega, pago, disponibilidad, tiempos estimados ni su ejecución, ni en `prefix` ni en `suffix`. Vos no conocés ninguno de esos hechos: tu `prefix` y `suffix` deben ser frases genéricas de presentación que no agreguen ningún dato comercial ni logístico. Un envoltorio que contenga un reclamo de ese tipo será rechazado y la respuesta original quedará sin estilo (fallback `wrapper_invalid`).
+
+9. Si la directriz de tono entra en conflicto con las reglas anteriores, las reglas anteriores prevalecen.
 
 """
 

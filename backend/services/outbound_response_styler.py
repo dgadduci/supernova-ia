@@ -87,6 +87,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -343,6 +344,139 @@ _DIGIT_PATTERN = re.compile(r"\d")
 _DISALLOWED_TEXT_CHARS = frozenset({"\n", "\r", "\t", "?"})
 _WRAPPER_MAX_LENGTH = 96
 _WRAPPER_COMBINED_MAX_LENGTH = 140
+
+
+_HIGH_RISK_CLAIM_TERMS: tuple[str, ...] = (
+    # Order state
+    "en camino",
+    "estado del pedido",
+    "estado de tu pedido",
+    "estado de su pedido",
+    "estado de el pedido",
+    "tu pedido está",
+    "su pedido está",
+    "el pedido está",
+    "pedido en camino",
+    # Preparation
+    "en preparación",
+    "preparando",
+    "preparado",
+    "cocinando",
+    "cocinado",
+    # Confirmation
+    "confirmado",
+    "confirmada",
+    "confirmamos",
+    "hemos confirmado",
+    "hemos confirmada",
+    "confirmación",
+    "confirmaciones",
+    # Shipment
+    "enviado",
+    "enviamos",
+    "despachado",
+    "despachamos",
+    "remitido",
+    # Delivery
+    "entregado",
+    "entregando",
+    "delivery",
+    "llegará",
+    # Payment
+    "pagado",
+    "pagamos",
+    "cobrado",
+    "cobramos",
+    # Availability
+    "en stock",
+    "hay stock",
+    "disponibilidad",
+    # Timing
+    "llega en",
+    "tarda",
+    "demora",
+    "en minutos",
+    "en horas",
+    "en breve",
+    "enseguida",
+    "ahora mismo",
+    "en un momento",
+    # Execution
+    "procesado",
+    "procesando",
+    "ejecutado",
+    "ejecutamos",
+)
+
+
+def _normalize_for_guard(value: str) -> str:
+    """Normalize a string for accent-insensitive, case-insensitive
+    comparison.
+
+    The normalization is a bounded lexical helper used ONLY by
+    the wrapper-claim guard. It MUST NOT be applied to the
+    customer-facing text; the deterministic message and the
+    composed wrapper are rendered with the original characters
+    intact.
+
+    The pipeline is:
+
+    * ``str.casefold()`` for canonical Unicode case folding
+      (stronger than ``lower()`` for non-ASCII letters);
+    * ``unicodedata.normalize("NFKD", ...)`` to decompose
+      accented characters into a base letter plus one or more
+      combining marks;
+    * strip combining marks (``unicodedata.combining``) so the
+      base letter is the only residue.
+
+    The result is a plain ASCII-friendly representation where
+    accents and case differences are eliminated. The original
+    string is never mutated.
+    """
+    if not isinstance(value, str):
+        return ""
+    decomposed = unicodedata.normalize("NFKD", value.casefold())
+    return "".join(char for char in decomposed if not unicodedata.combining(char))
+
+
+_NORMALIZED_CLAIM_TERMS: tuple[str, ...] = tuple(
+    _normalize_for_guard(term) for term in _HIGH_RISK_CLAIM_TERMS
+)
+
+
+def _wrapper_contains_claim_term(value: str) -> bool:
+    """Return ``True`` when the normalized wrapper contains a
+    bounded high-risk commerce / logistics claim term.
+
+    The guard is a bounded lexical safety net, not a general
+    semantic classifier. It catches the most common ways a
+    wrapper could assert, promise, or infer order state,
+    preparation, confirmation, shipment, delivery, payment,
+    availability, timing, or execution. ``prefix`` and
+    ``suffix`` are checked independently; a single match is
+    enough to reject the item through the existing
+    ``wrapper_invalid`` fallback.
+
+    The comparison is case-insensitive AND accent-insensitive:
+    both the wrapper fragment and the bounded term list are
+    normalized through :func:`_normalize_for_guard` (Unicode
+    casefold + NFKD decomposition + combining-mark removal)
+    before the substring match. The customer-facing text is
+    never mutated by the comparison.
+
+    The list is intentionally bounded: novel claims outside the
+    bounded high-risk lexical guard remain deferred and must
+    fail closed through future, separately approved work.
+    """
+    if not isinstance(value, str):
+        return False
+    normalized = _normalize_for_guard(value)
+    if not normalized:
+        return False
+    for term in _NORMALIZED_CLAIM_TERMS:
+        if term and term in normalized:
+            return True
+    return False
 
 
 def _safe_short_wrapper(value: Any) -> tuple[str | None, str]:
@@ -763,6 +897,18 @@ def _style_responses_and_diagnostic(
             and prefix_status != "invalid"
             and suffix_status != "invalid"
             and len(prefix) + len(suffix) > _WRAPPER_COMBINED_MAX_LENGTH
+        ):
+            prefix_status = "invalid"
+            suffix_status = "invalid"
+        if (
+            prefix_status != "invalid"
+            and suffix_status != "invalid"
+            and isinstance(prefix, str)
+            and isinstance(suffix, str)
+            and (
+                _wrapper_contains_claim_term(prefix)
+                or _wrapper_contains_claim_term(suffix)
+            )
         ):
             prefix_status = "invalid"
             suffix_status = "invalid"
