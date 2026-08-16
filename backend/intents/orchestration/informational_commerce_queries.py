@@ -199,6 +199,9 @@ When the catalog has at least one sellable item and the bounded
                 "presentacion_codigo": pp.presentacion.codigo,
                 "presentacion_descripcion": pp.presentacion.descripcion,
             }
+            precio = _first_valid_precio(pp)
+            if precio is not None:
+                item["precio"] = precio
             full_items.append(item)
             if isinstance(categoria_id, int) and not isinstance(categoria_id, bool):
                 items_by_categoria_id.setdefault(categoria_id, []).append(item)

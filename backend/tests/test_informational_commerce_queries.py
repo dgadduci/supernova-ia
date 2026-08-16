@@ -2666,6 +2666,393 @@ class BuildInformationalCommerceResponseTest(unittest.TestCase):
         self.assertNotIn("Empanadas disponibles:", rendered.message)
 
 
+class MenuPriceDisplayTest(unittest.TestCase):
+    """Focused coverage for the optional presentation price added to
+    every ``ver_menu`` item.
+
+    The orchestrator reuses ``_first_valid_precio`` so the price comes
+    only from the current-commerce sellable catalog already loaded by
+    :class:`ProductoQueryService`. The renderer reads the optional
+    ``precio`` key and formats it as ``— $<precio>`` when present,
+    preserving the original text when it is missing or invalid.
+    """
+
+    def _two_category_catalog_with_prices(self) -> list:
+        from decimal import Decimal
+
+        cat_pizzas = _categoria("Pizzas", orden=1)
+        cat_pizzas.id = 1
+        cat_empanadas = _categoria("Empanadas", orden=2)
+        cat_empanadas.id = 2
+        pres_grande = _presentacion("grande", "Grande")
+        pres_individual = _presentacion("individual", "Individual")
+        pres_unidad = _presentacion("unidad", "Unidad")
+        mozzarella = _producto(
+            id_=1,
+            nombre="Mozzarella",
+            categoria=cat_pizzas,
+            presentaciones=[
+                _producto_presentacion(
+                    id_=10,
+                    presentacion=pres_grande,
+                    precios=[_precio(Decimal("8500.00"))],
+                ),
+                _producto_presentacion(
+                    id_=11,
+                    presentacion=pres_individual,
+                    precios=[_precio(Decimal("5500.50"))],
+                ),
+            ],
+            orden=1,
+        )
+        empanada = _producto(
+            id_=2,
+            nombre="Empanada de Carne",
+            categoria=cat_empanadas,
+            presentaciones=[
+                _producto_presentacion(id_=20, presentacion=pres_unidad),
+            ],
+            orden=1,
+        )
+        return [mozzarella, empanada]
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_full_menu_exposes_two_decimal_precio_for_each_item(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        svc_cls.return_value.list_vendibles.return_value = (
+            self._two_category_catalog_with_prices()
+        )
+        resolver_factory.return_value.resolve.return_value = _resolved(
+            selected=None
+        )
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "menú"),
+        )
+
+        items = processed.resolved_data["items"]
+        # Only the presentations with valid prices should carry the
+        # price, in stable two-decimal form, in the same catalog order.
+        self.assertEqual(
+            [
+                (item["presentacion_codigo"], item.get("precio"))
+                for item in items
+            ],
+            [
+                ("grande", "8500.00"),
+                ("individual", "5500.50"),
+                ("unidad", None),
+            ],
+        )
+        rendered = build_informational_commerce_response(
+            _db(), _session(), processed
+        )
+        self.assertIn("- Mozzarella (grande) — $8500.00", rendered.message)
+        self.assertIn(
+            "- Mozzarella (individual) — $5500.50", rendered.message
+        )
+        self.assertIn("- Empanada de Carne (unidad)", rendered.message)
+        # Single call to the commerce-scoped catalog service.
+        svc_cls.return_value.list_vendibles.assert_called_once_with(7)
+        # No second catalog / price query is issued.
+        self.assertEqual(
+            svc_cls.return_value.list_vendibles.call_count, 1
+        )
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_selected_category_only_contains_prices_for_that_category(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        svc_cls.return_value.list_vendibles.return_value = (
+            self._two_category_catalog_with_prices()
+        )
+        resolver_factory.return_value.resolve.return_value = _resolved(
+            token="c1", nombre="Pizzas", categoria_id=1
+        )
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "qué pizzas hay"),
+        )
+
+        self.assertEqual(
+            processed.resolved_data["categoria_nombre"], "Pizzas"
+        )
+        items = processed.resolved_data["items"]
+        self.assertEqual(
+            [
+                (item["producto_nombre"], item.get("precio"))
+                for item in items
+            ],
+            [
+                ("Mozzarella", "8500.00"),
+                ("Mozzarella", "5500.50"),
+            ],
+        )
+        rendered = build_informational_commerce_response(
+            _db(), _session(), processed
+        )
+        self.assertIn("Pizzas disponibles:", rendered.message)
+        self.assertIn("- Mozzarella (grande) — $8500.00", rendered.message)
+        self.assertIn(
+            "- Mozzarella (individual) — $5500.50", rendered.message
+        )
+        self.assertNotIn("Empanadas", rendered.message)
+        self.assertNotIn("Empanada de Carne", rendered.message)
+        svc_cls.return_value.list_vendibles.assert_called_once_with(7)
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_item_without_valid_price_remains_visible_without_price(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        svc_cls.return_value.list_vendibles.return_value = (
+            self._two_category_catalog_with_prices()
+        )
+        resolver_factory.return_value.resolve.return_value = _resolved(
+            selected=None
+        )
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "menú"),
+        )
+        rendered = build_informational_commerce_response(
+            _db(), _session(), processed
+        )
+        # The price-less item keeps the legacy "Producto (codigo)" form,
+        # no "— $..." suffix and no "$None" placeholder.
+        self.assertIn("- Empanada de Carne (unidad)", rendered.message)
+        self.assertNotIn("(unidad) — $", rendered.message)
+        self.assertNotIn("(unidad) — $None", rendered.message)
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_mixed_category_keeps_price_less_item_visible(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        from decimal import Decimal
+
+        cat_pizzas = _categoria("Pizzas", orden=1)
+        cat_pizzas.id = 1
+        pres_con_precio = _presentacion("grande", "Grande")
+        pres_sin_precio = _presentacion("individual", "Individual")
+        mozzarella = _producto(
+            id_=1,
+            nombre="Mozzarella",
+            categoria=cat_pizzas,
+            presentaciones=[
+                _producto_presentacion(
+                    id_=10,
+                    presentacion=pres_con_precio,
+                    precios=[_precio(Decimal("8500.00"))],
+                ),
+                _producto_presentacion(
+                    id_=11,
+                    presentacion=pres_sin_precio,
+                    precios=[],
+                ),
+            ],
+            orden=1,
+        )
+        svc_cls.return_value.list_vendibles.return_value = [mozzarella]
+        resolver_factory.return_value.resolve.return_value = _resolved(
+            token="c1", nombre="Pizzas", categoria_id=1
+        )
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "qué pizzas hay"),
+        )
+        rendered = build_informational_commerce_response(
+            _db(), _session(), processed
+        )
+        self.assertIn("- Mozzarella (grande) — $8500.00", rendered.message)
+        self.assertIn("- Mozzarella (individual)", rendered.message)
+        self.assertNotIn("(individual) — $", rendered.message)
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_negative_and_malformed_prices_never_break_render(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        from decimal import Decimal
+
+        cat = _categoria("Pizzas")
+        cat.id = 1
+        pres = _presentacion("individual", "Individual")
+        pp = _producto_presentacion(
+            id_=10,
+            presentacion=pres,
+            precios=[
+                _precio(Decimal("-1.00")),
+                _precio("not-a-number"),
+                _precio(Decimal("999.99")),
+            ],
+        )
+        pizza = _producto(
+            id_=1,
+            nombre="Pizza",
+            categoria=cat,
+            presentaciones=[pp],
+        )
+        svc_cls.return_value.list_vendibles.return_value = [pizza]
+        resolver_factory.return_value.resolve.return_value = _resolved(
+            selected=None
+        )
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "menú"),
+        )
+
+        items = processed.resolved_data["items"]
+        # Only the first valid (non-negative, parseable) price is exposed.
+        self.assertEqual(items[0]["precio"], "999.99")
+        rendered = build_informational_commerce_response(
+            _db(), _session(), processed
+        )
+        self.assertIn("- Pizza (individual) — $999.99", rendered.message)
+        self.assertNotIn("not-a-number", rendered.message)
+        self.assertNotIn("-1.00", rendered.message)
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_only_malformed_prices_omit_precio(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        cat = _categoria("Pizzas")
+        cat.id = 1
+        pres = _presentacion("individual", "Individual")
+        pp = _producto_presentacion(
+            id_=10,
+            presentacion=pres,
+            precios=[_precio("not-a-number")],
+        )
+        pizza = _producto(
+            id_=1,
+            nombre="Pizza",
+            categoria=cat,
+            presentaciones=[pp],
+        )
+        svc_cls.return_value.list_vendibles.return_value = [pizza]
+        resolver_factory.return_value.resolve.return_value = _resolved(
+            selected=None
+        )
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "menú"),
+        )
+
+        items = processed.resolved_data["items"]
+        self.assertNotIn("precio", items[0])
+        rendered = build_informational_commerce_response(
+            _db(), _session(), processed
+        )
+        self.assertIn("- Pizza (individual)", rendered.message)
+        self.assertNotIn("$", rendered.message)
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_negative_only_prices_omit_precio(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        from decimal import Decimal
+
+        cat = _categoria("Pizzas")
+        cat.id = 1
+        pres = _presentacion("individual", "Individual")
+        pp = _producto_presentacion(
+            id_=10,
+            presentacion=pres,
+            precios=[_precio(Decimal("-1.00"))],
+        )
+        pizza = _producto(
+            id_=1,
+            nombre="Pizza",
+            categoria=cat,
+            presentaciones=[pp],
+        )
+        svc_cls.return_value.list_vendibles.return_value = [pizza]
+        resolver_factory.return_value.resolve.return_value = _resolved(
+            selected=None
+        )
+
+        processed = process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=7),
+            _classified(IntentName.VER_MENU, "menú"),
+        )
+
+        items = processed.resolved_data["items"]
+        self.assertNotIn("precio", items[0])
+        rendered = build_informational_commerce_response(
+            _db(), _session(), processed
+        )
+        self.assertIn("- Pizza (individual)", rendered.message)
+        self.assertNotIn("$", rendered.message)
+
+    @patch.object(info_module, "_build_menu_category_resolver")
+    @patch.object(info_module, "ProductoQueryService")
+    def test_catalog_service_is_called_only_once_per_comercio(
+        self, svc_cls, resolver_factory
+    ) -> None:
+        svc_cls.return_value.list_vendibles.return_value = (
+            self._two_category_catalog_with_prices()
+        )
+        resolver_factory.return_value.resolve.return_value = _resolved(
+            selected=None
+        )
+
+        process_initial_informational_commerce_query(
+            _db(),
+            _session(id_comercio=42),
+            _classified(IntentName.VER_MENU, "menú"),
+        )
+
+        svc_cls.return_value.list_vendibles.assert_called_once_with(42)
+        self.assertEqual(
+            svc_cls.return_value.list_vendibles.call_count, 1
+        )
+
+    def test_renderer_does_not_query_db_or_invoke_llm(self) -> None:
+        """The renderer must stay pure: it never queries the db,
+        never invokes an LLM, never owns a transaction.
+        """
+        with open(response_module.__file__, encoding="utf-8") as fh:
+            source = fh.read()
+        for forbidden in (
+            "ProductoQueryService",
+            "MenuCategoryResolver",
+            "QueryLlm",
+            "from backend.llm",
+            "db.commit(",
+            "db.rollback(",
+            "db.flush(",
+            "db.begin(",
+            "session.commit(",
+            "session.rollback(",
+            "session.flush(",
+            "session.begin(",
+            "logging.",
+            "logger.",
+            "print(",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, source)
+
+
 class BuildCustomerResponsesInformationalTest(unittest.TestCase):
     @patch.object(mapper_module, "build_informational_commerce_response")
     def test_ver_menu_is_routed_through_informational_builder(
