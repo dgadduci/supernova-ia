@@ -186,3 +186,65 @@ from a line quantity of `1`, send `quiero dos napolitanas grandes`, then
 `quiero tres napolitanas grandes`, and confirm responses/line totals `3` then
 `6` with empty pending/context. Do not archive this or dependent changes
 without explicit user approval.
+
+## Amendment: distinguish added quantity from line total
+
+### Objective and evidence
+
+The pilot confirmed that adding one Verdura Unit to a line at `6` correctly
+persists a line total of `7`. The deterministic customer response nevertheless
+says “se agregaron 7”, which describes the post-turn total as the requested
+delta. This is a presentation-contract defect, not an execution, recognition,
+price, pending-context, transaction, or styling failure.
+
+### Scope and shared boundary
+
+- Change only the deterministic executed `agregar_producto` response builder
+  and its focused tests.
+- Use the handler-provided `cantidad_agregada` as the delta and
+  `cantidad_final` as the authoritative persisted line total.
+- For an increment, state the added delta and then the current line total. For
+  a newly created line where both values are equal, retain the concise existing
+  confirmation without a redundant total clause.
+- Preserve compatibility for legacy executed intents that lack
+  `cantidad_agregada`: retain their existing final-quantity wording rather
+  than inventing a delta or failing an otherwise valid response.
+
+### Authoritative outcomes, fallback, and transaction ownership
+
+- **Authoritative business state:** `cantidad_final`; no response code may
+  recalculate or mutate it.
+- **Authoritative customer action:** `cantidad_agregada`; an increment reply
+  must not describe `cantidad_final` as the added amount.
+- **Valid outcome:** a one-unit add to total seven says that one was added and
+  that the line now contains seven.
+- **Fallback:** malformed/missing quantities retain the existing generic
+  technical response; legacy final-only intent data retains current wording.
+  No fallback may query, infer, stage, commit, rollback, retry, or alter a
+  product/order/session.
+
+The pure response builder owns no transaction operation. No new observability
+is needed: values stay in the deterministic response and must not be added to
+events or diagnostics.
+
+### Expected files, validation, rollback, and limitation
+
+- `backend/intents/responses/agregar_producto_response.py`
+- the existing focused product-add response tests
+- this change's OpenSpec artifacts.
+
+Test created and incremented singular/plural cases, including delta `1` and
+final total `7`, plus legacy final-only compatibility and malformed fallback.
+Run locally:
+
+```text
+PYTHONPATH=. venv/bin/python -m pytest backend/tests/test_consolidate_duplicate_product_presentations.py backend/tests/test_agregar_producto_handler.py -q
+PYTHONPATH=. venv/bin/python -m ruff check backend/intents/responses/agregar_producto_response.py backend/tests/test_consolidate_duplicate_product_presentations.py backend/tests/test_agregar_producto_handler.py
+PYTHONPATH=. venv/bin/python -m compileall -q backend/intents/responses/agregar_producto_response.py
+openspec validate fix-pilot-product-add-execution --strict
+git diff --check
+```
+
+The change is source-only and reversible by restoring the prior wording. It
+does not redesign full order summaries, pluralization/localization, styling,
+or any product-add business behavior.

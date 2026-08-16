@@ -898,14 +898,65 @@ class ResponseBuilderTests(unittest.TestCase):
         self.assertIn("Empanada de Verdura unidad", response.message)
         self.assertIn("1", response.message)
         self.assertIn("agregué", response.message)
+        self.assertNotIn("tenés", response.message)
 
-    def test_incremented_line_cantidad_final_4_plural(self) -> None:
+    def test_new_line_cantidad_final_plural_equal(self) -> None:
+        intent = self._executed_intent(
+            {
+                "producto_presentacion_id": 42,
+                "cantidad": 2,
+                "cantidad_agregada": 2,
+                "cantidad_final": 2,
+                "linea_creada": True,
+            }
+        )
+        with patch(
+            "backend.intents.responses.agregar_producto_response.ProductoQueryService"
+        ) as mock_q:
+            mock_q.return_value.list_presentaciones_by_ids.return_value = [
+                {"producto_nombre": "Pizza Mozzarella", "presentacion_descripcion": "grande"}
+            ]
+            response = build_agregar_producto_response(MagicMock(), MagicMock(), intent)
+        self.assertEqual(response.status, "executed")
+        self.assertIn("Pizza Mozzarella grande", response.message)
+        self.assertIn("2", response.message)
+        self.assertIn("se agregaron", response.message)
+        self.assertNotIn("agregué 2", response.message)
+        self.assertNotIn("tenés", response.message)
+
+    def test_incremented_line_delta_one_total_seven(self) -> None:
         intent = self._executed_intent(
             {
                 "producto_presentacion_id": 42,
                 "cantidad": 1,
                 "cantidad_agregada": 1,
-                "cantidad_final": 4,
+                "cantidad_final": 7,
+                "linea_creada": False,
+            }
+        )
+        with patch(
+            "backend.intents.responses.agregar_producto_response.ProductoQueryService"
+        ) as mock_q:
+            mock_q.return_value.list_presentaciones_by_ids.return_value = [
+                {"producto_nombre": "Verdura", "presentacion_descripcion": "unidad"}
+            ]
+            response = build_agregar_producto_response(MagicMock(), MagicMock(), intent)
+        self.assertEqual(response.status, "executed")
+        self.assertIn("Verdura unidad", response.message)
+        self.assertIn("agregué 1", response.message)
+        self.assertIn("tenés 7", response.message)
+        self.assertNotIn("se agregaron 7", response.message)
+        self.assertNotIn("increment", response.message)
+        self.assertNotIn("sumamos", response.message)
+        self.assertNotIn("anterior", response.message)
+
+    def test_incremented_line_delta_plural_total_distinct(self) -> None:
+        intent = self._executed_intent(
+            {
+                "producto_presentacion_id": 42,
+                "cantidad": 2,
+                "cantidad_agregada": 2,
+                "cantidad_final": 7,
                 "linea_creada": False,
             }
         )
@@ -918,11 +969,9 @@ class ResponseBuilderTests(unittest.TestCase):
             response = build_agregar_producto_response(MagicMock(), MagicMock(), intent)
         self.assertEqual(response.status, "executed")
         self.assertIn("Pizza Mozzarella chica", response.message)
-        self.assertIn("4", response.message)
-        self.assertIn("se agregaron", response.message)
-        self.assertNotIn("increment", response.message)
-        self.assertNotIn("sumamos", response.message)
-        self.assertNotIn("anterior", response.message)
+        self.assertIn("se agregaron 2", response.message)
+        self.assertIn("tenés 7", response.message)
+        self.assertNotIn("se agregaron 7", response.message)
 
     def test_legacy_resolved_data_falls_back_to_cantidad(self) -> None:
         intent = self._executed_intent(
@@ -938,6 +987,23 @@ class ResponseBuilderTests(unittest.TestCase):
         self.assertEqual(response.status, "executed")
         self.assertIn("2", response.message)
         self.assertIn("se agregaron", response.message)
+        self.assertNotIn("tenés", response.message)
+
+    def test_legacy_resolved_data_only_cantidad_final(self) -> None:
+        intent = self._executed_intent(
+            {"producto_presentacion_id": 42, "cantidad_final": 3}
+        )
+        with patch(
+            "backend.intents.responses.agregar_producto_response.ProductoQueryService"
+        ) as mock_q:
+            mock_q.return_value.list_presentaciones_by_ids.return_value = [
+                {"producto_nombre": "Pizza Mozzarella", "presentacion_descripcion": "grande"}
+            ]
+            response = build_agregar_producto_response(MagicMock(), MagicMock(), intent)
+        self.assertEqual(response.status, "executed")
+        self.assertIn("3", response.message)
+        self.assertIn("se agregaron", response.message)
+        self.assertNotIn("tenés", response.message)
 
     def test_missing_presentation_returns_failed_fallback(self) -> None:
         intent = self._executed_intent(
@@ -962,6 +1028,123 @@ class ResponseBuilderTests(unittest.TestCase):
         )
         response = build_agregar_producto_response(MagicMock(), MagicMock(), intent)
         self.assertEqual(response.status, "failed")
+
+    def test_inconsistent_modern_quantities_returns_failed_fallback(self) -> None:
+        intent = self._executed_intent(
+            {
+                "producto_presentacion_id": 42,
+                "cantidad_agregada": 5,
+                "cantidad_final": 2,
+                "linea_creada": False,
+            }
+        )
+        response = build_agregar_producto_response(MagicMock(), MagicMock(), intent)
+        self.assertEqual(response.status, "failed")
+
+    def test_invalid_modern_cantidad_agregada_returns_failed_fallback(self) -> None:
+        intent = self._executed_intent(
+            {
+                "producto_presentacion_id": 42,
+                "cantidad_agregada": 0,
+                "cantidad_final": 5,
+                "linea_creada": False,
+            }
+        )
+        response = build_agregar_producto_response(MagicMock(), MagicMock(), intent)
+        self.assertEqual(response.status, "failed")
+
+    def test_bool_modern_cantidad_agregada_returns_failed_fallback(self) -> None:
+        intent = self._executed_intent(
+            {
+                "producto_presentacion_id": 42,
+                "cantidad_agregada": True,
+                "cantidad_final": 5,
+                "linea_creada": False,
+            }
+        )
+        response = build_agregar_producto_response(MagicMock(), MagicMock(), intent)
+        self.assertEqual(response.status, "failed")
+
+    def test_invalid_modern_cantidad_final_returns_failed_fallback(self) -> None:
+        intent = self._executed_intent(
+            {
+                "producto_presentacion_id": 42,
+                "cantidad_agregada": 1,
+                "cantidad_final": 0,
+                "linea_creada": False,
+            }
+        )
+        response = build_agregar_producto_response(MagicMock(), MagicMock(), intent)
+        self.assertEqual(response.status, "failed")
+
+    def test_bool_modern_cantidad_final_returns_failed_fallback(self) -> None:
+        intent = self._executed_intent(
+            {
+                "producto_presentacion_id": 42,
+                "cantidad_agregada": 1,
+                "cantidad_final": True,
+                "linea_creada": False,
+            }
+        )
+        response = build_agregar_producto_response(MagicMock(), MagicMock(), intent)
+        self.assertEqual(response.status, "failed")
+
+    def test_response_builder_is_pure_renderer_without_transaction_control(self) -> None:
+        import pathlib
+
+        import backend.intents.responses.agregar_producto_response as module
+
+        source = pathlib.Path(module.__file__).read_text()
+        forbidden = [
+            "session.commit(",
+            "session.rollback(",
+            "session.flush(",
+            "session.refresh(",
+            "session.begin(",
+            "session.close(",
+            "emit_event",
+            "PedidoProductoRepository",
+            "select(PedidoProducto",
+            "session.get(PedidoProducto",
+            "from backend.repositories",
+            "from backend.intents.handlers",
+            "from backend.intents.orchestration",
+            "from backend.llm",
+            "import requests",
+            "import fastapi",
+            "import twilio",
+        ]
+        for needle in forbidden:
+            self.assertNotIn(needle, source, f"forbidden builder construct: {needle}")
+
+        intent = self._executed_intent(
+            {
+                "producto_presentacion_id": 42,
+                "cantidad_agregada": 1,
+                "cantidad_final": 7,
+                "linea_creada": False,
+            }
+        )
+        db = MagicMock(name="DatabaseSession")
+        session = MagicMock(name="ConversationSession")
+        with patch(
+            "backend.intents.responses.agregar_producto_response.ProductoQueryService"
+        ) as mock_q:
+            mock_q.return_value.list_presentaciones_by_ids.return_value = [
+                {"producto_nombre": "Verdura", "presentacion_descripcion": "unidad"}
+            ]
+            response = build_agregar_producto_response(db, session, intent)
+        self.assertEqual(response.status, "executed")
+        for method_name in (
+            "commit",
+            "rollback",
+            "flush",
+            "refresh",
+            "expire",
+            "begin",
+            "close",
+        ):
+            getattr(db, method_name).assert_not_called()
 
 
 class EndToEndHttpTests(unittest.TestCase):
