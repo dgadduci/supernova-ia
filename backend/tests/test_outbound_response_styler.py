@@ -15,6 +15,7 @@ isolated.
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import logging
@@ -2194,9 +2195,9 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
     def test_template_version_reflects_expressive_calibration(self) -> None:
         self.assertEqual(
             OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION,
-            "outbound-response-styler/v1.2.0",
+            "outbound-response-styler/v1.3.0",
         )
-        self.assertEqual(styler_version(), "outbound-response-styler/v1.2.0")
+        self.assertEqual(styler_version(), "outbound-response-styler/v1.3.0")
 
     def test_template_fingerprint_changes_with_static_body_only(self) -> None:
         # The fingerprint must depend only on the static template
@@ -2237,6 +2238,464 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, first)
+
+
+class MenuWrapperCalibrationTest(unittest.TestCase):
+    """Subphase 8 — menu wrapper calibration.
+
+    Pilot evidence under a usable selected ``joven`` flavor showed
+    that ``menu_full`` reached the styler but received the safe
+    ``wrapper_invalid`` fallback: the LLM tried to reproduce,
+    summarize, list, title, format or describe menu content while
+    the static prompt only restated generic wrapper rules. This
+    amendment revises and versions the static prompt so the
+    ``menu_full`` boundary is explicit:
+
+    * the LLM receives only the opaque ``menu_full`` token and the
+      selected persisted flavor instruction;
+    * the wrapper must be a generic one-line framing phrase;
+    * it must not reproduce, summarize, enumerate, list, title,
+      format or describe any menu content;
+    * it must not introduce products, presentations, categories,
+      prices, quantities, discounts or order/customer facts;
+    * it must not use Markdown, bullets, line breaks, questions or
+      instructions to the customer;
+    * tone and emoji choices stay governed exclusively by the
+      selected persisted ``instruccion_llm`` (no hardcoded flavor
+      phrase or emoji);
+    * an invalid menu wrapper preserves the exact deterministic
+      menu through the existing ``wrapper_invalid`` fallback.
+
+    The static validator, JSON schema, 96 / 140 character bounds,
+    one-request maximum, exact factual-substring composition,
+    neutral no-op and privacy / no-transaction contracts are
+    unchanged. Only the static prompt template, its version and
+    its fingerprint are bumped.
+    """
+
+    _MENU_MESSAGE = (
+        "Menú disponible:\n"
+        " - Pizzas: Margarita, Mozzarella, Especial\n"
+        " - Bebidas: Agua, Gaseosa\n"
+        " - Postres: Flan, Helado"
+    )
+
+    def test_template_version_reflects_menu_calibration(self) -> None:
+        self.assertEqual(
+            OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION,
+            "outbound-response-styler/v1.3.0",
+        )
+        self.assertEqual(styler_version(), "outbound-response-styler/v1.3.0")
+        identity = outbound_style_template_identity()
+        self.assertEqual(
+            identity["outbound_style_prompt_template_version"],
+            "outbound-response-styler/v1.3.0",
+        )
+
+    def test_static_prompt_documents_explicit_menu_full_rule(self) -> None:
+        """The static prompt body MUST make the ``menu_full``
+        boundary explicit: one-line wrapper, never menu content,
+        no Markdown / bullets / questions, no flavor-hardcoded
+        phrase or emoji. The rule must be present in the body the
+        LLM receives so the calibration is auditable.
+        """
+        prompt = build_outbound_style_prompt(
+            instruccion_llm="Tono joven.",
+            items=[{"index": 0, "response_type": "menu_full"}],
+        )
+        # Section header for the menu-specific rule.
+        self.assertIn("Regla específica para `menu_full`", prompt)
+        # Bounded one-line wrapper reminder.
+        self.assertIn("una sola línea", prompt)
+        # Prohibited behaviors (the LLM must be told what NOT to do).
+        for forbidden_behavior in (
+            "reproducir",
+            "resumir",
+            "enumerar",
+            "listar",
+            "titular",
+            "formatear",
+            "describir",
+        ):
+            with self.subTest(behavior=forbidden_behavior):
+                self.assertIn(forbidden_behavior, prompt)
+        # No Markdown / bullets / line breaks / questions / instructions.
+        for forbidden_format in (
+            "Markdown",
+            "bullets",
+            "saltos de línea",
+            "preguntas",
+            "instrucciones al cliente",
+        ):
+            with self.subTest(format=forbidden_format):
+                self.assertIn(forbidden_format, prompt)
+        # No products / categories / prices / quantities / discounts / facts.
+        for forbidden_facts in (
+            "productos",
+            "presentaciones",
+            "categorías",
+            "precios",
+            "cantidades",
+            "descuentos",
+            "hechos del pedido",
+        ):
+            with self.subTest(facts=forbidden_facts):
+                self.assertIn(forbidden_facts, prompt)
+        # Tone / emoji stay governed by the selected flavor instruction,
+        # never hardcoded in the static prompt.
+        self.assertIn("directriz interna de tono", prompt)
+        self.assertIn("no hardcodees", prompt)
+
+    def test_static_prompt_does_not_prescribe_a_flavor_specific_phrase(self) -> None:
+        """The menu-specific rule must NOT hardcode a customer-facing
+        phrase or emoji for ``menu_full`` or any flavor. Tone and
+        emoji choices stay in the persisted ``instruccion_llm`` row.
+        """
+        prompt = build_outbound_style_prompt(
+            instruccion_llm="Tono joven, súper cálido y con emojis.",
+            items=[{"index": 0, "response_type": "menu_full"}],
+        )
+        for forbidden_phrase in (
+            "¡Menú",
+            "Aquí va el menú",
+            "te paso el menú",
+            "menú completo",
+            "menú del día",
+        ):
+            with self.subTest(phrase=forbidden_phrase):
+                self.assertNotIn(forbidden_phrase, prompt)
+        # Emojis MUST NOT be hardcoded into the static prompt body.
+        for forbidden_emoji in ("🍕", "🍔", "🥗", "🍰", "🥤"):
+            with self.subTest(emoji=forbidden_emoji):
+                self.assertNotIn(forbidden_emoji, prompt)
+
+    def test_template_fingerprint_changes_with_menu_full_rule(self) -> None:
+        """The static fingerprint MUST change when the menu-specific
+        static rule is added. The fingerprint is the contract that
+        detects prompt drift without ever leaking runtime data.
+        """
+        identity = outbound_style_template_identity()
+        self.assertEqual(len(identity["outbound_style_prompt_template_hash"]), 64)
+        # The fingerprint MUST NOT embed any flavor instruction,
+        # customer or menu content.
+        serialized = identity["outbound_style_prompt_template_hash"]
+        for forbidden in (
+            "Tono joven",
+            "Tono serio",
+            "menu_full",
+            "Pizza",
+            "Mozzarella",
+            "Av. Secreta 1234",
+            "INSTRUCCION-SECRETA",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, serialized)
+        # The fingerprint is derived only from the static body, so
+        # it MUST stay stable across identical template versions and
+        # MUST change only when the static body itself changes.
+        self.assertEqual(
+            identity["outbound_style_prompt_template_hash"],
+            outbound_style_template_fingerprint(),
+        )
+        # The hash MUST be a 64-char lowercase hex string (SHA-256).
+        self.assertTrue(
+            all(c in "0123456789abcdef" for c in serialized)
+        )
+        # Recomputing the hash of any rendered prompt with
+        # arbitrary, deterministic runtime inputs MUST yield the
+        # same hash: this proves the hash is a pure function of the
+        # static body and never of runtime data. We use the empty
+        # ``items`` case to match the no-items path.
+        re_rendered_no_items = build_outbound_style_prompt(
+            instruccion_llm="placeholder-instruccion-llm",
+            items=[],
+        ).replace("placeholder-instruccion-llm", "{instruccion_llm}")
+        # Restore the empty-items placeholder that ``build_outbound_style_prompt``
+        # replaced with ``(sin elementos)``.
+        re_rendered_with_placeholder = re_rendered_no_items.replace(
+            "(sin elementos)", "{items}"
+        )
+        self.assertEqual(
+            hashlib.sha256(re_rendered_with_placeholder.encode("utf-8")).hexdigest(),
+            identity["outbound_style_prompt_template_hash"],
+        )
+
+    def test_prompt_never_carries_menu_content_for_menu_full(self) -> None:
+        flavor = _flavor(
+            codigo="joven",
+            instruccion="Tono joven. Usá emojis cuando aporten calidez.",
+        )
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._MENU_MESSAGE,
+                intent="ver_menu",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {"items": [{"index": 0, "prefix": "¡Buenas! ", "suffix": " 🍕"}]}
+        )
+        style_responses(db, 1, responses, query_llm=client)
+        prompt = client.request.call_args.args[0]
+        # The deterministic menu MUST NOT be sent to the LLM.
+        for menu_token in (
+            "Pizzas",
+            "Margarita",
+            "Mozzarella",
+            "Especial",
+            "Bebidas",
+            "Agua",
+            "Gaseosa",
+            "Postres",
+            "Flan",
+            "Helado",
+            "Menú disponible",
+        ):
+            with self.subTest(menu_token=menu_token):
+                self.assertNotIn(menu_token, prompt)
+        # Only the opaque token and the persisted directive are
+        # present in the prompt.
+        self.assertIn("response_type: menu_full", prompt)
+        self.assertIn("Tono joven. Usá emojis cuando aporten calidez.", prompt)
+
+    def test_valid_generic_one_line_wrapper_with_emoji_is_applied(self) -> None:
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._MENU_MESSAGE,
+                intent="ver_menu",
+                status="executed",
+            )
+        ]
+        prefix = "¡Acá va el menú del local! "
+        suffix = " 🍕"
+        client = _llm(
+            {"items": [{"index": 0, "prefix": prefix, "suffix": suffix}]}
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        # The deterministic menu remains an intact contiguous substring.
+        composed = styled[0].message
+        self.assertTrue(composed.startswith(prefix))
+        self.assertTrue(composed.endswith(suffix))
+        self.assertIn(self._MENU_MESSAGE, composed)
+        self.assertEqual(composed, f"{prefix}{self._MENU_MESSAGE}{suffix}")
+        self.assertEqual(styled[0].intent, "ver_menu")
+        self.assertEqual(styled[0].status, "executed")
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_APPLIED)
+        self.assertEqual(last_event["applied_count"], 1)
+        self.assertEqual(last_event["eligible_count"], 1)
+        self.assertEqual(last_event["flavor_code"], "joven")
+
+    def test_menu_full_falls_back_when_wrapper_uses_digits(self) -> None:
+        """A wrapper that smuggles in digits (a typical menu
+        reproduction attempt) MUST be rejected as ``wrapper_invalid``
+        and the exact deterministic menu MUST be preserved."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._MENU_MESSAGE,
+                intent="ver_menu",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "Menú 1: pizzas",
+                        "suffix": "",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._MENU_MESSAGE)
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["failure_category"], FALLBACK_WRAPPER_INVALID)
+        self.assertNotIn("outcome", last_event)
+        self.assertEqual(last_event["flavor_code"], "joven")
+
+    def test_menu_full_falls_back_when_wrapper_introduces_line_break(self) -> None:
+        """Multi-line wrappers (an attempt to reproduce the menu)
+        MUST be rejected and the exact deterministic menu preserved."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._MENU_MESSAGE,
+                intent="ver_menu",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "Acá va el menú:\n- pizzas\n- bebidas",
+                        "suffix": "",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._MENU_MESSAGE)
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["failure_category"], FALLBACK_WRAPPER_INVALID)
+        self.assertNotIn("outcome", last_event)
+
+    def test_menu_full_falls_back_when_wrapper_contains_question(self) -> None:
+        """A wrapper that asks the customer a question (typical menu
+        presentation attempt) MUST be rejected and the exact
+        deterministic menu preserved."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._MENU_MESSAGE,
+                intent="ver_menu",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "¿Qué vas a pedir hoy?",
+                        "suffix": "",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(styled[0].message, self._MENU_MESSAGE)
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["failure_category"], FALLBACK_WRAPPER_INVALID)
+
+    def test_menu_full_wrapper_with_asterisks_passes_validator(self) -> None:
+        """The runtime validator rejects digits, line breaks,
+        question marks and ASCII control characters. A wrapper that
+        smuggles in asterisks (``**``) or other Markdown markers
+        without those characters is structurally safe per the
+        existing wrapper contract; the static prompt reminds the
+        LLM that Markdown is forbidden but the runtime cannot
+        detect it. The deterministic menu MUST still remain an
+        intact contiguous substring either way.
+        """
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message=self._MENU_MESSAGE,
+                intent="ver_menu",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "prefix": "**Pizzas** disponibles",
+                        "suffix": "",
+                    }
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        composed = styled[0].message
+        # Even when the wrapper passes the structural validator,
+        # the deterministic menu MUST remain an intact contiguous
+        # substring because the backend composes prefix + exact
+        # factual message + suffix.
+        self.assertTrue(composed.startswith("**Pizzas** disponibles"))
+        self.assertIn(self._MENU_MESSAGE, composed)
+
+    def test_menu_full_keeps_one_llm_call_per_turn(self) -> None:
+        """A batch with a ``menu_full`` eligible response MUST still
+        produce exactly one LLM call per turn."""
+        flavor = _flavor(codigo="joven")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message="¡Hola! Decime qué querés.",
+                intent="saludo",
+                status="executed",
+            ),
+            CustomerResponse(
+                message=self._MENU_MESSAGE,
+                intent="ver_menu",
+                status="executed",
+            ),
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {"index": 0, "prefix": "¡Hey! ", "suffix": ""},
+                    {"index": 1, "prefix": "Acá va el menú ", "suffix": " 🍕"},
+                ]
+            }
+        )
+        style_responses(db, 1, responses, query_llm=client)
+        self.assertEqual(client.request.call_count, 1)
+
+    def test_menu_full_ineligible_under_neutro_flavor(self) -> None:
+        """Under ``neutro`` the menu response MUST remain byte-for-byte
+        deterministic and the styler MUST NOT make any LLM call."""
+        db = _db_with_flavor(1, flavor=_flavor(NEUTRO_FLAVOR_CODE))
+        responses = [
+            CustomerResponse(
+                message=self._MENU_MESSAGE,
+                intent="ver_menu",
+                status="executed",
+            )
+        ]
+        client = _llm(
+            {
+                "items": [
+                    {"index": 0, "prefix": "Cualquier cosa", "suffix": ""},
+                ]
+            }
+        )
+        stream = io.StringIO()
+        styled = style_responses(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(client.request.call_count, 0)
+        self.assertEqual(styled[0].message, self._MENU_MESSAGE)
+        last_event = _last_event(stream)
+        self.assertEqual(last_event["outcome"], OUTCOME_NOT_ATTEMPTED)
+
+    def test_menu_full_preserves_existing_eligibility_token(self) -> None:
+        """The eligibility surface for ``ver_menu`` MUST still map to
+        the ``menu_full`` token. The calibration only refines the
+        static prompt; it MUST NOT widen or shift the eligible set.
+        """
+        self.assertEqual(
+            response_type_for("ver_menu", EXECUTED_STATUS),
+            RESPONSE_TYPE_MENU_FULL,
+        )
 
 
 class StyleResponsesWithDiagnosticTest(unittest.TestCase):

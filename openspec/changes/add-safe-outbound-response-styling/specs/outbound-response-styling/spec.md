@@ -45,6 +45,20 @@ single-line, non-numeric, question-free and factual-free.
 - **AND THEN** the original deterministic message remains an intact contiguous
   substring in the rendered customer response.
 
+#### Scenario: Menu wrapper frames but never authors the deterministic menu
+
+- **WHEN** an active selected non-neutral flavor styles an eligible
+  `menu_full` response
+- **THEN** the LLM receives only the opaque response-type token and persisted
+  flavor instruction, never menu text or catalog data
+- **AND THEN** any accepted prefix/suffix is one-line, generic and
+  factual-free; it does not reproduce, summarize, enumerate, title or format
+  menu content
+- **AND THEN** the complete deterministic menu remains an intact contiguous
+  substring of the customer response
+- **AND THEN** an invalid wrapper preserves the exact deterministic menu as
+  the existing fallback.
+
 ### Requirement: Neutral and unsafe cases preserve the current output exactly
 
 The system SHALL not make a styling request for `neutro`, missing or inactive

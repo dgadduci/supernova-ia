@@ -250,6 +250,59 @@ openspec validate add-safe-outbound-response-styling --strict
 git diff --check
 ```
 
+## Menu Wrapper Calibration Amendment
+
+Pilot evidence under a usable selected `joven` flavor shows that `menu_full`
+reaches the styler but receives the safe `wrapper_invalid` fallback, while
+executed order status is styled correctly. This is not a `neutro` selection or
+a mapper integration failure. It is a prompt-contract calibration issue: the
+opaque `menu_full` token appears to invite menu reproduction, Markdown or
+multi-line content that the existing wrapper validator correctly rejects.
+
+- Revise only the static wrapper prompt and its version/fingerprint so
+  `menu_full` is explicitly a generic, one-line presentation boundary: wrap
+  the already-rendered menu; never reproduce, summarize, enumerate, format or
+  describe it.
+- Re-state that `menu_full` wrapper fields must be generic and factual-free:
+  no product/presentation/category names, prices, quantities, headings,
+  bullets, Markdown, line breaks, questions, or instruction to the customer.
+- Preserve creative tone and emoji decisions as the selected persisted
+  `instruccion_llm`; do not hardcode a customer-facing phrase, emoji, or any
+  young-specific wording in code.
+- Preserve the same strict JSON shape, existing 96/140 bounds, validation,
+  exact factual substring composition, one LLM request maximum and all
+  fallback behavior.
+
+### Expected files for this amendment
+
+- `backend/diagnostics/outbound_response_style_prompt_template.py`
+- `backend/tests/test_outbound_response_styler.py`
+- `backend/tests/test_prompt_template_grounding.py` only if it already owns
+  static-template identity assertions
+- This change's `tasks.md` and delta spec.
+
+### Focused tests for this amendment
+
+- Static prompt/version/fingerprint change when the menu-specific static
+  guidance changes; no customer or flavor instruction text in that identity.
+- `menu_full` valid generic one-line wrapper with an emoji is accepted and
+  retains the exact menu message as a contiguous factual substring.
+- Menu reproduction/list markers, product/category/price/quantity-like facts,
+  line breaks, Markdown and questions remain rejected by the existing generic
+  validator/fallback contract where representable at this boundary.
+- Existing status and non-menu wrapper behavior, one-call limit, `neutro`
+  no-op, privacy and no transaction controls remain unchanged.
+
+### Validation for this amendment
+
+```bash
+PYTHONPATH=. venv/bin/python -m pytest backend/tests/test_outbound_response_styler.py backend/tests/test_outbound_response_mapper.py backend/tests/test_prompt_template_grounding.py -q
+PYTHONPATH=. venv/bin/python -m ruff check backend/diagnostics/outbound_response_style_prompt_template.py backend/services/outbound_response_styler.py backend/tests/test_outbound_response_styler.py backend/tests/test_prompt_template_grounding.py
+PYTHONPATH=. venv/bin/python -m compileall -q backend/diagnostics/outbound_response_style_prompt_template.py backend/services/outbound_response_styler.py
+openspec validate add-safe-outbound-response-styling --strict
+git diff --check
+```
+
 ## Deferred Limitations
 
 - Styling error, rejection, ambiguity, or customer-free-text response families

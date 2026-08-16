@@ -85,3 +85,18 @@
 - [ ] 7.5 After approved deploy under `joven`, send a full/category menu and
   status query through the local panel; verify the panel distinguishes
   `applied`, `fallback`, or `not_attempted` without displaying private data.
+
+## 8. Menu wrapper calibration
+
+- [x] 8.1 Revise and version the static prompt so `menu_full` means a generic
+  one-line wrapper around an existing menu, never menu reproduction, Markdown
+  or factual menu content.
+- [x] 8.2 Preserve the selected flavor instruction as the sole source of tone
+  and emoji choices; do not hardcode customer-facing menu phrases or change
+  wrapper validation, mapper, business data, flavors or transactions.
+- [x] 8.3 Add focused prompt-identity and `menu_full` wrapper tests; run this
+  amendment's focused pytest, Ruff, compileall, strict validation and diff
+  check.
+- [ ] 8.4 After approved deploy under `joven`, verify full and category menus
+  produce `outbound_style.outcome=applied` with a visible valid wrapper, while
+  their deterministic menu content remains complete and exact.

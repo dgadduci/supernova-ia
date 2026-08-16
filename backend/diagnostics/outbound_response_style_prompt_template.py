@@ -43,12 +43,30 @@ is preserved when the active flavor is non-neutral. The backend
 treats an empty (``""`` / ``""``) wrapper for an eligible item as
 invalid, keeps the original factual message unchanged and records
 the bounded ``empty_wrapper`` diagnostic category.
+
+Menu wrapper calibration
+------------------------
+
+The opaque ``menu_full`` response-type token identifies the
+deterministically rendered full menu (categories, products,
+presentations and prices). The styler never asks the LLM to
+author a menu: it only asks for a bounded, generic, one-line
+framing phrase around the already-rendered menu. The LLM receives
+only the ``menu_full`` token and the selected persisted flavor
+instruction; it never sees menu text, catalog data or order data.
+
+The static template body MUST keep making that boundary explicit
+and MUST NOT prescribe a particular phrase or emoji for any
+flavor; tone and emoji choices stay governed by the selected
+``instruccion_llm``. An invalid ``menu_full`` wrapper preserves
+the exact deterministic menu through the existing
+``wrapper_invalid`` fallback.
 """
 from __future__ import annotations
 
 import hashlib
 
-OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION = "outbound-response-styler/v1.2.0"
+OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION = "outbound-response-styler/v1.3.0"
 
 _INTRO = (
     "\n"
@@ -87,6 +105,21 @@ Reglas del envoltorio:
 7. NO generes contenido que dependa de un cliente, comercio, pedido o turno específico. Tu sugerencia debe servir para cualquier instancia del mismo `response_type`.
 
 8. Si la directriz de tono entra en conflicto con las reglas anteriores, las reglas anteriores prevalecen.
+
+"""
+
+_MENU_FULL_RULE = """
+Regla específica para `menu_full`:
+
+El token opaco `menu_full` representa un menú ya redactado por el sistema, que incluye categorías, productos, presentaciones y precios. Para ese ítem tu único trabajo es proponer un envoltorio visual de una sola línea que enmarque ese menú ya redactado. La regla es:
+
+* Solo podés proponer una frase genérica de una sola línea que envuelva el menú ya redactado.
+* NO podés reproducir, resumir, enumerar, listar, titular, formatear ni describir el menú ni sus categorías, productos, presentaciones, precios o cantidades.
+* NO podés introducir productos, presentaciones, categorías, precios, cantidades, descuentos ni hechos del pedido o del cliente.
+* NO podés usar Markdown, bullets, saltos de línea, preguntas ni instrucciones al cliente.
+* La creatividad, el tono y los emojis siguen siendo gobernados exclusivamente por la directriz interna de tono: no hardcodees una frase ni un emoji específicos para `menu_full` ni para ningún flavor.
+
+Un envoltorio para `menu_full` que reproduzca, resuma, enumere, liste, titule, formatee o describa cualquier contenido del menú será rechazado y la respuesta original quedará sin estilo (fallback `wrapper_invalid`).
 
 """
 
@@ -132,6 +165,7 @@ _PROMPT_TEMPLATE_BODY = (
     _INTRO
     + _CONTEXT
     + _RULES
+    + _MENU_FULL_RULE
     + _OUTPUT_STRUCT
     + _FLAVOR_PROMPT
     + _ITEMS_PROMPT
