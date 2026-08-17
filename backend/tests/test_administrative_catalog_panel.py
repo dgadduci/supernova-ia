@@ -1861,6 +1861,152 @@ class PanelVisualAccessibilityTest(unittest.TestCase):
                 self.assertNotIn("unpkg", content.lower())
 
 
+class PanelPrimaryNavMediosPagoTest(unittest.TestCase):
+    """The primary navigation in ``base.html`` must surface the
+    global payment-method catalog so an operator can reach
+    ``/admin/catalog/medios-pago`` (and its ``nuevo`` / ``editar``
+    children) without typing the URL."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.app = _build_app()
+        self.override = _install_session_override(self, self.app, self.session)
+        self.client = TestClient(self.app, raise_server_exceptions=False, follow_redirects=False)
+        _stub_settings_patcher(self)
+
+    def _get_medios_pago_view_patch(self) -> MagicMock:
+        view_cls = patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        )
+        view = view_cls.start()
+        view.return_value = _stub_view_service()
+        view.return_value.list_global_medios_pago = MagicMock(
+            return_value=_build_global_medios_pago_rows()
+        )
+        view.return_value.get_global_medio_pago = MagicMock(
+            return_value=GlobalMedioPagoRow(
+                id=1,
+                codigo="EFECTIVO",
+                descripcion="Efectivo",
+                activo=True,
+                habilita_titular=False,
+                habilita_alias=False,
+            )
+        )
+        self.addCleanup(view_cls.stop)
+        return view
+
+    def _get_comercios_view_patch(self) -> MagicMock:
+        view_cls = patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        )
+        view = view_cls.start()
+        view.return_value = _stub_view_service(
+            detail=_build_detail(),
+            catalog=_build_catalog(),
+            flavor_options=_build_flavor_options(),
+        )
+        self.addCleanup(view_cls.stop)
+        return view
+
+    def test_medios_pago_link_present_on_list(self) -> None:
+        self._get_medios_pago_view_patch()
+        response = self.client.get(
+            "/admin/catalog/medios-pago",
+            headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            '<a href="/admin/catalog/medios-pago"',
+            response.text,
+        )
+        self.assertIn("Medios de pago", response.text)
+
+    def test_medios_pago_link_is_current_on_list(self) -> None:
+        """When the operator is on the list page, the
+        ``Medios de pago`` link in the primary nav must be the
+        current page (``aria-current="page"``) so the active
+        state uses the documented border / background styling."""
+        self._get_medios_pago_view_patch()
+        response = self.client.get(
+            "/admin/catalog/medios-pago",
+            headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            '<a href="/admin/catalog/medios-pago" aria-current="page"',
+            response.text,
+        )
+
+    def test_medios_pago_link_is_current_on_new_form(self) -> None:
+        """The high (``nuevo``) page lives under
+        ``/admin/catalog/medios-pago`` so the prefix match must
+        also mark the link current there."""
+        self._get_medios_pago_view_patch()
+        response = self.client.get(
+            "/admin/catalog/medios-pago/nuevo",
+            headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            '<a href="/admin/catalog/medios-pago" aria-current="page"',
+            response.text,
+        )
+
+    def test_medios_pago_link_is_current_on_edit_form(self) -> None:
+        """The edit page lives under
+        ``/admin/catalog/medios-pago/{id}/editar`` so the prefix
+        match must also mark the link current there."""
+        self._get_medios_pago_view_patch()
+        response = self.client.get(
+            "/admin/catalog/medios-pago/1/editar",
+            headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            '<a href="/admin/catalog/medios-pago" aria-current="page"',
+            response.text,
+        )
+
+    def test_medios_pago_link_not_current_on_comercios_section(self) -> None:
+        """When the operator is anywhere under
+        ``/admin/catalog/comercios`` the ``Medios de pago`` link
+        must NOT carry ``aria-current="page"``; only the
+        ``Comercios`` link should. This guards the prefix match
+        against accidentally highlighting the wrong entry."""
+        self._get_comercios_view_patch()
+        response = self.client.get(
+            "/admin/catalog/comercios",
+            headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn(
+            '<a href="/admin/catalog/medios-pago" aria-current="page"',
+            response.text,
+        )
+        self.assertIn(
+            '<a href="/admin/catalog/comercios" aria-current="page"',
+            response.text,
+        )
+
+    def test_comercios_link_not_current_on_medios_pago_section(self) -> None:
+        """``/admin/catalog/medios-pago`` is NOT a sub-path of
+        ``/admin/catalog/comercios`` so the ``Comercios`` link
+        must lose its current state once the operator navigates
+        to the medios-pago section. The two primary-nav entries
+        are siblings, not nested."""
+        self._get_medios_pago_view_patch()
+        response = self.client.get(
+            "/admin/catalog/medios-pago",
+            headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn(
+            '<a href="/admin/catalog/comercios" aria-current="page"',
+            response.text,
+        )
+
+
 class PanelCsrfNonceTest(unittest.TestCase):
     def test_panel_form_nonce_is_deterministic_and_path_bound(self) -> None:
         from backend.dependencies import (
