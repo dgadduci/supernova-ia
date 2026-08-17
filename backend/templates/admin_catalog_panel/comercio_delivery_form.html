@@ -23,7 +23,7 @@
     <dt>Descripción</dt><dd>{{ global_row.descripcion }}</dd>
     <dt>Orden global</dt><dd>{{ global_row.orden }}</dd>
     <dt>Activo global</dt><dd><span class="badge {% if global_row.activo %}success{% else %}warning{% endif %}">{{ "sí" if global_row.activo else "no" }}</span></dd>
-    <dt>Estado del comercio</dt><dd><span class="badge {% if configuration.activo %}success{% else %}warning{% endif %}">{{ "asociado y activo" if configuration.activo else ("asociado e inactivo" if configuration.id else "sin asociación") }}</span></dd>
+    <dt>Estado del comercio</dt><dd><span class="badge {% if configuration.activo %}success{% else %}warning{% endif %}">{{ "asociado y activo" if configuration.activo else ("asociado e inactivo" if configuration.association_id else "sin asociación") }}</span></dd>
   </dl>
 
   <form
@@ -43,12 +43,12 @@
     <div class="actions">
       <input type="hidden" name="action" value="enable">
       <button class="primary" type="submit" {% if not global_row.activo %}disabled aria-disabled="true"{% endif %}>
-        {% if configuration.id %}Actualizar orden{% else %}Habilitar{% endif %}
+        {% if configuration.association_id %}Actualizar orden{% else %}Habilitar{% endif %}
       </button>
     </div>
   </form>
 
-  {% if configuration.id %}
+  {% if configuration.association_id %}
     <form
       method="post"
       action="/admin/catalog/comercios/{{ detail.id }}/metodos-entrega/{{ global_row.id }}"

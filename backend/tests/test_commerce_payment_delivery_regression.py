@@ -99,7 +99,8 @@ class ConfigurationReadContractTest(unittest.TestCase):
             idioma="es-AR",
             medios_pago=[
                 PaymentMethodDetailView(
-                    id=10,
+                    association_id=110,
+                    medio_pago_id=10,
                     codigo="EFECTIVO",
                     descripcion="Efectivo",
                     activo=True,
@@ -109,7 +110,8 @@ class ConfigurationReadContractTest(unittest.TestCase):
             ],
         )
 
-        self.assertEqual(detalle.medios_pago[0].id, 10)
+        self.assertEqual(detalle.medios_pago[0].association_id, 110)
+        self.assertEqual(detalle.medios_pago[0].medio_pago_id, 10)
         self.assertEqual(detalle.medios_pago[0].codigo, "EFECTIVO")
         self.assertEqual(detalle.medios_pago[0].titular, "ORIGINAL")
         self.assertEqual(detalle.medios_pago[0].alias, "original.alias")
@@ -117,14 +119,16 @@ class ConfigurationReadContractTest(unittest.TestCase):
 
     def test_payment_method_view_round_trip(self) -> None:
         view = PaymentMethodDetailView(
-            id=42,
+            association_id=142,
+            medio_pago_id=42,
             codigo="EFECTIVO",
             descripcion="Efectivo",
             activo=True,
             titular="TITULAR",
             alias="alias.x",
         )
-        self.assertEqual(view.id, 42)
+        self.assertEqual(view.association_id, 142)
+        self.assertEqual(view.medio_pago_id, 42)
         self.assertEqual(view.codigo, "EFECTIVO")
         self.assertEqual(view.descripcion, "Efectivo")
         self.assertTrue(view.activo)

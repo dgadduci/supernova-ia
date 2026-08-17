@@ -44,6 +44,7 @@ import backend.admin.routes as admin_routes
 import backend.dependencies as dependencies_module
 import backend.main as main_module
 import backend.routers.admin_pilot_orders as pilot_router_module
+from backend.admin.view_service import AdministrativeCatalogPanelViewService
 from backend.admin.views import (
     CatalogCategoriaDetailView,
     CatalogCategoriaRow,
@@ -235,7 +236,8 @@ def _build_detail() -> CommerceDetailView:
         idioma="es-AR",
         medios_pago=[
             PaymentMethodDetailView(
-                id=10,
+                association_id=110,
+                medio_pago_id=10,
                 codigo="EFECTIVO",
                 descripcion="Efectivo",
                 activo=True,
@@ -243,7 +245,8 @@ def _build_detail() -> CommerceDetailView:
                 alias=None,
             ),
             PaymentMethodDetailView(
-                id=11,
+                association_id=111,
+                medio_pago_id=11,
                 codigo="TRANSFERENCIA",
                 descripcion="Transferencia",
                 activo=False,
@@ -253,14 +256,16 @@ def _build_detail() -> CommerceDetailView:
         ],
         metodos_entrega=[
             DeliveryMethodDetailView(
-                id=20,
+                association_id=120,
+                metodo_entrega_id=20,
                 codigo="RETIRO",
                 descripcion="Retiro en local",
                 activo=True,
                 orden=1,
             ),
             DeliveryMethodDetailView(
-                id=21,
+                association_id=121,
+                metodo_entrega_id=21,
                 codigo="DELIVERY",
                 descripcion="Envío a domicilio",
                 activo=False,
@@ -954,7 +959,93 @@ class PanelListViewTest(unittest.TestCase):
         self.assertIn("Comercio &lt;b&gt;", response.text)
         self.assertIn("Efectivo", response.text)
         self.assertIn("Retiro en local", response.text)
+        self.assertIn(
+            'href="/admin/catalog/comercios/1/medios-pago/10"',
+            response.text,
+        )
+        self.assertNotIn(
+            'href="/admin/catalog/comercios/1/medios-pago/110"',
+            response.text,
+        )
+        self.assertIn(
+            'href="/admin/catalog/comercios/1/metodos-entrega/20"',
+            response.text,
+        )
+        self.assertNotIn(
+            'href="/admin/catalog/comercios/1/metodos-entrega/120"',
+            response.text,
+        )
         self.assertIn("neutro", response.text)
+
+    def test_detail_projection_separates_association_and_global_ids(self) -> None:
+        payment_method = SimpleNamespace(
+            id=10,
+            codigo="EFECTIVO",
+            descripcion="Efectivo",
+            activo=True,
+        )
+        delivery_method = SimpleNamespace(
+            id=20,
+            codigo="RETIRO",
+            descripcion="Retiro en local",
+            activo=True,
+        )
+        comercio = SimpleNamespace(
+            id=1,
+            nombre_fantasia="Comercio X",
+            nombre_corto="X",
+            razon_social="X SRL",
+            cuit="30-12345678-9",
+            whatsapp="+5491100000001",
+            calle="Calle 1",
+            numero="100",
+            piso_departamento=None,
+            localidad="CABA",
+            provincia="CABA",
+            codigo_postal="1000",
+            slug="comercio-x",
+            estado=SimpleNamespace(estado="ACTIVO"),
+            zona_horaria="America/Argentina/Buenos_Aires",
+            moneda="ARS",
+            idioma="es-AR",
+            flavor_comunicacion=None,
+            medios_pago=[
+                SimpleNamespace(
+                    id=110,
+                    medio_pago=payment_method,
+                    activo=True,
+                    titular=None,
+                    alias=None,
+                )
+            ],
+            metodos_entrega=[
+                SimpleNamespace(
+                    id=120,
+                    metodo_entrega=delivery_method,
+                    activo=True,
+                    orden=1,
+                )
+            ],
+        )
+        detail_result = MagicMock()
+        detail_result.scalar_one_or_none.return_value = comercio
+        empty_catalog_result = MagicMock()
+        empty_catalog_result.scalars.return_value = []
+        session = MagicMock()
+        session.execute.side_effect = [
+            detail_result,
+            empty_catalog_result,
+            empty_catalog_result,
+        ]
+
+        detail = AdministrativeCatalogPanelViewService(session).get_commerce_detail(1)
+
+        self.assertIsNotNone(detail)
+        assert detail is not None
+        self.assertEqual(detail.medios_pago[0].association_id, 110)
+        self.assertEqual(detail.medios_pago[0].medio_pago_id, 10)
+        self.assertEqual(detail.metodos_entrega[0].association_id, 120)
+        self.assertEqual(detail.metodos_entrega[0].metodo_entrega_id, 20)
 
     def test_detail_with_missing_comercio_returns_404(self) -> None:
         with patch.object(

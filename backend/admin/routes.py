@@ -45,7 +45,6 @@ from backend.dependencies import (
     require_same_origin_panel_form,
     resolve_panel_csrf_secret,
 )
-from backend.models import MetodosEntrega
 from backend.services.catalog_create_service import CatalogCreateService
 from backend.services.commerce_payment_delivery_configuration_service import (
     CommercePaymentDeliveryConfigurationService,
@@ -2233,9 +2232,8 @@ def edit_commerce_delivery_form(
             status_code=404,
         )
 
-    global_row = service._session.get(  # type: ignore[attr-defined]
-        MetodosEntrega,
-        parsed_metodo_entrega_id,
+    global_row = service.get_global_metodo_entrega(
+        parsed_metodo_entrega_id
     )
     if global_row is None or not bool(global_row.activo):
         return _render(
@@ -2279,12 +2277,7 @@ def edit_commerce_delivery_form(
             path=str(request.url.path),
             extra={
                 "detail": detail,
-                "global_row": {
-                    "id": int(global_row.id),
-                    "codigo": str(global_row.codigo),
-                    "descripcion": str(global_row.descripcion),
-                    "orden": int(global_row.orden),
-                },
+                "global_row": global_row,
                 "configuration": configuration,
                 "form_values": {
                     "orden": configuration.orden,
@@ -2441,10 +2434,7 @@ def _re_render_delivery_form(
     field_name: str | None,
 ) -> Response:
     detail = service.get_commerce_detail(comercio_id)
-    global_row = service._session.get(  # type: ignore[attr-defined]
-        MetodosEntrega,
-        metodo_entrega_id,
-    )
+    global_row = service.get_global_metodo_entrega(metodo_entrega_id)
     configuration = service.get_commerce_delivery_configuration(
         comercio_id=comercio_id,
         metodo_entrega_id=metodo_entrega_id,
@@ -2470,12 +2460,7 @@ def _re_render_delivery_form(
             path=f"/admin/catalog/comercios/{comercio_id}/metodos-entrega/{metodo_entrega_id}",
             extra={
                 "detail": detail,
-                "global_row": {
-                    "id": int(global_row.id),
-                    "codigo": str(global_row.codigo),
-                    "descripcion": str(global_row.descripcion),
-                    "orden": int(global_row.orden),
-                },
+                "global_row": global_row,
                 "configuration": configuration,
                 "form_values": {
                     "orden": orden_value,

@@ -35,6 +35,7 @@ from backend.admin.views import (
     FlavorOption,
     FlavorSummaryView,
     GlobalMedioPagoRow,
+    GlobalMetodoEntregaRow,
     InactiveDeliveryMethodDetailView,
     InactivePaymentMethodDetailView,
     PaymentMethodDetailView,
@@ -124,7 +125,8 @@ class AdministrativeCatalogPanelViewService:
             if medio is not None and bool(medio.activo):
                 medios_pago.append(
                     PaymentMethodDetailView(
-                        id=association.id,
+                        association_id=int(association.id),
+                        medio_pago_id=int(medio.id),
                         codigo=codigo,
                         descripcion=descripcion,
                         activo=association.activo,
@@ -160,7 +162,8 @@ class AdministrativeCatalogPanelViewService:
             if metodo is not None and bool(metodo.activo):
                 metodos_entrega.append(
                     DeliveryMethodDetailView(
-                        id=association.id,
+                        association_id=int(association.id),
+                        metodo_entrega_id=int(metodo.id),
                         codigo=codigo,
                         descripcion=descripcion,
                         activo=association.activo,
@@ -637,6 +640,20 @@ class AdministrativeCatalogPanelViewService:
             habilita_alias=bool(row.habilita_alias),
         )
 
+    def get_global_metodo_entrega(
+        self, metodo_entrega_id: int
+    ) -> GlobalMetodoEntregaRow | None:
+        row = self._session.get(MetodosEntrega, metodo_entrega_id)
+        if row is None:
+            return None
+        return GlobalMetodoEntregaRow(
+            id=int(row.id),
+            codigo=str(row.codigo),
+            descripcion=str(row.descripcion),
+            orden=int(row.orden),
+            activo=bool(row.activo),
+        )
+
     def get_commerce_payment_configuration(
         self,
         *,
@@ -667,7 +684,7 @@ class AdministrativeCatalogPanelViewService:
         bridge = self._session.execute(stmt).scalar_one_or_none()
         if bridge is None:
             return PaymentMethodConfigurationView(
-                id=0,
+                association_id=0,
                 codigo=str(global_row.codigo),
                 descripcion=str(global_row.descripcion),
                 activo=False,
@@ -679,7 +696,7 @@ class AdministrativeCatalogPanelViewService:
         if bridge.id_comercio != comercio_id:
             return None
         return PaymentMethodConfigurationView(
-            id=bridge.id,
+            association_id=bridge.id,
             codigo=str(global_row.codigo),
             descripcion=str(global_row.descripcion),
             activo=bool(bridge.activo),
@@ -719,7 +736,7 @@ class AdministrativeCatalogPanelViewService:
         bridge = self._session.execute(stmt).scalar_one_or_none()
         if bridge is None:
             return DeliveryMethodConfigurationView(
-                id=0,
+                association_id=0,
                 codigo=str(global_row.codigo),
                 descripcion=str(global_row.descripcion),
                 activo=False,
@@ -729,7 +746,7 @@ class AdministrativeCatalogPanelViewService:
         if bridge.id_comercio != comercio_id:
             return None
         return DeliveryMethodConfigurationView(
-            id=bridge.id,
+            association_id=bridge.id,
             codigo=str(global_row.codigo),
             descripcion=str(global_row.descripcion),
             activo=bool(bridge.activo),

@@ -67,7 +67,8 @@ class FlavorSummaryView:
 class PaymentMethodDetailView:
     """One commerce-level payment-method row in the detail view."""
 
-    id: int
+    association_id: int
+    medio_pago_id: int
     codigo: str
     descripcion: str
     activo: bool
@@ -95,10 +96,20 @@ class GlobalMedioPagoRow:
 
 
 @dataclass(frozen=True)
+class GlobalMetodoEntregaRow:
+    id: int
+    codigo: str
+    descripcion: str
+    orden: int
+    activo: bool
+
+
+@dataclass(frozen=True)
 class DeliveryMethodDetailView:
     """One commerce-level delivery-method row in the detail view."""
 
-    id: int
+    association_id: int
+    metodo_entrega_id: int
     codigo: str
     descripcion: str
     activo: bool
@@ -183,7 +194,7 @@ class PaymentMethodConfigurationView:
     inspecting SQLAlchemy ORM state.
     """
 
-    id: int
+    association_id: int
     codigo: str
     descripcion: str
     activo: bool
@@ -202,7 +213,7 @@ class DeliveryMethodConfigurationView:
     without ever inspecting SQLAlchemy ORM state.
     """
 
-    id: int
+    association_id: int
     codigo: str
     descripcion: str
     activo: bool
@@ -441,6 +452,7 @@ __all__ = [
     "FlavorOption",
     "FlavorSummaryView",
     "GlobalMedioPagoRow",
+    "GlobalMetodoEntregaRow",
     "InactiveDeliveryMethodDetailView",
     "InactivePaymentMethodDetailView",
     "InvalidComercioIdError",

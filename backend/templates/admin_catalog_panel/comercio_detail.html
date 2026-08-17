@@ -97,7 +97,7 @@
                 <td><span class="badge {% if medio.activo %}success{% else %}warning{% endif %}">{{ "sí" if medio.activo else "no" }}</span></td>
                 <td>{{ medio.titular or "—" }}</td>
                 <td>{{ medio.alias or "—" }}</td>
-                <td class="actions-col"><a class="button secondary" href="/admin/catalog/comercios/{{ detail.id }}/medios-pago/{{ medio.id }}">Configurar</a></td>
+                <td class="actions-col"><a class="button secondary" href="/admin/catalog/comercios/{{ detail.id }}/medios-pago/{{ medio.medio_pago_id }}">Configurar</a></td>
               </tr>
             {% endfor %}
           </tbody>
@@ -160,7 +160,7 @@
                 <td>{{ metodo.descripcion }}</td>
                 <td><span class="badge {% if metodo.activo %}success{% else %}warning{% endif %}">{{ "sí" if metodo.activo else "no" }}</span></td>
                 <td>{{ metodo.orden }}</td>
-                <td class="actions-col"><a class="button secondary" href="/admin/catalog/comercios/{{ detail.id }}/metodos-entrega/{{ metodo.id }}">Configurar</a></td>
+                <td class="actions-col"><a class="button secondary" href="/admin/catalog/comercios/{{ detail.id }}/metodos-entrega/{{ metodo.metodo_entrega_id }}">Configurar</a></td>
               </tr>
             {% endfor %}
           </tbody>

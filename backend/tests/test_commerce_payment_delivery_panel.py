@@ -39,17 +39,12 @@ from backend.admin.views import (
     FlavorOption,
     FlavorSummaryView,
     GlobalMedioPagoRow,
+    GlobalMetodoEntregaRow,
     InactiveDeliveryMethodDetailView,
     InactivePaymentMethodDetailView,
     PaymentMethodConfigurationView,
     PaymentMethodDetailView,
 )
-
-
-class _FakeMetodoEntrega:
-    def __init__(self, **attrs: object) -> None:
-        for key, value in attrs.items():
-            setattr(self, key, value)
 from backend.config import settings as settings_module
 from backend.config.settings import Settings
 from backend.dependencies import (
@@ -145,7 +140,9 @@ def _stub_view_service(
         get_commerce_delivery_configuration=MagicMock(
             return_value=delivery_configuration
         ),
-        _session=MagicMock(get=MagicMock(return_value=global_metodo_entrega)),
+        get_global_metodo_entrega=MagicMock(
+            return_value=global_metodo_entrega
+        ),
     )
 
 
@@ -187,7 +184,8 @@ def _build_detail() -> CommerceDetailView:
         idioma="es-AR",
         medios_pago=[
             PaymentMethodDetailView(
-                id=10,
+                association_id=110,
+                medio_pago_id=10,
                 codigo="EFECTIVO",
                 descripcion="Efectivo",
                 activo=True,
@@ -197,7 +195,8 @@ def _build_detail() -> CommerceDetailView:
         ],
         metodos_entrega=[
             DeliveryMethodDetailView(
-                id=20,
+                association_id=120,
+                metodo_entrega_id=20,
                 codigo="RETIRO",
                 descripcion="Retiro en local",
                 activo=True,
@@ -449,7 +448,7 @@ class PaymentFormHappyPathTest(unittest.TestCase):
                 habilita_alias=False,
             )
             configuration = PaymentMethodConfigurationView(
-                id=10,
+                association_id=10,
                 codigo="EFECTIVO",
                 descripcion="Efectivo",
                 activo=True,
@@ -509,7 +508,7 @@ class PaymentFormReactivationTest(unittest.TestCase):
             habilita_alias=False,
         )
         self.configuration = PaymentMethodConfigurationView(
-            id=10,
+            association_id=110,
             codigo="EFECTIVO",
             descripcion="Efectivo",
             activo=False,
@@ -548,6 +547,14 @@ class PaymentFormReactivationTest(unittest.TestCase):
                 headers=self._auth_headers(),
             )
         self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            'action="/admin/catalog/comercios/1/medios-pago/10"',
+            response.text,
+        )
+        self.assertNotIn(
+            'action="/admin/catalog/comercios/1/medios-pago/110"',
+            response.text,
+        )
         self.assertNotIn('name="titular"', response.text)
         self.assertNotIn('name="alias"', response.text)
         self.assertIn("valor previo se conserva", response.text)
@@ -595,7 +602,7 @@ class PaymentFormReactivationTest(unittest.TestCase):
                 habilita_alias=False,
             )
             configuration = PaymentMethodConfigurationView(
-                id=10,
+                association_id=10,
                 codigo="EFECTIVO",
                 descripcion="Efectivo",
                 activo=False,
@@ -639,14 +646,14 @@ class DeliveryFormValidationTest(unittest.TestCase):
         _stub_settings(self)
         self.detail = _build_detail()
         self.delivery_configuration = DeliveryMethodConfigurationView(
-            id=0,
+            association_id=0,
             codigo="DELIVERY",
             descripcion="Envío a domicilio",
             activo=False,
             orden=0,
             global_orden=2,
         )
-        self.delivery_global = _FakeMetodoEntrega(
+        self.delivery_global = GlobalMetodoEntregaRow(
             id=20,
             codigo="DELIVERY",
             descripcion="Envío a domicilio",
@@ -673,6 +680,93 @@ class DeliveryFormValidationTest(unittest.TestCase):
             **_basic_auth_header("any", CONFIGURED_TOKEN),
             **_same_origin_headers(),
         }
+
+    def test_existing_association_opens_form_with_global_id(self) -> None:
+        path = "/admin/catalog/comercios/1/metodos-entrega/20"
+        configuration = DeliveryMethodConfigurationView(
+            association_id=120,
+            codigo="DELIVERY",
+            descripcion="Envío a domicilio",
+            activo=True,
+            orden=2,
+            global_orden=2,
+        )
+        with patch.object(
+            admin_routes,
+            "AdministrativeCatalogPanelViewService",
+        ) as view_cls:
+            view_cls.return_value = _stub_view_service(
+                detail=self.detail,
+                delivery_configuration=configuration,
+                global_metodo_entrega=self.delivery_global,
+            )
+            response = self.client.get(path, headers=self._auth_headers())
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            'action="/admin/catalog/comercios/1/metodos-entrega/20"',
+            response.text,
+        )
+        self.assertNotIn(
+            'action="/admin/catalog/comercios/1/metodos-entrega/120"',
+            response.text,
+        )
+
+    def test_active_global_method_enables_habilitar_button(self) -> None:
+        path = "/admin/catalog/comercios/1/metodos-entrega/20"
+        with patch.object(
+            admin_routes,
+            "AdministrativeCatalogPanelViewService",
+        ) as view_cls:
+            view_cls.return_value = self._stub_view_service()
+            response = self.client.get(path, headers=self._auth_headers())
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Habilitar", response.text)
+        self.assertNotIn('disabled aria-disabled="true"', response.text)
+        view_cls.return_value.get_global_metodo_entrega.assert_called_once_with(20)
+
+    def test_error_rerender_preserves_active_global_method(self) -> None:
+        path = "/admin/catalog/comercios/1/metodos-entrega/20"
+        with patch.object(
+            admin_routes,
+            "AdministrativeCatalogPanelViewService",
+        ) as view_cls, patch.object(
+            admin_routes,
+            "CommercePaymentDeliveryConfigurationService",
+        ) as config_cls:
+            view_cls.return_value = self._stub_view_service()
+            config_cls.return_value = _stub_config_service()
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path, {"action": "enable", "orden": "abc"}
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Habilitar", response.text)
+        self.assertNotIn('disabled aria-disabled="true"', response.text)
+        view_cls.return_value.get_global_metodo_entrega.assert_called_once_with(20)
+
+    def test_inactive_global_method_cannot_be_enabled(self) -> None:
+        path = "/admin/catalog/comercios/1/metodos-entrega/20"
+        inactive_global = GlobalMetodoEntregaRow(
+            id=20,
+            codigo="DELIVERY",
+            descripcion="Envío a domicilio",
+            orden=2,
+            activo=False,
+        )
+        with patch.object(
+            admin_routes,
+            "AdministrativeCatalogPanelViewService",
+        ) as view_cls:
+            view_cls.return_value = _stub_view_service(
+                detail=self.detail,
+                delivery_configuration=self.delivery_configuration,
+                global_metodo_entrega=inactive_global,
+            )
+            response = self.client.get(path, headers=self._auth_headers())
+        self.assertEqual(response.status_code, 404)
 
     def test_enable_without_orden_is_rejected(self) -> None:
         path = "/admin/catalog/comercios/1/metodos-entrega/20"
@@ -885,7 +979,7 @@ class PaymentFormXssEscapeTest(unittest.TestCase):
                 habilita_alias=False,
             )
             configuration = PaymentMethodConfigurationView(
-                id=10,
+                association_id=10,
                 codigo="EFECTIVO",
                 descripcion="Efectivo",
                 activo=True,
