@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}No encontrado — Panel administrativo{% endblock %}
+{% block crumb %}<span class="crumb">· No encontrado</span>{% endblock %}
+{% block body %}
+<h1>{{ resource_label or "Recurso" }} no encontrado</h1>
+<p>El identificador <code>{{ raw_id }}</code> no corresponde a un {{ resource_label or "recurso" }} existente, no pertenece al comercio seleccionado o no es válido.</p>
+<p class="muted">El panel no busca alternativas por sesión, cliente, presentación cruzada o comercio vecino.</p>
+<p><a class="visual-link" href="/admin/catalog/comercios">Volver al listado de comercios</a></p>
+{% endblock %}

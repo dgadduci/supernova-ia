@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 
+from backend.admin import routes as admin_catalog_routes
 from backend.routers import (
     admin_pilot_orders,
     admin_product_embeddings,
@@ -44,5 +45,6 @@ app.include_router(incoming_messages.router)
 app.include_router(pedido_productos.router)
 app.include_router(admin_product_embeddings.router)
 app.include_router(admin_pilot_orders.router)
+app.include_router(admin_catalog_routes.router)
 app.include_router(twilio_webhook.router)
 app.include_router(twilio_delivery_callback.router)

@@ -1,15 +1,12 @@
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from backend.config.settings import load_settings
 from backend.dependencies import get_session, require_admin_token
-from backend.llm.embedding_client import OllamaEmbeddingClient
 from backend.schemas.presentacion import PresentacionCreate, PresentacionResponse
-from backend.services.catalog_embedding_synchronization_service import (
-    CatalogEmbeddingSynchronizationService,
-)
+from backend.services.catalog_create_service import CatalogCreateService
 from backend.services.exceptions import (
     ComercioNotFound,
     DuplicatePresentacionCodigo,
@@ -17,7 +14,6 @@ from backend.services.exceptions import (
     InvalidPresentacion,
     PresentacionNotFound,
 )
-from backend.services.presentacion_service import PresentacionService
 
 router = APIRouter(
     tags=["presentaciones"],
@@ -25,22 +21,11 @@ router = APIRouter(
 )
 
 
-def _service(
+def _create_service(
     session: Annotated[Session, Depends(get_session)],
-) -> PresentacionService:
-    return PresentacionService(session)
-
-
-def _sync_service(
-    session: Annotated[Session, Depends(get_session)],
-) -> CatalogEmbeddingSynchronizationService:
+) -> CatalogCreateService:
     settings = load_settings()
-    embedding_client = OllamaEmbeddingClient(settings)
-    return CatalogEmbeddingSynchronizationService(
-        session=session,
-        embedding_client=embedding_client,
-        settings=settings,
-    )
+    return CatalogCreateService(session=session, settings=settings)
 
 
 @router.get(
@@ -49,15 +34,13 @@ def _sync_service(
 )
 def list_presentaciones(
     comercio_id: int,
-    service: PresentacionService = Depends(_service),
+    service: Annotated[CatalogCreateService, Depends(_create_service)],
 ) -> list[PresentacionResponse]:
     try:
-        return [
-            PresentacionResponse.model_validate(presentation)
-            for presentation in service.list_by_comercio(comercio_id)
-        ]
+        rows = service._presentacion_service.list_by_comercio(comercio_id)
     except ComercioNotFound as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+    return [PresentacionResponse.model_validate(row) for row in rows]
 
 
 @router.get(
@@ -66,12 +49,13 @@ def list_presentaciones(
 )
 def get_presentacion(
     presentacion_id: int,
-    service: PresentacionService = Depends(_service),
+    service: Annotated[CatalogCreateService, Depends(_create_service)],
 ) -> PresentacionResponse:
     try:
-        return PresentacionResponse.model_validate(service.get_by_id(presentacion_id))
+        row = service._presentacion_service.get_by_id(presentacion_id)
     except PresentacionNotFound as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+    return PresentacionResponse.model_validate(row)
 
 
 @router.post(
@@ -82,34 +66,23 @@ def get_presentacion(
 def create_presentacion(
     comercio_id: int,
     payload: PresentacionCreate,
-    session: Annotated[Any, Depends(get_session)],
-    service: PresentacionService = Depends(_service),
-    sync_service: CatalogEmbeddingSynchronizationService = Depends(_sync_service),
+    service: Annotated[CatalogCreateService, Depends(_create_service)],
 ) -> PresentacionResponse:
     try:
-        row = service.create(
+        row = service.create_presentacion(
             comercio_id,
             payload.codigo,
             payload.descripcion,
             payload.activo,
             payload.orden,
         )
-        session.commit()
     except ComercioNotFound as e:
-        session.rollback()
         raise HTTPException(status_code=404, detail=str(e)) from e
     except InvalidPresentacion as e:
-        session.rollback()
         raise HTTPException(status_code=400, detail=str(e)) from e
     except (DuplicatePresentacionCodigo, DuplicatePresentacionDescripcion) as e:
-        session.rollback()
         raise HTTPException(status_code=409, detail=str(e)) from e
-    except Exception:
-        session.rollback()
-        raise
-    try:
-        sync_service.synchronize_presentacion(int(row.id))
-        session.commit()
-    except Exception:
-        session.rollback()
     return PresentacionResponse.model_validate(row)
+
+
+__all__ = ["router"]

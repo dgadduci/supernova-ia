@@ -2,4 +2,4 @@
 line-length = 88
 
 [tool.ruff.lint]
-per-file-ignores = { "**/tests/**" = ["SIM117"] }
+per-file-ignores = { "**/tests/**" = ["SIM117", "B008", "BLE001"] }

@@ -236,6 +236,55 @@ def _order_management_admin_token_env(name: str) -> str | None:
     return cleaned
 
 
+def _admin_panel_csrf_secret_env(name: str) -> str | None:
+    """Resolve the optional panel CSRF signing secret.
+
+    The secret is optional: when missing or blank the panel reuses
+    the configured administrative token so the boundary works without
+    a new deployment setting. A non-blank value is the only way to
+    decouple the panel CSRF secret from the credential.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise TypeError(
+            f"{name} must be a string when provided "
+            f"(got {type(raw).__name__})"
+        )
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+    return cleaned
+
+
+def _admin_panel_allowed_origin_env(name: str) -> str | None:
+    """Resolve the optional panel allowed-origin pin.
+
+    When the value is missing or blank the dependency falls back to
+    the ``scheme://host[:port]`` the server sees for the request —
+    the same-origin check stays active by default. A non-blank value
+    pins the dependency to an exact origin string so reverse-proxy
+    deployments that rewrite ``Host`` / ``X-Forwarded-*`` can still
+    validate the request origin against a trusted value. The helper
+    performs no URL parsing because the dependency compares the
+    raw string verbatim — exact-string match prevents trivial
+    subdomain or trailing-slash bypasses.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise TypeError(
+            f"{name} must be a string when provided "
+            f"(got {type(raw).__name__})"
+        )
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+    return cleaned
+
+
 def _twilio_webhook_base_url_env(name: str) -> str | None:
     raw = _optional_str_env(name, None)
     if raw is None:
@@ -421,6 +470,8 @@ class Settings:
         DEFAULT_PROVIDER_PROCESSING_WORKER_OUTBOUND_MAX_ATTEMPTS_PER_PASS
     )
     order_management_admin_token: str | None = None
+    admin_panel_csrf_secret: str | None = None
+    admin_panel_allowed_origin: str | None = None
 
 
 def load_settings() -> Settings:
@@ -524,6 +575,12 @@ def load_settings() -> Settings:
         ),
         order_management_admin_token=_order_management_admin_token_env(
             "ORDER_MANAGEMENT_ADMIN_TOKEN"
+        ),
+        admin_panel_csrf_secret=_admin_panel_csrf_secret_env(
+            "ADMIN_PANEL_CSRF_SECRET"
+        ),
+        admin_panel_allowed_origin=_admin_panel_allowed_origin_env(
+            "ADMIN_PANEL_ALLOWED_ORIGIN"
         ),
     )
 

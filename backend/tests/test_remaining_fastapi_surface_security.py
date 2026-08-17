@@ -59,6 +59,13 @@ EXEMPT_PATHS = frozenset(
         "/admin/pilot/orders/{pedido_id}",
         "/admin/pilot/orders/{pedido_id}/local-test",
         "/admin/pilot/orders/commerce/{comercio_id}/catalog",
+        "/admin/catalog/comercios",
+        "/admin/catalog/comercios/{comercio_id}",
+        "/admin/catalog/comercios/{comercio_id}/flavor",
+        "/admin/catalog/comercios/{comercio_id}/categorias/nueva",
+        "/admin/catalog/comercios/{comercio_id}/categorias/{categoria_id}/productos/nuevo",
+        "/admin/catalog/comercios/{comercio_id}/presentaciones/nueva",
+        "/admin/catalog/comercios/{comercio_id}/productos/{producto_id}/presentaciones/{presentacion_id}/precio/nuevo",
     }
 )
 
