@@ -419,7 +419,10 @@ def detail_comercio(
         "comercio_detail.html",
         _form_context(
             request=request,
-            path=str(request.url.path),
+            # The detail view contains a mutable flavor form whose POST target
+            # differs from this GET route. Bind its nonce to that target so
+            # native form submissions satisfy the path-bound CSRF check.
+            path=f"/admin/catalog/comercios/{parsed_comercio_id}/flavor",
             extra={
                 "detail": detail,
                 "catalog": catalog,
