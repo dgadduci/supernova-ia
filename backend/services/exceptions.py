@@ -675,3 +675,25 @@ class FlavorComunicacionInactivo(Exception):
     The Phase-1 selection service translates this exception to
     ``HTTP 409`` without mutating the target ``Comercio``.
     """
+
+
+class InvalidPaymentField(ValueError):
+    """Raised when the panel submits a per-commerce payment field
+    that the global ``MediosPago`` flags disable.
+
+    The Phase-1 administrative panel configuration service rejects
+    the submission and preserves the stored value. The router
+    translates this exception to a bounded ``400`` panel feedback
+    without ever touching the bridge row.
+    """
+
+
+class InvalidDeliveryOrden(ValueError):
+    """Raised when a per-commerce ``orden`` is not a non-negative
+    integer.
+
+    The database check constraint enforces the same gate; the
+    service-level rejection is the documented adapter boundary
+    so the panel can render a closed validation error before any
+    persistence attempt.
+    """

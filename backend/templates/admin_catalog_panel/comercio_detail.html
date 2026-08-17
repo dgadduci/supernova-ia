@@ -86,7 +86,7 @@
     {% if detail.medios_pago %}
       <table>
         <thead>
-          <tr><th>Código</th><th>Descripción</th><th>Activo</th><th>Titular</th><th>Alias</th></tr>
+          <tr><th>Código</th><th>Descripción</th><th>Activo</th><th>Titular</th><th>Alias</th><th class="actions-col">Acción</th></tr>
         </thead>
         <tbody>
           {% for medio in detail.medios_pago %}
@@ -96,6 +96,7 @@
               <td><span class="badge {% if medio.activo %}success{% else %}warning{% endif %}">{{ "sí" if medio.activo else "no" }}</span></td>
               <td>{{ medio.titular or "—" }}</td>
               <td>{{ medio.alias or "—" }}</td>
+              <td><a class="button secondary" href="/admin/catalog/comercios/{{ detail.id }}/medios-pago/{{ medio.id }}">Configurar</a></td>
             </tr>
           {% endfor %}
         </tbody>
@@ -103,7 +104,41 @@
     {% else %}
       <div class="empty">El comercio no tiene medios de pago configurados.</div>
     {% endif %}
-    <p class="faint">Modo lectura: el panel no edita medios de pago.</p>
+
+    {% if detail.medios_pago_candidates %}
+      <h3>Agregar medio de pago</h3>
+      <ul class="nav-tree">
+        {% for candidate in detail.medios_pago_candidates %}
+          <li class="row">
+            <div>
+              <span class="label">#{{ candidate.id }} — {{ candidate.codigo }}</span>
+              <div class="meta">{{ candidate.descripcion }} · titular {{ "disponible" if candidate.habilita_titular else "no disponible" }} · alias {{ "disponible" if candidate.habilita_alias else "no disponible" }}</div>
+            </div>
+            <a class="button primary" href="/admin/catalog/comercios/{{ detail.id }}/medios-pago/{{ candidate.id }}">Configurar</a>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+
+    {% if detail.medios_pago_inactivos %}
+      <h3>Histórico (solo lectura)</h3>
+      <table>
+        <thead>
+          <tr><th>Código</th><th>Descripción</th><th>Titular</th><th>Alias</th></tr>
+        </thead>
+        <tbody>
+          {% for medio in detail.medios_pago_inactivos %}
+            <tr>
+              <td>{{ medio.codigo }}</td>
+              <td>{{ medio.descripcion }}</td>
+              <td>{{ medio.titular or "—" }}</td>
+              <td>{{ medio.alias or "—" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p class="faint">Los medios de pago cuyo catálogo global está inactivo se conservan como histórico. No se permite reactivarlos desde este panel.</p>
+    {% endif %}
   </section>
 
   <section class="panel" aria-label="Métodos de entrega">
@@ -111,7 +146,7 @@
     {% if detail.metodos_entrega %}
       <table>
         <thead>
-          <tr><th>Código</th><th>Descripción</th><th>Activo</th><th>Orden</th></tr>
+          <tr><th>Código</th><th>Descripción</th><th>Activo</th><th>Orden</th><th class="actions-col">Acción</th></tr>
         </thead>
         <tbody>
           {% for metodo in detail.metodos_entrega %}
@@ -120,6 +155,7 @@
               <td>{{ metodo.descripcion }}</td>
               <td><span class="badge {% if metodo.activo %}success{% else %}warning{% endif %}">{{ "sí" if metodo.activo else "no" }}</span></td>
               <td>{{ metodo.orden }}</td>
+              <td><a class="button secondary" href="/admin/catalog/comercios/{{ detail.id }}/metodos-entrega/{{ metodo.id }}">Configurar</a></td>
             </tr>
           {% endfor %}
         </tbody>
@@ -127,7 +163,40 @@
     {% else %}
       <div class="empty">El comercio no tiene métodos de entrega configurados.</div>
     {% endif %}
-    <p class="faint">Modo lectura: el panel no edita métodos de entrega.</p>
+
+    {% if detail.metodos_entrega_candidates %}
+      <h3>Agregar método de entrega</h3>
+      <ul class="nav-tree">
+        {% for candidate in detail.metodos_entrega_candidates %}
+          <li class="row">
+            <div>
+              <span class="label">#{{ candidate.id }} — {{ candidate.codigo }}</span>
+              <div class="meta">{{ candidate.descripcion }} · orden global {{ candidate.orden }}</div>
+            </div>
+            <a class="button primary" href="/admin/catalog/comercios/{{ detail.id }}/metodos-entrega/{{ candidate.id }}">Configurar</a>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+
+    {% if detail.metodos_entrega_inactivos %}
+      <h3>Histórico (solo lectura)</h3>
+      <table>
+        <thead>
+          <tr><th>Código</th><th>Descripción</th><th>Orden</th></tr>
+        </thead>
+        <tbody>
+          {% for metodo in detail.metodos_entrega_inactivos %}
+            <tr>
+              <td>{{ metodo.codigo }}</td>
+              <td>{{ metodo.descripcion }}</td>
+              <td>{{ metodo.orden }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p class="faint">Los métodos de entrega cuyo catálogo global está inactivo se conservan como histórico. No se permite reactivarlos desde este panel.</p>
+    {% endif %}
   </section>
 </div>
 

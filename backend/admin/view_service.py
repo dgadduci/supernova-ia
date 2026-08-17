@@ -27,12 +27,16 @@ from backend.admin.views import (
     CatalogProductoPresentacionRow,
     CatalogProductoRow,
     CommerceCatalogNavigationView,
+    CommerceDeliveryActiveCandidate,
     CommerceDetailView,
+    CommercePaymentActiveCandidate,
     CommerceSummary,
     DeliveryMethodDetailView,
     FlavorOption,
     FlavorSummaryView,
     GlobalMedioPagoRow,
+    InactiveDeliveryMethodDetailView,
+    InactivePaymentMethodDetailView,
     PaymentMethodDetailView,
 )
 from backend.models import (
@@ -41,6 +45,7 @@ from backend.models import (
     ComercioMedioPago,
     ComercioMetodoEntrega,
     MediosPago,
+    MetodosEntrega,
     Precio,
     Presentacion,
     Producto,
@@ -104,34 +109,108 @@ class AdministrativeCatalogPanelViewService:
             return None
 
         medios_pago: list[PaymentMethodDetailView] = []
+        medios_pago_inactivos: list[InactivePaymentMethodDetailView] = []
+        associated_medio_pago_ids: set[int] = set()
         for association in sorted(
             comercio.medios_pago, key=lambda item: item.id
         ):
             medio = association.medio_pago
-            medios_pago.append(
-                PaymentMethodDetailView(
-                    id=association.id,
-                    codigo=str(medio.codigo) if medio is not None else "",
-                    descripcion=str(medio.descripcion) if medio is not None else "",
-                    activo=association.activo,
-                    titular=association.titular,
-                    alias=association.alias,
-                )
+            codigo = str(medio.codigo) if medio is not None else ""
+            descripcion = (
+                str(medio.descripcion) if medio is not None else ""
             )
+            if medio is not None:
+                associated_medio_pago_ids.add(int(medio.id))
+            if medio is not None and bool(medio.activo):
+                medios_pago.append(
+                    PaymentMethodDetailView(
+                        id=association.id,
+                        codigo=codigo,
+                        descripcion=descripcion,
+                        activo=association.activo,
+                        titular=association.titular,
+                        alias=association.alias,
+                    )
+                )
+            else:
+                medios_pago_inactivos.append(
+                    InactivePaymentMethodDetailView(
+                        id=association.id,
+                        codigo=codigo,
+                        descripcion=descripcion,
+                        titular=association.titular,
+                        alias=association.alias,
+                    )
+                )
 
         metodos_entrega: list[DeliveryMethodDetailView] = []
+        metodos_entrega_inactivos: list[InactiveDeliveryMethodDetailView] = []
+        associated_metodo_entrega_ids: set[int] = set()
         for association in sorted(
             comercio.metodos_entrega,
             key=lambda item: (item.orden, item.id),
         ):
             metodo = association.metodo_entrega
-            metodos_entrega.append(
-                DeliveryMethodDetailView(
-                    id=association.id,
-                    codigo=str(metodo.codigo) if metodo is not None else "",
-                    descripcion=str(metodo.descripcion) if metodo is not None else "",
-                    activo=association.activo,
-                    orden=association.orden,
+            codigo = str(metodo.codigo) if metodo is not None else ""
+            descripcion = (
+                str(metodo.descripcion) if metodo is not None else ""
+            )
+            if metodo is not None:
+                associated_metodo_entrega_ids.add(int(metodo.id))
+            if metodo is not None and bool(metodo.activo):
+                metodos_entrega.append(
+                    DeliveryMethodDetailView(
+                        id=association.id,
+                        codigo=codigo,
+                        descripcion=descripcion,
+                        activo=association.activo,
+                        orden=association.orden,
+                    )
+                )
+            else:
+                metodos_entrega_inactivos.append(
+                    InactiveDeliveryMethodDetailView(
+                        id=association.id,
+                        codigo=codigo,
+                        descripcion=descripcion,
+                        orden=association.orden,
+                    )
+                )
+
+        medios_pago_candidates: list[CommercePaymentActiveCandidate] = []
+        for global_row in self._session.execute(
+            select(MediosPago)
+            .where(MediosPago.activo.is_(True))
+            .order_by(MediosPago.id.asc())
+        ).scalars():
+            if int(global_row.id) in associated_medio_pago_ids:
+                continue
+            medios_pago_candidates.append(
+                CommercePaymentActiveCandidate(
+                    id=int(global_row.id),
+                    codigo=str(global_row.codigo),
+                    descripcion=str(global_row.descripcion),
+                    habilita_titular=bool(global_row.habilita_titular),
+                    habilita_alias=bool(global_row.habilita_alias),
+                )
+            )
+
+        metodos_entrega_candidates: list[
+            CommerceDeliveryActiveCandidate
+        ] = []
+        for global_row in self._session.execute(
+            select(MetodosEntrega)
+            .where(MetodosEntrega.activo.is_(True))
+            .order_by(MetodosEntrega.orden.asc(), MetodosEntrega.id.asc())
+        ).scalars():
+            if int(global_row.id) in associated_metodo_entrega_ids:
+                continue
+            metodos_entrega_candidates.append(
+                CommerceDeliveryActiveCandidate(
+                    id=int(global_row.id),
+                    codigo=str(global_row.codigo),
+                    descripcion=str(global_row.descripcion),
+                    orden=int(global_row.orden),
                 )
             )
 
@@ -167,6 +246,10 @@ class AdministrativeCatalogPanelViewService:
             idioma=comercio.idioma,
             medios_pago=medios_pago,
             metodos_entrega=metodos_entrega,
+            medios_pago_candidates=medios_pago_candidates,
+            metodos_entrega_candidates=metodos_entrega_candidates,
+            medios_pago_inactivos=medios_pago_inactivos,
+            metodos_entrega_inactivos=metodos_entrega_inactivos,
             flavor=flavor,
         )
 
@@ -552,6 +635,106 @@ class AdministrativeCatalogPanelViewService:
             activo=bool(row.activo),
             habilita_titular=bool(row.habilita_titular),
             habilita_alias=bool(row.habilita_alias),
+        )
+
+    def get_commerce_payment_configuration(
+        self,
+        *,
+        comercio_id: int,
+        medio_pago_id: int,
+    ):
+        """Return the scoped payment configuration view for a form.
+
+        The lookup is the single panel entry point for the
+        per-commerce payment form: it merges the global
+        ``MediosPago`` row with the existing ``ComercioMedioPago``
+        bridge row and returns a closed
+        :class:`PaymentMethodConfigurationView`. The helper refuses
+        to return a row for a foreign ``comercio_id`` so a forged
+        POST cannot reach a different comercio's association.
+        """
+        from backend.admin.views import PaymentMethodConfigurationView
+
+        global_row = self._session.get(MediosPago, medio_pago_id)
+        if global_row is None:
+            return None
+
+        stmt = (
+            select(ComercioMedioPago)
+            .where(ComercioMedioPago.id_comercio == comercio_id)
+            .where(ComercioMedioPago.id_medio_pago == medio_pago_id)
+        )
+        bridge = self._session.execute(stmt).scalar_one_or_none()
+        if bridge is None:
+            return PaymentMethodConfigurationView(
+                id=0,
+                codigo=str(global_row.codigo),
+                descripcion=str(global_row.descripcion),
+                activo=False,
+                titular=None,
+                alias=None,
+                habilita_titular=bool(global_row.habilita_titular),
+                habilita_alias=bool(global_row.habilita_alias),
+            )
+        if bridge.id_comercio != comercio_id:
+            return None
+        return PaymentMethodConfigurationView(
+            id=bridge.id,
+            codigo=str(global_row.codigo),
+            descripcion=str(global_row.descripcion),
+            activo=bool(bridge.activo),
+            titular=bridge.titular,
+            alias=bridge.alias,
+            habilita_titular=bool(global_row.habilita_titular),
+            habilita_alias=bool(global_row.habilita_alias),
+        )
+
+    def get_commerce_delivery_configuration(
+        self,
+        *,
+        comercio_id: int,
+        metodo_entrega_id: int,
+    ):
+        """Return the scoped delivery configuration view for a form.
+
+        The lookup mirrors the payment configuration helper:
+        it merges the global ``MetodosEntrega`` row with the
+        existing ``ComercioMetodoEntrega`` bridge row and returns
+        a closed :class:`DeliveryMethodConfigurationView`. The
+        helper refuses to return a row for a foreign
+        ``comercio_id`` so a forged POST cannot reach a different
+        comercio's association.
+        """
+        from backend.admin.views import DeliveryMethodConfigurationView
+
+        global_row = self._session.get(MetodosEntrega, metodo_entrega_id)
+        if global_row is None:
+            return None
+
+        stmt = (
+            select(ComercioMetodoEntrega)
+            .where(ComercioMetodoEntrega.id_comercio == comercio_id)
+            .where(ComercioMetodoEntrega.id_metodo_entrega == metodo_entrega_id)
+        )
+        bridge = self._session.execute(stmt).scalar_one_or_none()
+        if bridge is None:
+            return DeliveryMethodConfigurationView(
+                id=0,
+                codigo=str(global_row.codigo),
+                descripcion=str(global_row.descripcion),
+                activo=False,
+                orden=0,
+                global_orden=int(global_row.orden),
+            )
+        if bridge.id_comercio != comercio_id:
+            return None
+        return DeliveryMethodConfigurationView(
+            id=bridge.id,
+            codigo=str(global_row.codigo),
+            descripcion=str(global_row.descripcion),
+            activo=bool(bridge.activo),
+            orden=int(bridge.orden),
+            global_orden=int(global_row.orden),
         )
 
 

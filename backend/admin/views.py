@@ -106,6 +106,111 @@ class DeliveryMethodDetailView:
 
 
 @dataclass(frozen=True)
+class CommercePaymentActiveCandidate:
+    """One active global ``MediosPago`` row the panel can offer.
+
+    The view is the panel's render-only catalogue of payment
+    candidates available for a new commerce association. The
+    per-commerce ``titular`` / ``alias`` fields are not exposed
+    here because the candidate row belongs to the global
+    catalog, not the commerce bridge.
+    """
+
+    id: int
+    codigo: str
+    descripcion: str
+    habilita_titular: bool
+    habilita_alias: bool
+
+
+@dataclass(frozen=True)
+class CommerceDeliveryActiveCandidate:
+    """One active global ``MetodosEntrega`` row the panel can offer.
+
+    The view is the panel's render-only catalogue of delivery
+    candidates available for a new commerce association. The
+    per-commerce ``orden`` belongs to the bridge row and is
+    exposed through :class:`DeliveryMethodDetailView`.
+    """
+
+    id: int
+    codigo: str
+    descripcion: str
+    orden: int
+
+
+@dataclass(frozen=True)
+class InactivePaymentMethodDetailView:
+    """A scoped ``ComercioMedioPago`` whose global method is inactive.
+
+    The view is read-only: the panel displays the historic
+    payment details but never offers a re-enable action. The
+    global catalog deactivation is the only state that can move
+    a row out of the normal :class:`PaymentMethodDetailView`
+    list.
+    """
+
+    id: int
+    codigo: str
+    descripcion: str
+    titular: str | None
+    alias: str | None
+
+
+@dataclass(frozen=True)
+class InactiveDeliveryMethodDetailView:
+    """A scoped ``ComercioMetodoEntrega`` whose global method is inactive.
+
+    The view is read-only: the panel displays the historic
+    delivery order but never offers a re-enable action. The
+    global catalog deactivation is the only state that can move
+    a row out of the normal :class:`DeliveryMethodDetailView`
+    list.
+    """
+
+    id: int
+    codigo: str
+    descripcion: str
+    orden: int
+
+
+@dataclass(frozen=True)
+class PaymentMethodConfigurationView:
+    """One scoped ``ComercioMedioPago`` row in the configuration form.
+
+    The view blends the bridge row with the global catalog so
+    the template can render the correct field set without ever
+    inspecting SQLAlchemy ORM state.
+    """
+
+    id: int
+    codigo: str
+    descripcion: str
+    activo: bool
+    titular: str | None
+    alias: str | None
+    habilita_titular: bool
+    habilita_alias: bool
+
+
+@dataclass(frozen=True)
+class DeliveryMethodConfigurationView:
+    """One scoped ``ComercioMetodoEntrega`` row in the configuration form.
+
+    The view blends the bridge row with the global catalog so
+    the template can render the per-commerce ``orden`` widget
+    without ever inspecting SQLAlchemy ORM state.
+    """
+
+    id: int
+    codigo: str
+    descripcion: str
+    activo: bool
+    orden: int
+    global_orden: int
+
+
+@dataclass(frozen=True)
 class CommerceDetailView:
     """Exact commerce configuration used by the detail view."""
 
@@ -128,6 +233,18 @@ class CommerceDetailView:
     idioma: str
     medios_pago: list[PaymentMethodDetailView] = field(default_factory=list)
     metodos_entrega: list[DeliveryMethodDetailView] = field(default_factory=list)
+    medios_pago_candidates: list[CommercePaymentActiveCandidate] = field(
+        default_factory=list
+    )
+    metodos_entrega_candidates: list[CommerceDeliveryActiveCandidate] = field(
+        default_factory=list
+    )
+    medios_pago_inactivos: list[InactivePaymentMethodDetailView] = field(
+        default_factory=list
+    )
+    metodos_entrega_inactivos: list[InactiveDeliveryMethodDetailView] = field(
+        default_factory=list
+    )
     flavor: FlavorSummaryView | None = None
 
 
@@ -315,15 +432,21 @@ __all__ = [
     "CatalogProductoPresentacionRow",
     "CatalogProductoRow",
     "CommerceCatalogNavigationView",
+    "CommerceDeliveryActiveCandidate",
     "CommerceDetailView",
+    "CommercePaymentActiveCandidate",
     "CommerceSummary",
+    "DeliveryMethodConfigurationView",
     "DeliveryMethodDetailView",
     "FlavorOption",
     "FlavorSummaryView",
     "GlobalMedioPagoRow",
+    "InactiveDeliveryMethodDetailView",
+    "InactivePaymentMethodDetailView",
     "InvalidComercioIdError",
     "InvalidNestedIdError",
     "PanelFormStatus",
+    "PaymentMethodConfigurationView",
     "PaymentMethodDetailView",
     "format_precio_display",
     "parse_positive_int",

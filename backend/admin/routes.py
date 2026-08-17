@@ -45,7 +45,11 @@ from backend.dependencies import (
     require_same_origin_panel_form,
     resolve_panel_csrf_secret,
 )
+from backend.models import MetodosEntrega
 from backend.services.catalog_create_service import CatalogCreateService
+from backend.services.commerce_payment_delivery_configuration_service import (
+    CommercePaymentDeliveryConfigurationService,
+)
 from backend.services.exceptions import (
     CategoriaProductoNotFound,
     ComercioNotFound,
@@ -56,10 +60,13 @@ from backend.services.exceptions import (
     FlavorComunicacionInactivo,
     FlavorComunicacionNotFound,
     InvalidCategoriaProducto,
+    InvalidDeliveryOrden,
+    InvalidPaymentField,
     InvalidPrecio,
     InvalidPresentacion,
     InvalidProducto,
     MediosPagoNotFound,
+    MetodoEntregaNotFound,
     PrecioNotFound,
     PresentacionNotFound,
     ProductoNotFound,
@@ -111,6 +118,20 @@ def _medios_pago_service(
     the ones the JSON API exposes.
     """
     return MediosPagoService(session)
+
+
+def _commerce_payment_delivery_service(
+    session: Annotated[Session, Depends(get_session)],
+) -> CommercePaymentDeliveryConfigurationService:
+    """Build the :class:`CommercePaymentDeliveryConfigurationService`.
+
+    The dependency is the single panel entry point for the
+    commerce-scoped mutation boundary. The service owns the
+    commit / rollback sequence and never opens a transaction
+    of its own, so the shared ``get_session`` dependency
+    remains the transaction owner.
+    """
+    return CommercePaymentDeliveryConfigurationService(session)
 
 
 def _render(
@@ -331,6 +352,26 @@ _DOMAIN_MAPPING: dict[type[Exception], _DomainMapping] = {
         400,
         "El flavor seleccionado está inactivo.",
         render_form=_VALIDATION_RENDER_FORM,
+    ),
+    InvalidPaymentField: _DomainMapping(
+        InvalidPaymentField,
+        400,
+        "El valor enviado para un campo de medio de pago no está "
+        "permitido por el catálogo global.",
+        render_form=_VALIDATION_RENDER_FORM,
+    ),
+    InvalidDeliveryOrden: _DomainMapping(
+        InvalidDeliveryOrden,
+        400,
+        "El orden del método de entrega debe ser un entero mayor "
+        "o igual a cero.",
+        render_form=_VALIDATION_RENDER_FORM,
+    ),
+    MetodoEntregaNotFound: _DomainMapping(
+        MetodoEntregaNotFound,
+        404,
+        "El método de entrega seleccionado no existe.",
+        render_form=False,
     ),
 }
 
@@ -1838,6 +1879,614 @@ def _checkbox_state(raw_value: str | None) -> bool | None:
     if cleaned == "":
         return None
     return cleaned in {"true", "1", "on", "yes", "si", "sí"}
+
+
+def _parse_optional_text(value: str | None) -> str | None:
+    """Normalise an optional text field to ``None`` when blank.
+
+    The helper preserves the original trimmed value when the
+    field is non-blank so the service can run its own length
+    validation. The helper never raises.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return None
+    return value.strip()
+
+
+def _parse_optional_int(value: str | None) -> int | None:
+    """Parse an optional integer form field.
+
+    Blank values return ``None``. Non-numeric values, ``bool``
+    substitutions and explicit floats raise ``TypeError`` so the
+    route can render a bounded validation error.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError("integer field must be a non-negative integer")
+    cleaned = value.strip()
+    if cleaned == "":
+        return None
+    try:
+        return int(cleaned)
+    except ValueError as exc:
+        raise ValueError("integer field must be a non-negative integer") from exc
+
+
+@router.get(
+    "/comercios/{comercio_id}/medios-pago/{medio_pago_id}",
+    response_class=HTMLResponse,
+)
+def edit_commerce_payment_form(
+    request: Request,
+    comercio_id: Annotated[str, Path()],
+    medio_pago_id: Annotated[str, Path()],
+    service: Annotated[
+        AdministrativeCatalogPanelViewService, Depends(_view_service)
+    ],
+) -> Response:
+    """Render the scoped payment configuration form.
+
+    The route is the GET companion of the POST mutation; it
+    refuses to render a foreign ``comercio_id`` /
+    ``medio_pago_id`` pair. The form is bound to the
+    path-bound CSRF nonce so the POST stage can validate
+    against the same secret.
+    """
+    try:
+        parsed_comercio_id = parse_positive_int(
+            comercio_id, field_name="comercio_id"
+        )
+        parsed_medio_pago_id = parse_positive_int(
+            medio_pago_id, field_name="medio_pago_id"
+        )
+    except ValueError:
+        return _render(
+            request,
+            "bad_request.html",
+            _form_context(
+                request=request,
+                path=str(request.url.path),
+                extra={"message": "ids must be positive integers"},
+            ),
+            status_code=400,
+        )
+
+    detail = service.get_commerce_detail(parsed_comercio_id)
+    if detail is None:
+        return _render(
+            request,
+            "not_found.html",
+            _form_context(
+                request=request,
+                path=str(request.url.path),
+                extra={
+                    "raw_id": comercio_id,
+                    "resource_label": "comercio",
+                },
+            ),
+            status_code=404,
+        )
+
+    global_row = service.get_global_medio_pago(parsed_medio_pago_id)
+    if global_row is None:
+        return _render(
+            request,
+            "not_found.html",
+            _form_context(
+                request=request,
+                path=str(request.url.path),
+                extra={
+                    "raw_id": medio_pago_id,
+                    "resource_label": "medio de pago global",
+                },
+            ),
+            status_code=404,
+        )
+
+    configuration = service.get_commerce_payment_configuration(
+        comercio_id=parsed_comercio_id,
+        medio_pago_id=parsed_medio_pago_id,
+    )
+    if configuration is None:
+        return _render(
+            request,
+            "not_found.html",
+            _form_context(
+                request=request,
+                path=str(request.url.path),
+                extra={
+                    "raw_id": medio_pago_id,
+                    "resource_label": "medio de pago del comercio",
+                },
+            ),
+            status_code=404,
+        )
+
+    return _render(
+        request,
+        "comercio_payment_form.html",
+        _form_context(
+            request=request,
+            path=str(request.url.path),
+            extra={
+                "detail": detail,
+                "global_row": global_row,
+                "configuration": configuration,
+                "form_values": {
+                    "titular": configuration.titular or "",
+                    "alias": configuration.alias or "",
+                },
+                "form_error": None,
+            },
+        ),
+    )
+
+
+@router.post(
+    "/comercios/{comercio_id}/medios-pago/{medio_pago_id}",
+    response_class=HTMLResponse,
+)
+def update_commerce_payment(
+    request: Request,
+    comercio_id: Annotated[str, Path()],
+    medio_pago_id: Annotated[str, Path()],
+    config_service: Annotated[
+        CommercePaymentDeliveryConfigurationService,
+        Depends(_commerce_payment_delivery_service),
+    ],
+    service: Annotated[
+        AdministrativeCatalogPanelViewService, Depends(_view_service)
+    ],
+    action: Annotated[str | None, Form()] = None,
+    titular: Annotated[str | None, Form()] = None,
+    alias: Annotated[str | None, Form()] = None,
+) -> Response:
+    """Apply the scoped payment configuration form.
+
+    The POST is the single panel entry point for the
+    ``ComercioMedioPago`` bridge row. The route enforces the
+    panel authentication boundary, the path-bound CSRF nonce,
+    the same-origin check and the POST / redirect / GET
+    contract. The action parameter selects between
+    enable / disable. The service is the single mutation
+    boundary and owns the commit / rollback sequence.
+    """
+    try:
+        parsed_comercio_id = parse_positive_int(
+            comercio_id, field_name="comercio_id"
+        )
+        parsed_medio_pago_id = parse_positive_int(
+            medio_pago_id, field_name="medio_pago_id"
+        )
+    except ValueError:
+        return _render(
+            request,
+            "bad_request.html",
+            _form_context(
+                request=request,
+                path=str(request.url.path),
+                extra={"message": "ids must be positive integers"},
+            ),
+            status_code=400,
+        )
+
+    normalized_action = (action or "").strip().lower()
+    payload_titular = _parse_optional_text(titular)
+    payload_alias = _parse_optional_text(alias)
+
+    try:
+        if normalized_action == "enable":
+            config_service.enable_payment_for_comercio(
+                comercio_id=parsed_comercio_id,
+                medio_pago_id=parsed_medio_pago_id,
+                titular=payload_titular,
+                alias=payload_alias,
+            )
+        elif normalized_action == "disable":
+            config_service.disable_payment_for_comercio(
+                comercio_id=parsed_comercio_id,
+                medio_pago_id=parsed_medio_pago_id,
+            )
+        else:
+            return _re_render_payment_form(
+                request=request,
+                service=service,
+                comercio_id=parsed_comercio_id,
+                medio_pago_id=parsed_medio_pago_id,
+                titular_input=titular,
+                alias_input=alias,
+                error_message="Acción no reconocida.",
+                field_name="action",
+            )
+    except Exception as exc:  # noqa: BLE001 - panel sanitises any failure
+        mapping = _map_domain_exception(exc)
+        if not mapping.render_form:
+            return _render(
+                request,
+                "not_found.html",
+                _form_context(
+                    request=request,
+                    path=str(request.url.path),
+                    extra={
+                        "raw_id": medio_pago_id,
+                        "resource_label": (
+                            "medio de pago del comercio"
+                            if isinstance(exc, (MediosPagoNotFound,))
+                            else "comercio"
+                        ),
+                    },
+                ),
+                status_code=mapping.status_code,
+            )
+        return _re_render_payment_form(
+            request=request,
+            service=service,
+            comercio_id=parsed_comercio_id,
+            medio_pago_id=parsed_medio_pago_id,
+            titular_input=titular,
+            alias_input=alias,
+            error_message=mapping.message,
+            field_name=(
+                "titular"
+                if isinstance(exc, InvalidPaymentField)
+                else "action"
+            ),
+        )
+
+    return _form_success_redirect(
+        f"/admin/catalog/comercios/{parsed_comercio_id}"
+    )
+
+
+def _re_render_payment_form(
+    *,
+    request: Request,
+    service: AdministrativeCatalogPanelViewService,
+    comercio_id: int,
+    medio_pago_id: int,
+    titular_input: str | None,
+    alias_input: str | None,
+    error_message: str,
+    field_name: str | None,
+) -> Response:
+    detail = service.get_commerce_detail(comercio_id)
+    global_row = service.get_global_medio_pago(medio_pago_id)
+    configuration = service.get_commerce_payment_configuration(
+        comercio_id=comercio_id,
+        medio_pago_id=medio_pago_id,
+    )
+    if detail is None or global_row is None or configuration is None:
+        return _form_success_redirect(
+            f"/admin/catalog/comercios/{comercio_id}"
+        )
+    return _render(
+        request,
+        "comercio_payment_form.html",
+        _form_context(
+            request=request,
+            path=f"/admin/catalog/comercios/{comercio_id}/medios-pago/{medio_pago_id}",
+            extra={
+                "detail": detail,
+                "global_row": global_row,
+                "configuration": configuration,
+                "form_values": {
+                    "titular": titular_input or "",
+                    "alias": alias_input or "",
+                },
+                "form_error": CatalogFormError(
+                    message=error_message,
+                    field_name=field_name,
+                ),
+            },
+        ),
+    )
+
+
+@router.get(
+    "/comercios/{comercio_id}/metodos-entrega/{metodo_entrega_id}",
+    response_class=HTMLResponse,
+)
+def edit_commerce_delivery_form(
+    request: Request,
+    comercio_id: Annotated[str, Path()],
+    metodo_entrega_id: Annotated[str, Path()],
+    service: Annotated[
+        AdministrativeCatalogPanelViewService, Depends(_view_service)
+    ],
+) -> Response:
+    """Render the scoped delivery configuration form."""
+    try:
+        parsed_comercio_id = parse_positive_int(
+            comercio_id, field_name="comercio_id"
+        )
+        parsed_metodo_entrega_id = parse_positive_int(
+            metodo_entrega_id, field_name="metodo_entrega_id"
+        )
+    except ValueError:
+        return _render(
+            request,
+            "bad_request.html",
+            _form_context(
+                request=request,
+                path=str(request.url.path),
+                extra={"message": "ids must be positive integers"},
+            ),
+            status_code=400,
+        )
+
+    detail = service.get_commerce_detail(parsed_comercio_id)
+    if detail is None:
+        return _render(
+            request,
+            "not_found.html",
+            _form_context(
+                request=request,
+                path=str(request.url.path),
+                extra={
+                    "raw_id": comercio_id,
+                    "resource_label": "comercio",
+                },
+            ),
+            status_code=404,
+        )
+
+    global_row = service._session.get(  # type: ignore[attr-defined]
+        MetodosEntrega,
+        parsed_metodo_entrega_id,
+    )
+    if global_row is None or not bool(global_row.activo):
+        return _render(
+            request,
+            "not_found.html",
+            _form_context(
+                request=request,
+                path=str(request.url.path),
+                extra={
+                    "raw_id": metodo_entrega_id,
+                    "resource_label": "método de entrega global",
+                },
+            ),
+            status_code=404,
+        )
+
+    configuration = service.get_commerce_delivery_configuration(
+        comercio_id=parsed_comercio_id,
+        metodo_entrega_id=parsed_metodo_entrega_id,
+    )
+    if configuration is None:
+        return _render(
+            request,
+            "not_found.html",
+            _form_context(
+                request=request,
+                path=str(request.url.path),
+                extra={
+                    "raw_id": metodo_entrega_id,
+                    "resource_label": "método de entrega del comercio",
+                },
+            ),
+            status_code=404,
+        )
+
+    return _render(
+        request,
+        "comercio_delivery_form.html",
+        _form_context(
+            request=request,
+            path=str(request.url.path),
+            extra={
+                "detail": detail,
+                "global_row": {
+                    "id": int(global_row.id),
+                    "codigo": str(global_row.codigo),
+                    "descripcion": str(global_row.descripcion),
+                    "orden": int(global_row.orden),
+                },
+                "configuration": configuration,
+                "form_values": {
+                    "orden": configuration.orden,
+                },
+                "form_error": None,
+            },
+        ),
+    )
+
+
+@router.post(
+    "/comercios/{comercio_id}/metodos-entrega/{metodo_entrega_id}",
+    response_class=HTMLResponse,
+)
+def update_commerce_delivery(
+    request: Request,
+    comercio_id: Annotated[str, Path()],
+    metodo_entrega_id: Annotated[str, Path()],
+    config_service: Annotated[
+        CommercePaymentDeliveryConfigurationService,
+        Depends(_commerce_payment_delivery_service),
+    ],
+    service: Annotated[
+        AdministrativeCatalogPanelViewService, Depends(_view_service)
+    ],
+    action: Annotated[str | None, Form()] = None,
+    orden: Annotated[str | None, Form()] = None,
+) -> Response:
+    """Apply the scoped delivery configuration form.
+
+    The route honours the same panel security boundaries as
+    the payment path. The ``action`` parameter selects between
+    enable / disable and the ``orden`` parameter is mandatory
+    for the enable path. The delivery ``orden`` is validated
+    as a non-negative integer by the service.
+    """
+    try:
+        parsed_comercio_id = parse_positive_int(
+            comercio_id, field_name="comercio_id"
+        )
+        parsed_metodo_entrega_id = parse_positive_int(
+            metodo_entrega_id, field_name="metodo_entrega_id"
+        )
+    except ValueError:
+        return _render(
+            request,
+            "bad_request.html",
+            _form_context(
+                request=request,
+                path=str(request.url.path),
+                extra={"message": "ids must be positive integers"},
+            ),
+            status_code=400,
+        )
+
+    normalized_action = (action or "").strip().lower()
+
+    try:
+        parsed_orden = _parse_optional_int(orden)
+    except ValueError as exc:
+        return _re_render_delivery_form(
+            request=request,
+            service=service,
+            comercio_id=parsed_comercio_id,
+            metodo_entrega_id=parsed_metodo_entrega_id,
+            orden_input=orden,
+            error_message=str(exc),
+            field_name="orden",
+        )
+
+    try:
+        if normalized_action == "enable":
+            if parsed_orden is None:
+                raise InvalidDeliveryOrden(
+                    "orden debe ser un entero mayor o igual a cero."
+                )
+            config_service.enable_delivery_for_comercio(
+                comercio_id=parsed_comercio_id,
+                metodo_entrega_id=parsed_metodo_entrega_id,
+                orden=parsed_orden,
+            )
+        elif normalized_action == "disable":
+            config_service.disable_delivery_for_comercio(
+                comercio_id=parsed_comercio_id,
+                metodo_entrega_id=parsed_metodo_entrega_id,
+            )
+        elif normalized_action == "update_order":
+            if parsed_orden is None:
+                raise InvalidDeliveryOrden(
+                    "orden debe ser un entero mayor o igual a cero."
+                )
+            config_service.update_delivery_order_for_comercio(
+                comercio_id=parsed_comercio_id,
+                metodo_entrega_id=parsed_metodo_entrega_id,
+                orden=parsed_orden,
+            )
+        else:
+            return _re_render_delivery_form(
+                request=request,
+                service=service,
+                comercio_id=parsed_comercio_id,
+                metodo_entrega_id=parsed_metodo_entrega_id,
+                orden_input=orden,
+                error_message="Acción no reconocida.",
+                field_name="action",
+            )
+    except Exception as exc:  # noqa: BLE001 - panel sanitises any failure
+        mapping = _map_domain_exception(exc)
+        if not mapping.render_form:
+            return _render(
+                request,
+                "not_found.html",
+                _form_context(
+                    request=request,
+                    path=str(request.url.path),
+                    extra={
+                        "raw_id": metodo_entrega_id,
+                        "resource_label": (
+                            "método de entrega del comercio"
+                            if isinstance(exc, MetodoEntregaNotFound)
+                            else "comercio"
+                        ),
+                    },
+                ),
+                status_code=mapping.status_code,
+            )
+        return _re_render_delivery_form(
+            request=request,
+            service=service,
+            comercio_id=parsed_comercio_id,
+            metodo_entrega_id=parsed_metodo_entrega_id,
+            orden_input=orden,
+            error_message=mapping.message,
+            field_name=(
+                "orden"
+                if isinstance(exc, InvalidDeliveryOrden)
+                else "action"
+            ),
+        )
+
+    return _form_success_redirect(
+        f"/admin/catalog/comercios/{parsed_comercio_id}"
+    )
+
+
+def _re_render_delivery_form(
+    *,
+    request: Request,
+    service: AdministrativeCatalogPanelViewService,
+    comercio_id: int,
+    metodo_entrega_id: int,
+    orden_input: str | None,
+    error_message: str,
+    field_name: str | None,
+) -> Response:
+    detail = service.get_commerce_detail(comercio_id)
+    global_row = service._session.get(  # type: ignore[attr-defined]
+        MetodosEntrega,
+        metodo_entrega_id,
+    )
+    configuration = service.get_commerce_delivery_configuration(
+        comercio_id=comercio_id,
+        metodo_entrega_id=metodo_entrega_id,
+    )
+    if detail is None or global_row is None or configuration is None:
+        return _form_success_redirect(
+            f"/admin/catalog/comercios/{comercio_id}"
+        )
+    orden_value: object
+    if orden_input is None:
+        orden_value = configuration.orden
+    else:
+        try:
+            parsed = _parse_optional_int(orden_input)
+        except ValueError:
+            parsed = None
+        orden_value = parsed if parsed is not None else orden_input
+    return _render(
+        request,
+        "comercio_delivery_form.html",
+        _form_context(
+            request=request,
+            path=f"/admin/catalog/comercios/{comercio_id}/metodos-entrega/{metodo_entrega_id}",
+            extra={
+                "detail": detail,
+                "global_row": {
+                    "id": int(global_row.id),
+                    "codigo": str(global_row.codigo),
+                    "descripcion": str(global_row.descripcion),
+                    "orden": int(global_row.orden),
+                },
+                "configuration": configuration,
+                "form_values": {
+                    "orden": orden_value,
+                },
+                "form_error": CatalogFormError(
+                    message=error_message,
+                    field_name=field_name,
+                ),
+            },
+        ),
+    )
 
 
 __all__ = ["router"]
