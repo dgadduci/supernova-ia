@@ -28,7 +28,7 @@
 
 ## 4. Post-Deploy Gate
 
-- [ ] 4.1 Verify an existing commerce formerly assigned `neutro` has no flavor
+- [x] 4.1 Verify an existing commerce formerly assigned `neutro` has no flavor
   selected and produces deterministic output; verify a newly created commerce
   starts without flavor; assign `joven`, verify a permitted menu can style,
   clear the assignment, and verify it returns to deterministic output.
