@@ -197,9 +197,80 @@ class FlavorAssignForm(BaseModel):
     ] = Field(default=None, ge=1)
 
 
+class ComercioCreateForm(BaseModel):
+    """Create-commerce form payload.
+
+    The shape mirrors
+    :class:`backend.schemas.comercio.ComercioCreate` exactly so the
+    panel forwards the same validated data into the shared
+    :class:`backend.services.comercio_service.ComercioService.create`
+    boundary. ``extra`` is configured to ``"ignore"`` so the
+    server-rendered CSRF marker field never breaks Pydantic
+    validation; the panel only writes the documented fields to the
+    service so the broader rejection guarantee still holds.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    nombre_fantasia: str = Field(min_length=1, max_length=150)
+    nombre_corto: str = Field(min_length=1, max_length=80)
+    razon_social: str = Field(min_length=1, max_length=200)
+    cuit: str = Field(min_length=1, max_length=20)
+    whatsapp: str = Field(min_length=1, max_length=30)
+    calle: str = Field(min_length=1, max_length=150)
+    numero: str = Field(min_length=1, max_length=20)
+    piso_departamento: str | None = Field(default=None, max_length=50)
+    localidad: str = Field(min_length=1, max_length=100)
+    provincia: str = Field(min_length=1, max_length=100)
+    codigo_postal: str | None = Field(default=None, max_length=20)
+    slug: str = Field(min_length=1, max_length=150)
+    estado_id: int = Field(ge=1)
+    zona_horaria: str | None = Field(default=None, max_length=100)
+    moneda: str | None = Field(default=None, max_length=3)
+    idioma: str | None = Field(default=None, max_length=10)
+
+
+class ComercioUpdateForm(BaseModel):
+    """Edit-commerce form payload.
+
+    The shape accepts **only** the documented permitted basic fields
+    (profile, address, locale, ``estado_id``). Routing identifiers
+    (``whatsapp``, ``slug``) are intentionally absent: the edit form
+    displays them read-only and the service rejects any value
+    submitted under those keys before any database call. Pydantic's
+    ``extra='forbid'`` further guarantees a forged POST that smuggles
+    additional fields (including a tampered ``whatsapp`` /
+    ``slug``) cannot pass through the adapter, so the stored routing
+    identity is never mutable through this seam.
+
+    The optional ``piso_departamento`` / ``codigo_postal`` fields
+    remain ``None`` so the service can preserve a blank address
+    component exactly as it was before the edit.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    nombre_fantasia: str = Field(min_length=1, max_length=150)
+    nombre_corto: str = Field(min_length=1, max_length=80)
+    razon_social: str = Field(min_length=1, max_length=200)
+    cuit: str = Field(min_length=1, max_length=20)
+    calle: str = Field(min_length=1, max_length=150)
+    numero: str = Field(min_length=1, max_length=20)
+    piso_departamento: str | None = Field(default=None, max_length=50)
+    localidad: str = Field(min_length=1, max_length=100)
+    provincia: str = Field(min_length=1, max_length=100)
+    codigo_postal: str | None = Field(default=None, max_length=20)
+    estado_id: int = Field(ge=1)
+    zona_horaria: str = Field(min_length=1, max_length=100)
+    moneda: str = Field(min_length=1, max_length=3)
+    idioma: str = Field(min_length=1, max_length=10)
+
+
 __all__ = [
     "CatalogFormError",
     "CategoriaProductoForm",
+    "ComercioCreateForm",
+    "ComercioUpdateForm",
     "FlavorAssignForm",
     "MedioPagoCreateForm",
     "MedioPagoUpdateForm",

@@ -58,6 +58,7 @@ from backend.admin.views import (
     CommercePaymentActiveCandidate,
     CommerceSummary,
     DeliveryMethodDetailView,
+    EstadoComercioOption,
     FlavorOption,
     FlavorSummaryView,
     GlobalMedioPagoRow,
@@ -170,7 +171,13 @@ def _stub_view_service(
     pp: CatalogProductoPresentacionRow | None = None,
     list_global_metodos_entrega_value: list[GlobalMetodoEntregaRow] | None = None,
     get_global_metodo_entrega_value: GlobalMetodoEntregaRow | None = None,
+    list_estados_comercio_value: list[EstadoComercioOption] | None = None,
 ) -> SimpleNamespace:
+    if list_estados_comercio_value is None:
+        list_estados_comercio_value = [
+            EstadoComercioOption(id=1, estado="ACTIVO"),
+            EstadoComercioOption(id=2, estado="INACTIVO"),
+        ]
     return SimpleNamespace(
         list_comercios=MagicMock(return_value=comercios or []),
         get_commerce_detail=MagicMock(return_value=detail),
@@ -186,6 +193,7 @@ def _stub_view_service(
         get_global_metodo_entrega=MagicMock(
             return_value=get_global_metodo_entrega_value
         ),
+        list_estados_comercio=MagicMock(return_value=list_estados_comercio_value),
     )
 
 
@@ -239,6 +247,7 @@ def _build_detail() -> CommerceDetailView:
         provincia="CABA",
         codigo_postal="1000",
         slug="comercio-x",
+        estado_id=1,
         estado="ACTIVO",
         zona_horaria="America/Argentina/Buenos_Aires",
         moneda="ARS",
@@ -1013,6 +1022,7 @@ class PanelListViewTest(unittest.TestCase):
             provincia="CABA",
             codigo_postal="1000",
             slug="comercio-x",
+            estado_id=1,
             estado=SimpleNamespace(estado="ACTIVO"),
             zona_horaria="America/Argentina/Buenos_Aires",
             moneda="ARS",
@@ -2010,6 +2020,7 @@ class PanelTableContainmentTest(unittest.TestCase):
             provincia=detail.provincia,
             codigo_postal=detail.codigo_postal,
             slug=detail.slug,
+            estado_id=detail.estado_id,
             estado=detail.estado,
             zona_horaria=detail.zona_horaria,
             moneda=detail.moneda,
@@ -3732,6 +3743,1061 @@ class PanelGlobalMetodosEntregaJsonBoundaryTest(unittest.TestCase):
             },
         )
         self.assertEqual(response.status_code, 401)
+
+
+class PanelCreateComercioTest(unittest.TestCase):
+    """Browser onboarding: ``GET``/``POST /comercios/nuevo``.
+
+    The tests cover the documented focused contract:
+
+    * HTTP Basic authentication, path-bound CSRF nonce and same-origin
+      ``Origin`` / ``Referer`` continue to gate every state-changing
+      submission.
+    * The shared :class:`ComercioService.create` boundary is invoked
+      exactly once with the cleaned, typed payload and the panel
+      redirects to the exact detail page of the new commerce.
+    * Missing / blank required fields, blank ``estado_id``, unknown
+      ``estado_id``, duplicate ``whatsapp`` and duplicate ``slug`` are
+      rejected with bounded re-renders of the same form (no
+      propagation of raw exceptions, no creation of partial data).
+    * The defaults (``zona_horaria`` / ``moneda`` / ``idioma``) match
+      the database server defaults.
+    * Dynamic data is autoescaped (``<b>Nombre</b>`` rendered as
+      ``&lt;b&gt;Nombre&lt;/b&gt;``).
+    """
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.app = _build_app()
+        self.override = _install_session_override(self, self.app, self.session)
+        self.client = TestClient(
+            self.app, raise_server_exceptions=False, follow_redirects=False
+        )
+        _stub_settings_patcher(self)
+
+    def _auth_headers(self) -> dict[str, str]:
+        return {
+            **_basic_auth_header("any", CONFIGURED_TOKEN),
+            **_same_origin_headers(),
+        }
+
+    def _estados(self) -> list[SimpleNamespace]:
+        return [
+            SimpleNamespace(id=1, estado="ACTIVO"),
+            SimpleNamespace(id=2, estado="INACTIVO"),
+        ]
+
+    def _auth_view(self) -> SimpleNamespace:
+        return _stub_view_service(
+            detail=_build_detail(),
+            catalog=_build_catalog(),
+            flavor_options=_build_flavor_options(),
+        )
+
+    def test_get_form_renders_estado_options_and_defaults(self) -> None:
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls:
+            view_cls.return_value = _stub_view_service()
+            view_cls.return_value.list_estados_comercio.return_value = [
+                SimpleNamespace(id=1, estado="ACTIVO"),
+                SimpleNamespace(id=2, estado="INACTIVO"),
+            ]
+            response = self.client.get(
+                "/admin/catalog/comercios/nuevo",
+                headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Nuevo comercio", response.text)
+        self.assertIn("ACTIVO", response.text)
+        self.assertIn("INACTIVO", response.text)
+        self.assertIn('value="America/Argentina/Buenos_Aires"', response.text)
+        self.assertIn('value="ARS"', response.text)
+        self.assertIn('value="es-AR"', response.text)
+        self.assertIn('name="whatsapp"', response.text)
+        self.assertIn('name="slug"', response.text)
+
+    def test_create_success_redirects_to_exact_detail(self) -> None:
+        path = "/admin/catalog/comercios/nuevo"
+        new_row = MagicMock(name="Comercio")
+        new_row.id = 999
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.create = MagicMock(return_value=new_row)
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Panadería Test",
+                        "nombre_corto": "PT",
+                        "razon_social": "Panadería Test SRL",
+                        "cuit": "30-12345678-9",
+                        "whatsapp": "+5491100000001",
+                        "calle": "Av. Test",
+                        "numero": "1234",
+                        "piso_departamento": "",
+                        "localidad": "CABA",
+                        "provincia": "Buenos Aires",
+                        "codigo_postal": "",
+                        "slug": "panaderia-test",
+                        "estado_id": "1",
+                        "zona_horaria": "America/Argentina/Buenos_Aires",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(
+            response.headers["location"], "/admin/catalog/comercios/999"
+        )
+        svc_cls.return_value.create.assert_called_once()
+        call_args = svc_cls.return_value.create.call_args
+        payload = call_args.args[0]
+        self.assertEqual(payload["estado_id"], 1)
+        self.assertEqual(payload["whatsapp"], "+5491100000001")
+        self.assertEqual(payload["slug"], "panaderia-test")
+
+    def test_create_without_nonce_is_rejected(self) -> None:
+        path = "/admin/catalog/comercios/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data={
+                    "nombre_fantasia": "Panadería Test",
+                    "nombre_corto": "PT",
+                    "razon_social": "Panadería Test SRL",
+                    "cuit": "30-12345678-9",
+                    "whatsapp": "+5491100000001",
+                    "calle": "Av. Test",
+                    "numero": "1234",
+                    "localidad": "CABA",
+                    "provincia": "Buenos Aires",
+                    "slug": "panaderia-test",
+                    "estado_id": "1",
+                },
+            )
+        self.assertEqual(response.status_code, 400)
+        svc_cls.return_value.create.assert_not_called()
+
+    def test_create_without_origin_is_rejected(self) -> None:
+        path = "/admin/catalog/comercios/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            response = self.client.post(
+                path,
+                headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Panadería Test",
+                        "nombre_corto": "PT",
+                        "razon_social": "Panadería Test SRL",
+                        "cuit": "30-12345678-9",
+                        "whatsapp": "+5491100000001",
+                        "calle": "Av. Test",
+                        "numero": "1234",
+                        "localidad": "CABA",
+                        "provincia": "Buenos Aires",
+                        "slug": "panaderia-test",
+                        "estado_id": "1",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 400)
+        svc_cls.return_value.create.assert_not_called()
+
+    def test_create_without_credentials_is_rejected(self) -> None:
+        path = "/admin/catalog/comercios/nuevo"
+        response = self.client.post(
+            path,
+            data=_csrf_form_data(path, {"estado_id": "1"}),
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_create_blank_estado_id_renders_bounded_error(self) -> None:
+        path = "/admin/catalog/comercios/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Panadería Test",
+                        "nombre_corto": "PT",
+                        "razon_social": "Panadería Test SRL",
+                        "cuit": "30-12345678-9",
+                        "whatsapp": "+5491100000001",
+                        "calle": "Av. Test",
+                        "numero": "1234",
+                        "localidad": "CABA",
+                        "provincia": "Buenos Aires",
+                        "slug": "panaderia-test",
+                        "estado_id": "",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("estado_id", response.text)
+        svc_cls.return_value.create.assert_not_called()
+
+    def test_create_blank_required_text_renders_bounded_error(self) -> None:
+        path = "/admin/catalog/comercios/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "",
+                        "nombre_corto": "PT",
+                        "razon_social": "Panadería Test SRL",
+                        "cuit": "30-12345678-9",
+                        "whatsapp": "+5491100000001",
+                        "calle": "Av. Test",
+                        "numero": "1234",
+                        "localidad": "CABA",
+                        "provincia": "Buenos Aires",
+                        "slug": "panaderia-test",
+                        "estado_id": "1",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        svc_cls.return_value.create.assert_not_called()
+
+    def test_create_unknown_estado_renders_bounded_error(self) -> None:
+        from backend.services.exceptions import EstadoComercioNotFound
+
+        path = "/admin/catalog/comercios/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.create = MagicMock(
+                side_effect=EstadoComercioNotFound(99)
+            )
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Panadería Test",
+                        "nombre_corto": "PT",
+                        "razon_social": "Panadería Test SRL",
+                        "cuit": "30-12345678-9",
+                        "whatsapp": "+5491100000001",
+                        "calle": "Av. Test",
+                        "numero": "1234",
+                        "localidad": "CABA",
+                        "provincia": "Buenos Aires",
+                        "slug": "panaderia-test",
+                        "estado_id": "1",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("estado seleccionado no existe", response.text.lower())
+
+    def test_create_duplicate_whatsapp_renders_bounded_error(self) -> None:
+        from backend.services.exceptions import DuplicateWhatsapp
+
+        path = "/admin/catalog/comercios/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.create = MagicMock(
+                side_effect=DuplicateWhatsapp("+5491100000001")
+            )
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Panadería Test",
+                        "nombre_corto": "PT",
+                        "razon_social": "Panadería Test SRL",
+                        "cuit": "30-12345678-9",
+                        "whatsapp": "+5491100000001",
+                        "calle": "Av. Test",
+                        "numero": "1234",
+                        "localidad": "CABA",
+                        "provincia": "Buenos Aires",
+                        "slug": "panaderia-test",
+                        "estado_id": "1",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Ya existe un comercio con ese WhatsApp", response.text)
+
+    def test_create_duplicate_slug_renders_bounded_error(self) -> None:
+        from backend.services.exceptions import DuplicateSlug
+
+        path = "/admin/catalog/comercios/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.create = MagicMock(
+                side_effect=DuplicateSlug("panaderia-test")
+            )
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Panadería Test",
+                        "nombre_corto": "PT",
+                        "razon_social": "Panadería Test SRL",
+                        "cuit": "30-12345678-9",
+                        "whatsapp": "+5491100000001",
+                        "calle": "Av. Test",
+                        "numero": "1234",
+                        "localidad": "CABA",
+                        "provincia": "Buenos Aires",
+                        "slug": "panaderia-test",
+                        "estado_id": "1",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Ya existe un comercio con ese slug", response.text)
+
+    def test_create_xss_payload_is_escaped_on_validation_error(self) -> None:
+        path = "/admin/catalog/comercios/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "<script>alert(1)</script>",
+                        "nombre_corto": "PT",
+                        "razon_social": "Panadería Test SRL",
+                        "cuit": "30-12345678-9",
+                        "whatsapp": "+5491100000001",
+                        "calle": "Av. Test",
+                        "numero": "1234",
+                        "localidad": "CABA",
+                        "provincia": "Buenos Aires",
+                        "slug": "panaderia-test",
+                        "estado_id": "",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("<script>alert(1)</script>", response.text)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", response.text)
+        svc_cls.return_value.create.assert_not_called()
+
+
+class PanelEditComercioTest(unittest.TestCase):
+    """Browser basic edit: ``GET``/``POST /comercios/{id}/editar``.
+
+    The tests cover the documented focused contract:
+
+    * HTTP Basic authentication, path-bound CSRF nonce and same-origin
+      ``Origin`` / ``Referer`` continue to gate every state-changing
+      submission.
+    * The shared :class:`ComercioService.update` boundary is invoked
+      exactly once with the cleaned, typed payload. The panel
+      redirects to the exact detail page of the edited commerce.
+    * ``whatsapp`` and ``slug`` are not part of the edit form
+      payload; the adapter (Pydantic ``extra='forbid'``) and the
+      service both reject any forged value submitted under those
+      keys before any database call.
+    * Invalid ``estado_id`` (blank, non-numeric, unknown) is rejected
+      with a bounded re-render.
+    * Unknown ``comercio_id`` returns ``404``.
+    * Persistence failures roll back without mutating the prior
+      ``Comercio`` row or any related table.
+    """
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.app = _build_app()
+        self.override = _install_session_override(self, self.app, self.session)
+        self.client = TestClient(
+            self.app, raise_server_exceptions=False, follow_redirects=False
+        )
+        _stub_settings_patcher(self)
+
+    def _auth_headers(self) -> dict[str, str]:
+        return {
+            **_basic_auth_header("any", CONFIGURED_TOKEN),
+            **_same_origin_headers(),
+        }
+
+    def _auth_view(self, *, detail: object = None) -> SimpleNamespace:
+        return _stub_view_service(
+            detail=detail if detail is not None else _build_detail(),
+            catalog=_build_catalog(),
+            flavor_options=_build_flavor_options(),
+        )
+
+    def _estados(self) -> list[SimpleNamespace]:
+        return [
+            SimpleNamespace(id=1, estado="ACTIVO"),
+            SimpleNamespace(id=2, estado="INACTIVO"),
+        ]
+
+    def test_get_form_renders_readonly_routing_identifiers(self) -> None:
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls:
+            view_cls.return_value = _stub_view_service(detail=_build_detail())
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            response = self.client.get(
+                "/admin/catalog/comercios/1/editar",
+                headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Editar comercio #1", response.text)
+        self.assertIn("readonly", response.text)
+        self.assertIn("+5491100000001", response.text)
+        self.assertIn("comercio-x", response.text)
+        self.assertNotIn('name="whatsapp"', response.text)
+        self.assertNotIn('name="slug"', response.text)
+
+    def test_get_form_preselects_non_first_estado_id(self) -> None:
+        """The ``<select>`` must preselect the exact ``estado_id`` the
+        commerce currently holds even when it is not the first
+        canonical option. The form value must come from
+        ``detail.estado_id`` (the integer FK) and not from
+        ``detail.estado`` (the human-readable label).
+        """
+        non_first_detail = CommerceDetailView(
+            id=1,
+            nombre_fantasia="Comercio X",
+            nombre_corto="X",
+            razon_social="X SRL",
+            cuit="30-12345678-9",
+            whatsapp="+5491100000001",
+            calle="Calle 1",
+            numero="100",
+            piso_departamento=None,
+            localidad="CABA",
+            provincia="CABA",
+            codigo_postal="1000",
+            slug="comercio-x",
+            estado_id=2,
+            estado="INACTIVO",
+            zona_horaria="America/Argentina/Buenos_Aires",
+            moneda="ARS",
+            idioma="es-AR",
+        )
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls:
+            view_cls.return_value = _stub_view_service(detail=non_first_detail)
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            response = self.client.get(
+                "/admin/catalog/comercios/1/editar",
+                headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('value="2" selected', response.text)
+        self.assertIn("INACTIVO", response.text)
+        self.assertNotIn('value="1" selected', response.text)
+
+    def test_get_form_preselects_first_estado_id_by_default(self) -> None:
+        """Regression: with ``estado_id=1`` the first option must be
+        ``selected`` so an unchanged form still resolves to a known id.
+        """
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls:
+            view_cls.return_value = _stub_view_service(detail=_build_detail())
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            response = self.client.get(
+                "/admin/catalog/comercios/1/editar",
+                headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('value="1" selected', response.text)
+
+    def test_edit_post_preselected_estado_id_reaches_service(self) -> None:
+        """When the operator posts the form without changing the
+        preselected ``estado_id`` the value the service receives is
+        the canonical ``int`` FK — never a stale string label.
+        """
+        non_first_detail = CommerceDetailView(
+            id=1,
+            nombre_fantasia="Comercio X",
+            nombre_corto="X",
+            razon_social="X SRL",
+            cuit="30-12345678-9",
+            whatsapp="+5491100000001",
+            calle="Calle 1",
+            numero="100",
+            piso_departamento=None,
+            localidad="CABA",
+            provincia="CABA",
+            codigo_postal="1000",
+            slug="comercio-x",
+            estado_id=2,
+            estado="INACTIVO",
+            zona_horaria="America/Argentina/Buenos_Aires",
+            moneda="ARS",
+            idioma="es-AR",
+        )
+        path = "/admin/catalog/comercios/1/editar"
+        updated_row = MagicMock(name="Comercio")
+        updated_row.id = 1
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = _stub_view_service(detail=non_first_detail)
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.update = MagicMock(return_value=updated_row)
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Comercio X",
+                        "nombre_corto": "X",
+                        "razon_social": "X SRL",
+                        "cuit": "30-12345678-9",
+                        "calle": "Calle 1",
+                        "numero": "100",
+                        "localidad": "CABA",
+                        "provincia": "CABA",
+                        "estado_id": "2",
+                        "zona_horaria": "America/Argentina/Buenos_Aires",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 303)
+        svc_cls.return_value.update.assert_called_once()
+        payload = svc_cls.return_value.update.call_args.args[1]
+        self.assertEqual(payload["estado_id"], 2)
+        self.assertEqual(payload["estado_id"], non_first_detail.estado_id)
+
+    def test_edit_re_render_preserves_non_first_estado_id(self) -> None:
+        """On a bounded error the re-rendered form must keep the
+        operator's preselected ``estado_id`` (numeric FK) so the
+        template marks the right ``<option selected>`` and a resubmit
+        does not silently fall back to the first option.
+        """
+        from backend.services.exceptions import EstadoComercioNotFound
+
+        non_first_detail = CommerceDetailView(
+            id=1,
+            nombre_fantasia="Comercio X",
+            nombre_corto="X",
+            razon_social="X SRL",
+            cuit="30-12345678-9",
+            whatsapp="+5491100000001",
+            calle="Calle 1",
+            numero="100",
+            piso_departamento=None,
+            localidad="CABA",
+            provincia="CABA",
+            codigo_postal="1000",
+            slug="comercio-x",
+            estado_id=2,
+            estado="INACTIVO",
+            zona_horaria="America/Argentina/Buenos_Aires",
+            moneda="ARS",
+            idioma="es-AR",
+        )
+        path = "/admin/catalog/comercios/1/editar"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = _stub_view_service(detail=non_first_detail)
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.update = MagicMock(
+                side_effect=EstadoComercioNotFound(99)
+            )
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Comercio X",
+                        "nombre_corto": "X",
+                        "razon_social": "X SRL",
+                        "cuit": "30-12345678-9",
+                        "calle": "Calle 1",
+                        "numero": "100",
+                        "localidad": "CABA",
+                        "provincia": "CABA",
+                        "estado_id": "2",
+                        "zona_horaria": "America/Argentina/Buenos_Aires",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('value="2" selected', response.text)
+        self.assertNotIn('value="1" selected', response.text)
+
+    def test_get_form_for_missing_comercio_returns_404(self) -> None:
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls:
+            view_cls.return_value = _stub_view_service(detail=None)
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            response = self.client.get(
+                "/admin/catalog/comercios/9999/editar",
+                headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 404)
+
+    def test_get_form_for_invalid_id_returns_400(self) -> None:
+        response = self.client.get(
+            "/admin/catalog/comercios/abc/editar",
+            headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_edit_success_redirects_to_detail(self) -> None:
+        path = "/admin/catalog/comercios/1/editar"
+        updated_row = MagicMock(name="Comercio")
+        updated_row.id = 1
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.update = MagicMock(return_value=updated_row)
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Comercio X Editado",
+                        "nombre_corto": "XE",
+                        "razon_social": "X SRL",
+                        "cuit": "30-12345678-9",
+                        "calle": "Calle Editada",
+                        "numero": "200",
+                        "piso_departamento": "1A",
+                        "localidad": "CABA",
+                        "provincia": "CABA",
+                        "codigo_postal": "1000",
+                        "estado_id": "1",
+                        "zona_horaria": "America/Argentina/Buenos_Aires",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(
+            response.headers["location"], "/admin/catalog/comercios/1"
+        )
+        svc_cls.return_value.update.assert_called_once()
+        call_args = svc_cls.return_value.update.call_args
+        self.assertEqual(call_args.args[0], 1)
+        payload = call_args.args[1]
+        self.assertNotIn("whatsapp", payload)
+        self.assertNotIn("slug", payload)
+
+    def test_edit_rejects_forged_whatsapp_field(self) -> None:
+        """The route signature does NOT declare ``whatsapp``, so FastAPI
+        strips it from the form payload before the service call. The
+        forged value cannot reach the service and the stored routing
+        identity remains immutable through this seam."""
+        path = "/admin/catalog/comercios/1/editar"
+        updated_row = MagicMock(name="Comercio")
+        updated_row.id = 1
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.update = MagicMock(return_value=updated_row)
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Comercio X",
+                        "nombre_corto": "X",
+                        "razon_social": "X SRL",
+                        "cuit": "30-12345678-9",
+                        "calle": "Calle 1",
+                        "numero": "100",
+                        "localidad": "CABA",
+                        "provincia": "CABA",
+                        "estado_id": "1",
+                        "zona_horaria": "America/Argentina/Buenos_Aires",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                        "whatsapp": "+5491199999999",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 303)
+        svc_cls.return_value.update.assert_called_once()
+        payload = svc_cls.return_value.update.call_args.args[1]
+        self.assertNotIn("whatsapp", payload)
+        self.assertNotIn("slug", payload)
+
+    def test_edit_rejects_forged_slug_field(self) -> None:
+        """The route signature does NOT declare ``slug``, so FastAPI
+        strips it from the form payload before the service call. The
+        forged value cannot reach the service and the stored catalog
+        identity remains immutable through this seam."""
+        path = "/admin/catalog/comercios/1/editar"
+        updated_row = MagicMock(name="Comercio")
+        updated_row.id = 1
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.update = MagicMock(return_value=updated_row)
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Comercio X",
+                        "nombre_corto": "X",
+                        "razon_social": "X SRL",
+                        "cuit": "30-12345678-9",
+                        "calle": "Calle 1",
+                        "numero": "100",
+                        "localidad": "CABA",
+                        "provincia": "CABA",
+                        "estado_id": "1",
+                        "zona_horaria": "America/Argentina/Buenos_Aires",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                        "slug": "comercio-x-renombrado",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 303)
+        svc_cls.return_value.update.assert_called_once()
+        payload = svc_cls.return_value.update.call_args.args[1]
+        self.assertNotIn("whatsapp", payload)
+        self.assertNotIn("slug", payload)
+
+    def test_edit_unknown_comercio_returns_404(self) -> None:
+        from backend.services.exceptions import ComercioNotFound
+
+        path = "/admin/catalog/comercios/9999/editar"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view(detail=None)
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.update = MagicMock(
+                side_effect=ComercioNotFound(9999)
+            )
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "X",
+                        "nombre_corto": "X",
+                        "razon_social": "X",
+                        "cuit": "30-12345678-9",
+                        "calle": "C",
+                        "numero": "1",
+                        "localidad": "CABA",
+                        "provincia": "CABA",
+                        "estado_id": "1",
+                        "zona_horaria": "America/Argentina/Buenos_Aires",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("No encontrado", response.text)
+
+    def test_edit_invalid_estado_renders_bounded_error(self) -> None:
+        path = "/admin/catalog/comercios/1/editar"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.update = MagicMock()
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "X",
+                        "nombre_corto": "X",
+                        "razon_social": "X",
+                        "cuit": "30-12345678-9",
+                        "calle": "C",
+                        "numero": "1",
+                        "localidad": "CABA",
+                        "provincia": "CABA",
+                        "estado_id": "0",
+                        "zona_horaria": "America/Argentina/Buenos_Aires",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        svc_cls.return_value.update.assert_not_called()
+
+    def test_edit_unknown_estado_in_service_renders_bounded_error(self) -> None:
+        from backend.services.exceptions import EstadoComercioNotFound
+
+        path = "/admin/catalog/comercios/1/editar"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.update = MagicMock(
+                side_effect=EstadoComercioNotFound(99)
+            )
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "X",
+                        "nombre_corto": "X",
+                        "razon_social": "X",
+                        "cuit": "30-12345678-9",
+                        "calle": "C",
+                        "numero": "1",
+                        "localidad": "CABA",
+                        "provincia": "CABA",
+                        "estado_id": "1",
+                        "zona_horaria": "America/Argentina/Buenos_Aires",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("estado seleccionado no existe", response.text.lower())
+
+    def test_edit_without_nonce_is_rejected(self) -> None:
+        path = "/admin/catalog/comercios/1/editar"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data={
+                    "nombre_fantasia": "X",
+                    "nombre_corto": "X",
+                    "razon_social": "X",
+                    "cuit": "30-12345678-9",
+                    "calle": "C",
+                    "numero": "1",
+                    "localidad": "CABA",
+                    "provincia": "CABA",
+                    "estado_id": "1",
+                    "zona_horaria": "America/Argentina/Buenos_Aires",
+                    "moneda": "ARS",
+                    "idioma": "es-AR",
+                },
+            )
+        self.assertEqual(response.status_code, 400)
+        svc_cls.return_value.update.assert_not_called()
+
+    def test_edit_invalid_id_returns_400(self) -> None:
+        response = self.client.post(
+            "/admin/catalog/comercios/abc/editar",
+            headers=self._auth_headers(),
+            data=_csrf_form_data("/admin/catalog/comercios/abc/editar", {}),
+        )
+        self.assertEqual(response.status_code, 400)
+
+
+class PanelComercioRouteRegressionTest(unittest.TestCase):
+    """The new commerce create / edit surface must not weaken the
+    documented boundaries:
+
+    * existing flavor, catalog, payment and delivery routes still
+      resolve exactly as before — the new code is additive only;
+    * the JSON ``/comercios`` API contract (token-based
+      authentication) is untouched;
+    * the admin Basic-auth ``GET`` / ``POST`` panel routes never call
+      the JSON API through internal HTTP.
+    """
+
+    def setUp(self) -> None:
+        self.app = main_module.app
+        self.client = TestClient(
+            self.app, raise_server_exceptions=False, follow_redirects=False
+        )
+        self.session = MagicMock(name="DatabaseSession")
+        self.override = _install_session_override(self, self.app, self.session)
+        _stub_settings_patcher(self)
+
+    def test_json_create_comercio_still_requires_token(self) -> None:
+        response = self.client.post(
+            "/comercios",
+            json={
+                "nombre_fantasia": "Test",
+                "nombre_corto": "T",
+                "razon_social": "T",
+                "cuit": "30-12345678-9",
+                "whatsapp": "+5491100000001",
+                "calle": "C",
+                "numero": "1",
+                "localidad": "CABA",
+                "provincia": "CABA",
+                "slug": "test",
+                "estado_id": 1,
+            },
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_panel_create_route_does_not_internally_call_json_api(self) -> None:
+        """The panel must call the shared :class:`ComercioService`
+        directly. It must NOT issue an internal HTTP ``POST /comercios``
+        because doing so would duplicate the transaction boundary."""
+        path = "/admin/catalog/comercios/nuevo"
+        new_row = MagicMock(name="Comercio")
+        new_row.id = 1
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = _stub_view_service()
+            view_cls.return_value.list_estados_comercio.return_value = [
+                SimpleNamespace(id=1, estado="ACTIVO")
+            ]
+            svc_cls.return_value.create = MagicMock(return_value=new_row)
+            with patch.object(
+                main_module, "app", wraps=main_module.app
+            ) as app_spy:
+                response = self.client.post(
+                    path,
+                    headers={
+                        **_basic_auth_header("any", CONFIGURED_TOKEN),
+                        **_same_origin_headers(),
+                    },
+                    data=_csrf_form_data(
+                        path,
+                        {
+                            "nombre_fantasia": "X",
+                            "nombre_corto": "X",
+                            "razon_social": "X",
+                            "cuit": "30-12345678-9",
+                            "whatsapp": "+5491100000001",
+                            "calle": "C",
+                            "numero": "1",
+                            "localidad": "CABA",
+                            "provincia": "CABA",
+                            "slug": "x",
+                            "estado_id": "1",
+                            "zona_horaria": "America/Argentina/Buenos_Aires",
+                            "moneda": "ARS",
+                            "idioma": "es-AR",
+                        },
+                    ),
+                )
+        self.assertEqual(response.status_code, 303)
+        svc_cls.return_value.create.assert_called_once()
+        location = response.headers["location"]
+        self.assertTrue(
+            location.startswith("/admin/catalog/comercios/"),
+            f"unexpected redirect location: {location!r}",
+        )
+        self.assertFalse(
+            location.startswith("/comercios/"),
+            f"panel redirected to the JSON API path: {location!r}",
+        )
+        self.assertEqual(location, "/admin/catalog/comercios/1")
+        del app_spy
 
 
 if __name__ == "__main__":

@@ -29,6 +29,10 @@
       <dt>WhatsApp</dt><dd>{{ detail.whatsapp }}</dd>
       <dt>Slug</dt><dd>{{ detail.slug }}</dd>
     </dl>
+    <div class="actions">
+      <a class="button primary" href="/admin/catalog/comercios/{{ detail.id }}/editar">Editar datos básicos</a>
+    </div>
+    <p class="hint">Los identificadores de ruteo (WhatsApp y slug) son inmutables tras la creación.</p>
   </section>
 
   <section class="panel" aria-label="Configuración regional">

@@ -36,6 +36,23 @@ class CommerceSummary:
 
 
 @dataclass(frozen=True)
+class EstadoComercioOption:
+    """Closed typed option for the commerce ``estado_id`` form field.
+
+    The view model exposes only the canonical ``id`` and ``estado``
+    string of each :class:`backend.models.EstadoComercio` row. The
+    panel never inspects ORM state and never reads additional columns
+    so the rendered ``<select>`` widget is the only surface the
+    operator sees. Service-side validation still re-checks the
+    selected id against the database to defeat stale / tampered
+    submissions.
+    """
+
+    id: int
+    estado: str
+
+
+@dataclass(frozen=True)
 class FlavorOption:
     """One selectable flavor row in the assignment form.
 
@@ -238,6 +255,7 @@ class CommerceDetailView:
     provincia: str
     codigo_postal: str | None
     slug: str
+    estado_id: int
     estado: str
     zona_horaria: str
     moneda: str
@@ -449,6 +467,7 @@ __all__ = [
     "CommerceSummary",
     "DeliveryMethodConfigurationView",
     "DeliveryMethodDetailView",
+    "EstadoComercioOption",
     "FlavorOption",
     "FlavorSummaryView",
     "GlobalMedioPagoRow",

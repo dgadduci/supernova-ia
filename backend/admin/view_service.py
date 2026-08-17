@@ -32,6 +32,7 @@ from backend.admin.views import (
     CommercePaymentActiveCandidate,
     CommerceSummary,
     DeliveryMethodDetailView,
+    EstadoComercioOption,
     FlavorOption,
     FlavorSummaryView,
     GlobalMedioPagoRow,
@@ -45,6 +46,7 @@ from backend.models import (
     Comercio,
     ComercioMedioPago,
     ComercioMetodoEntrega,
+    EstadoComercio,
     MediosPago,
     MetodosEntrega,
     Precio,
@@ -243,6 +245,7 @@ class AdministrativeCatalogPanelViewService:
             provincia=comercio.provincia,
             codigo_postal=comercio.codigo_postal,
             slug=comercio.slug,
+            estado_id=int(comercio.estado_id),
             estado=str(comercio.estado.estado) if comercio.estado else "",
             zona_horaria=comercio.zona_horaria,
             moneda=comercio.moneda,
@@ -277,6 +280,33 @@ class AdministrativeCatalogPanelViewService:
                 )
             )
         return options
+
+    def list_estados_comercio(self) -> list[EstadoComercioOption]:
+        """List every :class:`EstadoComercio` row as a closed typed option.
+
+        The helper powers the ``estado_id`` widget of the commerce
+        create / edit form. It returns a frozen list of
+        :class:`EstadoComercioOption` view models so the template
+        never inspects SQLAlchemy ORM state and never renders a
+        database identifier the operator cannot recognise.
+
+        The listing is exhaustive on purpose: the panel never
+        filters ``EstadoComercio`` rows by ``activo`` or any other
+        predicate because the OpenSpec change authorises only the
+        existing service-side validation to gate the selected id.
+        The service still re-verifies the submitted id against the
+        database so a stale / tampered submission is rejected before
+        persistence even if the rendered dropdown is bypassed.
+        """
+        stmt = select(EstadoComercio).order_by(EstadoComercio.id.asc())
+        rows = list(self._session.execute(stmt).scalars())
+        return [
+            EstadoComercioOption(
+                id=int(row.id),
+                estado=str(row.estado),
+            )
+            for row in rows
+        ]
 
     def get_commerce_catalog_navigation(
         self,

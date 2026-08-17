@@ -46,6 +46,7 @@ from backend.dependencies import (
     resolve_panel_csrf_secret,
 )
 from backend.services.catalog_create_service import CatalogCreateService
+from backend.services.comercio_service import ComercioService
 from backend.services.commerce_payment_delivery_configuration_service import (
     CommercePaymentDeliveryConfigurationService,
 )
@@ -56,6 +57,9 @@ from backend.services.exceptions import (
     DuplicatePresentacionCodigo,
     DuplicatePresentacionDescripcion,
     DuplicateProductoNombre,
+    DuplicateSlug,
+    DuplicateWhatsapp,
+    EstadoComercioNotFound,
     FlavorComunicacionInactivo,
     FlavorComunicacionNotFound,
     InvalidCategoriaProducto,
@@ -105,6 +109,20 @@ def _create_service(
 ) -> CatalogCreateService:
     settings = load_settings()
     return CatalogCreateService(session=session, settings=settings)
+
+
+def _comercio_service(
+    session: Annotated[Session, Depends(get_session)],
+) -> ComercioService:
+    """Build the shared :class:`ComercioService` for the panel.
+
+    The panel reuses the existing JSON-API service factory so the
+    create / update boundary is identical regardless of who submitted
+    the request. The shared service owns validation, the duplicate
+    detector, the commit / rollback sequence and the post-create
+    refresh; the panel is a pure rendering / HTTP adapter over it.
+    """
+    return ComercioService(session)
 
 
 def _medios_pago_service(
@@ -337,6 +355,24 @@ _DOMAIN_MAPPING: dict[type[Exception], _DomainMapping] = {
         "Ya existe un producto con ese nombre en la categoría seleccionada.",
         render_form=_VALIDATION_RENDER_FORM,
     ),
+    DuplicateWhatsapp: _DomainMapping(
+        DuplicateWhatsapp,
+        409,
+        "Ya existe un comercio con ese WhatsApp.",
+        render_form=_VALIDATION_RENDER_FORM,
+    ),
+    DuplicateSlug: _DomainMapping(
+        DuplicateSlug,
+        409,
+        "Ya existe un comercio con ese slug.",
+        render_form=_VALIDATION_RENDER_FORM,
+    ),
+    EstadoComercioNotFound: _DomainMapping(
+        EstadoComercioNotFound,
+        400,
+        "El estado seleccionado no existe.",
+        render_form=_VALIDATION_RENDER_FORM,
+    ),
     DuplicatePresentacionCodigo: _DomainMapping(
         DuplicatePresentacionCodigo,
         409,
@@ -432,6 +468,642 @@ def list_comercios(
             request=request,
             path="/admin/catalog/comercios",
             extra={"comercios": rows},
+        ),
+    )
+
+
+@router.get("/comercios/nuevo", response_class=HTMLResponse)
+def new_comercio_form(
+    request: Request,
+    service: Annotated[
+        AdministrativeCatalogPanelViewService, Depends(_view_service)
+    ],
+) -> Response:
+    """Render the server-rendered commerce onboarding form.
+
+    The handler never opens a database transaction, never imports
+    the recognizer pipeline and never reads the embeddings service:
+    the form is the panel's only entry point for onboarding and the
+    shared :class:`ComercioService.create` is the single mutation
+    boundary. The handler is intentionally the panel's only GET
+    path that lists the canonical ``EstadoComercio`` options: the
+    view service projects every row through the closed
+    :class:`EstadoComercioOption` view model so the template never
+    inspects SQLAlchemy ORM state.
+    """
+    estados = service.list_estados_comercio()
+    return _render(
+        request,
+        "comercio_form.html",
+        _form_context(
+            request=request,
+            path="/admin/catalog/comercios/nuevo",
+            extra={
+                "is_edit": False,
+                "form_title": "Nuevo comercio",
+                "submit_label": "Crear comercio",
+                "form_action": "/admin/catalog/comercios/nuevo",
+                "estados": estados,
+                "detail": None,
+                "form_values": {
+                    "nombre_fantasia": "",
+                    "nombre_corto": "",
+                    "razon_social": "",
+                    "cuit": "",
+                    "whatsapp": "",
+                    "calle": "",
+                    "numero": "",
+                    "piso_departamento": "",
+                    "localidad": "",
+                    "provincia": "",
+                    "codigo_postal": "",
+                    "slug": "",
+                    "estado_id": "",
+                    "zona_horaria": "America/Argentina/Buenos_Aires",
+                    "moneda": "ARS",
+                    "idioma": "es-AR",
+                },
+                "form_error": None,
+            },
+        ),
+    )
+
+
+@router.post("/comercios/nuevo", response_class=HTMLResponse)
+def create_comercio(
+    request: Request,
+    comercio_service: Annotated[
+        ComercioService, Depends(_comercio_service)
+    ],
+    service: Annotated[
+        AdministrativeCatalogPanelViewService, Depends(_view_service)
+    ],
+    nombre_fantasia: Annotated[str, Form()] = "",
+    nombre_corto: Annotated[str, Form()] = "",
+    razon_social: Annotated[str, Form()] = "",
+    cuit: Annotated[str, Form()] = "",
+    whatsapp: Annotated[str, Form()] = "",
+    calle: Annotated[str, Form()] = "",
+    numero: Annotated[str, Form()] = "",
+    piso_departamento: Annotated[str | None, Form()] = None,
+    localidad: Annotated[str, Form()] = "",
+    provincia: Annotated[str, Form()] = "",
+    codigo_postal: Annotated[str | None, Form()] = None,
+    slug: Annotated[str, Form()] = "",
+    estado_id: Annotated[str | None, Form()] = None,
+    zona_horaria: Annotated[str | None, Form()] = None,
+    moneda: Annotated[str | None, Form()] = None,
+    idioma: Annotated[str | None, Form()] = None,
+) -> Response:
+    """Apply the server-rendered commerce onboarding form.
+
+    The handler is the single panel entry point for browser
+    commerce creation. It forwards the form values to the shared
+    :class:`ComercioService.create` so the JSON API contract, the
+    duplicate detector and the commit / rollback sequence are
+    preserved verbatim. The handler never opens a transaction of
+    its own; the shared ``get_session`` dependency owns the
+    transaction.
+
+    Every failure is sanitised into a bounded re-render of the
+    same form with a fresh path-bound CSRF nonce and escaped
+    feedback. The status code follows the domain mapping: ``400``
+    for invalid input, ``409`` for duplicate routing identifiers
+    and ``404`` for an unknown estado. The handler never returns
+    raw exception detail, never echoes the submitted values into
+    the error message and never writes to the response before the
+    service has rolled back / committed cleanly.
+    """
+    form_path = "/admin/catalog/comercios/nuevo"
+    payload = {
+        "nombre_fantasia": nombre_fantasia,
+        "nombre_corto": nombre_corto,
+        "razon_social": razon_social,
+        "cuit": cuit,
+        "whatsapp": whatsapp,
+        "calle": calle,
+        "numero": numero,
+        "piso_departamento": piso_departamento,
+        "localidad": localidad,
+        "provincia": provincia,
+        "codigo_postal": codigo_postal,
+        "slug": slug,
+        "zona_horaria": zona_horaria,
+        "moneda": moneda,
+        "idioma": idioma,
+    }
+
+    try:
+        coerced_estado_id = _coerce_estado_id(estado_id)
+    except ValueError as exc:
+        return _re_render_comercio_form(
+            request=request,
+            service=service,
+            form_path=form_path,
+            is_edit=False,
+            form_values={"estado_id": estado_id, **payload},
+            error_message=str(exc),
+            field_name="estado_id",
+        )
+
+    payload["estado_id"] = coerced_estado_id
+
+    try:
+        from backend.admin.forms import ComercioCreateForm
+
+        ComercioCreateForm(**payload)
+    except Exception as exc:  # noqa: BLE001 - adapter boundary
+        return _re_render_comercio_form(
+            request=request,
+            service=service,
+            form_path=form_path,
+            is_edit=False,
+            form_values={"estado_id": estado_id, **payload},
+            error_message=str(exc),
+            field_name=None,
+        )
+
+    try:
+        row = comercio_service.create(payload)
+    except Exception as exc:  # noqa: BLE001 - panel intentionally sanitises any failure
+        mapping = _map_domain_exception(exc)
+        if not mapping.render_form:
+            return _render(
+                request,
+                "not_found.html",
+                _form_context(
+                    request=request,
+                    path=str(request.url.path),
+                    extra={
+                        "raw_id": str(payload.get("estado_id") or ""),
+                        "resource_label": "comercio",
+                    },
+                ),
+                status_code=mapping.status_code,
+            )
+        return _re_render_comercio_form(
+            request=request,
+            service=service,
+            form_path=form_path,
+            is_edit=False,
+            form_values={"estado_id": estado_id, **payload},
+            error_message=mapping.message,
+            field_name=(
+                "whatsapp"
+                if isinstance(exc, DuplicateWhatsapp)
+                else "slug"
+                if isinstance(exc, DuplicateSlug)
+                else "estado_id"
+                if isinstance(exc, EstadoComercioNotFound)
+                else None
+            ),
+        )
+
+    return _form_success_redirect(
+        f"/admin/catalog/comercios/{row.id}"
+    )
+
+
+def _coerce_estado_id(raw_value: str | None) -> int:
+    """Parse the panel ``estado_id`` form field as a positive integer.
+
+    Blank, non-integer or non-positive values are treated as a hard
+    validation error so the panel returns a bounded ``400`` form
+    re-render before the shared service is reached. The helper is
+    panel-only and does not change the JSON API contract.
+    """
+    if raw_value is None:
+        raise ValueError("estado_id must be a positive integer")
+    if not isinstance(raw_value, str):
+        # Panel callers only catch ``ValueError``; raising
+        # ``TypeError`` here would escape as an unhandled 500 and
+        # break the bounded feedback contract. Keep raising
+        # ``ValueError`` so the panel route re-renders the form
+        # with the documented message.
+        raise ValueError("estado_id must be a positive integer")  # noqa: TRY004
+    cleaned = raw_value.strip()
+    if cleaned == "":
+        raise ValueError("estado_id must be a positive integer")
+    try:
+        parsed = int(cleaned)
+    except ValueError as exc:
+        raise ValueError("estado_id must be a positive integer") from exc
+    if parsed < 1:
+        raise ValueError("estado_id must be a positive integer")
+    return parsed
+
+
+def _re_render_comercio_form(
+    *,
+    request: Request,
+    service: AdministrativeCatalogPanelViewService,
+    form_path: str,
+    is_edit: bool,
+    form_values: dict[str, Any],
+    error_message: str,
+    field_name: str | None,
+) -> Response:
+    """Re-render the commerce form with bounded feedback after a failure.
+
+    The helper reuses the canonical ``comercio_form.html`` template
+    and refreshes the path-bound CSRF nonce so the operator can
+    correct the submission without losing context. The ``detail``
+    view is only populated on the edit branch so the operator sees
+    the routing identifiers (whatsapp / slug) read-only next to the
+    form.
+    """
+    estados = service.list_estados_comercio()
+    detail = service.get_commerce_detail(
+        int(form_values.get("_comercio_id"))  # type: ignore[arg-type]
+    ) if is_edit and form_values.get("_comercio_id") is not None else None
+    return _render(
+        request,
+        "comercio_form.html",
+        _form_context(
+            request=request,
+            path=form_path,
+            extra={
+                "is_edit": is_edit,
+                "form_title": (
+                    f"Editar comercio #{form_values.get('_comercio_id')}"
+                    if is_edit
+                    else "Nuevo comercio"
+                ),
+                "submit_label": (
+                    "Guardar cambios" if is_edit else "Crear comercio"
+                ),
+                "form_action": form_path,
+                "estados": estados,
+                "detail": detail,
+                "form_values": _normalise_comercio_form_values(form_values),
+                "form_error": CatalogFormError(
+                    message=error_message,
+                    field_name=field_name,
+                ),
+            },
+        ),
+    )
+
+
+def _normalise_comercio_form_values(raw: dict[str, Any]) -> dict[str, Any]:
+    """Normalise the commerce form values for re-render.
+
+    The helper renders empty strings for blank text fields and keeps
+    ``estado_id`` as the original string so the select widget can
+    restore the operator's selection. ``None`` values (the native
+    HTML representation of an absent optional field) are coerced to
+    an empty string so the template does not render ``None``.
+    """
+    keys = (
+        "nombre_fantasia",
+        "nombre_corto",
+        "razon_social",
+        "cuit",
+        "whatsapp",
+        "calle",
+        "numero",
+        "piso_departamento",
+        "localidad",
+        "provincia",
+        "codigo_postal",
+        "slug",
+        "estado_id",
+        "zona_horaria",
+        "moneda",
+        "idioma",
+    )
+    cleaned: dict[str, Any] = {}
+    for key in keys:
+        value = raw.get(key)
+        if value is None:
+            cleaned[key] = ""
+        elif key == "estado_id" and not isinstance(value, str):
+            cleaned[key] = str(int(value))
+        elif not isinstance(value, str):
+            cleaned[key] = str(value)
+        else:
+            cleaned[key] = value
+    return cleaned
+
+
+@router.get("/comercios/{comercio_id}/editar", response_class=HTMLResponse)
+def edit_comercio_form(
+    request: Request,
+    comercio_id: Annotated[str, Path()],
+    service: Annotated[
+        AdministrativeCatalogPanelViewService, Depends(_view_service)
+    ],
+) -> Response:
+    """Render the server-rendered commerce edit form.
+
+    The handler is the GET companion of the exact-commerce basic
+    edit POST. It refuses to render a foreign ``comercio_id``
+    (returns ``404``) and binds the path-bound CSRF nonce to the
+    exact POST destination so a native browser submission is
+    accepted without JavaScript.
+    """
+    try:
+        parsed_comercio_id = parse_positive_int(
+            comercio_id, field_name="comercio_id"
+        )
+    except ValueError:
+        return _render(
+            request,
+            "bad_request.html",
+            _form_context(
+                request=request,
+                path=str(request.url.path),
+                extra={"message": "comercio_id must be a positive integer"},
+            ),
+            status_code=400,
+        )
+
+    detail = service.get_commerce_detail(parsed_comercio_id)
+    if detail is None:
+        return _render(
+            request,
+            "not_found.html",
+            _form_context(
+                request=request,
+                path=str(request.url.path),
+                extra={
+                    "raw_id": comercio_id,
+                    "resource_label": "comercio",
+                },
+            ),
+            status_code=404,
+        )
+
+    estados = service.list_estados_comercio()
+    return _render(
+        request,
+        "comercio_form.html",
+        _form_context(
+            request=request,
+            path=f"/admin/catalog/comercios/{parsed_comercio_id}/editar",
+            extra={
+                "is_edit": True,
+                "form_title": f"Editar comercio #{parsed_comercio_id}",
+                "submit_label": "Guardar cambios",
+                "form_action": f"/admin/catalog/comercios/{parsed_comercio_id}/editar",
+                "estados": estados,
+                "detail": detail,
+                "form_values": {
+                    "nombre_fantasia": detail.nombre_fantasia,
+                    "nombre_corto": detail.nombre_corto,
+                    "razon_social": detail.razon_social,
+                    "cuit": detail.cuit,
+                    "whatsapp": detail.whatsapp,
+                    "calle": detail.calle,
+                    "numero": detail.numero,
+                    "piso_departamento": detail.piso_departamento or "",
+                    "localidad": detail.localidad,
+                    "provincia": detail.provincia,
+                    "codigo_postal": detail.codigo_postal or "",
+                    "slug": detail.slug,
+                    "estado_id": detail.estado_id,
+                    "zona_horaria": detail.zona_horaria,
+                    "moneda": detail.moneda,
+                    "idioma": detail.idioma,
+                },
+                "form_error": None,
+            },
+        ),
+    )
+
+
+@router.post("/comercios/{comercio_id}/editar", response_class=HTMLResponse)
+def update_comercio(
+    request: Request,
+    comercio_id: Annotated[str, Path()],
+    comercio_service: Annotated[
+        ComercioService, Depends(_comercio_service)
+    ],
+    service: Annotated[
+        AdministrativeCatalogPanelViewService, Depends(_view_service)
+    ],
+    nombre_fantasia: Annotated[str, Form()] = "",
+    nombre_corto: Annotated[str, Form()] = "",
+    razon_social: Annotated[str, Form()] = "",
+    cuit: Annotated[str, Form()] = "",
+    calle: Annotated[str, Form()] = "",
+    numero: Annotated[str, Form()] = "",
+    piso_departamento: Annotated[str | None, Form()] = None,
+    localidad: Annotated[str, Form()] = "",
+    provincia: Annotated[str, Form()] = "",
+    codigo_postal: Annotated[str | None, Form()] = None,
+    estado_id: Annotated[str | None, Form()] = None,
+    zona_horaria: Annotated[str | None, Form()] = None,
+    moneda: Annotated[str | None, Form()] = None,
+    idioma: Annotated[str | None, Form()] = None,
+) -> Response:
+    """Apply the server-rendered commerce edit form.
+
+    The handler is the single panel entry point for the exact
+    basic edit mutation. It forwards the form values to the shared
+    :class:`ComercioService.update` boundary; the service rejects
+    any value submitted under ``whatsapp`` / ``slug`` (those keys
+    are intentionally absent from the form payload) before any
+    database call so the stored routing identity is never mutable
+    through this seam.
+
+    Every failure is sanitised into a bounded re-render of the
+    same edit form with a fresh path-bound CSRF nonce and escaped
+    feedback. The handler never opens a transaction of its own and
+    never returns raw exception detail.
+    """
+    try:
+        parsed_comercio_id = parse_positive_int(
+            comercio_id, field_name="comercio_id"
+        )
+    except ValueError:
+        return _render(
+            request,
+            "bad_request.html",
+            _form_context(
+                request=request,
+                path=str(request.url.path),
+                extra={"message": "comercio_id must be a positive integer"},
+            ),
+            status_code=400,
+        )
+
+    form_path = f"/admin/catalog/comercios/{parsed_comercio_id}/editar"
+
+    try:
+        coerced_estado_id = _coerce_estado_id(estado_id)
+    except ValueError as exc:
+        return _re_render_comercio_edit_form(
+            request=request,
+            service=service,
+            comercio_id=parsed_comercio_id,
+            form_values={
+                "estado_id": estado_id,
+                "nombre_fantasia": nombre_fantasia,
+                "nombre_corto": nombre_corto,
+                "razon_social": razon_social,
+                "cuit": cuit,
+                "calle": calle,
+                "numero": numero,
+                "piso_departamento": piso_departamento,
+                "localidad": localidad,
+                "provincia": provincia,
+                "codigo_postal": codigo_postal,
+                "zona_horaria": zona_horaria,
+                "moneda": moneda,
+                "idioma": idioma,
+            },
+            error_message=str(exc),
+            field_name="estado_id",
+        )
+
+    payload: dict[str, Any] = {
+        "nombre_fantasia": nombre_fantasia,
+        "nombre_corto": nombre_corto,
+        "razon_social": razon_social,
+        "cuit": cuit,
+        "calle": calle,
+        "numero": numero,
+        "piso_departamento": piso_departamento,
+        "localidad": localidad,
+        "provincia": provincia,
+        "codigo_postal": codigo_postal,
+        "estado_id": coerced_estado_id,
+        "zona_horaria": zona_horaria,
+        "moneda": moneda,
+        "idioma": idioma,
+    }
+
+    try:
+        from backend.admin.forms import ComercioUpdateForm
+
+        ComercioUpdateForm(**payload)
+    except Exception as exc:  # noqa: BLE001 - adapter boundary
+        return _re_render_comercio_edit_form(
+            request=request,
+            service=service,
+            comercio_id=parsed_comercio_id,
+            form_values=payload,
+            error_message=str(exc),
+            field_name=None,
+        )
+
+    try:
+        row = comercio_service.update(parsed_comercio_id, payload)
+    except ComercioNotFound:
+        return _render(
+            request,
+            "not_found.html",
+            _form_context(
+                request=request,
+                path=form_path,
+                extra={
+                    "raw_id": str(parsed_comercio_id),
+                    "resource_label": "comercio",
+                },
+            ),
+            status_code=404,
+        )
+    except Exception as exc:  # noqa: BLE001 - panel intentionally sanitises any failure
+        mapping = _map_domain_exception(exc)
+        if isinstance(exc, (DuplicateWhatsapp, DuplicateSlug)):
+            return _re_render_comercio_edit_form(
+                request=request,
+                service=service,
+                comercio_id=parsed_comercio_id,
+                form_values=payload,
+                error_message="Los identificadores de ruteo son inmutables.",
+                field_name=None,
+            )
+        if not mapping.render_form:
+            return _render(
+                request,
+                "not_found.html",
+                _form_context(
+                    request=request,
+                    path=form_path,
+                    extra={
+                        "raw_id": str(parsed_comercio_id),
+                        "resource_label": "comercio",
+                    },
+                ),
+                status_code=mapping.status_code,
+            )
+        return _re_render_comercio_edit_form(
+            request=request,
+            service=service,
+            comercio_id=parsed_comercio_id,
+            form_values=payload,
+            error_message=mapping.message,
+            field_name=(
+                "estado_id"
+                if isinstance(exc, EstadoComercioNotFound)
+                else None
+            ),
+        )
+
+    return _form_success_redirect(
+        f"/admin/catalog/comercios/{row.id}"
+    )
+
+
+def _re_render_comercio_edit_form(
+    *,
+    request: Request,
+    service: AdministrativeCatalogPanelViewService,
+    comercio_id: int,
+    form_values: dict[str, Any],
+    error_message: str,
+    field_name: str | None,
+) -> Response:
+    """Re-render the edit form with bounded feedback after a failure."""
+    detail = service.get_commerce_detail(comercio_id)
+    if detail is None:
+        return _form_success_redirect(
+            f"/admin/catalog/comercios/{comercio_id}"
+        )
+    estados = service.list_estados_comercio()
+    form_path = f"/admin/catalog/comercios/{comercio_id}/editar"
+    payload = {
+        "nombre_fantasia": detail.nombre_fantasia,
+        "nombre_corto": detail.nombre_corto,
+        "razon_social": detail.razon_social,
+        "cuit": detail.cuit,
+        "whatsapp": detail.whatsapp,
+        "calle": detail.calle,
+        "numero": detail.numero,
+        "piso_departamento": detail.piso_departamento or "",
+        "localidad": detail.localidad,
+        "provincia": detail.provincia,
+        "codigo_postal": detail.codigo_postal or "",
+        "slug": detail.slug,
+        "estado_id": detail.estado_id,
+        "zona_horaria": detail.zona_horaria,
+        "moneda": detail.moneda,
+        "idioma": detail.idioma,
+    }
+    for key, value in form_values.items():
+        payload[key] = value
+    payload["estado_id"] = form_values.get("estado_id") or detail.estado_id
+    return _render(
+        request,
+        "comercio_form.html",
+        _form_context(
+            request=request,
+            path=form_path,
+            extra={
+                "is_edit": True,
+                "form_title": f"Editar comercio #{comercio_id}",
+                "submit_label": "Guardar cambios",
+                "form_action": form_path,
+                "estados": estados,
+                "detail": detail,
+                "form_values": _normalise_comercio_form_values(payload),
+                "form_error": CatalogFormError(
+                    message=error_message,
+                    field_name=field_name,
+                ),
+            },
         ),
     )
 

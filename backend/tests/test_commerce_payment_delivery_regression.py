@@ -103,6 +103,7 @@ class ConfigurationReadContractTest(unittest.TestCase):
             provincia="CABA",
             codigo_postal="1000",
             slug="comercio-x",
+            estado_id=1,
             estado="ACTIVO",
             zona_horaria="America/Argentina/Buenos_Aires",
             moneda="ARS",
