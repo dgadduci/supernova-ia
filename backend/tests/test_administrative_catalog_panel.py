@@ -1061,6 +1061,11 @@ class PanelFlavorPrivacyTest(unittest.TestCase):
         assign_mock.assert_called_once_with(1, 2)
 
     def test_clear_flavor_uses_none(self) -> None:
+        """The real HTML payload ``flavor_comunicacion_id=`` (the
+        ``— Sin flavor —`` option) must reach the shared service as
+        ``None``; Pydantic must never reject the empty string before
+        the field is normalised.
+        """
         path = "/admin/catalog/comercios/1/flavor"
         with patch.object(
             admin_routes, "AdministrativeCatalogPanelViewService"
@@ -1087,11 +1092,147 @@ class PanelFlavorPrivacyTest(unittest.TestCase):
                     **_basic_auth_header("any", CONFIGURED_TOKEN),
                     **_same_origin_headers(),
                 },
-                data=_csrf_form_data(path, {"": ""}),
+                data=_csrf_form_data(path, {"flavor_comunicacion_id": ""}),
             )
         self.assertEqual(response.status_code, 200)
         assign_mock.assert_called_once_with(1, None)
         self.assertIn("Flavor limpiado", response.text)
+
+    def test_clear_flavor_with_whitespace_only_value_uses_none(self) -> None:
+        """Whitespace-only values must normalise to ``None`` too so the
+        operator cannot bypass the clear semantics with stray spaces.
+        """
+        path = "/admin/catalog/comercios/1/flavor"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "CatalogCreateService"
+        ) as create_cls:
+            view_cls.return_value = _stub_view_service(
+                detail=_build_detail(),
+                catalog=_build_catalog(),
+                flavor_options=_build_flavor_options(),
+            )
+            assign_mock = MagicMock(
+                return_value=(
+                    MagicMock(name="Comercio"),
+                    None,
+                )
+            )
+            create_cls.return_value = _stub_create_service(
+                assign_flavor=assign_mock
+            )
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    **_same_origin_headers(),
+                },
+                data=_csrf_form_data(path, {"flavor_comunicacion_id": "   "}),
+            )
+        self.assertEqual(response.status_code, 200)
+        assign_mock.assert_called_once_with(1, None)
+
+    def test_assign_flavor_zero_value_does_not_invoke_service(self) -> None:
+        """``0`` is not a valid flavor id and must be rejected at the
+        form adapter so the shared service is never called."""
+        path = "/admin/catalog/comercios/1/flavor"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "CatalogCreateService"
+        ) as create_cls:
+            view_cls.return_value = _stub_view_service(
+                detail=_build_detail(),
+                catalog=_build_catalog(),
+                flavor_options=_build_flavor_options(),
+            )
+            create_cls.return_value = _stub_create_service()
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    **_same_origin_headers(),
+                },
+                data=_csrf_form_data(path, {"flavor_comunicacion_id": "0"}),
+            )
+        self.assertEqual(response.status_code, 422)
+        create_cls.return_value.assign_flavor.assert_not_called()
+
+    def test_assign_flavor_negative_value_does_not_invoke_service(self) -> None:
+        """Negative ids must be rejected at the form adapter."""
+        path = "/admin/catalog/comercios/1/flavor"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "CatalogCreateService"
+        ) as create_cls:
+            view_cls.return_value = _stub_view_service(
+                detail=_build_detail(),
+                catalog=_build_catalog(),
+                flavor_options=_build_flavor_options(),
+            )
+            create_cls.return_value = _stub_create_service()
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    **_same_origin_headers(),
+                },
+                data=_csrf_form_data(path, {"flavor_comunicacion_id": "-1"}),
+            )
+        self.assertEqual(response.status_code, 422)
+        create_cls.return_value.assign_flavor.assert_not_called()
+
+    def test_assign_flavor_non_numeric_value_does_not_invoke_service(self) -> None:
+        """Magic codes / sentinels like ``"neutro"`` must be rejected at
+        the form adapter so the shared service never sees them."""
+        path = "/admin/catalog/comercios/1/flavor"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "CatalogCreateService"
+        ) as create_cls:
+            view_cls.return_value = _stub_view_service(
+                detail=_build_detail(),
+                catalog=_build_catalog(),
+                flavor_options=_build_flavor_options(),
+            )
+            create_cls.return_value = _stub_create_service()
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    **_same_origin_headers(),
+                },
+                data=_csrf_form_data(path, {"flavor_comunicacion_id": "neutro"}),
+            )
+        self.assertEqual(response.status_code, 422)
+        create_cls.return_value.assign_flavor.assert_not_called()
+
+    def test_clear_flavor_still_requires_nonce_and_origin(self) -> None:
+        """The clear payload must continue to carry a valid path-bound
+        nonce and a same-origin header; the normalisation helper must
+        not weaken the CSRF boundary."""
+        path = "/admin/catalog/comercios/1/flavor"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "CatalogCreateService"
+        ) as create_cls:
+            view_cls.return_value = _stub_view_service(
+                detail=_build_detail(),
+                catalog=_build_catalog(),
+                flavor_options=_build_flavor_options(),
+            )
+            create_cls.return_value = _stub_create_service()
+            response = self.client.post(
+                path,
+                headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+                data={NONCE_FIELD: "0" * 64, "flavor_comunicacion_id": ""},
+            )
+        self.assertEqual(response.status_code, 400)
+        create_cls.return_value.assign_flavor.assert_not_called()
 
     def test_assign_unknown_flavor_renders_bounded_error(self) -> None:
         from backend.services.exceptions import FlavorComunicacionNotFound

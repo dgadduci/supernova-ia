@@ -16,8 +16,9 @@ the JSON API router does.
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
 
 class CatalogFormError(BaseModel):
@@ -92,18 +93,51 @@ class PrecioForm(BaseModel):
     precio: Decimal = Field(ge=Decimal(0), max_digits=12, decimal_places=2)
 
 
+def _coerce_blank_flavor_id_to_none(value: object) -> object:
+    """Normalise the HTML "no flavor" representation to ``None``.
+
+    The browser always sends ``flavor_comunicacion_id=""`` when the
+    operator picks the "— Sin flavor —" option. Without this
+    normalisation step Pydantic rejects the empty string before
+    ``int`` coercion can produce ``None`` and the route never sees
+    a real ``flavor_comunicacion_id``. The helper runs *before*
+    Pydantic's type validation so the field can still be declared
+    as ``int | None`` with ``ge=1``: a blank string becomes
+    ``None`` (the only valid clear), a non-blank string is passed
+    through for ``int`` coercion (which still rejects non-numeric
+    values and values below ``1``), and ``None`` or any other
+    non-string value is forwarded unchanged.
+    """
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if cleaned == "":
+            return None
+        return cleaned
+    return value
+
+
 class FlavorAssignForm(BaseModel):
     """Flavor assignment / clear form payload.
 
     The shape accepts only the documented
     ``flavor_comunicacion_id`` field with the same constraint the
     JSON API enforces: a positive global flavor id to assign, or the
-    explicit ``None`` value to clear. Any other value (an empty
-    string, ``0``, a negative number, a sentinel) is rejected by
-    Pydantic so the panel never has to invent a "neutral" sentinel
-    or rely on a magic code. The closed validator guarantees that
-    the only way to clear the flavor is to omit the value entirely
-    in the form (which Pydantic translates into ``None``).
+    explicit ``None`` value to clear. Any other value (``0``, a
+    negative number, a non-numeric string, a magic code) is rejected
+    by Pydantic so the panel never has to invent a "neutral" sentinel
+    or rely on a magic code.
+
+    The native HTML representation of "no flavor" is the empty string
+    (``<option value="">— Sin flavor —</option>``), so the panel-only
+    adapter normalises a blank value to ``None`` *before* Pydantic
+    coerces the field to ``int``. This is strictly a panel adapter
+    concern: the JSON API schema
+    (:class:`backend.schemas.comunicacion_flavor.FlavorAsignacion`)
+    is unchanged because it never receives form-encoded payloads.
+    After the normalisation step Pydantic validates the field as
+    ``int | None`` with ``ge=1`` so ``0``, negative numbers and
+    non-numeric strings are still rejected at the adapter boundary
+    and never reach the shared :class:`CatalogCreateService`.
 
     ``extra`` is configured to ``"ignore"`` so the server-rendered
     CSRF marker field does not break Pydantic validation; the panel
@@ -113,7 +147,10 @@ class FlavorAssignForm(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    flavor_comunicacion_id: int | None = Field(default=None, ge=1)
+    flavor_comunicacion_id: Annotated[
+        int | None,
+        BeforeValidator(_coerce_blank_flavor_id_to_none),
+    ] = Field(default=None, ge=1)
 
 
 __all__ = [
