@@ -999,6 +999,35 @@ class PanelFlavorPrivacyTest(unittest.TestCase):
         self.assertNotIn("instruccion_llm", response.text)
         self.assertNotIn("INSTRUCCION_LLM", response.text)
 
+    def test_detail_flavor_form_nonce_is_bound_to_flavor_post_target(self) -> None:
+        """The detail GET and flavor POST have different paths.
+
+        The rendered nonce must be generated for the POST destination, not
+        the detail page itself, otherwise a native browser submission is
+        rejected before the flavor service is reached.
+        """
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as service_cls:
+            service_cls.return_value = _stub_view_service(
+                detail=_build_detail(),
+                catalog=_build_catalog(),
+                flavor_options=_build_flavor_options(),
+            )
+            response = self.client.get(
+                "/admin/catalog/comercios/1",
+                headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+            )
+        expected_nonce = compute_panel_form_nonce(
+            path="/admin/catalog/comercios/1/flavor",
+            secret=resolve_panel_csrf_secret(),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            f'name="{NONCE_FIELD}" value="{expected_nonce}"',
+            response.text,
+        )
+
     def test_assign_flavor_passes_value_to_shared_service(self) -> None:
         path = "/admin/catalog/comercios/1/flavor"
         with patch.object(
