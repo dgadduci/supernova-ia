@@ -36,8 +36,41 @@ class MediosPagoRepository:
         )
         return list(self._session.execute(stmt).scalars())
 
-    def create(self, codigo: str, descripcion: str, activo: bool) -> MediosPago:
-        row = MediosPago(codigo=codigo, descripcion=descripcion, activo=activo)
+    def create(
+        self,
+        codigo: str,
+        descripcion: str,
+        activo: bool,
+        habilita_titular: bool,
+        habilita_alias: bool,
+    ) -> MediosPago:
+        row = MediosPago(
+            codigo=codigo,
+            descripcion=descripcion,
+            activo=activo,
+            habilita_titular=habilita_titular,
+            habilita_alias=habilita_alias,
+        )
         self._session.add(row)
+        self._session.flush()
+        return row
+
+    def update(
+        self,
+        row: MediosPago,
+        *,
+        descripcion: str | None,
+        activo: bool | None,
+        habilita_titular: bool | None,
+        habilita_alias: bool | None,
+    ) -> MediosPago:
+        if descripcion is not None:
+            row.descripcion = descripcion
+        if activo is not None:
+            row.activo = activo
+        if habilita_titular is not None:
+            row.habilita_titular = habilita_titular
+        if habilita_alias is not None:
+            row.habilita_alias = habilita_alias
         self._session.flush()
         return row

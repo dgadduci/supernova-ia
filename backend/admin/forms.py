@@ -93,6 +93,50 @@ class PrecioForm(BaseModel):
     precio: Decimal = Field(ge=Decimal(0), max_digits=12, decimal_places=2)
 
 
+class MedioPagoCreateForm(BaseModel):
+    """Create global payment-method form payload.
+
+    The shape mirrors
+    :class:`backend.schemas.medios_pago.MediosPagoCreate` so the
+    shared :class:`backend.services.medios_pago_service.MediosPagoService`
+    boundary receives the same validated payload regardless of
+    whether the JSON API or the panel submitted the request. The
+    boolean availability fields default to ``False`` to match the
+    documented safe baseline; an operator who wants a method to
+    permit per-commerce ``titular`` / ``alias`` editing ticks the
+    corresponding checkbox and the panel forwards ``True``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    codigo: str = Field(min_length=1, max_length=50)
+    descripcion: str = Field(min_length=1, max_length=100)
+    activo: bool | None = None
+    habilita_titular: bool | None = None
+    habilita_alias: bool | None = None
+
+
+class MedioPagoUpdateForm(BaseModel):
+    """Edit global payment-method form payload.
+
+    The shape mirrors
+    :class:`backend.schemas.medios_pago.MediosPagoUpdate` so the
+    shared service boundary receives the same validated payload
+    regardless of who submitted the request. ``codigo`` is
+    intentionally absent from the update shape because the global
+    catalog code is the natural identifier the rest of the system
+    keys off; an operator who wants to change a code must use a
+    new global row.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    descripcion: str | None = Field(default=None, min_length=1, max_length=100)
+    activo: bool | None = None
+    habilita_titular: bool | None = None
+    habilita_alias: bool | None = None
+
+
 def _coerce_blank_flavor_id_to_none(value: object) -> object:
     """Normalise the HTML "no flavor" representation to ``None``.
 
@@ -157,6 +201,8 @@ __all__ = [
     "CatalogFormError",
     "CategoriaProductoForm",
     "FlavorAssignForm",
+    "MedioPagoCreateForm",
+    "MedioPagoUpdateForm",
     "PrecioForm",
     "PresentacionForm",
     "ProductoForm",

@@ -388,6 +388,252 @@ def test_create_medio_pago_activo_defaults_true() -> None:
         _delete_medio_pago(new_id)
 
 
+def test_create_medio_pago_flags_default_false() -> None:
+    """Create without the optional flags must default both
+    ``habilita_titular`` and ``habilita_alias`` to ``False`` so the
+    safe baseline is the documented behaviour."""
+    payload = _medio_pago_payload()
+    assert "habilita_titular" not in payload
+    assert "habilita_alias" not in payload
+    r = client.post("/medios-pago", json=payload)
+    if r.status_code != 201:
+        record(
+            "create_medio_pago_flags_default_false",
+            False,
+            f"{r.status_code} {r.text}",
+        )
+        return
+    new_id = r.json()["id"]
+    try:
+        body = r.json()
+        ok = (
+            body["habilita_titular"] is False
+            and body["habilita_alias"] is False
+        )
+        record(
+            "create_medio_pago_flags_default_false",
+            ok,
+            f"titular={body['habilita_titular']} alias={body['habilita_alias']}",
+        )
+    finally:
+        _delete_medio_pago(new_id)
+
+
+def test_create_medio_pago_with_flags_true() -> None:
+    """Create with both flags set to ``True`` must persist the
+    explicit availability values."""
+    payload = _medio_pago_payload()
+    payload["habilita_titular"] = True
+    payload["habilita_alias"] = True
+    r = client.post("/medios-pago", json=payload)
+    if r.status_code != 201:
+        record(
+            "create_medio_pago_with_flags_true",
+            False,
+            f"{r.status_code} {r.text}",
+        )
+        return
+    new_id = r.json()["id"]
+    try:
+        body = r.json()
+        ok = (
+            body["habilita_titular"] is True
+            and body["habilita_alias"] is True
+        )
+        record(
+            "create_medio_pago_with_flags_true",
+            ok,
+            f"titular={body['habilita_titular']} alias={body['habilita_alias']}",
+        )
+    finally:
+        _delete_medio_pago(new_id)
+
+
+def test_update_medio_pago_both_flags_true() -> None:
+    """An authenticated administrator may enable both availability
+    flags on an existing payment method. The response and a
+    subsequent read must both expose the new values; the existing
+    catalog data must be preserved."""
+    payload = _medio_pago_payload()
+    r1 = client.post("/medios-pago", json=payload)
+    if r1.status_code != 201:
+        record(
+            "update_medio_pago_both_flags_true",
+            False,
+            f"setup failed: {r1.status_code} {r1.text}",
+        )
+        return
+    new_id = r1.json()["id"]
+    original_codigo = r1.json()["codigo"]
+    original_descripcion = r1.json()["descripcion"]
+    try:
+        r = client.put(
+            f"/medios-pago/{new_id}",
+            json={
+                "descripcion": original_descripcion,
+                "activo": True,
+                "habilita_titular": True,
+                "habilita_alias": True,
+            },
+        )
+        if r.status_code != 200:
+            record(
+                "update_medio_pago_both_flags_true",
+                False,
+                f"{r.status_code} {r.text}",
+            )
+            return
+        body = r.json()
+        update_ok = (
+            body["habilita_titular"] is True
+            and body["habilita_alias"] is True
+            and body["codigo"] == original_codigo
+            and body["descripcion"] == original_descripcion
+        )
+        r_get = client.get(f"/medios-pago/{new_id}")
+        get_body = r_get.json()
+        read_ok = (
+            r_get.status_code == 200
+            and get_body["habilita_titular"] is True
+            and get_body["habilita_alias"] is True
+        )
+        record(
+            "update_medio_pago_both_flags_true",
+            update_ok and read_ok,
+            f"update={update_ok} read={read_ok}",
+        )
+    finally:
+        _delete_medio_pago(new_id)
+
+
+def test_update_medio_pago_independent_flags() -> None:
+    """A method can independently allow alias only or titular only;
+    the response must reflect exactly the requested booleans."""
+    payload = _medio_pago_payload()
+    r1 = client.post("/medios-pago", json=payload)
+    if r1.status_code != 201:
+        record(
+            "update_medio_pago_independent_flags",
+            False,
+            f"setup failed: {r1.status_code} {r1.text}",
+        )
+        return
+    new_id = r1.json()["id"]
+    try:
+        r = client.put(
+            f"/medios-pago/{new_id}",
+            json={
+                "descripcion": payload["descripcion"],
+                "activo": True,
+                "habilita_titular": False,
+                "habilita_alias": True,
+            },
+        )
+        if r.status_code != 200:
+            record(
+                "update_medio_pago_independent_flags",
+                False,
+                f"{r.status_code} {r.text}",
+            )
+            return
+        body = r.json()
+        record(
+            "update_medio_pago_independent_flags",
+            body["habilita_titular"] is False and body["habilita_alias"] is True,
+            f"titular={body['habilita_titular']} alias={body['habilita_alias']}",
+        )
+    finally:
+        _delete_medio_pago(new_id)
+
+
+def test_update_medio_pago_missing_404() -> None:
+    max_id = max(_existing_medio_pago_ids() or [0])
+    r = client.put(
+        f"/medios-pago/{max_id + 99999}",
+        json={
+            "descripcion": "X",
+            "activo": True,
+            "habilita_titular": True,
+            "habilita_alias": False,
+        },
+    )
+    record(
+        "update_medio_pago_missing_404",
+        r.status_code == 404,
+        f"{r.status_code}",
+    )
+
+
+def test_update_medio_pago_invalid_descripcion_400() -> None:
+    payload = _medio_pago_payload()
+    r1 = client.post("/medios-pago", json=payload)
+    if r1.status_code != 201:
+        record(
+            "update_medio_pago_invalid_descripcion_400",
+            False,
+            f"setup failed: {r1.status_code} {r1.text}",
+        )
+        return
+    new_id = r1.json()["id"]
+    try:
+        r = client.put(
+            f"/medios-pago/{new_id}",
+            json={
+                "descripcion": "   ",
+                "habilita_titular": True,
+            },
+        )
+        record(
+            "update_medio_pago_invalid_descripcion_400",
+            r.status_code == 400,
+            f"{r.status_code}",
+        )
+    finally:
+        _delete_medio_pago(new_id)
+
+
+def test_update_medio_pago_preserves_flags_on_invalid_input() -> None:
+    """An invalid update must leave prior flags unchanged."""
+    payload = _medio_pago_payload()
+    r1 = client.post(
+        "/medios-pago",
+        json={**payload, "habilita_titular": True, "habilita_alias": True},
+    )
+    if r1.status_code != 201:
+        record(
+            "update_medio_pago_preserves_flags_on_invalid_input",
+            False,
+            f"setup failed: {r1.status_code} {r1.text}",
+        )
+        return
+    new_id = r1.json()["id"]
+    try:
+        r = client.put(
+            f"/medios-pago/{new_id}",
+            json={
+                "descripcion": "",
+                "habilita_titular": False,
+                "habilita_alias": False,
+            },
+        )
+        r_get = client.get(f"/medios-pago/{new_id}")
+        if r.status_code != 422 or r_get.status_code != 200:
+            record(
+                "update_medio_pago_preserves_flags_on_invalid_input",
+                False,
+                f"put={r.status_code} get={r_get.status_code}",
+            )
+            return
+        body = r_get.json()
+        record(
+            "update_medio_pago_preserves_flags_on_invalid_input",
+            body["habilita_titular"] is True and body["habilita_alias"] is True,
+            f"titular={body['habilita_titular']} alias={body['habilita_alias']}",
+        )
+    finally:
+        _delete_medio_pago(new_id)
+
+
 def _existing_metodo_entrega_ids() -> list[int]:
     with engine.connect() as c:
         return [row[0] for row in c.execute(text("SELECT id FROM metodos_entrega ORDER BY id"))]
@@ -5982,6 +6228,13 @@ if __name__ == "__main__":
     test_create_medio_pago_empty_descripcion_400()
     test_create_medio_pago_rejects_id_422()
     test_create_medio_pago_activo_defaults_true()
+    test_create_medio_pago_flags_default_false()
+    test_create_medio_pago_with_flags_true()
+    test_update_medio_pago_both_flags_true()
+    test_update_medio_pago_independent_flags()
+    test_update_medio_pago_missing_404()
+    test_update_medio_pago_invalid_descripcion_400()
+    test_update_medio_pago_preserves_flags_on_invalid_input()
     test_list_and_get_metodos_entrega()
     test_get_metodo_entrega_missing_404()
     test_create_metodo_entrega_201_and_activo()

@@ -2,7 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from backend.dependencies import get_session, require_admin_token
-from backend.schemas.medios_pago import MediosPagoCreate, MediosPagoResponse
+from backend.schemas.medios_pago import (
+    MediosPagoCreate,
+    MediosPagoResponse,
+    MediosPagoUpdate,
+)
 from backend.services.exceptions import (
     DuplicateMedioPago,
     InvalidMedioPago,
@@ -46,9 +50,37 @@ def create_medio_pago(
 ) -> MediosPagoResponse:
     try:
         return MediosPagoResponse.model_validate(
-            service.create(payload.codigo, payload.descripcion, payload.activo)
+            service.create(
+                payload.codigo,
+                payload.descripcion,
+                payload.activo,
+                payload.habilita_titular,
+                payload.habilita_alias,
+            )
         )
     except InvalidMedioPago as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except DuplicateMedioPago as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
+
+
+@router.put("/{medio_pago_id}", response_model=MediosPagoResponse)
+def update_medio_pago(
+    medio_pago_id: int,
+    payload: MediosPagoUpdate,
+    service: MediosPagoService = Depends(_service),
+) -> MediosPagoResponse:
+    try:
+        return MediosPagoResponse.model_validate(
+            service.update(
+                medio_pago_id,
+                descripcion=payload.descripcion,
+                activo=payload.activo,
+                habilita_titular=payload.habilita_titular,
+                habilita_alias=payload.habilita_alias,
+            )
+        )
+    except MediosPagoNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except InvalidMedioPago as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e

@@ -32,6 +32,7 @@ from backend.admin.views import (
     DeliveryMethodDetailView,
     FlavorOption,
     FlavorSummaryView,
+    GlobalMedioPagoRow,
     PaymentMethodDetailView,
 )
 from backend.models import (
@@ -39,6 +40,7 @@ from backend.models import (
     Comercio,
     ComercioMedioPago,
     ComercioMetodoEntrega,
+    MediosPago,
     Precio,
     Presentacion,
     Producto,
@@ -503,6 +505,54 @@ class AdministrativeCatalogPanelViewService:
             .order_by(CategoriaProducto.orden.asc(), CategoriaProducto.id.asc())
         )
         return list(self._session.execute(stmt).scalars())
+
+    def list_global_medios_pago(self) -> list[GlobalMedioPagoRow]:
+        """Return the global ``MediosPago`` catalog for the panel.
+
+        The helper reads the canonical global catalog (every row,
+        not filtered by comercio) and projects each row into a
+        closed :class:`GlobalMedioPagoRow` view so the panel can
+        render the global availability flags without ever inspecting
+        SQLAlchemy ORM state. The helper does NOT read
+        ``ComercioMedioPago`` and never widens the query to a
+        comercio scope.
+        """
+        stmt = select(MediosPago).order_by(MediosPago.id.asc())
+        rows = list(self._session.execute(stmt).scalars())
+        return [
+            GlobalMedioPagoRow(
+                id=row.id,
+                codigo=str(row.codigo),
+                descripcion=str(row.descripcion),
+                activo=bool(row.activo),
+                habilita_titular=bool(row.habilita_titular),
+                habilita_alias=bool(row.habilita_alias),
+            )
+            for row in rows
+        ]
+
+    def get_global_medio_pago(
+        self, medio_pago_id: int
+    ) -> GlobalMedioPagoRow | None:
+        """Return the single global ``MediosPago`` row or ``None``.
+
+        The helper is intentionally a no-match (returns ``None``)
+        for an unknown id so the panel renders the documented
+        not-found page rather than propagating a raw exception.
+        The helper does NOT read ``ComercioMedioPago`` and never
+        exposes per-commerce ``titular`` / ``alias`` values.
+        """
+        row = self._session.get(MediosPago, medio_pago_id)
+        if row is None:
+            return None
+        return GlobalMedioPagoRow(
+            id=row.id,
+            codigo=str(row.codigo),
+            descripcion=str(row.descripcion),
+            activo=bool(row.activo),
+            habilita_titular=bool(row.habilita_titular),
+            habilita_alias=bool(row.habilita_alias),
+        )
 
 
 __all__ = ["AdministrativeCatalogPanelViewService"]

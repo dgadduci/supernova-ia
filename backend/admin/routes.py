@@ -59,11 +59,13 @@ from backend.services.exceptions import (
     InvalidPrecio,
     InvalidPresentacion,
     InvalidProducto,
+    MediosPagoNotFound,
     PrecioNotFound,
     PresentacionNotFound,
     ProductoNotFound,
     ProductoPresentacionNotFound,
 )
+from backend.services.medios_pago_service import MediosPagoService
 
 _TEMPLATE_DIR = (
     PathLib(__file__).resolve().parents[1]
@@ -95,6 +97,20 @@ def _create_service(
 ) -> CatalogCreateService:
     settings = load_settings()
     return CatalogCreateService(session=session, settings=settings)
+
+
+def _medios_pago_service(
+    session: Annotated[Session, Depends(get_session)],
+) -> MediosPagoService:
+    """Build the shared :class:`MediosPagoService` for the panel.
+
+    The dependency is intentionally identical to the JSON API
+    router's factory: the panel is a pure rendering / HTTP adapter
+    over the existing service so the commit / rollback sequence,
+    the duplicate-codigo behaviour and the not-found outcome remain
+    the ones the JSON API exposes.
+    """
+    return MediosPagoService(session)
 
 
 def _render(
@@ -1448,6 +1464,380 @@ def _build_paginator_url(
     if not cleaned:
         return base
     return f"{base}?{urlencode(cleaned)}"
+
+
+@router.get("/medios-pago", response_class=HTMLResponse)
+def list_global_medios_pago(
+    request: Request,
+    service: Annotated[
+        AdministrativeCatalogPanelViewService, Depends(_view_service)
+    ],
+) -> Response:
+    rows = service.list_global_medios_pago()
+    return _render(
+        request,
+        "medios_pago_list.html",
+        _form_context(
+            request=request,
+            path="/admin/catalog/medios-pago",
+            extra={"medios_pago": rows, "status": None},
+        ),
+    )
+
+
+@router.get("/medios-pago/nuevo", response_class=HTMLResponse)
+def new_medio_pago_form(
+    request: Request,
+    service: Annotated[
+        AdministrativeCatalogPanelViewService, Depends(_view_service)
+    ],
+) -> Response:
+    return _render(
+        request,
+        "medio_pago_form.html",
+        _form_context(
+            request=request,
+            path="/admin/catalog/medios-pago/nuevo",
+            extra={
+                "is_edit": False,
+                "form_title": "Nuevo medio de pago global",
+                "submit_label": "Crear medio de pago",
+                "form_action": "/admin/catalog/medios-pago/nuevo",
+                "form_values": {
+                    "codigo": "",
+                    "descripcion": "",
+                    "activo": True,
+                    "habilita_titular": False,
+                    "habilita_alias": False,
+                },
+                "form_error": None,
+            },
+        ),
+    )
+
+
+@router.post("/medios-pago/nuevo", response_class=HTMLResponse)
+def create_medio_pago(
+    request: Request,
+    medios_pago_service: Annotated[
+        MediosPagoService, Depends(_medios_pago_service)
+    ],
+    codigo: Annotated[str, Form()] = "",
+    descripcion: Annotated[str, Form()] = "",
+    activo: Annotated[str | None, Form()] = None,
+    habilita_titular: Annotated[str | None, Form()] = None,
+    habilita_alias: Annotated[str | None, Form()] = None,
+) -> Response:
+    try:
+        coerced_activo = _coerce_optional_bool(activo)
+        coerced_titular = _coerce_optional_bool(habilita_titular)
+        coerced_alias = _coerce_optional_bool(habilita_alias)
+    except ValueError as exc:
+        return _re_render_medio_pago_form(
+            request=request,
+            is_edit=False,
+            form_values={
+                "codigo": codigo,
+                "descripcion": descripcion,
+                "activo": activo,
+                "habilita_titular": habilita_titular,
+                "habilita_alias": habilita_alias,
+            },
+            error_message=str(exc),
+            field_name="activo",
+        )
+
+    try:
+        row = medios_pago_service.create(
+            codigo=codigo,
+            descripcion=descripcion,
+            activo=bool(coerced_activo) if coerced_activo is not None else True,
+            habilita_titular=bool(coerced_titular) if coerced_titular is not None else False,
+            habilita_alias=bool(coerced_alias) if coerced_alias is not None else False,
+        )
+    except Exception as exc:  # noqa: BLE001 - panel intentionally sanitises any failure
+        mapping = _map_domain_exception(exc)
+        return _re_render_medio_pago_form(
+            request=request,
+            is_edit=False,
+            form_values={
+                "codigo": codigo,
+                "descripcion": descripcion,
+                "activo": activo,
+                "habilita_titular": habilita_titular,
+                "habilita_alias": habilita_alias,
+            },
+            error_message=mapping.message,
+            field_name="codigo" if mapping.status_code == 409 else "descripcion",
+        )
+
+    return _form_success_redirect(
+        f"/admin/catalog/medios-pago?created=medio-pago#{row.id}"
+    )
+
+
+@router.get("/medios-pago/{medio_pago_id}/editar", response_class=HTMLResponse)
+def edit_medio_pago_form(
+    request: Request,
+    medio_pago_id: Annotated[str, Path()],
+    service: Annotated[
+        AdministrativeCatalogPanelViewService, Depends(_view_service)
+    ],
+) -> Response:
+    try:
+        parsed_id = parse_positive_int(medio_pago_id, field_name="medio_pago_id")
+    except ValueError:
+        return _render(
+            request,
+            "bad_request.html",
+            _form_context(
+                request=request,
+                path=str(request.url.path),
+                extra={"message": "medio_pago_id must be a positive integer"},
+            ),
+            status_code=400,
+        )
+
+    row = service.get_global_medio_pago(parsed_id)
+    if row is None:
+        return _render(
+            request,
+            "not_found.html",
+            _form_context(
+                request=request,
+                path=str(request.url.path),
+                extra={
+                    "raw_id": medio_pago_id,
+                    "resource_label": "medio de pago global",
+                },
+            ),
+            status_code=404,
+        )
+
+    return _render(
+        request,
+        "medio_pago_form.html",
+        _form_context(
+            request=request,
+            path=f"/admin/catalog/medios-pago/{parsed_id}/editar",
+            extra={
+                "is_edit": True,
+                "form_title": f"Editar medio de pago global #{row.id}",
+                "submit_label": "Guardar cambios",
+                "form_action": f"/admin/catalog/medios-pago/{parsed_id}/editar",
+                "form_values": {
+                    "codigo": row.codigo,
+                    "descripcion": row.descripcion,
+                    "activo": row.activo,
+                    "habilita_titular": row.habilita_titular,
+                    "habilita_alias": row.habilita_alias,
+                },
+                "form_error": None,
+            },
+        ),
+    )
+
+
+@router.post("/medios-pago/{medio_pago_id}/editar", response_class=HTMLResponse)
+def update_medio_pago(
+    request: Request,
+    medio_pago_id: Annotated[str, Path()],
+    medios_pago_service: Annotated[
+        MediosPagoService, Depends(_medios_pago_service)
+    ],
+    descripcion: Annotated[str | None, Form()] = None,
+    activo: Annotated[str | None, Form()] = None,
+    habilita_titular: Annotated[str | None, Form()] = None,
+    habilita_alias: Annotated[str | None, Form()] = None,
+) -> Response:
+    try:
+        parsed_id = parse_positive_int(medio_pago_id, field_name="medio_pago_id")
+    except ValueError:
+        return _render(
+            request,
+            "bad_request.html",
+            _form_context(
+                request=request,
+                path=str(request.url.path),
+                extra={"message": "medio_pago_id must be a positive integer"},
+            ),
+            status_code=400,
+        )
+
+    try:
+        coerced_activo = _coerce_optional_bool(activo)
+        coerced_titular = _coerce_optional_bool(habilita_titular)
+        coerced_alias = _coerce_optional_bool(habilita_alias)
+    except ValueError as exc:
+        return _re_render_medio_pago_update_form(
+            request=request,
+            medios_pago_service=medios_pago_service,
+            medio_pago_id=parsed_id,
+            form_values={
+                "descripcion": descripcion,
+                "activo": activo,
+                "habilita_titular": habilita_titular,
+                "habilita_alias": habilita_alias,
+            },
+            error_message=str(exc),
+            field_name="activo",
+        )
+
+    try:
+        row = medios_pago_service.update(
+            parsed_id,
+            descripcion=descripcion,
+            activo=coerced_activo,
+            habilita_titular=coerced_titular,
+            habilita_alias=coerced_alias,
+        )
+    except MediosPagoNotFound:
+        return _render(
+            request,
+            "not_found.html",
+            _form_context(
+                request=request,
+                path=str(request.url.path),
+                extra={
+                    "raw_id": medio_pago_id,
+                    "resource_label": "medio de pago global",
+                },
+            ),
+            status_code=404,
+        )
+    except Exception as exc:  # noqa: BLE001 - panel intentionally sanitises any failure
+        mapping = _map_domain_exception(exc)
+        return _re_render_medio_pago_update_form(
+            request=request,
+            medios_pago_service=medios_pago_service,
+            medio_pago_id=parsed_id,
+            form_values={
+                "descripcion": descripcion,
+                "activo": activo,
+                "habilita_titular": habilita_titular,
+                "habilita_alias": habilita_alias,
+            },
+            error_message=mapping.message,
+            field_name="descripcion",
+        )
+
+    return _form_success_redirect(
+        f"/admin/catalog/medios-pago?updated=medio-pago#{row.id}"
+    )
+
+
+def _re_render_medio_pago_form(
+    *,
+    request: Request,
+    is_edit: bool,
+    form_values: dict[str, Any],
+    error_message: str,
+    field_name: str | None,
+) -> Response:
+    path = "/admin/catalog/medios-pago/editar" if is_edit else "/admin/catalog/medios-pago/nuevo"
+    action = path
+    return _render(
+        request,
+        "medio_pago_form.html",
+        _form_context(
+            request=request,
+            path=path,
+            extra={
+                "is_edit": is_edit,
+                "form_title": (
+                    "Editar medio de pago global"
+                    if is_edit
+                    else "Nuevo medio de pago global"
+                ),
+                "submit_label": "Guardar cambios" if is_edit else "Crear medio de pago",
+                "form_action": action,
+                "form_values": {
+                    "codigo": form_values.get("codigo") or "",
+                    "descripcion": form_values.get("descripcion") or "",
+                    "activo": _checkbox_state(form_values.get("activo")),
+                    "habilita_titular": _checkbox_state(
+                        form_values.get("habilita_titular")
+                    ),
+                    "habilita_alias": _checkbox_state(
+                        form_values.get("habilita_alias")
+                    ),
+                },
+                "form_error": CatalogFormError(
+                    message=error_message,
+                    field_name=field_name,
+                ),
+            },
+        ),
+    )
+
+
+def _re_render_medio_pago_update_form(
+    *,
+    request: Request,
+    medios_pago_service: MediosPagoService,
+    medio_pago_id: int,
+    form_values: dict[str, Any],
+    error_message: str,
+    field_name: str | None,
+) -> Response:
+    row = medios_pago_service.get_by_id(medio_pago_id)
+    if row is None:
+        return _form_success_redirect("/admin/catalog/medios-pago")
+    path = f"/admin/catalog/medios-pago/{medio_pago_id}/editar"
+    return _render(
+        request,
+        "medio_pago_form.html",
+        _form_context(
+            request=request,
+            path=path,
+            extra={
+                "is_edit": True,
+                "form_title": f"Editar medio de pago global #{row.id}",
+                "submit_label": "Guardar cambios",
+                "form_action": path,
+                "form_values": {
+                    "codigo": row.codigo,
+                    "descripcion": form_values.get("descripcion") or row.descripcion,
+                    "activo": (
+                        form_values.get("activo")
+                        if form_values.get("activo") is not None
+                        else ("true" if row.activo else None)
+                    ),
+                    "habilita_titular": (
+                        form_values.get("habilita_titular")
+                        if form_values.get("habilita_titular") is not None
+                        else ("true" if row.habilita_titular else None)
+                    ),
+                    "habilita_alias": (
+                        form_values.get("habilita_alias")
+                        if form_values.get("habilita_alias") is not None
+                        else ("true" if row.habilita_alias else None)
+                    ),
+                },
+                "form_error": CatalogFormError(
+                    message=error_message,
+                    field_name=field_name,
+                ),
+            },
+        ),
+    )
+
+
+def _checkbox_state(raw_value: str | None) -> bool | None:
+    """Translate a form checkbox raw value into a tri-state boolean.
+
+    HTML checkboxes only submit when ticked (``"true"``); an
+    unticked checkbox is absent from the form payload (``None``).
+    The helper keeps ``None`` for the absent case so the template
+    can render the checkbox as unchecked, and converts any other
+    string to ``True`` to be tolerant of HTML form quirks.
+    """
+    if raw_value is None:
+        return None
+    cleaned = raw_value.strip().lower()
+    if cleaned == "":
+        return None
+    return cleaned in {"true", "1", "on", "yes", "si", "sí"}
 
 
 __all__ = ["router"]

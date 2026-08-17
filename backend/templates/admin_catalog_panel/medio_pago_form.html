@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}{{ form_title }} — Panel administrativo{% endblock %}
+{% block crumb %}<span class="crumb">· <a href="/admin/catalog/medios-pago">Medios de pago globales</a> · {{ form_title }}</span>{% endblock %}
+{% block body %}
+<h1>{{ form_title }}</h1>
+<p class="muted">Catálogo global <code>MediosPago</code>. Los flags controlan la disponibilidad de los campos por comercio, no su obligatoriedad.</p>
+
+{% if form_error %}
+<section class="notice error" role="alert" aria-live="assertive" data-form-error>
+  <span class="label">Error</span>
+  <div class="body"><p style="margin: 0;">{{ form_error.message }}</p></div>
+</section>
+{% endif %}
+
+<section class="panel" aria-label="{{ form_title }}">
+  <form
+    method="post"
+    action="{{ form_action }}"
+    class="form-grid"
+    data-medio-pago-form
+  >
+    <input type="hidden" name="{{ csrf_nonce_field }}" value="{{ form_nonce }}">
+
+    {% if is_edit %}
+    <label class="form-field" for="codigo">
+      Código
+      <input
+        id="codigo"
+        name="codigo_display"
+        type="text"
+        value="{{ form_values.codigo }}"
+        readonly
+        aria-readonly="true"
+      >
+      <span class="hint">Identificador único del medio de pago global. No editable.</span>
+    </label>
+    {% else %}
+    <label class="form-field" for="codigo">
+      Código
+      <input
+        id="codigo"
+        name="codigo"
+        type="text"
+        maxlength="50"
+        required
+        value="{{ form_values.codigo or '' }}"
+        {% if form_error and form_error.field_name == 'codigo' %}aria-invalid="true" class="invalid"{% endif %}
+      >
+      <span class="hint">Identificador único del medio de pago global (1 a 50 caracteres).</span>
+    </label>
+    {% endif %}
+
+    <label class="form-field" for="descripcion">
+      Descripción
+      <input
+        id="descripcion"
+        name="descripcion"
+        type="text"
+        maxlength="100"
+        required
+        value="{{ form_values.descripcion or '' }}"
+        {% if form_error and form_error.field_name == 'descripcion' %}aria-invalid="true" class="invalid"{% endif %}
+      >
+      <span class="hint">Etiqueta visible para el operador (1 a 100 caracteres).</span>
+    </label>
+
+    <div class="grid-3">
+      <div class="checkbox-row">
+        {% if is_edit %}<input type="hidden" name="activo" value="false">{% endif %}
+        <input id="activo" name="activo" type="checkbox" value="true" {% if form_values.activo %}checked{% endif %}>
+        <label for="activo">Activo en el catálogo global</label>
+      </div>
+      <div class="checkbox-row">
+        {% if is_edit %}<input type="hidden" name="habilita_titular" value="false">{% endif %}
+        <input id="habilita_titular" name="habilita_titular" type="checkbox" value="true" {% if form_values.habilita_titular %}checked{% endif %}>
+        <label for="habilita_titular">Habilita titular</label>
+      </div>
+      <div class="checkbox-row">
+        {% if is_edit %}<input type="hidden" name="habilita_alias" value="false">{% endif %}
+        <input id="habilita_alias" name="habilita_alias" type="checkbox" value="true" {% if form_values.habilita_alias %}checked{% endif %}>
+        <label for="habilita_alias">Habilita alias</label>
+      </div>
+    </div>
+
+    <p class="hint muted">Los flags controlan disponibilidad para los formularios por comercio, no obligatoriedad. Los valores concretos <code>titular</code> y <code>alias</code> siguen siendo propios de cada <code>ComercioMedioPago</code>.</p>
+
+    <div class="actions">
+      <button class="primary" type="submit">{{ submit_label }}</button>
+      <a class="button secondary" href="/admin/catalog/medios-pago">Cancelar</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

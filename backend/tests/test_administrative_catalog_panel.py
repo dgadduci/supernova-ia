@@ -57,6 +57,7 @@ from backend.admin.views import (
     DeliveryMethodDetailView,
     FlavorOption,
     FlavorSummaryView,
+    GlobalMedioPagoRow,
     PaymentMethodDetailView,
 )
 from backend.config import settings as settings_module
@@ -1904,6 +1905,648 @@ class PanelNoSessionOrCommerceLeakageTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("set-cookie", {k.lower() for k in response.headers})
         self.assertNotIn("token=", response.text.lower())
+
+
+def _build_global_medios_pago_rows() -> list[GlobalMedioPagoRow]:
+    return [
+        GlobalMedioPagoRow(
+            id=1,
+            codigo="EFECTIVO",
+            descripcion="Efectivo",
+            activo=True,
+            habilita_titular=False,
+            habilita_alias=False,
+        ),
+        GlobalMedioPagoRow(
+            id=2,
+            codigo="TRANSFERENCIA",
+            descripcion="Transferencia",
+            activo=True,
+            habilita_titular=True,
+            habilita_alias=True,
+        ),
+        GlobalMedioPagoRow(
+            id=3,
+            codigo="MERCADOPAGO",
+            descripcion="MercadoPago",
+            activo=False,
+            habilita_titular=False,
+            habilita_alias=True,
+        ),
+    ]
+
+
+class PanelGlobalMediosPagoListTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.app = _build_app()
+        self.override = _install_session_override(self, self.app, self.session)
+        self.client = TestClient(self.app, raise_server_exceptions=False, follow_redirects=False)
+        _stub_settings_patcher(self)
+
+    def test_list_renders_all_rows_with_flags(self) -> None:
+        rows = _build_global_medios_pago_rows()
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as service_cls:
+            service_cls.return_value = _stub_view_service()
+            service_cls.return_value.list_global_medios_pago = MagicMock(return_value=rows)
+            response = self.client.get(
+                "/admin/catalog/medios-pago",
+                headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Medios de pago globales", response.text)
+        self.assertIn("EFECTIVO", response.text)
+        self.assertIn("TRANSFERENCIA", response.text)
+        self.assertIn("MERCADOPAGO", response.text)
+        # Independent flags must be readable on the rendered row
+        self.assertIn("habilita_titular", response.text.lower())
+        self.assertIn("habilita_alias", response.text.lower())
+
+    def test_list_without_auth_returns_401(self) -> None:
+        response = self.client.get("/admin/catalog/medios-pago")
+        self.assertEqual(response.status_code, 401)
+        self.override.assert_not_called()
+
+    def test_list_does_not_invoke_json_api(self) -> None:
+        """The panel must call the view service directly, not the
+        JSON API through internal HTTP."""
+        rows = _build_global_medios_pago_rows()
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MediosPagoService"
+        ) as medios_service_cls:
+            view_cls.return_value = _stub_view_service()
+            view_cls.return_value.list_global_medios_pago = MagicMock(return_value=rows)
+            medios_service_cls.return_value = MagicMock(name="MediosPagoService")
+            response = self.client.get(
+                "/admin/catalog/medios-pago",
+                headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 200)
+        view_cls.return_value.list_global_medios_pago.assert_called_once()
+        medios_service_cls.return_value.list_all.assert_not_called()
+
+
+class PanelGlobalMediosPagoNewFormTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.app = _build_app()
+        self.override = _install_session_override(self, self.app, self.session)
+        self.client = TestClient(self.app, raise_server_exceptions=False, follow_redirects=False)
+        _stub_settings_patcher(self)
+
+    def test_new_form_renders_with_default_flags_false(self) -> None:
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls:
+            view_cls.return_value = _stub_view_service()
+            response = self.client.get(
+                "/admin/catalog/medios-pago/nuevo",
+                headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 200)
+        # The checkboxes for the two flags must be present
+        self.assertIn('name="habilita_titular"', response.text)
+        self.assertIn('name="habilita_alias"', response.text)
+        self.assertIn('name="activo"', response.text)
+        # The CSRF nonce field must be bound to the new-form POST target
+        expected_nonce = compute_panel_form_nonce(
+            path="/admin/catalog/medios-pago/nuevo",
+            secret=resolve_panel_csrf_secret(),
+        )
+        self.assertIn(
+            f'name="{NONCE_FIELD}" value="{expected_nonce}"',
+            response.text,
+        )
+
+
+class PanelGlobalMediosPagoCreateTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.app = _build_app()
+        self.override = _install_session_override(self, self.app, self.session)
+        self.client = TestClient(self.app, raise_server_exceptions=False, follow_redirects=False)
+        _stub_settings_patcher(self)
+
+    def test_create_calls_service_with_both_flags(self) -> None:
+        path = "/admin/catalog/medios-pago/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MediosPagoService"
+        ) as service_cls:
+            view_cls.return_value = _stub_view_service()
+            new_row = MagicMock(name="NewMedioPago", id=42)
+            service_cls.return_value.create.return_value = new_row
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    **_same_origin_headers(),
+                },
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "codigo": "  TEST_MEDIO  ",
+                        "descripcion": "  Test medio  ",
+                        "activo": "true",
+                        "habilita_titular": "true",
+                        "habilita_alias": "false",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 303)
+        service_cls.return_value.create.assert_called_once_with(
+            codigo="  TEST_MEDIO  ",
+            descripcion="  Test medio  ",
+            activo=True,
+            habilita_titular=True,
+            habilita_alias=False,
+        )
+
+    def test_create_without_nonce_is_rejected(self) -> None:
+        path = "/admin/catalog/medios-pago/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MediosPagoService"
+        ) as service_cls:
+            view_cls.return_value = _stub_view_service()
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    **_same_origin_headers(),
+                },
+                data={
+                    "codigo": "TEST",
+                    "descripcion": "Test",
+                    "activo": "true",
+                },
+            )
+        self.assertEqual(response.status_code, 400)
+        service_cls.return_value.create.assert_not_called()
+
+    def test_create_without_origin_is_rejected(self) -> None:
+        path = "/admin/catalog/medios-pago/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MediosPagoService"
+        ) as service_cls:
+            view_cls.return_value = _stub_view_service()
+            response = self.client.post(
+                path,
+                headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "codigo": "TEST",
+                        "descripcion": "Test",
+                        "activo": "true",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 400)
+        service_cls.return_value.create.assert_not_called()
+
+    def test_create_with_cross_origin_is_rejected(self) -> None:
+        path = "/admin/catalog/medios-pago/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MediosPagoService"
+        ) as service_cls:
+            view_cls.return_value = _stub_view_service()
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    "Origin": "https://malicious.example.com",
+                },
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "codigo": "TEST",
+                        "descripcion": "Test",
+                        "activo": "true",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 400)
+        service_cls.return_value.create.assert_not_called()
+
+
+class PanelGlobalMediosPagoEditTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.app = _build_app()
+        self.override = _install_session_override(self, self.app, self.session)
+        self.client = TestClient(self.app, raise_server_exceptions=False, follow_redirects=False)
+        _stub_settings_patcher(self)
+
+    def test_edit_form_renders_existing_flags(self) -> None:
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as service_cls:
+            service_cls.return_value = _stub_view_service()
+            service_cls.return_value.get_global_medio_pago = MagicMock(
+                return_value=GlobalMedioPagoRow(
+                    id=2,
+                    codigo="TRANSFERENCIA",
+                    descripcion="Transferencia",
+                    activo=True,
+                    habilita_titular=True,
+                    habilita_alias=False,
+                )
+            )
+            response = self.client.get(
+                "/admin/catalog/medios-pago/2/editar",
+                headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("TRANSFERENCIA", response.text)
+        self.assertIn('name="habilita_titular"', response.text)
+        self.assertIn('name="habilita_alias"', response.text)
+        expected_nonce = compute_panel_form_nonce(
+            path="/admin/catalog/medios-pago/2/editar",
+            secret=resolve_panel_csrf_secret(),
+        )
+        self.assertIn(
+            f'name="{NONCE_FIELD}" value="{expected_nonce}"',
+            response.text,
+        )
+
+    def test_edit_form_404_when_unknown(self) -> None:
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as service_cls:
+            service_cls.return_value = _stub_view_service()
+            service_cls.return_value.get_global_medio_pago = MagicMock(return_value=None)
+            response = self.client.get(
+                "/admin/catalog/medios-pago/9999/editar",
+                headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 404)
+
+    def test_edit_form_400_when_invalid_id(self) -> None:
+        response = self.client.get(
+            "/admin/catalog/medios-pago/abc/editar",
+            headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_update_calls_service_with_partial_payload(self) -> None:
+        path = "/admin/catalog/medios-pago/2/editar"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MediosPagoService"
+        ) as service_cls:
+            view_cls.return_value = _stub_view_service()
+            service_cls.return_value.get_by_id.return_value = MagicMock(
+                id=2,
+                codigo="TRANSFERENCIA",
+                descripcion="Transferencia",
+                activo=True,
+                habilita_titular=True,
+                habilita_alias=False,
+            )
+            service_cls.return_value.update.return_value = MagicMock(id=2)
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    **_same_origin_headers(),
+                },
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "descripcion": "  Transferencia bancaria  ",
+                        "activo": "false",
+                        "habilita_titular": "true",
+                        "habilita_alias": "true",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 303)
+        service_cls.return_value.update.assert_called_once_with(
+            2,
+            descripcion="  Transferencia bancaria  ",
+            activo=False,
+            habilita_titular=True,
+            habilita_alias=True,
+        )
+
+    def test_edit_form_renders_hidden_false_inputs_before_checkbox(self) -> None:
+        """The edit template must render a hidden ``value="false"``
+        input BEFORE every boolean checkbox. Starlette's
+        ``FormData`` keeps the LAST occurrence of a duplicated key
+        (the underlying dict comprehension overwrites earlier
+        values), so a hidden ``false`` placed AFTER the checkbox
+        would win over the ``true`` value the browser sends for a
+        checked box and silently persist ``False`` even when the
+        operator marked the field on. Placing the hidden input
+        BEFORE the checkbox keeps the checkbox value last in the
+        form payload so the checked state survives the round trip."""
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as service_cls:
+            service_cls.return_value = _stub_view_service()
+            service_cls.return_value.get_global_medio_pago = MagicMock(
+                return_value=GlobalMedioPagoRow(
+                    id=2,
+                    codigo="TRANSFERENCIA",
+                    descripcion="Transferencia",
+                    activo=True,
+                    habilita_titular=True,
+                    habilita_alias=True,
+                )
+            )
+            response = self.client.get(
+                "/admin/catalog/medios-pago/2/editar",
+                headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 200)
+        for field in ("activo", "habilita_titular", "habilita_alias"):
+            with self.subTest(field=field):
+                hidden_idx = response.text.index(
+                    f'name="{field}" value="false"'
+                )
+                checkbox_idx = response.text.index(
+                    f'name="{field}" type="checkbox"', hidden_idx
+                )
+                self.assertLess(
+                    hidden_idx,
+                    checkbox_idx,
+                    f"hidden false input for {field!r} must come BEFORE the checkbox",
+                )
+
+    def test_new_form_does_not_render_hidden_false_inputs(self) -> None:
+        """The new-form path keeps the documented absence-as-default
+        contract for ``activo``: the operator only sees the
+        checkbox and the create route falls back to the documented
+        default when the field is absent. The hidden ``false``
+        siblings are edit-only so the create semantics stay
+        untouched."""
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as service_cls:
+            service_cls.return_value = _stub_view_service()
+            response = self.client.get(
+                "/admin/catalog/medios-pago/nuevo",
+                headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 200)
+        for field in ("activo", "habilita_titular", "habilita_alias"):
+            with self.subTest(field=field):
+                self.assertNotIn(
+                    f'name="{field}" value="false"',
+                    response.text,
+                )
+
+    def test_update_checked_checkbox_persists_true_in_browser_order(self) -> None:
+        """Submitting the real edit form with every checkbox
+        marked must persist ``True`` for each boolean field. The
+        test sends the realistic browser payload: the hidden
+        ``false`` sibling (rendered first by the template) appears
+        before the checked ``true`` value in the body, exactly as
+        Starlette parses it. This is the regression that motivated
+        the current fix: a hidden ``false`` placed AFTER the
+        checkbox would overwrite the checked ``true`` value because
+        ``FormData`` keeps the LAST occurrence."""
+        path = "/admin/catalog/medios-pago/2/editar"
+        nonce = compute_panel_form_nonce(
+            path=path, secret=resolve_panel_csrf_secret()
+        )
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MediosPagoService"
+        ) as service_cls:
+            view_cls.return_value = _stub_view_service()
+            service_cls.return_value.get_by_id.return_value = MagicMock(
+                id=2,
+                codigo="TRANSFERENCIA",
+                descripcion="Transferencia",
+                activo=False,
+                habilita_titular=False,
+                habilita_alias=False,
+            )
+            service_cls.return_value.update.return_value = MagicMock(id=2)
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    **_same_origin_headers(),
+                },
+                # ``data`` carries each boolean field twice in the
+                # exact browser order: the hidden ``false`` sibling
+                # first (rendered before the checkbox by the
+                # template), then the checked ``true`` value. The
+                # body encodes as
+                # ``activo=false&activo=true&...``.
+                data={
+                    NONCE_FIELD: nonce,
+                    "descripcion": "Transferencia",
+                    "activo": ["false", "true"],
+                    "habilita_titular": ["false", "true"],
+                    "habilita_alias": ["false", "true"],
+                },
+            )
+        self.assertEqual(response.status_code, 303)
+        service_cls.return_value.update.assert_called_once_with(
+            2,
+            descripcion="Transferencia",
+            activo=True,
+            habilita_titular=True,
+            habilita_alias=True,
+        )
+
+    def test_update_with_all_checkboxes_unchecked_persists_false(self) -> None:
+        """Submitting the real edit form with every checkbox
+        unchecked must persist ``False`` for each boolean field. The
+        browser only sends the hidden ``false`` sibling when the
+        checkbox is unchecked (the unchecked checkbox itself is
+        omitted from the payload), so the body carries a single
+        ``false`` value per field."""
+        path = "/admin/catalog/medios-pago/2/editar"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MediosPagoService"
+        ) as service_cls:
+            view_cls.return_value = _stub_view_service()
+            service_cls.return_value.get_by_id.return_value = MagicMock(
+                id=2,
+                codigo="TRANSFERENCIA",
+                descripcion="Transferencia",
+                activo=True,
+                habilita_titular=True,
+                habilita_alias=True,
+            )
+            service_cls.return_value.update.return_value = MagicMock(id=2)
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    **_same_origin_headers(),
+                },
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "descripcion": "Transferencia",
+                        "activo": "false",
+                        "habilita_titular": "false",
+                        "habilita_alias": "false",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 303)
+        service_cls.return_value.update.assert_called_once_with(
+            2,
+            descripcion="Transferencia",
+            activo=False,
+            habilita_titular=False,
+            habilita_alias=False,
+        )
+
+    def test_update_mixed_checkbox_states_persists_correctly(self) -> None:
+        """A mixed form with one checkbox unchecked and the other
+        two marked must persist ``False`` for the unchecked field
+        and ``True`` for the marked ones. The test sends the
+        realistic browser payload per field so the duplicate-value
+        behaviour (checked) and the single-value behaviour
+        (unchecked) coexist in the same submission. This guards
+        against a future regression where the hidden-input ordering
+        could silently flip one of the booleans."""
+        path = "/admin/catalog/medios-pago/2/editar"
+        nonce = compute_panel_form_nonce(
+            path=path, secret=resolve_panel_csrf_secret()
+        )
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MediosPagoService"
+        ) as service_cls:
+            view_cls.return_value = _stub_view_service()
+            service_cls.return_value.get_by_id.return_value = MagicMock(
+                id=2,
+                codigo="TRANSFERENCIA",
+                descripcion="Transferencia",
+                activo=False,
+                habilita_titular=True,
+                habilita_alias=True,
+            )
+            service_cls.return_value.update.return_value = MagicMock(id=2)
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    **_same_origin_headers(),
+                },
+                data={
+                    NONCE_FIELD: nonce,
+                    "descripcion": "  Transferencia bancaria  ",
+                    # ``activo`` is marked: hidden sibling + checkbox
+                    "activo": ["false", "true"],
+                    # ``habilita_titular`` is unchecked: only the
+                    # hidden ``false`` sibling survives
+                    "habilita_titular": "false",
+                    # ``habilita_alias`` is marked: hidden sibling + checkbox
+                    "habilita_alias": ["false", "true"],
+                },
+            )
+        self.assertEqual(response.status_code, 303)
+        service_cls.return_value.update.assert_called_once_with(
+            2,
+            descripcion="  Transferencia bancaria  ",
+            activo=True,
+            habilita_titular=False,
+            habilita_alias=True,
+        )
+
+    def test_update_without_nonce_is_rejected(self) -> None:
+        path = "/admin/catalog/medios-pago/2/editar"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MediosPagoService"
+        ) as service_cls:
+            view_cls.return_value = _stub_view_service()
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    **_same_origin_headers(),
+                },
+                data={
+                    "descripcion": "X",
+                    "habilita_titular": "true",
+                },
+            )
+        self.assertEqual(response.status_code, 400)
+        service_cls.return_value.update.assert_not_called()
+
+    def test_update_404_when_unknown(self) -> None:
+        path = "/admin/catalog/medios-pago/9999/editar"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MediosPagoService"
+        ) as service_cls:
+            view_cls.return_value = _stub_view_service()
+            service_cls.return_value.update.side_effect = admin_routes.MediosPagoNotFound(9999)
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    **_same_origin_headers(),
+                },
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "descripcion": "X",
+                        "habilita_titular": "true",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 404)
+
+
+class PanelGlobalMediosPagoJsonBoundaryTest(unittest.TestCase):
+    """The new panel surface must not weaken the JSON API
+    authentication contract: the JSON endpoints still require
+    ``X-Admin-Token`` and the panel never calls them through
+    internal HTTP."""
+
+    def setUp(self) -> None:
+        self.app = main_module.app
+        self.client = TestClient(self.app, raise_server_exceptions=False, follow_redirects=False)
+        self.session = MagicMock(name="DatabaseSession")
+        self.override = _install_session_override(self, self.app, self.session)
+        _stub_settings_patcher(self)
+
+    def test_json_get_rejects_basic_auth(self) -> None:
+        response = self.client.get(
+            "/medios-pago/1",
+            headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+        )
+        self.assertEqual(response.status_code, 401)
+        self.override.assert_not_called()
+
+    def test_json_create_requires_x_admin_token(self) -> None:
+        response = self.client.post(
+            "/medios-pago",
+            json={
+                "codigo": "TEST_TOKEN",
+                "descripcion": "Test token",
+            },
+        )
+        self.assertEqual(response.status_code, 401)
 
 
 if __name__ == "__main__":

@@ -76,6 +76,25 @@ class PaymentMethodDetailView:
 
 
 @dataclass(frozen=True)
+class GlobalMedioPagoRow:
+    """One global payment-method row in the catalog administration view.
+
+    The view model carries only the documented closed fields the
+    panel renders. The per-commerce ``titular`` / ``alias`` values
+    remain exclusively on ``ComercioMedioPago``; the global catalog
+    stores the boolean availability flags that govern whether a
+    commerce form may edit those per-commerce values.
+    """
+
+    id: int
+    codigo: str
+    descripcion: str
+    activo: bool
+    habilita_titular: bool
+    habilita_alias: bool
+
+
+@dataclass(frozen=True)
 class DeliveryMethodDetailView:
     """One commerce-level delivery-method row in the detail view."""
 
@@ -301,6 +320,7 @@ __all__ = [
     "DeliveryMethodDetailView",
     "FlavorOption",
     "FlavorSummaryView",
+    "GlobalMedioPagoRow",
     "InvalidComercioIdError",
     "InvalidNestedIdError",
     "PanelFormStatus",

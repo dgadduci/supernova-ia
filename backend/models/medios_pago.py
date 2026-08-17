@@ -33,6 +33,20 @@ class MediosPago(Base):
         server_default="true",
     )
 
+    habilita_titular: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
+
+    habilita_alias: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
+
     fecha_alta: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

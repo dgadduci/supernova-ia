@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Medios de pago globales — Panel administrativo{% endblock %}
+{% block crumb %}<span class="crumb">· <a href="/admin/catalog/comercios">Comercios</a> · Medios de pago globales</span>{% endblock %}
+{% block body %}
+<h1>Medios de pago globales</h1>
+<p class="muted">Catálogo global <code>MediosPago</code>. Los flags <code>habilita_titular</code> y <code>habilita_alias</code> determinan la disponibilidad de los campos por comercio; los valores concretos <code>titular</code> y <code>alias</code> siguen siendo propios de cada <code>ComercioMedioPago</code>.</p>
+
+{% if status %}
+<section class="notice {% if status.outcome == 'success' %}success{% else %}error{% endif %}" role="status" aria-live="polite" data-form-status>
+  <span class="label">{% if status.outcome == 'success' %}Listo{% else %}Error{% endif %}</span>
+  <div class="body"><p style="margin: 0;">{{ status.message }}</p></div>
+</section>
+{% endif %}
+
+<p>
+  <a class="button primary" href="/admin/catalog/medios-pago/nuevo">Nuevo medio de pago global</a>
+</p>
+
+{% if medios_pago %}
+<table>
+  <thead>
+    <tr>
+      <th>Código</th>
+      <th>Descripción</th>
+      <th>Estado</th>
+      <th>Habilita titular</th>
+      <th>Habilita alias</th>
+      <th>Acción</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in medios_pago %}
+    <tr>
+      <td><span class="visual-link">#{{ row.id }} — {{ row.codigo }}</span></td>
+      <td>{{ row.descripcion }}</td>
+      <td>
+        <span class="badge {% if row.activo %}success{% else %}warning{% endif %}">
+          {% if row.activo %}Activo{% else %}Inactivo{% endif %}
+        </span>
+      </td>
+      <td>
+        {% if row.habilita_titular %}
+          <span class="badge accent">Sí</span>
+        {% else %}
+          <span class="badge">No</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if row.habilita_alias %}
+          <span class="badge accent">Sí</span>
+        {% else %}
+          <span class="badge">No</span>
+        {% endif %}
+      </td>
+      <td>
+        <a class="visual-link" href="/admin/catalog/medios-pago/{{ row.id }}/editar">Editar</a>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty">No hay medios de pago globales registrados.</div>
+{% endif %}
+{% endblock %}
