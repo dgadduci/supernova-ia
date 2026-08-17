@@ -617,6 +617,33 @@ class AdministrativeCatalogPanelViewService:
             for row in rows
         ]
 
+    def list_global_metodos_entrega(self) -> list[GlobalMetodoEntregaRow]:
+        """Return the global ``MetodosEntrega`` catalog for the panel.
+
+        The helper reads the canonical global catalog (every row,
+        not filtered by comercio) and projects each row into a
+        closed :class:`GlobalMetodoEntregaRow` view so the panel
+        can render the global code / description / order / active
+        state without ever inspecting SQLAlchemy ORM state. The
+        helper does NOT read ``ComercioMetodoEntrega`` and never
+        widens the query to a comercio scope.
+        """
+        stmt = (
+            select(MetodosEntrega)
+            .order_by(MetodosEntrega.orden.asc(), MetodosEntrega.id.asc())
+        )
+        rows = list(self._session.execute(stmt).scalars())
+        return [
+            GlobalMetodoEntregaRow(
+                id=int(row.id),
+                codigo=str(row.codigo),
+                descripcion=str(row.descripcion),
+                orden=int(row.orden),
+                activo=bool(row.activo),
+            )
+            for row in rows
+        ]
+
     def get_global_medio_pago(
         self, medio_pago_id: int
     ) -> GlobalMedioPagoRow | None:

@@ -452,6 +452,7 @@
     <a href="/admin" {% if request.url.path == '/admin' or request.url.path == '/admin/' %}aria-current="page"{% endif %}>Inicio</a>
     <a href="/admin/catalog/comercios" {% if request.url.path.startswith('/admin/catalog/comercios') %}aria-current="page"{% endif %}>Comercios</a>
     <a href="/admin/catalog/medios-pago" {% if request.url.path.startswith('/admin/catalog/medios-pago') %}aria-current="page"{% endif %}>Medios de pago</a>
+    <a href="/admin/catalog/metodos-entrega" {% if request.url.path.startswith('/admin/catalog/metodos-entrega') %}aria-current="page"{% endif %}>Métodos de entrega</a>
     <a href="/admin/pilot/orders" rel="noopener">Operación (panel piloto)</a>
   </nav>
   {% block crumb %}{% endblock %}

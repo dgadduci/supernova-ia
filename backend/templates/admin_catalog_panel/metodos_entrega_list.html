@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Métodos de entrega globales — Panel administrativo{% endblock %}
+{% block crumb %}<span class="crumb">· <a href="/admin/catalog/comercios">Comercios</a> · Métodos de entrega globales</span>{% endblock %}
+{% block body %}
+<h1>Métodos de entrega globales</h1>
+<p class="muted">Catálogo global <code>MetodosEntrega</code>. El <code>orden</code> mostrado es el orden global y es independiente del <code>orden</code> propio de cada <code>ComercioMetodoEntrega</code>. Las asociaciones por comercio se rigen por su propio estado y orden; desactivar este catálogo nunca borra ni deshabilita las asociaciones existentes.</p>
+
+{% if status %}
+<section class="notice {% if status.outcome == 'success' %}success{% else %}error{% endif %}" role="status" aria-live="polite" data-form-status>
+  <span class="label">{% if status.outcome == 'success' %}Listo{% else %}Error{% endif %}</span>
+  <div class="body"><p style="margin: 0;">{{ status.message }}</p></div>
+</section>
+{% endif %}
+
+<p>
+  <a class="button primary" href="/admin/catalog/metodos-entrega/nuevo">Nuevo método de entrega global</a>
+</p>
+
+{% if metodos_entrega %}
+<div class="table-scroll" data-panel-table-scroll="metodos-entrega-globales">
+<table>
+  <thead>
+    <tr>
+      <th scope="col">ID</th>
+      <th scope="col">Código</th>
+      <th scope="col">Descripción</th>
+      <th scope="col">Orden global</th>
+      <th scope="col">Estado</th>
+      <th scope="col" class="actions-col">Acción</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in metodos_entrega %}
+    <tr>
+      <td><span class="visual-link">#{{ row.id }}</span></td>
+      <td><code>{{ row.codigo }}</code></td>
+      <td>{{ row.descripcion }}</td>
+      <td>{{ row.orden }}</td>
+      <td>
+        <span class="badge {% if row.activo %}success{% else %}warning{% endif %}">
+          {% if row.activo %}Activo{% else %}Inactivo{% endif %}
+        </span>
+      </td>
+      <td class="actions-col">
+        <a class="visual-link" href="/admin/catalog/metodos-entrega/{{ row.id }}/editar">Editar</a>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<div class="empty">No hay métodos de entrega globales registrados.</div>
+{% endif %}
+{% endblock %}

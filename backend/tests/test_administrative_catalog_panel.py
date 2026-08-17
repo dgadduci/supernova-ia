@@ -61,6 +61,7 @@ from backend.admin.views import (
     FlavorOption,
     FlavorSummaryView,
     GlobalMedioPagoRow,
+    GlobalMetodoEntregaRow,
     InactiveDeliveryMethodDetailView,
     InactivePaymentMethodDetailView,
     PaymentMethodDetailView,
@@ -167,6 +168,8 @@ def _stub_view_service(
     categoria: CatalogCategoriaDetailView | None = None,
     producto: CatalogProductoDetailView | None = None,
     pp: CatalogProductoPresentacionRow | None = None,
+    list_global_metodos_entrega_value: list[GlobalMetodoEntregaRow] | None = None,
+    get_global_metodo_entrega_value: GlobalMetodoEntregaRow | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         list_comercios=MagicMock(return_value=comercios or []),
@@ -177,6 +180,12 @@ def _stub_view_service(
         get_producto_detail=MagicMock(return_value=producto),
         find_producto_presentacion=MagicMock(return_value=pp),
         find_producto_presentacion_for_pp=MagicMock(return_value=pp),
+        list_global_metodos_entrega=MagicMock(
+            return_value=list_global_metodos_entrega_value or []
+        ),
+        get_global_metodo_entrega=MagicMock(
+            return_value=get_global_metodo_entrega_value
+        ),
     )
 
 
@@ -2967,6 +2976,759 @@ class PanelGlobalMediosPagoJsonBoundaryTest(unittest.TestCase):
             json={
                 "codigo": "TEST_TOKEN",
                 "descripcion": "Test token",
+            },
+        )
+        self.assertEqual(response.status_code, 401)
+
+
+def _build_global_metodos_entrega_rows() -> list[GlobalMetodoEntregaRow]:
+    return [
+        GlobalMetodoEntregaRow(
+            id=1,
+            codigo="RETIRO",
+            descripcion="Retiro en local",
+            orden=0,
+            activo=True,
+        ),
+        GlobalMetodoEntregaRow(
+            id=2,
+            codigo="DELIVERY",
+            descripcion="Envío a domicilio",
+            orden=1,
+            activo=True,
+        ),
+        GlobalMetodoEntregaRow(
+            id=3,
+            codigo="EXPRESS",
+            descripcion="Envío express",
+            orden=2,
+            activo=False,
+        ),
+    ]
+
+
+class PanelGlobalMetodosEntregaListTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.app = _build_app()
+        self.override = _install_session_override(self, self.app, self.session)
+        self.client = TestClient(self.app, raise_server_exceptions=False, follow_redirects=False)
+        _stub_settings_patcher(self)
+
+    def test_list_renders_all_rows_with_global_fields(self) -> None:
+        rows = _build_global_metodos_entrega_rows()
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as service_cls:
+            service_cls.return_value = _stub_view_service(
+                list_global_metodos_entrega_value=rows
+            )
+            response = self.client.get(
+                "/admin/catalog/metodos-entrega",
+                headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Métodos de entrega globales", response.text)
+        self.assertIn("RETIRO", response.text)
+        self.assertIn("DELIVERY", response.text)
+        self.assertIn("EXPRESS", response.text)
+        # Each row's exact global id must participate in the edit URL.
+        self.assertIn("/admin/catalog/metodos-entrega/1/editar", response.text)
+        self.assertIn("/admin/catalog/metodos-entrega/2/editar", response.text)
+        self.assertIn("/admin/catalog/metodos-entrega/3/editar", response.text)
+
+    def test_list_without_auth_returns_401(self) -> None:
+        response = self.client.get("/admin/catalog/metodos-entrega")
+        self.assertEqual(response.status_code, 401)
+        self.override.assert_not_called()
+
+    def test_list_does_not_invoke_json_api(self) -> None:
+        """The panel must call the view service directly, never the
+        JSON API through internal HTTP."""
+        rows = _build_global_metodos_entrega_rows()
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MetodoEntregaService"
+        ) as metodo_service_cls:
+            view_cls.return_value = _stub_view_service(
+                list_global_metodos_entrega_value=rows
+            )
+            metodo_service_cls.return_value = MagicMock(name="MetodoEntregaService")
+            response = self.client.get(
+                "/admin/catalog/metodos-entrega",
+                headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 200)
+        view_cls.return_value.list_global_metodos_entrega.assert_called_once()
+        metodo_service_cls.return_value.list_all.assert_not_called()
+
+    def test_list_edit_link_uses_global_id_not_association_id(self) -> None:
+        """The edit link MUST carry the global ``MetodosEntrega.id``
+        value (1, 2, 3) — never the ``ComercioMetodoEntrega.id``
+        value — because the global URL space is keyed off the
+        catalog row, not the bridge row. The list view does not
+        receive bridge ids so this is enforced by construction, but
+        we still assert it explicitly to guard against a future
+        template regression."""
+        rows = _build_global_metodos_entrega_rows()
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as service_cls:
+            service_cls.return_value = _stub_view_service(
+                list_global_metodos_entrega_value=rows
+            )
+            response = self.client.get(
+                "/admin/catalog/metodos-entrega",
+                headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 200)
+        # Global ids must appear exactly in the edit URL
+        self.assertIn("metodos-entrega/1/editar", response.text)
+        self.assertIn("metodos-entrega/2/editar", response.text)
+        self.assertIn("metodos-entrega/3/editar", response.text)
+        # No association id (>=100) appears as a global route
+        self.assertNotIn("metodos-entrega/100/editar", response.text)
+
+
+class PanelGlobalMetodosEntregaNewFormTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.app = _build_app()
+        self.override = _install_session_override(self, self.app, self.session)
+        self.client = TestClient(self.app, raise_server_exceptions=False, follow_redirects=False)
+        _stub_settings_patcher(self)
+
+    def test_new_form_renders_with_codigo_input(self) -> None:
+        response = self.client.get(
+            "/admin/catalog/metodos-entrega/nuevo",
+            headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('name="codigo"', response.text)
+        self.assertIn('name="descripcion"', response.text)
+        self.assertIn('name="orden"', response.text)
+        self.assertIn('name="activo"', response.text)
+        # The CSRF nonce field must be bound to the new-form POST target
+        expected_nonce = compute_panel_form_nonce(
+            path="/admin/catalog/metodos-entrega/nuevo",
+            secret=resolve_panel_csrf_secret(),
+        )
+        self.assertIn(
+            f'name="{NONCE_FIELD}" value="{expected_nonce}"',
+            response.text,
+        )
+
+
+class PanelGlobalMetodosEntregaCreateTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.app = _build_app()
+        self.override = _install_session_override(self, self.app, self.session)
+        self.client = TestClient(self.app, raise_server_exceptions=False, follow_redirects=False)
+        _stub_settings_patcher(self)
+
+    def test_create_calls_service_with_typed_payload(self) -> None:
+        path = "/admin/catalog/metodos-entrega/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MetodoEntregaService"
+        ) as service_cls:
+            view_cls.return_value = _stub_view_service()
+            new_row = MagicMock(name="NewMetodoEntrega", id=42)
+            service_cls.return_value.create.return_value = new_row
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    **_same_origin_headers(),
+                },
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "codigo": "  TEST_METODO  ",
+                        "descripcion": "  Test metodo  ",
+                        "orden": "5",
+                        "activo": "true",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 303)
+        service_cls.return_value.create.assert_called_once_with(
+            codigo="  TEST_METODO  ",
+            descripcion="  Test metodo  ",
+            orden=5,
+            activo=True,
+        )
+
+    def test_create_rejects_negative_orden(self) -> None:
+        path = "/admin/catalog/metodos-entrega/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MetodoEntregaService"
+        ) as service_cls:
+            view_cls.return_value = _stub_view_service()
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    **_same_origin_headers(),
+                },
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "codigo": "TEST",
+                        "descripcion": "Test",
+                        "orden": "-1",
+                        "activo": "true",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        service_cls.return_value.create.assert_not_called()
+        self.assertIn("orden", response.text.lower())
+
+    def test_create_rejects_non_integer_orden(self) -> None:
+        path = "/admin/catalog/metodos-entrega/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MetodoEntregaService"
+        ) as service_cls:
+            view_cls.return_value = _stub_view_service()
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    **_same_origin_headers(),
+                },
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "codigo": "TEST",
+                        "descripcion": "Test",
+                        "orden": "abc",
+                        "activo": "true",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        service_cls.return_value.create.assert_not_called()
+
+    def test_create_rejects_blank_orden(self) -> None:
+        path = "/admin/catalog/metodos-entrega/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MetodoEntregaService"
+        ) as service_cls:
+            view_cls.return_value = _stub_view_service()
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    **_same_origin_headers(),
+                },
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "codigo": "TEST",
+                        "descripcion": "Test",
+                        "orden": "",
+                        "activo": "true",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        service_cls.return_value.create.assert_not_called()
+
+    def test_parse_metodo_entrega_orden_non_string_raises_value_error(self) -> None:
+        """A non-string ``orden`` payload (e.g. ``int``, ``list``)
+        must raise :class:`ValueError` so the panel route's
+        ``except ValueError`` branch keeps rendering a bounded
+        feedback. The helper must never leak a :class:`TypeError`
+        through the panel surface."""
+        parse = admin_routes._parse_metodo_entrega_orden
+        for bad in (123, 1.5, ["0"], {"v": 1}, (0,), b"0"):
+            with self.subTest(value=bad):
+                with self.assertRaises(ValueError) as ctx:
+                    parse(bad)  # type: ignore[arg-type]
+                self.assertEqual(
+                    str(ctx.exception),
+                    "orden must be a non-negative integer",
+                )
+        # The helper must NOT propagate a TypeError for a
+        # non-string value; the previous subtests guarantee the
+        # only raised exception type is ValueError.
+
+    def test_parse_metodo_entrega_orden_string_paths_still_raise_value_error(self) -> None:
+        """All string-shaped rejection paths must remain
+        :class:`ValueError` so callers' ``except ValueError`` branch
+        keeps covering every documented rejection."""
+        parse = admin_routes._parse_metodo_entrega_orden
+        for bad in ("", "   ", "abc", "-1"):
+            with self.subTest(value=bad):
+                with self.assertRaises(ValueError):
+                    parse(bad)
+
+    def test_parse_metodo_entrega_orden_accepts_valid_strings(self) -> None:
+        parse = admin_routes._parse_metodo_entrega_orden
+        self.assertEqual(parse("0"), 0)
+        self.assertEqual(parse(" 3 "), 3)
+        self.assertEqual(parse("42"), 42)
+
+    def test_create_without_nonce_is_rejected(self) -> None:
+        path = "/admin/catalog/metodos-entrega/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MetodoEntregaService"
+        ) as service_cls:
+            view_cls.return_value = _stub_view_service()
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    **_same_origin_headers(),
+                },
+                data={
+                    "codigo": "TEST",
+                    "descripcion": "Test",
+                    "orden": "1",
+                    "activo": "true",
+                },
+            )
+        self.assertEqual(response.status_code, 400)
+        service_cls.return_value.create.assert_not_called()
+
+    def test_create_without_origin_is_rejected(self) -> None:
+        path = "/admin/catalog/metodos-entrega/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MetodoEntregaService"
+        ) as service_cls:
+            view_cls.return_value = _stub_view_service()
+            response = self.client.post(
+                path,
+                headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "codigo": "TEST",
+                        "descripcion": "Test",
+                        "orden": "1",
+                        "activo": "true",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 400)
+        service_cls.return_value.create.assert_not_called()
+
+    def test_create_with_cross_origin_is_rejected(self) -> None:
+        path = "/admin/catalog/metodos-entrega/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MetodoEntregaService"
+        ) as service_cls:
+            view_cls.return_value = _stub_view_service()
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    "Origin": "https://malicious.example.com",
+                },
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "codigo": "TEST",
+                        "descripcion": "Test",
+                        "orden": "1",
+                        "activo": "true",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 400)
+        service_cls.return_value.create.assert_not_called()
+
+    def test_create_without_auth_is_rejected(self) -> None:
+        path = "/admin/catalog/metodos-entrega/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MetodoEntregaService"
+        ) as service_cls:
+            view_cls.return_value = _stub_view_service()
+            response = self.client.post(
+                path,
+                headers=_same_origin_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "codigo": "TEST",
+                        "descripcion": "Test",
+                        "orden": "1",
+                        "activo": "true",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 401)
+        service_cls.return_value.create.assert_not_called()
+
+
+class PanelGlobalMetodosEntregaEditFormTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.app = _build_app()
+        self.override = _install_session_override(self, self.app, self.session)
+        self.client = TestClient(self.app, raise_server_exceptions=False, follow_redirects=False)
+        _stub_settings_patcher(self)
+
+    def test_edit_form_renders_codigo_readonly(self) -> None:
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as service_cls:
+            service_cls.return_value = _stub_view_service(
+                get_global_metodo_entrega_value=GlobalMetodoEntregaRow(
+                    id=2,
+                    codigo="DELIVERY",
+                    descripcion="Envío a domicilio",
+                    orden=1,
+                    activo=True,
+                )
+            )
+            response = self.client.get(
+                "/admin/catalog/metodos-entrega/2/editar",
+                headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("DELIVERY", response.text)
+        # The codigo must be rendered read-only, NOT as an editable input
+        self.assertIn('name="codigo_display"', response.text)
+        self.assertNotIn('name="codigo"', response.text)
+        # The orden field must be present and editable
+        self.assertIn('name="orden"', response.text)
+        expected_nonce = compute_panel_form_nonce(
+            path="/admin/catalog/metodos-entrega/2/editar",
+            secret=resolve_panel_csrf_secret(),
+        )
+        self.assertIn(
+            f'name="{NONCE_FIELD}" value="{expected_nonce}"',
+            response.text,
+        )
+
+    def test_edit_form_404_when_unknown(self) -> None:
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as service_cls:
+            service_cls.return_value = _stub_view_service(
+                get_global_metodo_entrega_value=None
+            )
+            response = self.client.get(
+                "/admin/catalog/metodos-entrega/9999/editar",
+                headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 404)
+
+    def test_edit_form_400_when_invalid_id(self) -> None:
+        response = self.client.get(
+            "/admin/catalog/metodos-entrega/abc/editar",
+            headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+        )
+        self.assertEqual(response.status_code, 400)
+
+
+class PanelGlobalMetodosEntregaUpdateTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.app = _build_app()
+        self.override = _install_session_override(self, self.app, self.session)
+        self.client = TestClient(self.app, raise_server_exceptions=False, follow_redirects=False)
+        _stub_settings_patcher(self)
+
+    def test_update_calls_service_with_partial_payload(self) -> None:
+        path = "/admin/catalog/metodos-entrega/2/editar"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MetodoEntregaService"
+        ) as service_cls:
+            view_cls.return_value = _stub_view_service()
+            service_cls.return_value.get_by_id.return_value = MagicMock(
+                id=2,
+                codigo="DELIVERY",
+                descripcion="Envío a domicilio",
+                orden=1,
+                activo=True,
+            )
+            service_cls.return_value.update.return_value = MagicMock(id=2)
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    **_same_origin_headers(),
+                },
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "descripcion": "  Envío a domicilio (24h)  ",
+                        "orden": "3",
+                        "activo": "false",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 303)
+        service_cls.return_value.update.assert_called_once_with(
+            2,
+            descripcion="  Envío a domicilio (24h)  ",
+            orden=3,
+            activo=False,
+        )
+
+    def test_update_rejects_negative_orden(self) -> None:
+        path = "/admin/catalog/metodos-entrega/2/editar"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MetodoEntregaService"
+        ) as service_cls:
+            view_cls.return_value = _stub_view_service()
+            service_cls.return_value.get_by_id.return_value = MagicMock(
+                id=2, codigo="DELIVERY", descripcion="X", orden=1, activo=True
+            )
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    **_same_origin_headers(),
+                },
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "descripcion": "X",
+                        "orden": "-5",
+                        "activo": "true",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        service_cls.return_value.update.assert_not_called()
+
+    def test_update_without_nonce_is_rejected(self) -> None:
+        path = "/admin/catalog/metodos-entrega/2/editar"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MetodoEntregaService"
+        ) as service_cls:
+            view_cls.return_value = _stub_view_service()
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    **_same_origin_headers(),
+                },
+                data={
+                    "descripcion": "X",
+                    "orden": "1",
+                    "activo": "true",
+                },
+            )
+        self.assertEqual(response.status_code, 400)
+        service_cls.return_value.update.assert_not_called()
+
+    def test_update_404_when_unknown(self) -> None:
+        path = "/admin/catalog/metodos-entrega/9999/editar"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MetodoEntregaService"
+        ) as service_cls:
+            view_cls.return_value = _stub_view_service()
+            service_cls.return_value.update.side_effect = (
+                admin_routes.MetodoEntregaNotFound(9999)
+            )
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    **_same_origin_headers(),
+                },
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "descripcion": "X",
+                        "orden": "1",
+                        "activo": "true",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 404)
+
+    def test_update_rollback_on_service_failure(self) -> None:
+        """A service-level failure (raised after the panel security
+        checks pass) must surface a generic bounded feedback and
+        must not leak a raw exception message to the rendered HTML.
+        """
+        path = "/admin/catalog/metodos-entrega/2/editar"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "MetodoEntregaService"
+        ) as service_cls:
+            view_cls.return_value = _stub_view_service()
+            service_cls.return_value.get_by_id.return_value = MagicMock(
+                id=2, codigo="DELIVERY", descripcion="X", orden=1, activo=True
+            )
+            service_cls.return_value.update.side_effect = RuntimeError(
+                "DB connection refused"
+            )
+            response = self.client.post(
+                path,
+                headers={
+                    **_basic_auth_header("any", CONFIGURED_TOKEN),
+                    **_same_origin_headers(),
+                },
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "descripcion": "X",
+                        "orden": "1",
+                        "activo": "true",
+                    },
+                ),
+            )
+        # Raw exception text must never leak to the operator
+        self.assertNotIn("DB connection refused", response.text)
+
+
+class PanelPrimaryNavMetodosEntregaTest(unittest.TestCase):
+    """The primary navigation in ``base.html`` must surface the
+    global delivery-method catalog so an operator can reach
+    ``/admin/catalog/metodos-entrega`` (and its ``nuevo`` /
+    ``editar`` children) without typing the URL."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.app = _build_app()
+        self.override = _install_session_override(self, self.app, self.session)
+        self.client = TestClient(self.app, raise_server_exceptions=False, follow_redirects=False)
+        _stub_settings_patcher(self)
+
+    def _get_view_patch(self) -> MagicMock:
+        view_cls = patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        )
+        view = view_cls.start()
+        view.return_value = _stub_view_service(
+            list_global_metodos_entrega_value=_build_global_metodos_entrega_rows(),
+            get_global_metodo_entrega_value=GlobalMetodoEntregaRow(
+                id=1,
+                codigo="RETIRO",
+                descripcion="Retiro en local",
+                orden=0,
+                activo=True,
+            ),
+        )
+        self.addCleanup(view_cls.stop)
+        return view
+
+    def test_metodos_entrega_link_present_on_list(self) -> None:
+        self._get_view_patch()
+        response = self.client.get(
+            "/admin/catalog/metodos-entrega",
+            headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            '<a href="/admin/catalog/metodos-entrega"',
+            response.text,
+        )
+        self.assertIn("Métodos de entrega", response.text)
+
+    def test_metodos_entrega_link_is_current_on_list(self) -> None:
+        self._get_view_patch()
+        response = self.client.get(
+            "/admin/catalog/metodos-entrega",
+            headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            '<a href="/admin/catalog/metodos-entrega" aria-current="page"',
+            response.text,
+        )
+
+    def test_metodos_entrega_link_is_current_on_new_form(self) -> None:
+        self._get_view_patch()
+        response = self.client.get(
+            "/admin/catalog/metodos-entrega/nuevo",
+            headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            '<a href="/admin/catalog/metodos-entrega" aria-current="page"',
+            response.text,
+        )
+
+    def test_metodos_entrega_link_is_current_on_edit_form(self) -> None:
+        self._get_view_patch()
+        response = self.client.get(
+            "/admin/catalog/metodos-entrega/1/editar",
+            headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            '<a href="/admin/catalog/metodos-entrega" aria-current="page"',
+            response.text,
+        )
+
+    def test_comercios_link_not_current_on_metodos_entrega_section(self) -> None:
+        """``/admin/catalog/metodos-entrega`` is NOT a sub-path of
+        ``/admin/catalog/comercios`` so the ``Comercios`` link
+        must lose its current state on the delivery list."""
+        self._get_view_patch()
+        response = self.client.get(
+            "/admin/catalog/metodos-entrega",
+            headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn(
+            '<a href="/admin/catalog/comercios" aria-current="page"',
+            response.text,
+        )
+
+
+class PanelGlobalMetodosEntregaJsonBoundaryTest(unittest.TestCase):
+    """The new panel surface must not weaken the JSON API
+    authentication contract: the JSON endpoints still require
+    ``X-Admin-Token`` and the panel never calls them through
+    internal HTTP."""
+
+    def setUp(self) -> None:
+        self.app = main_module.app
+        self.client = TestClient(self.app, raise_server_exceptions=False, follow_redirects=False)
+        self.session = MagicMock(name="DatabaseSession")
+        self.override = _install_session_override(self, self.app, self.session)
+        _stub_settings_patcher(self)
+
+    def test_json_get_rejects_basic_auth(self) -> None:
+        response = self.client.get(
+            "/metodos-entrega/1",
+            headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+        )
+        self.assertEqual(response.status_code, 401)
+        self.override.assert_not_called()
+
+    def test_json_create_requires_x_admin_token(self) -> None:
+        response = self.client.post(
+            "/metodos-entrega",
+            json={
+                "codigo": "TEST_TOKEN",
+                "descripcion": "Test token",
+                "orden": 0,
             },
         )
         self.assertEqual(response.status_code, 401)
