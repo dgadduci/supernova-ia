@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="es-AR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Panel administrativo</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #08070c;
+    --bg-elevated: #11101a;
+    --bg-sunken: #050509;
+    --panel: #161521;
+    --panel-strong: #1d1c2c;
+    --border: #2a2939;
+    --border-strong: #3c3a52;
+    --fg: #f1f1f7;
+    --fg-muted: #a4a3b9;
+    --fg-faint: #6f6e85;
+    --accent: #b48cff;
+    --accent-strong: #cda4ff;
+    --accent-ink: #0a0510;
+    --focus-ring: #ffd166;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.5;
+    font-size: 16px;
+    -webkit-font-smoothing: antialiased;
+  }
+  a {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  a:hover, a:focus-visible { color: var(--accent-strong); }
+  header.app-header {
+    background: linear-gradient(180deg, #11101a 0%, #0a0914 100%);
+    color: var(--fg);
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    gap: 18px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  header.app-header .brand {
+    font-weight: 700;
+    font-size: 1.05rem;
+    letter-spacing: 0.02em;
+    color: var(--fg);
+    text-decoration: none;
+  }
+  header.app-header .crumb {
+    color: var(--fg-faint);
+    font-size: 0.9rem;
+  }
+  main.app-main {
+    padding: 24px;
+    max-width: 1180px;
+    margin: 0 auto;
+  }
+  h1, h2, h3 { margin: 0 0 0.6em; }
+  h1 { font-size: 1.55rem; letter-spacing: -0.01em; }
+  h2 { font-size: 1.15rem; margin-top: 1.6em; }
+  p.muted { color: var(--fg-muted); }
+  p.faint { color: var(--fg-faint); font-size: 0.9rem; }
+  .entry-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: grid;
+    gap: 14px;
+  }
+  .entry-list li {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+  }
+  .entry-list a.entry-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--fg);
+    font-weight: 700;
+    font-size: 1.05rem;
+    text-decoration: none;
+    padding: 4px 0;
+  }
+  .entry-list a.entry-link:hover,
+  .entry-list a.entry-link:focus-visible {
+    color: var(--accent-strong);
+    text-decoration: underline;
+    outline: none;
+  }
+  .entry-list a.entry-link:focus-visible {
+    box-shadow: 0 0 0 3px var(--focus-ring);
+    border-radius: 4px;
+  }
+  .entry-list .entry-path {
+    display: block;
+    margin-top: 4px;
+    color: var(--fg-faint);
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+    word-break: break-all;
+  }
+  .entry-list .entry-desc {
+    margin: 8px 0 0;
+    color: var(--fg-muted);
+    font-size: 0.95rem;
+  }
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    top: auto;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+  }
+  .skip-link:focus {
+    position: static;
+    width: auto;
+    height: auto;
+    background: var(--accent);
+    color: var(--accent-ink);
+    padding: 8px 12px;
+    display: inline-block;
+    margin: 8px;
+  }
+  @media (max-width: 800px) {
+    main.app-main { padding: 16px; }
+    header.app-header { padding: 12px 16px; }
+  }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main-content">Saltar al contenido</a>
+<header class="app-header" role="banner">
+  <a class="brand" href="/admin" aria-label="Panel administrativo" aria-current="page">Panel administrativo</a>
+</header>
+<main class="app-main" id="main-content" tabindex="-1">
+  <h1>Panel administrativo</h1>
+  <p class="muted">Elegí una sección para empezar. Esta pantalla es un punto de partida estable: podés volver acá desde cualquier sección del panel.</p>
+  <nav aria-label="Secciones del panel administrativo">
+    <ul class="entry-list">
+      <li>
+        <a class="entry-link" href="{{ comercios_url }}">Comercios</a>
+        <span class="entry-path">{{ comercios_url }}</span>
+        <p class="entry-desc">Administrar comercios, su catálogo y los precios asociados.</p>
+      </li>
+      <li>
+        <a class="entry-link" href="{{ medios_pago_url }}">Medios de pago</a>
+        <span class="entry-path">{{ medios_pago_url }}</span>
+        <p class="entry-desc">Configurar el catálogo global de medios de pago disponibles.</p>
+      </li>
+      <li>
+        <a class="entry-link" href="{{ operacion_url }}">Operación (panel piloto)</a>
+        <span class="entry-path">{{ operacion_url }}</span>
+        <p class="entry-desc">Inspeccionar pedidos del panel piloto en modo solo lectura.</p>
+      </li>
+    </ul>
+  </nav>
+</main>
+</body>
+</html>

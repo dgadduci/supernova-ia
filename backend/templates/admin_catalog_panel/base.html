@@ -403,6 +403,7 @@
 <header class="app-header" role="banner">
   <a class="brand" href="/admin/catalog/comercios" aria-label="Panel administrativo de catálogo">Panel · Catálogo</a>
   <nav class="primary" aria-label="Navegación principal">
+    <a href="/admin" {% if request.url.path == '/admin' or request.url.path == '/admin/' %}aria-current="page"{% endif %}>Inicio</a>
     <a href="/admin/catalog/comercios" {% if request.url.path.startswith('/admin/catalog/comercios') %}aria-current="page"{% endif %}>Comercios</a>
     <a href="/admin/catalog/medios-pago" {% if request.url.path.startswith('/admin/catalog/medios-pago') %}aria-current="page"{% endif %}>Medios de pago</a>
     <a href="/admin/pilot/orders" rel="noopener">Operación (panel piloto)</a>
