@@ -37,7 +37,7 @@ def _suffix() -> str:
 def _estado_id() -> int:
     with engine.connect() as conn:
         row = conn.execute(
-            select(EstadoComercio.id).where(EstadoComercio.estado == "ACTIVO")
+            select(EstadoComercio.id).where(EstadoComercio.codigo == "ACTIVO")
         ).first()
         if row is None:
             raise RuntimeError("estado ACTIVO not seeded")

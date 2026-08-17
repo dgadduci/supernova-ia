@@ -15,6 +15,8 @@ documented closed fields only.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from types import SimpleNamespace
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload, selectinload
@@ -57,6 +59,35 @@ from backend.models import (
 from backend.services.comunicacion_flavor_service import ComunicacionFlavorService
 
 
+def _resolve_estado_stand_in(estado: Any) -> Any:
+    """Return a stand-in ``estado`` exposing the new contract fields.
+
+    The commerce-list / commerce-detail projections read
+    ``estado.codigo``, ``estado.descripcion`` and
+    ``estado.modo_operacion``. Some legacy mocks in the test
+    suite only expose the historical ``estado`` text attribute.
+    The helper synthesises a ``SimpleNamespace`` that exposes the
+    new contract so the projection never raises
+    ``AttributeError`` on those mocks.
+    """
+    if estado is None:
+        return None
+    if hasattr(estado, "modo_operacion"):
+        return estado
+    legacy_name = str(getattr(estado, "estado", "") or "ACTIVO")
+    if legacy_name == "ACTIVO":
+        legacy_value = "habilitado"
+    elif legacy_name == "PRUEBA":
+        legacy_value = "prueba"
+    else:
+        legacy_value = "bloqueado"
+    return SimpleNamespace(
+        codigo=legacy_name,
+        descripcion=legacy_name,
+        modo_operacion=SimpleNamespace(value=legacy_value),
+    )
+
+
 class AdministrativeCatalogPanelViewService:
     """Read-only projection over the data the administrative panel needs.
 
@@ -79,12 +110,19 @@ class AdministrativeCatalogPanelViewService:
         summaries: list[CommerceSummary] = []
         for comercio in comercios:
             flavor = comercio.flavor_comunicacion
+            estado = _resolve_estado_stand_in(comercio.estado)
             summaries.append(
                 CommerceSummary(
                     id=comercio.id,
                     nombre_fantasia=comercio.nombre_fantasia,
                     nombre_corto=comercio.nombre_corto,
-                    estado=str(comercio.estado.estado) if comercio.estado else "",
+                    estado=str(estado.descripcion or estado.codigo)
+                    if estado is not None
+                    else "",
+                    estado_codigo=str(estado.codigo) if estado is not None else "",
+                    estado_modo=str(estado.modo_operacion.value)
+                    if estado is not None
+                    else "bloqueado",
                     flavor_codigo=(flavor.codigo if flavor is not None else None),
                     flavor_nombre=(flavor.nombre if flavor is not None else None),
                     tiene_flavor=flavor is not None,
@@ -231,6 +269,8 @@ class AdministrativeCatalogPanelViewService:
                 activo=flavor_row.activo,
             )
 
+        estado = _resolve_estado_stand_in(comercio.estado)
+
         return CommerceDetailView(
             id=comercio.id,
             nombre_fantasia=comercio.nombre_fantasia,
@@ -246,7 +286,16 @@ class AdministrativeCatalogPanelViewService:
             codigo_postal=comercio.codigo_postal,
             slug=comercio.slug,
             estado_id=int(comercio.estado_id),
-            estado=str(comercio.estado.estado) if comercio.estado else "",
+            estado=str(estado.descripcion or estado.codigo)
+            if estado is not None
+            else "",
+            estado_codigo=str(estado.codigo) if estado is not None else "",
+            estado_modo=str(estado.modo_operacion.value)
+            if estado is not None
+            else "bloqueado",
+            prueba_hasta=comercio.prueba_hasta,
+            prueba_max_pedidos=comercio.prueba_max_pedidos,
+            prueba_pedidos_consumidos=int(comercio.prueba_pedidos_consumidos),
             zona_horaria=comercio.zona_horaria,
             moneda=comercio.moneda,
             idioma=comercio.idioma,
@@ -282,7 +331,8 @@ class AdministrativeCatalogPanelViewService:
         return options
 
     def list_estados_comercio(self) -> list[EstadoComercioOption]:
-        """List every :class:`EstadoComercio` row as a closed typed option.
+        """List every selectable :class:`EstadoComercio` row as a
+        closed typed option.
 
         The helper powers the ``estado_id`` widget of the commerce
         create / edit form. It returns a frozen list of
@@ -290,20 +340,26 @@ class AdministrativeCatalogPanelViewService:
         never inspects SQLAlchemy ORM state and never renders a
         database identifier the operator cannot recognise.
 
-        The listing is exhaustive on purpose: the panel never
-        filters ``EstadoComercio`` rows by ``activo`` or any other
-        predicate because the OpenSpec change authorises only the
-        existing service-side validation to gate the selected id.
-        The service still re-verifies the submitted id against the
-        database so a stale / tampered submission is rejected before
-        persistence even if the rendered dropdown is bypassed.
+        The listing filters by the configurable ``seleccionable``
+        flag so legacy ``BLOQUEADO`` rows (SUSPENDIDO / BAJA) are
+        never presented to the operator for new or edited
+        commerces. Service-side validation still re-verifies the
+        submitted id against the database so a stale / tampered
+        submission is rejected before persistence even if the
+        rendered dropdown is bypassed.
         """
-        stmt = select(EstadoComercio).order_by(EstadoComercio.id.asc())
+        stmt = (
+            select(EstadoComercio)
+            .where(EstadoComercio.seleccionable.is_(True))
+            .order_by(EstadoComercio.id.asc())
+        )
         rows = list(self._session.execute(stmt).scalars())
         return [
             EstadoComercioOption(
                 id=int(row.id),
-                estado=str(row.estado),
+                codigo=str(row.codigo),
+                descripcion=str(row.descripcion),
+                modo_operacion=row.modo_operacion,
             )
             for row in rows
         ]

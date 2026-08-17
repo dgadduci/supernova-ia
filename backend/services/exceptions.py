@@ -26,6 +26,54 @@ class InvalidEstado(Exception):
     pass
 
 
+class InvalidTrialConfiguration(ValueError):
+    """Raised when the trial configuration supplied to a commerce
+    mutation is invalid.
+
+    The validation requires either:
+
+    * the selected state has a non-PRUEBA operating mode and no
+      trial columns are supplied (``prueba_hasta`` and
+      ``prueba_max_pedidos`` are both ``None``);
+    * the selected state has the PRUEBA operating mode, a future
+      ``prueba_hasta`` and a positive ``prueba_max_pedidos``.
+
+    Any other combination is rejected with a bounded ``400``
+    feedback so the panel can re-render the form with the documented
+    error and a fresh path-bound CSRF nonce.
+    """
+
+
+class EstadoComercioNotSelectable(ValueError):
+    """Raised when an admin mutation targets a non-selectable state.
+
+    The commerce lifecycle policy marks SUSPENDIDO / BAJA (and any
+    other legacy row) as ``seleccionable=False``. The create and
+    update services must reject those ids before any staging so a
+    forged or stale ``estado_id`` payload cannot move a commerce to
+    a historical / blocked configuration through the documented
+    admin seams.
+
+    The exception is a typed ``ValueError`` so callers see a
+    bounded, panel-renderable feedback instead of a generic 5xx
+    trace.
+    """
+
+
+class CommerceUnavailable(Exception):
+    """Raised when the commerce availability policy rejects a
+    confirmation attempt.
+
+    The exception is the typed signal every
+    ``BORRADOR -> INGRESADO`` seam raises when the commerce is
+    blocked, missing, expired or quota-exhausted. The router / panel
+    translates it to the documented ``409`` / panel feedback. The
+    reservation is staged in the same transaction so a ``commit``
+    failure rolls back both the pedido transition and the counter
+    increment together.
+    """
+
+
 class MediosPagoNotFound(Exception):
     pass
 

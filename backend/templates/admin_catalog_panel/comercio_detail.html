@@ -38,7 +38,12 @@
   <section class="panel" aria-label="Configuración regional">
     <h2>Configuración</h2>
     <dl>
-      <dt>Estado</dt><dd><span class="badge {% if detail.estado == 'ACTIVO' %}success{% elif detail.estado == 'INACTIVO' %}warning{% else %}accent{% endif %}">{{ detail.estado or "—" }}</span></dd>
+      <dt>Estado</dt><dd><span class="badge {% if detail.estado_modo == 'habilitado' %}success{% elif detail.estado_modo == 'prueba' %}accent{% else %}warning{% endif %}">{{ detail.estado or "—" }}</span></dd>
+      {% if detail.estado_modo == 'prueba' %}
+      <dt>Fin de prueba</dt><dd>{{ detail.prueba_hasta or "—" }}</dd>
+      <dt>Máximo de pedidos confirmados</dt><dd>{{ detail.prueba_max_pedidos or "—" }}</dd>
+      <dt>Pedidos confirmados consumidos</dt><dd>{{ detail.prueba_pedidos_consumidos }}</dd>
+      {% endif %}
       <dt>Zona horaria</dt><dd>{{ detail.zona_horaria }}</dd>
       <dt>Moneda</dt><dd>{{ detail.moneda }}</dd>
       <dt>Idioma</dt><dd>{{ detail.idioma }}</dd>

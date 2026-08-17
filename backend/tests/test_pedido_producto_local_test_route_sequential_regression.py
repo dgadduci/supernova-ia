@@ -150,7 +150,7 @@ def _suffix() -> str:
 def _estado_id_activo() -> int:
     with engine.connect() as c:
         row = c.execute(
-            select(EstadoComercio.id).where(EstadoComercio.estado == "ACTIVO")
+            select(EstadoComercio.id).where(EstadoComercio.codigo == "ACTIVO")
         ).first()
         if row is None:
             raise RuntimeError(

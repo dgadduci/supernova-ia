@@ -2,11 +2,7 @@ from sqlalchemy.orm import Session
 
 from backend.models import EstadoComercio
 from backend.repositories.estado_comercio_repository import EstadoComercioRepository
-from backend.services.exceptions import (
-    DuplicateEstado,
-    EstadoComercioNotFound,
-    InvalidEstado,
-)
+from backend.services.exceptions import EstadoComercioNotFound
 
 
 class EstadoComercioService:
@@ -23,16 +19,5 @@ class EstadoComercioService:
             raise EstadoComercioNotFound(estado_id)
         return row
 
-    def create(self, estado: str) -> EstadoComercio:
-        cleaned = estado.strip()
-        if not cleaned:
-            raise InvalidEstado("estado must not be empty")
-        if self._repo.get_by_estado(cleaned) is not None:
-            raise DuplicateEstado(cleaned)
-        try:
-            row = self._repo.create(cleaned)
-            self._session.commit()
-            return row
-        except Exception:
-            self._session.rollback()
-            raise
+
+__all__ = ["EstadoComercioService"]

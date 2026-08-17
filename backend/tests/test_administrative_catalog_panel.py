@@ -67,6 +67,7 @@ from backend.admin.views import (
     InactivePaymentMethodDetailView,
     PaymentMethodDetailView,
 )
+from backend.models.estado_comercio import EstadoComercioModoOperacion
 from backend.config import settings as settings_module
 from backend.config.settings import Settings
 from backend.dependencies import (
@@ -175,8 +176,18 @@ def _stub_view_service(
 ) -> SimpleNamespace:
     if list_estados_comercio_value is None:
         list_estados_comercio_value = [
-            EstadoComercioOption(id=1, estado="ACTIVO"),
-            EstadoComercioOption(id=2, estado="INACTIVO"),
+            EstadoComercioOption(
+                id=1,
+                codigo="ACTIVO",
+                descripcion="Activo",
+                modo_operacion=EstadoComercioModoOperacion.HABILITADO,
+            ),
+            EstadoComercioOption(
+                id=2,
+                codigo="INACTIVO",
+                descripcion="Inactivo",
+                modo_operacion=EstadoComercioModoOperacion.BLOQUEADO,
+            ),
         ]
     return SimpleNamespace(
         list_comercios=MagicMock(return_value=comercios or []),
@@ -249,6 +260,11 @@ def _build_detail() -> CommerceDetailView:
         slug="comercio-x",
         estado_id=1,
         estado="ACTIVO",
+        estado_codigo="ACTIVO",
+        estado_modo="habilitado",
+        prueba_hasta=None,
+        prueba_max_pedidos=None,
+        prueba_pedidos_consumidos=0,
         zona_horaria="America/Argentina/Buenos_Aires",
         moneda="ARS",
         idioma="es-AR",
@@ -363,6 +379,8 @@ class PanelAuthTest(unittest.TestCase):
                         nombre_fantasia="X",
                         nombre_corto="X",
                         estado="ACTIVO",
+                        estado_codigo="ACTIVO",
+                        estado_modo="habilitado",
                         flavor_codigo="neutro",
                         flavor_nombre="Neutro",
                         tiene_flavor=True,
@@ -931,6 +949,8 @@ class PanelListViewTest(unittest.TestCase):
                 nombre_fantasia="<b>Comercio X</b>",
                 nombre_corto="X",
                 estado="ACTIVO",
+                estado_codigo="ACTIVO",
+                estado_modo="habilitado",
                 flavor_codigo="neutro",
                 flavor_nombre="Neutro",
                 tiene_flavor=True,
@@ -940,6 +960,8 @@ class PanelListViewTest(unittest.TestCase):
                 nombre_fantasia="Comercio Y",
                 nombre_corto="Y",
                 estado="INACTIVO",
+                estado_codigo="INACTIVO",
+                estado_modo="bloqueado",
                 flavor_codigo=None,
                 flavor_nombre=None,
                 tiene_flavor=False,
@@ -1023,7 +1045,12 @@ class PanelListViewTest(unittest.TestCase):
             codigo_postal="1000",
             slug="comercio-x",
             estado_id=1,
-            estado=SimpleNamespace(estado="ACTIVO"),
+            estado=SimpleNamespace(descripcion="ACTIVO", codigo="ACTIVO"),
+            estado_codigo="ACTIVO",
+            estado_modo="habilitado",
+            prueba_hasta=None,
+            prueba_max_pedidos=None,
+            prueba_pedidos_consumidos=0,
             zona_horaria="America/Argentina/Buenos_Aires",
             moneda="ARS",
             idioma="es-AR",
@@ -2022,6 +2049,11 @@ class PanelTableContainmentTest(unittest.TestCase):
             slug=detail.slug,
             estado_id=detail.estado_id,
             estado=detail.estado,
+            estado_codigo=detail.estado_codigo,
+            estado_modo=detail.estado_modo,
+            prueba_hasta=detail.prueba_hasta,
+            prueba_max_pedidos=detail.prueba_max_pedidos,
+            prueba_pedidos_consumidos=detail.prueba_pedidos_consumidos,
             zona_horaria=detail.zona_horaria,
             moneda=detail.moneda,
             idioma=detail.idioma,
@@ -3781,10 +3813,20 @@ class PanelCreateComercioTest(unittest.TestCase):
             **_same_origin_headers(),
         }
 
-    def _estados(self) -> list[SimpleNamespace]:
+    def _estados(self) -> list[EstadoComercioOption]:
         return [
-            SimpleNamespace(id=1, estado="ACTIVO"),
-            SimpleNamespace(id=2, estado="INACTIVO"),
+            EstadoComercioOption(
+                id=1,
+                codigo="ACTIVO",
+                descripcion="Activo",
+                modo_operacion=EstadoComercioModoOperacion.HABILITADO,
+            ),
+            EstadoComercioOption(
+                id=2,
+                codigo="INACTIVO",
+                descripcion="Inactivo",
+                modo_operacion=EstadoComercioModoOperacion.BLOQUEADO,
+            ),
         ]
 
     def _auth_view(self) -> SimpleNamespace:
@@ -3800,8 +3842,18 @@ class PanelCreateComercioTest(unittest.TestCase):
         ) as view_cls:
             view_cls.return_value = _stub_view_service()
             view_cls.return_value.list_estados_comercio.return_value = [
-                SimpleNamespace(id=1, estado="ACTIVO"),
-                SimpleNamespace(id=2, estado="INACTIVO"),
+                EstadoComercioOption(
+                    id=1,
+                    codigo="ACTIVO",
+                    descripcion="Activo",
+                    modo_operacion=EstadoComercioModoOperacion.HABILITADO,
+                ),
+                EstadoComercioOption(
+                    id=2,
+                    codigo="INACTIVO",
+                    descripcion="Inactivo",
+                    modo_operacion=EstadoComercioModoOperacion.BLOQUEADO,
+                ),
             ]
             response = self.client.get(
                 "/admin/catalog/comercios/nuevo",
@@ -4189,10 +4241,20 @@ class PanelEditComercioTest(unittest.TestCase):
             flavor_options=_build_flavor_options(),
         )
 
-    def _estados(self) -> list[SimpleNamespace]:
+    def _estados(self) -> list[EstadoComercioOption]:
         return [
-            SimpleNamespace(id=1, estado="ACTIVO"),
-            SimpleNamespace(id=2, estado="INACTIVO"),
+            EstadoComercioOption(
+                id=1,
+                codigo="ACTIVO",
+                descripcion="Activo",
+                modo_operacion=EstadoComercioModoOperacion.HABILITADO,
+            ),
+            EstadoComercioOption(
+                id=2,
+                codigo="INACTIVO",
+                descripcion="Inactivo",
+                modo_operacion=EstadoComercioModoOperacion.BLOQUEADO,
+            ),
         ]
 
     def test_get_form_renders_readonly_routing_identifiers(self) -> None:
@@ -4236,6 +4298,11 @@ class PanelEditComercioTest(unittest.TestCase):
             slug="comercio-x",
             estado_id=2,
             estado="INACTIVO",
+            estado_codigo="INACTIVO",
+            estado_modo="bloqueado",
+            prueba_hasta=None,
+            prueba_max_pedidos=None,
+            prueba_pedidos_consumidos=0,
             zona_horaria="America/Argentina/Buenos_Aires",
             moneda="ARS",
             idioma="es-AR",
@@ -4291,6 +4358,11 @@ class PanelEditComercioTest(unittest.TestCase):
             slug="comercio-x",
             estado_id=2,
             estado="INACTIVO",
+            estado_codigo="INACTIVO",
+            estado_modo="bloqueado",
+            prueba_hasta=None,
+            prueba_max_pedidos=None,
+            prueba_pedidos_consumidos=0,
             zona_horaria="America/Argentina/Buenos_Aires",
             moneda="ARS",
             idioma="es-AR",
@@ -4357,6 +4429,11 @@ class PanelEditComercioTest(unittest.TestCase):
             slug="comercio-x",
             estado_id=2,
             estado="INACTIVO",
+            estado_codigo="INACTIVO",
+            estado_modo="bloqueado",
+            prueba_hasta=None,
+            prueba_max_pedidos=None,
+            prueba_pedidos_consumidos=0,
             zona_horaria="America/Argentina/Buenos_Aires",
             moneda="ARS",
             idioma="es-AR",

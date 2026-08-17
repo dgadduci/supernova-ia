@@ -58,6 +58,10 @@ from backend.repositories.comercio_canal_compartido_repository import (
 from backend.repositories.contexto_cliente_canal_whatsapp_repository import (
     ContextoClienteCanalWhatsappRepository,
 )
+from backend.services.commerce_availability_service import (
+    CommerceAvailabilityService,
+    CommerceAvailabilityStatus,
+)
 from backend.services.exceptions import (
     InvalidSharedChannelMembershipSelection,
     InvalidSharedRoutingContext,
@@ -806,15 +810,10 @@ class SharedChannelRoutingService:
         )
 
     def _is_comercio_activo(self, comercio_id: int) -> bool:
-        from backend.models import Comercio, EstadoComercio
-
-        comercio = self._session.get(Comercio, comercio_id)
-        if comercio is None:
-            return False
-        estado = self._session.get(EstadoComercio, comercio.estado_id)
-        if estado is None:
-            return False
-        return bool(estado.estado == "ACTIVO")
+        outcome = CommerceAvailabilityService(
+            self._session
+        ).evaluate(comercio_id)
+        return outcome.status is CommerceAvailabilityStatus.AVAILABLE
 
     def _resolve_preconditions(
         self,

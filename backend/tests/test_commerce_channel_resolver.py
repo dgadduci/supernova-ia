@@ -44,7 +44,7 @@ def _estado_id_activo() -> int:
     with engine.connect() as c:
         row = c.execute(
             select(EstadoComercio.id).where(
-                EstadoComercio.estado == "ACTIVO"
+                EstadoComercio.codigo == "ACTIVO"
             )
         ).first()
         if row is None:
@@ -56,7 +56,7 @@ def _estado_id_inactivo() -> int:
     with engine.connect() as c:
         row = c.execute(
             select(EstadoComercio.id).where(
-                EstadoComercio.estado == "INACTIVO"
+                EstadoComercio.codigo == "INACTIVO"
             )
         ).first()
         if row is None:

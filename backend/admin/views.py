@@ -16,10 +16,12 @@ no diagnostic data, no exception detail).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
 from backend.models import EstadoComercio
+from backend.models.estado_comercio import EstadoComercioModoOperacion
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,8 @@ class CommerceSummary:
     nombre_fantasia: str
     nombre_corto: str
     estado: str
+    estado_codigo: str
+    estado_modo: str
     flavor_codigo: str | None
     flavor_nombre: str | None
     tiene_flavor: bool
@@ -39,17 +43,21 @@ class CommerceSummary:
 class EstadoComercioOption:
     """Closed typed option for the commerce ``estado_id`` form field.
 
-    The view model exposes only the canonical ``id`` and ``estado``
-    string of each :class:`backend.models.EstadoComercio` row. The
-    panel never inspects ORM state and never reads additional columns
-    so the rendered ``<select>`` widget is the only surface the
-    operator sees. Service-side validation still re-checks the
-    selected id against the database to defeat stale / tampered
-    submissions.
+    The view model exposes the canonical ``id``, stable ``codigo``,
+    operator-facing ``descripcion`` and typed ``modo_operacion`` of
+    each :class:`backend.models.EstadoComercio` row. The panel
+    never inspects ORM state and never reads additional columns so
+    the rendered ``<select>`` widget is the only surface the
+    operator sees. The template gates the trial subform on the
+    ``modo_operacion`` value rather than on the operator-facing
+    label. Service-side validation still re-checks the selected id
+    against the database to defeat stale / tampered submissions.
     """
 
     id: int
-    estado: str
+    codigo: str
+    descripcion: str
+    modo_operacion: EstadoComercioModoOperacion
 
 
 @dataclass(frozen=True)
@@ -257,6 +265,11 @@ class CommerceDetailView:
     slug: str
     estado_id: int
     estado: str
+    estado_codigo: str
+    estado_modo: str
+    prueba_hasta: datetime | None
+    prueba_max_pedidos: int | None
+    prueba_pedidos_consumidos: int
     zona_horaria: str
     moneda: str
     idioma: str
@@ -432,12 +445,18 @@ def to_estado_label(estado: Any) -> str:
 
     The label is always a non-empty ``str`` so the template can
     always render it; unknown values fall back to ``"DESCONOCIDO"``
-    so the panel never leaks an ORM enum or an SQL identifier.
+    so the panel never leaks an ORM enum or an SQL identifier. The
+    helper prefers the operator-facing ``descripcion`` and falls
+    back to the stable ``codigo`` when no description is available
+    so the panel never compares business labels as a behavior
+    branch.
     """
     if isinstance(estado, EstadoComercio):
-        return str(estado.estado)
-    if hasattr(estado, "estado"):
-        return str(estado.estado)
+        return str(estado.descripcion or estado.codigo)
+    if hasattr(estado, "descripcion"):
+        descripcion = getattr(estado, "descripcion", None)
+        codigo = getattr(estado, "codigo", None)
+        return str(descripcion or codigo or "")
     if isinstance(estado, str) and estado:
         return estado
     return "DESCONOCIDO"

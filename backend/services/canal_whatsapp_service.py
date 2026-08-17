@@ -35,6 +35,10 @@ from backend.repositories.canal_whatsapp_repository import (
 from backend.repositories.comercio_canal_compartido_repository import (
     ComercioCanalCompartidoRepository,
 )
+from backend.services.commerce_availability_service import (
+    CommerceAvailabilityService,
+    CommerceAvailabilityStatus,
+)
 from backend.services.exceptions import (
     CanalWhatsappNotFound,
     DedicatedChannelCannotHaveSharedMembership,
@@ -141,15 +145,17 @@ class CanalWhatsappService:
             )
 
     def _ensure_comercio_active(self, id_comercio: int) -> None:
-        from backend.models import Comercio, EstadoComercio
+        from backend.models import Comercio
 
         comercio = self._session.get(Comercio, id_comercio)
         if comercio is None:
             raise CanalWhatsappNotFound(
                 f"comercio {id_comercio} not found"
             )
-        estado = self._session.get(EstadoComercio, comercio.estado_id)
-        if estado is None or estado.estado != "ACTIVO":
+        outcome = CommerceAvailabilityService(
+            self._session
+        ).evaluate(id_comercio)
+        if outcome.status is not CommerceAvailabilityStatus.AVAILABLE:
             raise CanalWhatsappNotFound(
                 f"comercio {id_comercio} is not active"
             )

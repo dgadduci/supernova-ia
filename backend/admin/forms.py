@@ -15,6 +15,7 @@ the JSON API router does.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 from typing import Annotated
 
@@ -160,6 +161,55 @@ def _coerce_blank_flavor_id_to_none(value: object) -> object:
     return value
 
 
+def _coerce_blank_str_to_none(value: object) -> object:
+    """Normalise the HTML "blank" representation to ``None``.
+
+    The browser always sends ``""`` when the operator leaves an
+    optional input untouched; without this coercion Pydantic rejects
+    the empty string before the typed validator can produce
+    ``None`` and the route never sees the documented optional
+    shape. The helper runs *before* Pydantic's type validation so
+    the field can still be declared as ``datetime | None`` /
+    ``int | None``: a blank string becomes ``None``, a non-blank
+    string is passed through for type coercion, and any other
+    value is forwarded unchanged.
+    """
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if cleaned == "":
+            return None
+        return cleaned
+    return value
+
+
+def _coerce_positive_int_or_none(value: object) -> object:
+    """Coerce to ``int`` and enforce ``>= 1`` only on supplied values.
+
+    The form carries the trial ``prueba_max_pedidos`` as an optional
+    integer. Pydantic applies the ``Field(ge=1)`` constraint only
+    after the validator runs; a missing value yields ``None`` and
+    skips the constraint, a blank string becomes ``None`` (see
+    :func:`_coerce_blank_str_to_none`), and any non-empty string
+    is coerced to a positive integer. A non-positive integer raises
+    :class:`ValueError` so the route renders a bounded ``400`` form
+    re-render instead of a 500.
+    """
+    coerced = _coerce_blank_str_to_none(value)
+    if coerced is None:
+        return None
+    try:
+        parsed = int(str(coerced))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "prueba_max_pedidos must be a positive integer"
+        ) from exc
+    if parsed < 1:
+        raise ValueError(
+            "prueba_max_pedidos must be a positive integer"
+        )
+    return parsed
+
+
 class FlavorAssignForm(BaseModel):
     """Flavor assignment / clear form payload.
 
@@ -208,6 +258,11 @@ class ComercioCreateForm(BaseModel):
     server-rendered CSRF marker field never breaks Pydantic
     validation; the panel only writes the documented fields to the
     service so the broader rejection guarantee still holds.
+
+    Trial fields are part of the panel contract: the panel routes
+    them through Pydantic only when the operator selected a
+    PRUEBA-mode state; the service performs the authoritative
+    validation and refuses to persist an out-of-sync payload.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -225,6 +280,13 @@ class ComercioCreateForm(BaseModel):
     codigo_postal: str | None = Field(default=None, max_length=20)
     slug: str = Field(min_length=1, max_length=150)
     estado_id: int = Field(ge=1)
+    prueba_hasta: Annotated[
+        datetime | None, BeforeValidator(_coerce_blank_str_to_none)
+    ] = None
+    prueba_max_pedidos: Annotated[
+        int | None,
+        BeforeValidator(_coerce_positive_int_or_none),
+    ] = None
     zona_horaria: str | None = Field(default=None, max_length=100)
     moneda: str | None = Field(default=None, max_length=3)
     idioma: str | None = Field(default=None, max_length=10)
@@ -234,18 +296,26 @@ class ComercioUpdateForm(BaseModel):
     """Edit-commerce form payload.
 
     The shape accepts **only** the documented permitted basic fields
-    (profile, address, locale, ``estado_id``). Routing identifiers
-    (``whatsapp``, ``slug``) are intentionally absent: the edit form
-    displays them read-only and the service rejects any value
-    submitted under those keys before any database call. Pydantic's
-    ``extra='forbid'`` further guarantees a forged POST that smuggles
-    additional fields (including a tampered ``whatsapp`` /
-    ``slug``) cannot pass through the adapter, so the stored routing
-    identity is never mutable through this seam.
+    (profile, address, locale, ``estado_id``, trial configuration).
+    Routing identifiers (``whatsapp``, ``slug``) are intentionally
+    absent: the edit form displays them read-only and the service
+    rejects any value submitted under those keys before any
+    database call. Pydantic's ``extra='forbid'`` further guarantees
+    a forged POST that smuggles additional fields (including a
+    tampered ``whatsapp`` / ``slug``) cannot pass through the
+    adapter, so the stored routing identity is never mutable
+    through this seam.
 
     The optional ``piso_departamento`` / ``codigo_postal`` fields
     remain ``None`` so the service can preserve a blank address
     component exactly as it was before the edit.
+
+    The optional trial fields ``prueba_hasta`` and
+    ``prueba_max_pedidos`` are collected only when the operator
+    selected a PRUEBA-mode state; the service performs the
+    authoritative validation and refuses to persist an out-of-sync
+    payload. The counter ``prueba_pedidos_consumidos`` is read-only
+    in the panel and never reaches the form contract.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -261,6 +331,13 @@ class ComercioUpdateForm(BaseModel):
     provincia: str = Field(min_length=1, max_length=100)
     codigo_postal: str | None = Field(default=None, max_length=20)
     estado_id: int = Field(ge=1)
+    prueba_hasta: Annotated[
+        datetime | None, BeforeValidator(_coerce_blank_str_to_none)
+    ] = None
+    prueba_max_pedidos: Annotated[
+        int | None,
+        BeforeValidator(_coerce_positive_int_or_none),
+    ] = None
     zona_horaria: str = Field(min_length=1, max_length=100)
     moneda: str = Field(min_length=1, max_length=3)
     idioma: str = Field(min_length=1, max_length=10)

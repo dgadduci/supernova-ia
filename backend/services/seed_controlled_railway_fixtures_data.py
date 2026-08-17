@@ -33,6 +33,7 @@ from decimal import Decimal
 from typing import Final
 
 COMMERCE_ESTADO_CODIGO: Final[str] = "ACTIVO"
+COMMERCE_ESTADO_MODO: Final[str] = "habilitado"
 
 
 @dataclass(frozen=True)
