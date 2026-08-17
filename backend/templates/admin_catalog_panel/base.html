@@ -358,9 +358,55 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     gap: 12px;
+    min-width: 0;
   }
   .nav-tree .row .label { color: var(--fg); font-weight: 600; }
   .nav-tree .row .meta { color: var(--fg-faint); font-size: 0.85rem; }
+  .nav-tree .row .row-body {
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  .nav-tree .row .row-action {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+  .nav-tree.nav-tree-allow-wrap .row {
+    flex-wrap: wrap;
+  }
+  .nav-tree.nav-tree-allow-wrap .row .row-action {
+    margin-left: auto;
+  }
+
+  .table-scroll {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+  }
+  .table-scroll > table {
+    width: 100%;
+    min-width: 36rem;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    table-layout: auto;
+  }
+  .table-scroll th,
+  .table-scroll td {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  .table-scroll th.actions-col,
+  .table-scroll td.actions-col {
+    white-space: nowrap;
+    width: 1%;
+  }
   .grid-2 {
     display: grid;
     gap: 18px;

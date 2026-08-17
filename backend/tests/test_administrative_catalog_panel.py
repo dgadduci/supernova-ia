@@ -52,12 +52,16 @@ from backend.admin.views import (
     CatalogProductoPresentacionRow,
     CatalogProductoRow,
     CommerceCatalogNavigationView,
+    CommerceDeliveryActiveCandidate,
     CommerceDetailView,
+    CommercePaymentActiveCandidate,
     CommerceSummary,
     DeliveryMethodDetailView,
     FlavorOption,
     FlavorSummaryView,
     GlobalMedioPagoRow,
+    InactiveDeliveryMethodDetailView,
+    InactivePaymentMethodDetailView,
     PaymentMethodDetailView,
 )
 from backend.config import settings as settings_module
@@ -1859,6 +1863,188 @@ class PanelVisualAccessibilityTest(unittest.TestCase):
                 self.assertNotIn("cdn", content.lower())
                 self.assertNotIn("googleapis", content.lower())
                 self.assertNotIn("unpkg", content.lower())
+
+
+class PanelTableContainmentTest(unittest.TestCase):
+    """The payment / delivery sections must contain their tables and
+    candidate rows so long cell content cannot push the action
+    button outside the visible card.
+
+    The tests look at the rendered markup and the bundled stylesheet
+    to verify the containment contract:
+
+    * the payment and delivery tables are wrapped in a
+      ``.table-scroll`` container with a ``data-panel-table-scroll``
+      marker;
+    * the base stylesheet constrains the wrapper to a horizontal
+      scroll and forces ``min-width: 0`` on the candidate rows so
+      the text block can shrink and wrap;
+    * headers remain accessible via ``scope="col"``;
+    * the action cell stays visible at the right edge of the table.
+    """
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.app = _build_app()
+        self.override = _install_session_override(self, self.app, self.session)
+        self.client = TestClient(
+            self.app,
+            raise_server_exceptions=False,
+            follow_redirects=False,
+        )
+        _stub_settings_patcher(self)
+
+    def _build_rich_detail(self) -> CommerceDetailView:
+        detail = _build_detail()
+        return CommerceDetailView(
+            id=detail.id,
+            nombre_fantasia=detail.nombre_fantasia,
+            nombre_corto=detail.nombre_corto,
+            razon_social=detail.razon_social,
+            cuit=detail.cuit,
+            whatsapp=detail.whatsapp,
+            calle=detail.calle,
+            numero=detail.numero,
+            piso_departamento=detail.piso_departamento,
+            localidad=detail.localidad,
+            provincia=detail.provincia,
+            codigo_postal=detail.codigo_postal,
+            slug=detail.slug,
+            estado=detail.estado,
+            zona_horaria=detail.zona_horaria,
+            moneda=detail.moneda,
+            idioma=detail.idioma,
+            medios_pago=detail.medios_pago,
+            metodos_entrega=detail.metodos_entrega,
+            medios_pago_candidates=[
+                CommercePaymentActiveCandidate(
+                    id=12,
+                    codigo="CANDIDATE",
+                    descripcion="Descripción de candidato",
+                    habilita_titular=True,
+                    habilita_alias=True,
+                ),
+            ],
+            metodos_entrega_candidates=[
+                CommerceDeliveryActiveCandidate(
+                    id=22,
+                    codigo="DELIVERY_CANDIDATE",
+                    descripcion="Descripción de candidato de entrega",
+                    orden=2,
+                ),
+            ],
+            medios_pago_inactivos=[
+                InactivePaymentMethodDetailView(
+                    id=13,
+                    codigo="MEDIO_INACTIVO",
+                    descripcion="Histórico",
+                    titular="Titular histórico",
+                    alias="alias.historico",
+                ),
+            ],
+            metodos_entrega_inactivos=[
+                InactiveDeliveryMethodDetailView(
+                    id=23,
+                    codigo="ENTREGA_INACTIVA",
+                    descripcion="Histórico entrega",
+                    orden=3,
+                ),
+            ],
+            flavor=detail.flavor,
+        )
+
+    def _get_detail(self) -> str:
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls:
+            view_cls.return_value = _stub_view_service(
+                detail=self._build_rich_detail(),
+                catalog=_build_catalog(),
+                flavor_options=_build_flavor_options(),
+            )
+            response = self.client.get(
+                "/admin/catalog/comercios/1",
+                headers=_basic_auth_header("any", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 200)
+        return response.text
+
+    def _base_stylesheet(self) -> str:
+        template_dir = (
+            Path(admin_routes.__file__).resolve().parent.parent
+            / "templates"
+            / "admin_catalog_panel"
+        )
+        base_path = template_dir / "base.html"
+        return base_path.read_text(encoding="utf-8")
+
+    def test_payment_table_is_wrapped_in_table_scroll(self) -> None:
+        text = self._get_detail()
+        self.assertIn(
+            'data-panel-table-scroll="medios-pago"',
+            text,
+        )
+        self.assertIn(
+            'data-panel-table-scroll="metodos-entrega"',
+            text,
+        )
+
+    def test_inactive_history_tables_are_wrapped_in_table_scroll(self) -> None:
+        text = self._get_detail()
+        self.assertIn(
+            'data-panel-table-scroll="medios-pago-historico"',
+            text,
+        )
+        self.assertIn(
+            'data-panel-table-scroll="metodos-entrega-historico"',
+            text,
+        )
+
+    def test_table_scroll_wrapper_declares_horizontal_overflow(self) -> None:
+        stylesheet = self._base_stylesheet()
+        self.assertIn(".table-scroll", stylesheet)
+        self.assertIn("overflow-x: auto", stylesheet)
+        self.assertIn("overflow-y: hidden", stylesheet)
+        self.assertIn("max-width: 100%", stylesheet)
+
+    def test_table_scroll_inner_table_uses_min_width(self) -> None:
+        stylesheet = self._base_stylesheet()
+        self.assertIn("min-width: 36rem", stylesheet)
+
+    def test_table_cells_force_safe_line_breaks(self) -> None:
+        stylesheet = self._base_stylesheet()
+        self.assertIn("overflow-wrap: anywhere", stylesheet)
+        self.assertIn("word-break: break-word", stylesheet)
+
+    def test_table_header_columns_are_associated_with_scopes(self) -> None:
+        text = self._get_detail()
+        self.assertIn('<th scope="col"', text)
+        self.assertIn('<th scope="col" class="actions-col"', text)
+
+    def test_actions_column_keeps_action_button_visible(self) -> None:
+        text = self._get_detail()
+        self.assertIn('<td class="actions-col"><a class="button secondary"', text)
+        self.assertIn("Configurar</a></td>", text)
+
+    def test_candidate_rows_allow_text_block_to_shrink(self) -> None:
+        stylesheet = self._base_stylesheet()
+        self.assertIn(".nav-tree-allow-wrap", stylesheet)
+        self.assertIn("min-width: 0", stylesheet)
+        self.assertIn("flex-wrap: wrap", stylesheet)
+        self.assertIn("overflow-wrap: anywhere", stylesheet)
+        self.assertIn("word-break: break-word", stylesheet)
+
+    def test_candidate_rows_markup_uses_row_body_class(self) -> None:
+        text = self._get_detail()
+        self.assertIn('class="row-body"', text)
+        self.assertIn('class="button primary row-action"', text)
+
+    def test_action_button_remains_keyboard_accessible(self) -> None:
+        text = self._get_detail()
+        # The markup keeps the action button as a normal anchor so
+        # keyboard activation requires no extra plumbing.
+        self.assertIn("<a class=\"button", text)
+        self.assertIn(">Configurar</a>", text)
 
 
 class PanelPrimaryNavMediosPagoTest(unittest.TestCase):
