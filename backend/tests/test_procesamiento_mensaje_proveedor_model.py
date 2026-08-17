@@ -72,7 +72,7 @@ def _estado_id_activo() -> int:
     with engine.connect() as c:
         row = c.execute(
             select(EstadoComercio.id).where(
-                EstadoComercio.estado == "ACTIVO"
+                EstadoComercio.codigo == "ACTIVO"
             )
         ).first()
         if row is None:

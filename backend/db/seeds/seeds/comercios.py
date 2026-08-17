@@ -19,8 +19,10 @@ def main() -> None:
     with Session(engine) as session:
         with session.begin():
             estado_ids = {
-                estado: id_
-                for estado, id_ in session.execute(select(EstadoComercio.estado, EstadoComercio.id)).all()
+                codigo: id_
+                for codigo, id_ in session.execute(
+                    select(EstadoComercio.codigo, EstadoComercio.id)
+                ).all()
             }
             existing_cuits = {
                 cuit for (cuit,) in session.execute(select(Comercio.cuit)).all()

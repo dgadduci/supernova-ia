@@ -45,6 +45,7 @@ from backend.services.controlled_railway_calibration_identity import (
 )
 
 COMMERCE_ESTADO_CODIGO: Final[str] = "ACTIVO"
+COMMERCE_ESTADO_MODO: Final[str] = "habilitado"
 
 
 # Marker the dedicated Railway target MUST expose. The CLI reads the

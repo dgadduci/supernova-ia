@@ -1,14 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from backend.dependencies import get_session, require_admin_token
-from backend.schemas.estado_comercio import EstadoComercioCreate, EstadoComercioResponse
+from backend.schemas.estado_comercio import EstadoComercioResponse
 from backend.services.estado_comercio_service import EstadoComercioService
-from backend.services.exceptions import (
-    DuplicateEstado,
-    EstadoComercioNotFound,
-    InvalidEstado,
-)
+from backend.services.exceptions import EstadoComercioNotFound
 
 router = APIRouter(
     prefix="/estados-comercio",
@@ -39,14 +35,4 @@ def get_estado_comercio(
         raise HTTPException(status_code=404, detail=str(e)) from e
 
 
-@router.post("", response_model=EstadoComercioResponse, status_code=status.HTTP_201_CREATED)
-def create_estado_comercio(
-    payload: EstadoComercioCreate,
-    service: EstadoComercioService = Depends(_service),
-) -> EstadoComercioResponse:
-    try:
-        return EstadoComercioResponse.model_validate(service.create(payload.estado))
-    except InvalidEstado as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except DuplicateEstado as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
+__all__ = ["router"]

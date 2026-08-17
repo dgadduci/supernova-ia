@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, String, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.models.base import Base
@@ -15,6 +15,17 @@ if TYPE_CHECKING:
 
 class Comercio(Base):
     __tablename__ = "comercios"
+
+    __table_args__ = (
+        CheckConstraint(
+            "prueba_max_pedidos IS NULL OR prueba_max_pedidos > 0",
+            name="comercios_prueba_max_pedidos_positivo",
+        ),
+        CheckConstraint(
+            "prueba_pedidos_consumidos >= 0",
+            name="comercios_prueba_pedidos_consumidos_no_negativo",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
 
@@ -78,6 +89,21 @@ class Comercio(Base):
     fecha_baja: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
+    )
+
+    prueba_hasta: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    prueba_max_pedidos: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    prueba_pedidos_consumidos: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
     )
 
     metodos_entrega: Mapped[list["ComercioMetodoEntrega"]] = relationship(

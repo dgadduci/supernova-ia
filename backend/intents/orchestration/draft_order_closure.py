@@ -51,6 +51,10 @@ from backend.models.session import EstadoSession
 from backend.models.session import Session as ConversationSession
 from backend.repositories.medios_pago_repository import MediosPagoRepository
 from backend.repositories.metodo_entrega_repository import MetodoEntregaRepository
+from backend.services.commerce_availability_service import (
+    CommerceAvailabilityService,
+    CommerceAvailabilityStatus,
+)
 from backend.services.pedido_producto_service import PedidoProductoService
 
 
@@ -427,6 +431,14 @@ def finalize_confirmar_pedido(
     recognizer or any session-control method
     (``commit`` / ``rollback`` / ``flush`` / ``refresh`` / ``begin`` /
     ``close``).
+
+    The finalizer also re-checks the centralized commerce
+    availability policy and reserves a trial quota unit when the
+    comercio is in ``PRUEBA`` mode. The reservation locks the
+    comercio row inside the caller-owned transaction so the counter
+    increment is staged together with the pedido transition; any
+    technical failure rolled back by the caller reverts both
+    effects.
     """
     preconditions = _validate_confirmar_preconditions(
         db,
@@ -438,6 +450,33 @@ def finalize_confirmar_pedido(
 
     pedido = preconditions.pedido
     assert pedido is not None
+
+    comercio_id = session.id_comercio
+    if comercio_id is None:
+        return _rejected(
+            "confirmar_pedido",
+            source_text,
+            "no_comercio",
+            "draft_order_closure",
+            "confirmar_pedido",
+        )
+    availability = CommerceAvailabilityService(
+        db
+    ).reserve_confirmed_order(int(comercio_id))
+    if availability.status is not CommerceAvailabilityStatus.AVAILABLE:
+        reason = (
+            availability.reason.value
+            if availability.reason is not None
+            else "blocked_state"
+        )
+        return _rejected(
+            "confirmar_pedido",
+            source_text,
+            f"comercio_unavailable:{reason}",
+            "draft_order_closure",
+            "confirmar_pedido",
+        )
+
     if not skip_observation and observation_text is not None:
         pedido.observaciones = observation_text
 

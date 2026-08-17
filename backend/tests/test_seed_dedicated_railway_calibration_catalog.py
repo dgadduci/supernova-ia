@@ -120,12 +120,14 @@ from backend.models import (
     Producto,
     ProductoPresentacion,
 )
+from backend.models.estado_comercio import EstadoComercioModoOperacion
 from backend.services.controlled_railway_calibration_identity import (
     resolve_manifest,
 )
 from backend.services.seed_dedicated_railway_calibration_catalog_data import (
     CATEGORY_FIXTURES,
-    COMMERCE_ESTADO_CODIGO,
+COMMERCE_ESTADO_CODIGO,
+    COMMERCE_ESTADO_MODO,
     COMMERCE_FIXTURES,
     DEDICATED_COMMERCE_SLUG,
     DEDICATED_TARGET_ENV_VAR,
@@ -329,6 +331,21 @@ class _IsolatedDatabaseTestCase(unittest.TestCase):
 
 
 @contextlib.contextmanager
+def _make_estado(
+    codigo: str,
+    *,
+    modo: str = "bloqueado",
+    seleccionable: bool = False,
+) -> EstadoComercio:
+    """Build an :class:`EstadoComercio` with sensible lifecycle defaults."""
+    return EstadoComercio(
+        codigo=codigo,
+        descripcion=codigo,
+        modo_operacion=EstadoComercioModoOperacion(modo),
+        seleccionable=seleccionable,
+    )
+
+
 def _open_isolated_inspection_session(
     isolation: _Isolation,
 ) -> Iterator[Session]:
@@ -1386,7 +1403,7 @@ class DedicatedRailwayCalibrationCatalogCliTest(_IsolatedDatabaseTestCase):
     def _seed_pilot_comercio(self) -> None:
         """Seed a pilot comercio so the empty-target guard fails."""
         with _open_isolated_inspection_session(self.isolation) as session:
-            estado = EstadoComercio(estado=COMMERCE_ESTADO_CODIGO)
+            estado = _make_estado(COMMERCE_ESTADO_CODIGO, modo=COMMERCE_ESTADO_MODO, seleccionable=True)
             session.add(estado)
             session.flush()
             estado_id_value = cast(int, estado.id)
@@ -1413,7 +1430,17 @@ class DedicatedRailwayCalibrationCatalogCliTest(_IsolatedDatabaseTestCase):
     def _seed_single_estado(self, codigo: str) -> None:
         """Seed exactly one estado_comercio row."""
         with _open_isolated_inspection_session(self.isolation) as session:
-            session.add(EstadoComercio(estado=codigo))
+            session.add(
+                _make_estado(
+                    codigo,
+                    modo=(
+                        COMMERCE_ESTADO_MODO
+                        if codigo == COMMERCE_ESTADO_CODIGO
+                        else "bloqueado"
+                    ),
+                    seleccionable=(codigo == COMMERCE_ESTADO_CODIGO),
+                )
+            )
             session.flush()
             session.commit()
 
@@ -1601,7 +1628,11 @@ class IsolationRegressionTest(_IsolatedDatabaseTestCase):
         before = _catalog_row_counts_in_shared_db()
         with _open_isolated_inspection_session(self.isolation) as session:
             session.add(
-                EstadoComercio(estado="ROLLBACK_PROBE_SHOULD_NEVER_PERSIST")
+                _make_estado(
+                    "ROLLBACK_PROBE_SHOULD_NEVER_PERSIST",
+                    modo="bloqueado",
+                    seleccionable=False,
+                )
             )
         # No commit, no flush: the row is staged in T_outer. The
         # shared database must still be unchanged after tearDown.

@@ -62,9 +62,11 @@ from backend.models import (
     Producto,
     ProductoPresentacion,
 )
+from backend.models.estado_comercio import EstadoComercioModoOperacion
 from backend.services.seed_controlled_railway_fixtures_data import (
     CATEGORY_FIXTURES,
     COMMERCE_ESTADO_CODIGO,
+    COMMERCE_ESTADO_MODO,
     COMMERCE_FIXTURES,
     PRESENTATION_FIXTURES,
     PRESENTATIONS_BY_CATEGORY,
@@ -709,7 +711,7 @@ class ControlledRailwayFixtureService:
     def _estado_activo_id_or_none(self) -> int | None:
         estado = self._session.execute(
             select(EstadoComercio).where(
-                EstadoComercio.estado == COMMERCE_ESTADO_CODIGO
+                EstadoComercio.codigo == COMMERCE_ESTADO_CODIGO
             )
         ).scalar_one_or_none()
         if estado is None:
@@ -748,7 +750,12 @@ class ControlledRailwayFixtureService:
         ``flush`` time. The service never calls ``flush``,
         ``commit``, ``rollback`` or ``begin``.
         """
-        estado_activo = EstadoComercio(estado=COMMERCE_ESTADO_CODIGO)
+        estado_activo = EstadoComercio(
+            codigo=COMMERCE_ESTADO_CODIGO,
+            descripcion=COMMERCE_ESTADO_CODIGO,
+            modo_operacion=EstadoComercioModoOperacion(COMMERCE_ESTADO_MODO),
+            seleccionable=True,
+        )
         self._session.add(estado_activo)
 
         comercios_by_slug: dict[str, Comercio] = {}

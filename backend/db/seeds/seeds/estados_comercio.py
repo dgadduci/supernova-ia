@@ -6,9 +6,27 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from backend.models import EstadoComercio
+from backend.models.estado_comercio import EstadoComercioModoOperacion
 
 DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "estados.json"
 DEFAULT_URL = "postgresql+psycopg:///supernova_test"
+
+
+def _build_estado(row: dict) -> EstadoComercio:
+    modo_value = row["modo_operacion"]
+    try:
+        modo_enum = EstadoComercioModoOperacion(modo_value)
+    except ValueError as exc:
+        raise ValueError(
+            f"estado_comercio seed row {row.get('codigo')!r} has invalid "
+            f"modo_operacion {modo_value!r}"
+        ) from exc
+    return EstadoComercio(
+        codigo=row["codigo"],
+        descripcion=row["descripcion"],
+        modo_operacion=modo_enum,
+        seleccionable=bool(row.get("seleccionable", False)),
+    )
 
 
 def main() -> None:
@@ -19,15 +37,30 @@ def main() -> None:
     with Session(engine) as session:
         with session.begin():
             existing = {
-                estado for (estado,) in session.execute(select(EstadoComercio.estado)).all()
+                codigo
+                for (codigo,) in session.execute(
+                    select(EstadoComercio.codigo)
+                ).all()
             }
             inserted = 0
             for row in rows:
-                estado = row["estado"]
-                if estado in existing:
+                codigo = row["codigo"]
+                if codigo in existing:
+                    session.execute(
+                        EstadoComercio.__table__.update()
+                        .where(EstadoComercio.codigo == codigo)
+                        .values(
+                            descripcion=row["descripcion"],
+                            modo_operacion=_build_estado(row).modo_operacion,
+                            seleccionable=bool(
+                                row.get("seleccionable", False)
+                            ),
+                        )
+                    )
+                    existing.add(codigo)
                     continue
-                session.add(EstadoComercio(estado=estado))
-                existing.add(estado)
+                session.add(_build_estado(row))
+                existing.add(codigo)
                 inserted += 1
             skipped = len(rows) - inserted
 

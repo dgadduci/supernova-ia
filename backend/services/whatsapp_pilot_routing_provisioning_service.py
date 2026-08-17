@@ -45,7 +45,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from backend.models import Comercio, EstadoComercio
+from backend.models import Comercio
 from backend.models.canal_whatsapp import CanalWhatsappMode
 from backend.repositories.canal_whatsapp_repository import (
     CanalWhatsappRepository,
@@ -54,6 +54,10 @@ from backend.repositories.cliente_repository import ClienteRepository
 from backend.services.canal_whatsapp_service import (
     CanalWhatsappService,
     normalize_destination,
+)
+from backend.services.commerce_availability_service import (
+    CommerceAvailabilityService,
+    CommerceAvailabilityStatus,
 )
 from backend.services.commerce_channel_resolver import (
     CommerceChannelResolver,
@@ -549,11 +553,10 @@ class WhatsappPilotRoutingProvisioningService:
             raise WhatsappPilotProvisioningCommerceUnavailable(
                 f"comercio {comercio_id} not found"
             )
-        estado = self._session.get(EstadoComercio, comercio.estado_id)
-        estado_nombre: str | None = (
-            None if estado is None else getattr(estado, "estado", None)
-        )
-        if estado is None or estado_nombre != "ACTIVO":
+        outcome = CommerceAvailabilityService(
+            self._session
+        ).evaluate(comercio_id)
+        if outcome.status is not CommerceAvailabilityStatus.AVAILABLE:
             raise WhatsappPilotProvisioningCommerceUnavailable(
                 f"comercio {comercio_id} is not active"
             )

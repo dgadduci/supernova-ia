@@ -2,10 +2,16 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from backend.models import EstadoPedido, EstadoSession, Pedido, PedidoProducto, Session as _SESSION_MODEL
+from backend.models import EstadoPedido, EstadoSession, Pedido, PedidoProducto
+from backend.models import Session as _SESSION_MODEL
 from backend.repositories.pedido_producto_repository import PedidoProductoRepository
 from backend.repositories.pedido_repository import PedidoRepository
+from backend.services.commerce_availability_service import (
+    CommerceAvailabilityService,
+    CommerceAvailabilityStatus,
+)
 from backend.services.exceptions import (
+    CommerceUnavailable,
     InvalidEstadoTransition,
     MediosPagoNotFound,
     MetodoEntregaNotFound,
@@ -120,6 +126,11 @@ class PedidoService:
     def cambiar_estado(self, pedido_id: int, nuevo_estado: EstadoPedido) -> Pedido:
         pedido = self._require_exists(pedido_id)
         self._assert_transition(pedido.estado_pedido, nuevo_estado)
+        if (
+            pedido.estado_pedido == EstadoPedido.BORRADOR
+            and nuevo_estado == EstadoPedido.INGRESADO
+        ):
+            self._reserve_confirmed_order_or_raise(pedido)
         pedido.estado_pedido = nuevo_estado
         try:
             self._repo.flush()
@@ -129,6 +140,36 @@ class PedidoService:
         except Exception:
             self._session.rollback()
             raise
+
+    def _reserve_confirmed_order_or_raise(self, pedido: Pedido) -> None:
+        """Reserve a trial quota unit before flipping a pedido to INGRESADO.
+
+        The helper is only invoked for the ``BORRADOR -> INGRESADO``
+        transition. It locks the comercio row, re-evaluates the
+        trial window / quota inside the lock, and increments the
+        counter atomically with the caller-owned transition. The
+        caller owns the surrounding transaction: a subsequent
+        failure rolls back both the pedido stage and the counter
+        stage together.
+        """
+        from backend.models import Session as ConversationSession
+
+        session_row = self._session.get(ConversationSession, int(pedido.id_session))
+        if session_row is None:
+            raise CommerceUnavailable("session missing for pedido")
+        comercio_id = getattr(session_row, "id_comercio", None)
+        if comercio_id is None:
+            raise CommerceUnavailable("commerce missing for pedido")
+        outcome = CommerceAvailabilityService(
+            self._session
+        ).reserve_confirmed_order(int(comercio_id))
+        if outcome.status is not CommerceAvailabilityStatus.AVAILABLE:
+            reason = (
+                outcome.reason.value if outcome.reason is not None else "blocked_state"
+            )
+            raise CommerceUnavailable(
+                f"comercio {comercio_id} no disponible: {reason}"
+            )
 
     def _require_exists(self, pedido_id: int) -> Pedido:
         pedido = self._repo.get(pedido_id)

@@ -1,17 +1,32 @@
 [
   {
-    "estado": "ACTIVO"
+    "codigo": "ACTIVO",
+    "descripcion": "Activo",
+    "modo_operacion": "habilitado",
+    "seleccionable": true
   },
   {
-    "estado": "INACTIVO"
+    "codigo": "INACTIVO",
+    "descripcion": "Inactivo",
+    "modo_operacion": "bloqueado",
+    "seleccionable": true
   },
   {
-    "estado": "PRUEBA"
+    "codigo": "PRUEBA",
+    "descripcion": "Prueba",
+    "modo_operacion": "prueba",
+    "seleccionable": true
   },
   {
-    "estado": "SUSPENDIDO"
+    "codigo": "SUSPENDIDO",
+    "descripcion": "Suspendido",
+    "modo_operacion": "bloqueado",
+    "seleccionable": false
   },
   {
-    "estado": "BAJA"
+    "codigo": "BAJA",
+    "descripcion": "Baja",
+    "modo_operacion": "bloqueado",
+    "seleccionable": false
   }
 ]

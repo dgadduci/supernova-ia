@@ -69,6 +69,7 @@ from backend.services.exceptions import (
     InvalidPrecio,
     InvalidPresentacion,
     InvalidProducto,
+    InvalidTrialConfiguration,
     MediosPagoNotFound,
     MetodoEntregaNotFound,
     PrecioNotFound,
@@ -417,6 +418,12 @@ _DOMAIN_MAPPING: dict[type[Exception], _DomainMapping] = {
         "o igual a cero.",
         render_form=_VALIDATION_RENDER_FORM,
     ),
+    InvalidTrialConfiguration: _DomainMapping(
+        InvalidTrialConfiguration,
+        400,
+        "La configuración de la prueba no es válida.",
+        render_form=_VALIDATION_RENDER_FORM,
+    ),
     InvalidMetodoEntrega: _DomainMapping(
         InvalidMetodoEntrega,
         400,
@@ -519,6 +526,8 @@ def new_comercio_form(
                     "codigo_postal": "",
                     "slug": "",
                     "estado_id": "",
+                    "prueba_hasta": "",
+                    "prueba_max_pedidos": "",
                     "zona_horaria": "America/Argentina/Buenos_Aires",
                     "moneda": "ARS",
                     "idioma": "es-AR",
@@ -551,6 +560,8 @@ def create_comercio(
     codigo_postal: Annotated[str | None, Form()] = None,
     slug: Annotated[str, Form()] = "",
     estado_id: Annotated[str | None, Form()] = None,
+    prueba_hasta: Annotated[str | None, Form()] = None,
+    prueba_max_pedidos: Annotated[str | None, Form()] = None,
     zona_horaria: Annotated[str | None, Form()] = None,
     moneda: Annotated[str | None, Form()] = None,
     idioma: Annotated[str | None, Form()] = None,
@@ -591,6 +602,8 @@ def create_comercio(
         "zona_horaria": zona_horaria,
         "moneda": moneda,
         "idioma": idioma,
+        "prueba_hasta": prueba_hasta,
+        "prueba_max_pedidos": prueba_max_pedidos,
     }
 
     try:
@@ -654,7 +667,10 @@ def create_comercio(
                 else "slug"
                 if isinstance(exc, DuplicateSlug)
                 else "estado_id"
-                if isinstance(exc, EstadoComercioNotFound)
+                if isinstance(
+                    exc,
+                    (EstadoComercioNotFound, InvalidTrialConfiguration),
+                )
                 else None
             ),
         )
@@ -768,6 +784,8 @@ def _normalise_comercio_form_values(raw: dict[str, Any]) -> dict[str, Any]:
         "codigo_postal",
         "slug",
         "estado_id",
+        "prueba_hasta",
+        "prueba_max_pedidos",
         "zona_horaria",
         "moneda",
         "idioma",
@@ -862,6 +880,9 @@ def edit_comercio_form(
                     "codigo_postal": detail.codigo_postal or "",
                     "slug": detail.slug,
                     "estado_id": detail.estado_id,
+                    "prueba_hasta": detail.prueba_hasta,
+                    "prueba_max_pedidos": detail.prueba_max_pedidos,
+                    "prueba_pedidos_consumidos": detail.prueba_pedidos_consumidos,
                     "zona_horaria": detail.zona_horaria,
                     "moneda": detail.moneda,
                     "idioma": detail.idioma,
@@ -893,6 +914,8 @@ def update_comercio(
     provincia: Annotated[str, Form()] = "",
     codigo_postal: Annotated[str | None, Form()] = None,
     estado_id: Annotated[str | None, Form()] = None,
+    prueba_hasta: Annotated[str | None, Form()] = None,
+    prueba_max_pedidos: Annotated[str | None, Form()] = None,
     zona_horaria: Annotated[str | None, Form()] = None,
     moneda: Annotated[str | None, Form()] = None,
     idioma: Annotated[str | None, Form()] = None,
@@ -949,6 +972,8 @@ def update_comercio(
                 "localidad": localidad,
                 "provincia": provincia,
                 "codigo_postal": codigo_postal,
+                "prueba_hasta": prueba_hasta,
+                "prueba_max_pedidos": prueba_max_pedidos,
                 "zona_horaria": zona_horaria,
                 "moneda": moneda,
                 "idioma": idioma,
@@ -969,6 +994,8 @@ def update_comercio(
         "provincia": provincia,
         "codigo_postal": codigo_postal,
         "estado_id": coerced_estado_id,
+        "prueba_hasta": prueba_hasta,
+        "prueba_max_pedidos": prueba_max_pedidos,
         "zona_horaria": zona_horaria,
         "moneda": moneda,
         "idioma": idioma,
@@ -1037,7 +1064,10 @@ def update_comercio(
             error_message=mapping.message,
             field_name=(
                 "estado_id"
-                if isinstance(exc, EstadoComercioNotFound)
+                if isinstance(
+                    exc,
+                    (EstadoComercioNotFound, InvalidTrialConfiguration),
+                )
                 else None
             ),
         )
@@ -1078,6 +1108,9 @@ def _re_render_comercio_edit_form(
         "codigo_postal": detail.codigo_postal or "",
         "slug": detail.slug,
         "estado_id": detail.estado_id,
+        "prueba_hasta": detail.prueba_hasta,
+        "prueba_max_pedidos": detail.prueba_max_pedidos,
+        "prueba_pedidos_consumidos": detail.prueba_pedidos_consumidos,
         "zona_horaria": detail.zona_horaria,
         "moneda": detail.moneda,
         "idioma": detail.idioma,

@@ -92,9 +92,11 @@ from backend.models import (
     Producto,
     ProductoPresentacion,
 )
+from backend.models.estado_comercio import EstadoComercioModoOperacion
 from backend.services.seed_controlled_railway_fixtures_data import (
     CATEGORY_FIXTURES,
     COMMERCE_ESTADO_CODIGO,
+    COMMERCE_ESTADO_MODO,
     COMMERCE_FIXTURES,
     PRESENTATION_FIXTURES,
     PRESENTATIONS_BY_CATEGORY,
@@ -158,20 +160,52 @@ def _truncate_all_data_tables() -> None:
 
 
 def _reseed_estado_comercio_standard() -> None:
-    """Re-seed the standard ``estado_comercio`` rows used by other tests."""
-    rows = (
-        "ACTIVO",
-        "INACTIVO",
-        "PRUEBA",
-        "SUSPENDIDO",
-        "BAJA",
+    """Re-seed the standard ``estado_comercio`` rows used by other tests.
+
+    The seed mirrors the canonical lifecycle policy:
+
+    * ACTIVO -> ``habilitado``, ``seleccionable=True``;
+    * INACTIVO -> ``bloqueado``, ``seleccionable=True``;
+    * PRUEBA -> ``prueba``, ``seleccionable=True``;
+    * SUSPENDIDO / BAJA -> ``bloqueado``, ``seleccionable=False``.
+    """
+    rows: tuple[tuple[str, str, bool], ...] = (
+        ("ACTIVO", "habilitado", True),
+        ("INACTIVO", "bloqueado", True),
+        ("PRUEBA", "prueba", True),
+        ("SUSPENDIDO", "bloqueado", False),
+        ("BAJA", "bloqueado", False),
     )
     with engine.begin() as conn:
-        for estado in rows:
+        for codigo, modo, seleccionable in rows:
             conn.execute(
-                text("INSERT INTO estado_comercio (estado) VALUES (:estado)"),
-                {"estado": estado},
+                text(
+                    "INSERT INTO estado_comercio "
+                    "(codigo, descripcion, modo_operacion, seleccionable) "
+                    "VALUES (:codigo, :codigo, CAST(:modo AS "
+                    "estado_comercio_modo_operacion), :seleccionable)"
+                ),
+                {
+                    "codigo": codigo,
+                    "modo": modo,
+                    "seleccionable": bool(seleccionable),
+                },
             )
+
+
+def _make_estado(
+    codigo: str,
+    *,
+    modo: str = "bloqueado",
+    seleccionable: bool = False,
+) -> EstadoComercio:
+    """Build an :class:`EstadoComercio` with sensible lifecycle defaults."""
+    return EstadoComercio(
+        codigo=codigo,
+        descripcion=codigo,
+        modo_operacion=EstadoComercioModoOperacion(modo),
+        seleccionable=seleccionable,
+    )
 
 
 def _count(session: Session, model: type[Any]) -> int:
@@ -342,7 +376,7 @@ class ControlledRailwayFixtureCliTest(unittest.TestCase):
         with _open_inspection_session() as session:
             estado = session.execute(
                 select(EstadoComercio).where(
-                    EstadoComercio.estado == COMMERCE_ESTADO_CODIGO
+                    EstadoComercio.codigo == COMMERCE_ESTADO_CODIGO
                 )
             ).scalar_one()
             self.assertIsNotNone(estado)
@@ -353,11 +387,11 @@ class ControlledRailwayFixtureCliTest(unittest.TestCase):
         with TestingSessionLocal() as session, session.begin():
             estado = session.execute(
                 select(EstadoComercio).where(
-                    EstadoComercio.estado == COMMERCE_ESTADO_CODIGO
+                    EstadoComercio.codigo == COMMERCE_ESTADO_CODIGO
                 )
             ).scalar_one_or_none()
             if estado is None:
-                estado = EstadoComercio(estado=COMMERCE_ESTADO_CODIGO)
+                estado = _make_estado(COMMERCE_ESTADO_CODIGO, modo=COMMERCE_ESTADO_MODO, seleccionable=True)
                 session.add(estado)
                 session.flush()
             estado_id_value = cast(int, estado.id)
@@ -397,11 +431,11 @@ class ControlledRailwayFixtureCliTest(unittest.TestCase):
         with TestingSessionLocal() as session, session.begin():
             estado = session.execute(
                 select(EstadoComercio).where(
-                    EstadoComercio.estado == COMMERCE_ESTADO_CODIGO
+                    EstadoComercio.codigo == COMMERCE_ESTADO_CODIGO
                 )
             ).scalar_one_or_none()
             if estado is None:
-                estado = EstadoComercio(estado=COMMERCE_ESTADO_CODIGO)
+                estado = _make_estado(COMMERCE_ESTADO_CODIGO, modo=COMMERCE_ESTADO_MODO, seleccionable=True)
                 session.add(estado)
                 session.flush()
             estado_id_value = cast(int, estado.id)
@@ -444,7 +478,7 @@ class ControlledRailwayFixtureCliTest(unittest.TestCase):
         self,
     ) -> None:
         with TestingSessionLocal() as session, session.begin():
-            session.add(EstadoComercio(estado=COMMERCE_ESTADO_CODIGO))
+            session.add(_make_estado(COMMERCE_ESTADO_CODIGO, modo=COMMERCE_ESTADO_MODO, seleccionable=True))
 
         before = _catalog_row_counts_in_context()
         self.assertEqual(before["estado_comercio"], 1)
@@ -480,7 +514,13 @@ class ControlledRailwayFixtureCliTest(unittest.TestCase):
         self,
     ) -> None:
         with TestingSessionLocal() as session, session.begin():
-            session.add(EstadoComercio(estado="INACTIVO"))
+            session.add(
+                _make_estado(
+                    "INACTIVO",
+                    modo="bloqueado",
+                    seleccionable=True,
+                )
+            )
 
         before = _catalog_row_counts_in_context()
         self.assertEqual(before["estado_comercio"], 1)
@@ -488,7 +528,7 @@ class ControlledRailwayFixtureCliTest(unittest.TestCase):
 
         with _open_inspection_session() as session:
             estados = session.execute(
-                select(EstadoComercio.estado)
+                select(EstadoComercio.codigo)
             ).all()
         self.assertEqual(
             [row[0] for row in estados], ["INACTIVO"]

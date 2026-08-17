@@ -14,6 +14,7 @@ from backend.schemas.pedido import (
     PedidoResponse,
 )
 from backend.services.exceptions import (
+    CommerceUnavailable,
     InvalidEstadoPedido,
     InvalidEstadoTransition,
     MediosPagoNotFound,
@@ -175,6 +176,8 @@ def cambiar_estado(
         raise HTTPException(status_code=404, detail=str(e)) from e
     except InvalidEstadoPedido as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    except CommerceUnavailable as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except InvalidEstadoTransition as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     return PedidoResponse.model_validate(pedido)

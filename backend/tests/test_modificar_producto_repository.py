@@ -38,7 +38,7 @@ def _seed(suffix: str) -> dict:
     """Seed comercio, cliente, session, pedido, presentacion, pp, precio."""
     with engine.connect() as conn:
         estado_id = conn.execute(
-            select(EstadoComercio.id).where(EstadoComercio.estado == "ACTIVO")
+            select(EstadoComercio.id).where(EstadoComercio.codigo == "ACTIVO")
         ).first()
         if estado_id is None:
             raise RuntimeError("estado ACTIVO not seeded")

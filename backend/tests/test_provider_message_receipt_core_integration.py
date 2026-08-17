@@ -86,7 +86,7 @@ def _now() -> datetime:
 def _estado_id(nombre: str) -> int:
     with engine.connect() as c:
         row = c.execute(
-            select(EstadoComercio.id).where(EstadoComercio.estado == nombre)
+            select(EstadoComercio.id).where(EstadoComercio.codigo == nombre)
         ).first()
         if row is None:
             raise RuntimeError(

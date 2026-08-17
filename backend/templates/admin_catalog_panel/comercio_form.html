@@ -246,13 +246,57 @@
       >
         <option value="">— Seleccionar estado —</option>
         {% for option in estados %}
-          <option value="{{ option.id }}" {% if form_values.estado_id and form_values.estado_id|string == option.id|string %}selected{% endif %}>
-            #{{ option.id }} — {{ option.estado }}
+          <option value="{{ option.id }}" {% if form_values.estado_id and form_values.estado_id|string == option.id|string %}selected{% endif %} data-modo-operacion="{{ option.modo_operacion.value }}">
+            #{{ option.id }} — {{ option.codigo }}
           </option>
         {% endfor %}
       </select>
       <span class="hint">El servicio valida que el id seleccionado exista antes de persistir.</span>
     </label>
+
+    {% set trial_selected = False %}
+    {% for option in estados %}
+      {% if form_values.estado_id and form_values.estado_id|string == option.id|string and option.modo_operacion.value == 'prueba' %}
+        {% set trial_selected = True %}
+      {% endif %}
+    {% endfor %}
+
+    <fieldset class="form-field trial-fields" data-trial-fields aria-label="Configuración de prueba" {% if not trial_selected %}hidden{% endif %}>
+      <legend>Prueba</legend>
+      <div class="grid-2">
+        <label class="form-field" for="prueba_hasta">
+          Fin de prueba
+          <input
+            id="prueba_hasta"
+            name="prueba_hasta"
+            type="datetime-local"
+            value="{{ form_values.prueba_hasta }}"
+            {% if form_error and form_error.field_name == 'prueba_hasta' %}aria-invalid="true" class="invalid"{% endif %}
+          >
+          <span class="hint">Obligatorio en PRUEBA. Debe ser una fecha y hora futura con zona horaria.</span>
+        </label>
+
+        <label class="form-field" for="prueba_max_pedidos">
+          Máximo de pedidos confirmados
+          <input
+            id="prueba_max_pedidos"
+            name="prueba_max_pedidos"
+            type="number"
+            min="1"
+            step="1"
+            value="{{ form_values.prueba_max_pedidos }}"
+            {% if form_error and form_error.field_name == 'prueba_max_pedidos' %}aria-invalid="true" class="invalid"{% endif %}
+          >
+          <span class="hint">Obligatorio en PRUEBA. Entero positivo.</span>
+        </label>
+      </div>
+
+      {% if is_edit and form_values.prueba_pedidos_consumidos is not none %}
+      <p class="muted">
+        Pedidos confirmados consumidos: <strong>{{ form_values.prueba_pedidos_consumidos }}</strong>. Sólo lectura.
+      </p>
+      {% endif %}
+    </fieldset>
 
     <div class="grid-3">
       <label class="form-field" for="zona_horaria">
@@ -304,4 +348,23 @@
     </div>
   </form>
 </section>
+<script>
+  (function () {
+    var select = document.getElementById('estado_id');
+    var fields = document.querySelector('[data-trial-fields]');
+    if (!select || !fields) { return; }
+    var trialHint = fields.querySelector('legend');
+    function refresh() {
+      var opt = select.options[select.selectedIndex];
+      var modo = opt && opt.getAttribute('data-modo-operacion');
+      if (modo === 'prueba') {
+        fields.hidden = false;
+      } else {
+        fields.hidden = true;
+      }
+    }
+    select.addEventListener('change', refresh);
+    refresh();
+  })();
+</script>
 {% endblock %}

@@ -9,7 +9,10 @@ from backend.models.comercio_metodos_entrega import ComercioMetodoEntrega
 from backend.models.contexto_cliente_canal_whatsapp import (
     ContextoClienteCanalWhatsapp,
 )
-from backend.models.estado_comercio import EstadoComercio
+from backend.models.estado_comercio import (
+    EstadoComercio,
+    EstadoComercioModoOperacion,
+)
 from backend.models.flavor_comunicacion import FlavorComunicacion
 from backend.models.medios_pago import MediosPago
 from backend.models.mensaje_proveedor_saliente import (
@@ -52,6 +55,7 @@ __all__ = [
     "ContextoClienteCanalWhatsapp",
     "EmbeddingStatus",
     "EstadoComercio",
+    "EstadoComercioModoOperacion",
     "EstadoPedido",
     "EstadoSession",
     "FlavorComunicacion",
