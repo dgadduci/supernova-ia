@@ -47,7 +47,7 @@ class ComercioRepository:
         return comercio
 
     def set_flavor_comunicacion(
-        self, comercio: Comercio, flavor_id: int
+        self, comercio: Comercio, flavor_id: int | None
     ) -> None:
         comercio.flavor_comunicacion_id = flavor_id
         self._session.flush()

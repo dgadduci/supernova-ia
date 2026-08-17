@@ -40,21 +40,41 @@ class ComunicacionFlavorService:
         return self._flavor_repo.list_active()
 
     def assign_to_comercio(
-        self, comercio_id: int, flavor_id: int
-    ) -> tuple[Comercio, FlavorComunicacion]:
-        """Set ``comercio.flavor_comunicacion_id`` to ``flavor_id``.
+        self, comercio_id: int, flavor_id: int | None
+    ) -> tuple[Comercio, FlavorComunicacion | None]:
+        """Set or clear ``comercio.flavor_comunicacion_id``.
+
+        When ``flavor_id`` is a positive integer, the target flavor
+        is validated as a known and active global flavor and the
+        comercio's selection is updated. When ``flavor_id`` is
+        ``None``, the comercio selection is cleared
+        (``flavor_comunicacion_id`` set to ``NULL``).
 
         Raises:
             ComercioNotFound: if the comercio does not exist.
             FlavorComunicacionNotFound: if the flavor is unknown.
             FlavorComunicacionInactivo: if the flavor is inactive.
 
-        The selection is rejected before any mutation so the caller
-        can rely on a transactional all-or-nothing outcome.
+        A ``None`` request NEVER raises ``FlavorComunicacionNotFound``
+        or ``FlavorComunicacionInactivo``; clearing is a valid,
+        idempotent administrative operation. Positive assignments
+        are rejected before any mutation so the caller can rely on
+        a transactional all-or-nothing outcome. An already-cleared
+        comercio cleared again is a no-op (the cleared state is the
+        preserved state).
         """
         comercio = self._comercio_repo.get_by_id(comercio_id)
         if comercio is None:
             raise ComercioNotFound(comercio_id)
+
+        if flavor_id is None:
+            if comercio.flavor_comunicacion_id is None:
+                self._session.flush()
+                return comercio, None
+            self._comercio_repo.set_flavor_comunicacion(comercio, None)
+            self._session.flush()
+            return comercio, None
+
         flavor = self._flavor_repo.get_by_id(flavor_id)
         if flavor is None:
             raise FlavorComunicacionNotFound(flavor_id)

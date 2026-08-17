@@ -85,9 +85,10 @@ def assign_flavor_comunicacion(
     flavor_service: ComunicacionFlavorService = Depends(_service),  # noqa: B008
     comercio_service: ComercioService = Depends(_comercio_service),  # noqa: B008
 ) -> ComercioResponse:
+    requested_flavor_id = payload.flavor_comunicacion_id
     try:
         flavor_service.assign_to_comercio(
-            comercio_id, payload.flavor_comunicacion_id
+            comercio_id, requested_flavor_id
         )
     except ComercioNotFound as e:
         session.rollback()

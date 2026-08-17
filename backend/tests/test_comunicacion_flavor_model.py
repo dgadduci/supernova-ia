@@ -299,22 +299,21 @@ class CatalogoGlobalSinOwnerTest(unittest.TestCase):
         self.assertGreaterEqual(count, 0)
 
 
-class MigrationBackfillTest(unittest.TestCase):
-    """Verifies the migration produced a coherent, non-null and
-    FK-enforced backfill, and that a fresh comercio is created with
-    the ``neutro`` flavor by code (no hard-coded numeric ID)."""
+class MigrationOptionalFlavorTest(unittest.TestCase):
+    """Verifies the optional-flavor migration contract::
 
-    def test_all_comercios_reference_a_flavor(self) -> None:
-        with engine.connect() as conn:
-            row = conn.execute(
-                text(
-                    "SELECT COUNT(*) FILTER (WHERE flavor_comunicacion_id IS NULL), "
-                    "COUNT(*) FROM comercios"
-                )
-            ).first()
-        self.assertEqual(int(row[0]), 0)
+    * the ``comercios.flavor_comunicacion_id`` column is nullable,
+      retains the foreign key (``r`` for ``RESTRICT``) and the
+      supporting index;
+    * at least the comerce seeded by ``_seed_comercio`` here (which
+      uses the canonical ``neutro`` flavor at insert time on
+      purpose) keeps its record coherent without violating the
+      nullable contract — and a fresh comercio inserted through
+      the model without ``flavor_comunicacion_id`` is accepted,
+      in line with the new creation semantics.
+    """
 
-    def test_fk_constraint_is_non_null(self) -> None:
+    def test_fk_constraint_is_nullable(self) -> None:
         with engine.connect() as conn:
             row = conn.execute(
                 text(
@@ -324,7 +323,7 @@ class MigrationBackfillTest(unittest.TestCase):
                 )
             ).first()
         self.assertIsNotNone(row)
-        self.assertEqual(row[0], "NO")
+        self.assertEqual(row[0], "YES")
 
     def test_fk_is_restrict(self) -> None:
         with engine.connect() as conn:
@@ -337,25 +336,61 @@ class MigrationBackfillTest(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertEqual(row[0], "r")
 
-    def test_new_comercio_defaults_to_neutro_resolved_by_code(self) -> None:
-        suffix = _suffix()
-        comercio_id = _seed_comercio(suffix)
-        self.addCleanup(_delete_comercio, comercio_id)
+    def test_fk_index_remains(self) -> None:
         with engine.connect() as conn:
-            flavor_id = conn.execute(
+            rows = conn.execute(
                 text(
-                    "SELECT id FROM flavors_comunicacion "
-                    "WHERE codigo = 'neutro'"
+                    "SELECT indexname FROM pg_indexes "
+                    "WHERE tablename = 'comercios' "
+                    "AND indexname = 'ix_comercios_flavor_comunicacion_id'"
                 )
-            ).scalar_one()
+            ).all()
+        self.assertEqual(len(rows), 1)
+
+    def test_comercio_without_flavor_insertion_is_accepted(self) -> None:
+        """A fresh comercio is accepted without
+        ``flavor_comunicacion_id``. The optional-flavor migration
+        changed the contract: absence is the canonical no-style
+        sentinel, not a rejection."""
+        suffix = _suffix()
+        with TestingSessionLocal() as session, session.begin():
+            session.add(
+                Comercio(
+                    nombre_fantasia=f"FK Test {suffix}",
+                    nombre_corto=f"FK {suffix}",
+                    razon_social=f"FK Test SRL {suffix}",
+                    cuit=f"30-{suffix[:8]}-{suffix[8]}",
+                    whatsapp=f"+54914{suffix[:8]}",
+                    calle="Av. FK",
+                    numero="100",
+                    piso_departamento=None,
+                    localidad="CABA",
+                    provincia="Buenos Aires",
+                    codigo_postal="C1000",
+                    slug=f"fk-test-{suffix}",
+                    estado_id=_estado_id_activo(),
+                )
+            )
+            session.flush()
+            inserted_id = int(
+                session.execute(
+                    text(
+                        "SELECT id FROM comercios "
+                        "WHERE slug = :slug"
+                    ),
+                    {"slug": f"fk-test-{suffix}"},
+                ).scalar_one()
+            )
+        self.addCleanup(_delete_comercio, inserted_id)
+        with engine.connect() as conn:
             stored = conn.execute(
                 text(
                     "SELECT flavor_comunicacion_id FROM comercios "
                     "WHERE id = :id"
                 ),
-                {"id": comercio_id},
+                {"id": inserted_id},
             ).scalar_one()
-        self.assertEqual(int(stored), int(flavor_id))
+        self.assertIsNone(stored)
 
     def test_idempotent_seed_via_code_resolution(self) -> None:
         """Re-running the seed step by code must not create duplicate
@@ -439,33 +474,6 @@ class FlavorComunicacionRepositoryTest(unittest.TestCase):
 
 
 class FlavorComercioForeignKeyTest(unittest.TestCase):
-    def test_comercio_without_flavor_insertion_is_rejected(self) -> None:
-        suffix = _suffix()
-        with TestingSessionLocal() as session:
-            try:
-                with session.begin():
-                    session.add(
-                        Comercio(
-                            nombre_fantasia=f"FK Test {suffix}",
-                            nombre_corto=f"FK {suffix}",
-                            razon_social=f"FK Test SRL {suffix}",
-                            cuit=f"30-{suffix[:8]}-{suffix[8]}",
-                            whatsapp=f"+54914{suffix[:8]}",
-                            calle="Av. FK",
-                            numero="100",
-                            piso_departamento=None,
-                            localidad="CABA",
-                            provincia="Buenos Aires",
-                            codigo_postal="C1000",
-                            slug=f"fk-test-{suffix}",
-                            estado_id=_estado_id_activo(),
-                        )
-                    )
-            except Exception as exc:  # noqa: BLE001
-                self.assertIn("flavor_comunicacion_id", str(exc).lower())
-            else:
-                self.fail("expected NOT NULL violation on flavor_comunicacion_id")
-
     def test_comercio_with_unknown_flavor_id_is_rejected(self) -> None:
         suffix = _suffix()
         with TestingSessionLocal() as session:
@@ -497,7 +505,11 @@ class FlavorComercioForeignKeyTest(unittest.TestCase):
 
 class FlavorUpdatePropagationTest(unittest.TestCase):
     """Changing the ``flavor_comunicacion_id`` on a comercio is
-    propagated identically to the FK column."""
+    propagated identically to the FK column. The optional-flavor
+    migration makes the column nullable, so the propagation
+    contract is verified on a positive assignment while the
+    unaffected comercio is left untouched (``NULL`` or another
+    row, never the new ``serio`` row)."""
 
     def test_update_flavor_changes_only_target_comercio(self) -> None:
         suffix = _suffix()
@@ -542,7 +554,12 @@ class FlavorUpdatePropagationTest(unittest.TestCase):
                 {"id": other_id},
             ).scalar_one()
         self.assertEqual(int(target_flavor), int(serio_id))
-        self.assertNotEqual(int(other_flavor), int(serio_id))
+        # The other comercio must NOT have inherited the target's
+        # ``serio`` flavor. After the optional-flavor migration
+        # most rows are ``NULL``; we just check the absence of the
+        # new assignment.
+        if other_flavor is not None:
+            self.assertNotEqual(int(other_flavor), int(serio_id))
 
 
 if __name__ == "__main__":

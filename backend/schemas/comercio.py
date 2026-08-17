@@ -47,4 +47,4 @@ class ComercioResponse(BaseModel):
     fecha_alta: datetime
     fecha_ultima_modificacion: datetime
     fecha_baja: datetime | None
-    flavor_comunicacion: FlavorComunicacionSummary
+    flavor_comunicacion: FlavorComunicacionSummary | None

@@ -64,14 +64,20 @@ class ComercioFlavorAssignRequest(BaseModel):
     """Payload for the focused ``PUT /comercios/{id}/flavor-comunicacion``
     operation.
 
-    Only the global flavor ID is accepted. The endpoint refuses any
-    payload that tries to mutate ``descripcion`` or ``instruccion_llm``
-    because the catalog is system-managed global seed data.
+    The payload accepts either a positive global flavor ID to assign
+    the selected flavor or an explicit ``null`` value to clear the
+    current assignment. The endpoint refuses any payload that tries
+    to mutate ``descripcion`` or ``instruccion_llm`` because the
+    catalog is system-managed global seed data; ``0`` and empty
+    strings are not valid substitutes for the explicit ``null``
+    clear operation.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    flavor_comunicacion_id: int = Field(ge=1)
+    flavor_comunicacion_id: int | None = Field(
+        default=None, ge=1
+    )
 
 
 __all__ = [

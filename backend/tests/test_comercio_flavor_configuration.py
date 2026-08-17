@@ -216,15 +216,15 @@ class AssignFlavorRuntimeTest(unittest.TestCase):
             ).first()
             previous_other: int | None = None
             if other_id is not None:
-                previous_other = int(
-                    conn.execute(
-                        __import__("sqlalchemy").text(
-                            "SELECT flavor_comunicacion_id FROM comercios "
-                            "WHERE id = :id"
-                        ),
-                        {"id": int(other_id[0])},
-                    ).scalar_one()
-                )
+                stored = conn.execute(
+                    __import__("sqlalchemy").text(
+                        "SELECT flavor_comunicacion_id FROM comercios "
+                        "WHERE id = :id"
+                    ),
+                    {"id": int(other_id[0])},
+                ).scalar_one()
+                if stored is not None:
+                    previous_other = int(stored)
         response = self.client.put(
             f"/comercios/{self.comercio_id}/flavor-comunicacion",
             json={"flavor_comunicacion_id": serio_id},
