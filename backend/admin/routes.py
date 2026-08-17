@@ -60,6 +60,7 @@ from backend.services.exceptions import (
     FlavorComunicacionNotFound,
     InvalidCategoriaProducto,
     InvalidDeliveryOrden,
+    InvalidMetodoEntrega,
     InvalidPaymentField,
     InvalidPrecio,
     InvalidPresentacion,
@@ -72,6 +73,7 @@ from backend.services.exceptions import (
     ProductoPresentacionNotFound,
 )
 from backend.services.medios_pago_service import MediosPagoService
+from backend.services.metodo_entrega_service import MetodoEntregaService
 
 _TEMPLATE_DIR = (
     PathLib(__file__).resolve().parents[1]
@@ -117,6 +119,19 @@ def _medios_pago_service(
     the ones the JSON API exposes.
     """
     return MediosPagoService(session)
+
+
+def _metodo_entrega_service(
+    session: Annotated[Session, Depends(get_session)],
+) -> MetodoEntregaService:
+    """Build the shared :class:`MetodoEntregaService` for the panel.
+
+    The dependency mirrors the JSON API router's factory so the
+    global panel routes call the same create / update boundary the
+    JSON API exposes, preserving the commit / rollback sequence,
+    the duplicate-codigo behaviour and the not-found outcome.
+    """
+    return MetodoEntregaService(session)
 
 
 def _commerce_payment_delivery_service(
@@ -364,6 +379,12 @@ _DOMAIN_MAPPING: dict[type[Exception], _DomainMapping] = {
         400,
         "El orden del método de entrega debe ser un entero mayor "
         "o igual a cero.",
+        render_form=_VALIDATION_RENDER_FORM,
+    ),
+    InvalidMetodoEntrega: _DomainMapping(
+        InvalidMetodoEntrega,
+        400,
+        "Los valores enviados para el método de entrega global no son válidos.",
         render_form=_VALIDATION_RENDER_FORM,
     ),
     MetodoEntregaNotFound: _DomainMapping(
@@ -2464,6 +2485,404 @@ def _re_render_delivery_form(
                 "configuration": configuration,
                 "form_values": {
                     "orden": orden_value,
+                },
+                "form_error": CatalogFormError(
+                    message=error_message,
+                    field_name=field_name,
+                ),
+            },
+        ),
+    )
+
+
+@router.get("/metodos-entrega", response_class=HTMLResponse)
+def list_global_metodos_entrega(
+    request: Request,
+    service: Annotated[
+        AdministrativeCatalogPanelViewService, Depends(_view_service)
+    ],
+) -> Response:
+    """Render the global delivery-method catalog list.
+
+    The route is the GET entry point of the panel surface: it
+    reads every global ``MetodosEntrega`` row (the canonical
+    catalog, not a comercio scope) through the closed view
+    service and renders the list with the exact global id of
+    each row. Bridge ids never participate in global URLs.
+    """
+    rows = service.list_global_metodos_entrega()
+    return _render(
+        request,
+        "metodos_entrega_list.html",
+        _form_context(
+            request=request,
+            path="/admin/catalog/metodos-entrega",
+            extra={"metodos_entrega": rows, "status": None},
+        ),
+    )
+
+
+@router.get("/metodos-entrega/nuevo", response_class=HTMLResponse)
+def new_metodo_entrega_form(
+    request: Request,
+) -> Response:
+    return _render(
+        request,
+        "metodo_entrega_form.html",
+        _form_context(
+            request=request,
+            path="/admin/catalog/metodos-entrega/nuevo",
+            extra={
+                "is_edit": False,
+                "form_title": "Nuevo método de entrega global",
+                "submit_label": "Crear método de entrega",
+                "form_action": "/admin/catalog/metodos-entrega/nuevo",
+                "form_values": {
+                    "codigo": "",
+                    "descripcion": "",
+                    "orden": "0",
+                    "activo": True,
+                },
+                "form_error": None,
+            },
+        ),
+    )
+
+
+@router.post("/metodos-entrega/nuevo", response_class=HTMLResponse)
+def create_metodo_entrega(
+    request: Request,
+    metodo_entrega_service: Annotated[
+        MetodoEntregaService, Depends(_metodo_entrega_service)
+    ],
+    codigo: Annotated[str, Form()] = "",
+    descripcion: Annotated[str, Form()] = "",
+    orden: Annotated[str | None, Form()] = None,
+    activo: Annotated[str | None, Form()] = None,
+) -> Response:
+    """Apply the create form for a global delivery method.
+
+    The route is the panel-side counterpart of the JSON
+    ``POST /metodos-entrega`` endpoint: it parses the form,
+    delegates the mutation to the shared
+    :class:`MetodoEntregaService` and never opens a transaction
+    of its own. The CSRF nonce, the same-origin proof and the
+    Basic-auth boundary are inherited from the router scope, so
+    a forged request is rejected before reaching the service.
+    """
+    try:
+        coerced_orden = _parse_metodo_entrega_orden(orden)
+        coerced_activo = _coerce_optional_bool(activo)
+    except ValueError as exc:
+        return _re_render_metodo_entrega_form(
+            request=request,
+            is_edit=False,
+            form_values={
+                "codigo": codigo,
+                "descripcion": descripcion,
+                "orden": orden,
+                "activo": activo,
+            },
+            error_message=str(exc),
+            field_name="orden",
+        )
+
+    try:
+        row = metodo_entrega_service.create(
+            codigo=codigo,
+            descripcion=descripcion,
+            orden=coerced_orden,
+            activo=bool(coerced_activo) if coerced_activo is not None else True,
+        )
+    except Exception as exc:  # noqa: BLE001 - panel intentionally sanitises any failure
+        mapping = _map_domain_exception(exc)
+        return _re_render_metodo_entrega_form(
+            request=request,
+            is_edit=False,
+            form_values={
+                "codigo": codigo,
+                "descripcion": descripcion,
+                "orden": orden,
+                "activo": activo,
+            },
+            error_message=mapping.message,
+            field_name="codigo" if mapping.status_code == 409 else "descripcion",
+        )
+
+    return _form_success_redirect(
+        f"/admin/catalog/metodos-entrega?created=metodo-entrega#{row.id}"
+    )
+
+
+@router.get("/metodos-entrega/{metodo_entrega_id}/editar", response_class=HTMLResponse)
+def edit_metodo_entrega_form(
+    request: Request,
+    metodo_entrega_id: Annotated[str, Path()],
+    service: Annotated[
+        AdministrativeCatalogPanelViewService, Depends(_view_service)
+    ],
+) -> Response:
+    try:
+        parsed_id = parse_positive_int(
+            metodo_entrega_id, field_name="metodo_entrega_id"
+        )
+    except ValueError:
+        return _render(
+            request,
+            "bad_request.html",
+            _form_context(
+                request=request,
+                path=str(request.url.path),
+                extra={"message": "metodo_entrega_id must be a positive integer"},
+            ),
+            status_code=400,
+        )
+
+    row = service.get_global_metodo_entrega(parsed_id)
+    if row is None:
+        return _render(
+            request,
+            "not_found.html",
+            _form_context(
+                request=request,
+                path=str(request.url.path),
+                extra={
+                    "raw_id": metodo_entrega_id,
+                    "resource_label": "método de entrega global",
+                },
+            ),
+            status_code=404,
+        )
+
+    return _render(
+        request,
+        "metodo_entrega_form.html",
+        _form_context(
+            request=request,
+            path=f"/admin/catalog/metodos-entrega/{parsed_id}/editar",
+            extra={
+                "is_edit": True,
+                "form_title": f"Editar método de entrega global #{row.id}",
+                "submit_label": "Guardar cambios",
+                "form_action": f"/admin/catalog/metodos-entrega/{parsed_id}/editar",
+                "form_values": {
+                    "codigo": row.codigo,
+                    "descripcion": row.descripcion,
+                    "orden": str(row.orden),
+                    "activo": row.activo,
+                },
+                "form_error": None,
+            },
+        ),
+    )
+
+
+@router.post("/metodos-entrega/{metodo_entrega_id}/editar", response_class=HTMLResponse)
+def update_metodo_entrega(
+    request: Request,
+    metodo_entrega_id: Annotated[str, Path()],
+    metodo_entrega_service: Annotated[
+        MetodoEntregaService, Depends(_metodo_entrega_service)
+    ],
+    descripcion: Annotated[str, Form()] = "",
+    orden: Annotated[str | None, Form()] = None,
+    activo: Annotated[str | None, Form()] = None,
+) -> Response:
+    """Apply the edit form for a global delivery method.
+
+    The route is intentionally the only mutation surface for
+    the global catalog: ``codigo`` is omitted from the form
+    payload and the service update signature never accepts it,
+    so a stale edit form cannot rewrite the catalog identifier.
+    The same panel security boundaries (Basic auth, exact-path
+    CSRF nonce, same-origin proof) protect the route.
+    """
+    try:
+        parsed_id = parse_positive_int(
+            metodo_entrega_id, field_name="metodo_entrega_id"
+        )
+    except ValueError:
+        return _render(
+            request,
+            "bad_request.html",
+            _form_context(
+                request=request,
+                path=str(request.url.path),
+                extra={"message": "metodo_entrega_id must be a positive integer"},
+            ),
+            status_code=400,
+        )
+
+    try:
+        coerced_orden = _parse_metodo_entrega_orden(orden)
+        coerced_activo = _coerce_optional_bool(activo)
+    except ValueError as exc:
+        return _re_render_metodo_entrega_update_form(
+            request=request,
+            metodo_entrega_service=metodo_entrega_service,
+            metodo_entrega_id=parsed_id,
+            form_values={
+                "descripcion": descripcion,
+                "orden": orden,
+                "activo": activo,
+            },
+            error_message=str(exc),
+            field_name="orden",
+        )
+
+    try:
+        row = metodo_entrega_service.update(
+            parsed_id,
+            descripcion=descripcion,
+            orden=coerced_orden,
+            activo=coerced_activo,
+        )
+    except MetodoEntregaNotFound:
+        return _render(
+            request,
+            "not_found.html",
+            _form_context(
+                request=request,
+                path=str(request.url.path),
+                extra={
+                    "raw_id": metodo_entrega_id,
+                    "resource_label": "método de entrega global",
+                },
+            ),
+            status_code=404,
+        )
+    except Exception as exc:  # noqa: BLE001 - panel intentionally sanitises any failure
+        mapping = _map_domain_exception(exc)
+        return _re_render_metodo_entrega_update_form(
+            request=request,
+            metodo_entrega_service=metodo_entrega_service,
+            metodo_entrega_id=parsed_id,
+            form_values={
+                "descripcion": descripcion,
+                "orden": orden,
+                "activo": activo,
+            },
+            error_message=mapping.message,
+            field_name="descripcion",
+        )
+
+    return _form_success_redirect(
+        f"/admin/catalog/metodos-entrega?updated=metodo-entrega#{row.id}"
+    )
+
+
+def _parse_metodo_entrega_orden(raw_value: str | None) -> int:
+    """Parse the panel ``orden`` form field for a global delivery method.
+
+    The ``orden`` is required for both create and edit so a blank
+    or non-integer value is treated as a hard validation error.
+    The helper enforces ``>= 0`` at the panel boundary even though
+    the service runs the same check so the operator gets a bounded
+    panel feedback before any database call.
+    """
+    if raw_value is None:
+        raise ValueError("orden must be a non-negative integer")
+    if not isinstance(raw_value, str):
+        # Panel callers only catch ``ValueError``; raising
+        # ``TypeError`` here would escape as an unhandled 500 and
+        # break the bounded feedback contract. Keep raising
+        # ``ValueError`` so the panel route re-renders the form
+        # with the documented message.
+        raise ValueError("orden must be a non-negative integer")  # noqa: TRY004
+    cleaned = raw_value.strip()
+    if cleaned == "":
+        raise ValueError("orden must be a non-negative integer")
+    try:
+        parsed = int(cleaned)
+    except ValueError as exc:
+        raise ValueError("orden must be a non-negative integer") from exc
+    if parsed < 0:
+        raise ValueError("orden must be a non-negative integer")
+    return parsed
+
+
+def _re_render_metodo_entrega_form(
+    *,
+    request: Request,
+    is_edit: bool,
+    form_values: dict[str, Any],
+    error_message: str,
+    field_name: str | None,
+) -> Response:
+    path = "/admin/catalog/metodos-entrega/editar" if is_edit else "/admin/catalog/metodos-entrega/nuevo"
+    action = path
+    orden_value = form_values.get("orden")
+    if orden_value is None:
+        orden_value = ""
+    elif not isinstance(orden_value, str):
+        orden_value = str(orden_value)
+    return _render(
+        request,
+        "metodo_entrega_form.html",
+        _form_context(
+            request=request,
+            path=path,
+            extra={
+                "is_edit": is_edit,
+                "form_title": (
+                    "Editar método de entrega global"
+                    if is_edit
+                    else "Nuevo método de entrega global"
+                ),
+                "submit_label": "Guardar cambios" if is_edit else "Crear método de entrega",
+                "form_action": action,
+                "form_values": {
+                    "codigo": form_values.get("codigo") or "",
+                    "descripcion": form_values.get("descripcion") or "",
+                    "orden": orden_value,
+                    "activo": _checkbox_state(form_values.get("activo")),
+                },
+                "form_error": CatalogFormError(
+                    message=error_message,
+                    field_name=field_name,
+                ),
+            },
+        ),
+    )
+
+
+def _re_render_metodo_entrega_update_form(
+    *,
+    request: Request,
+    metodo_entrega_service: MetodoEntregaService,
+    metodo_entrega_id: int,
+    form_values: dict[str, Any],
+    error_message: str,
+    field_name: str | None,
+) -> Response:
+    row = metodo_entrega_service.get_by_id(metodo_entrega_id)
+    if row is None:
+        return _form_success_redirect("/admin/catalog/metodos-entrega")
+    path = f"/admin/catalog/metodos-entrega/{metodo_entrega_id}/editar"
+    return _render(
+        request,
+        "metodo_entrega_form.html",
+        _form_context(
+            request=request,
+            path=path,
+            extra={
+                "is_edit": True,
+                "form_title": f"Editar método de entrega global #{row.id}",
+                "submit_label": "Guardar cambios",
+                "form_action": path,
+                "form_values": {
+                    "codigo": row.codigo,
+                    "descripcion": form_values.get("descripcion") or row.descripcion,
+                    "orden": (
+                        form_values.get("orden")
+                        if form_values.get("orden") not in (None, "")
+                        else str(row.orden)
+                    ),
+                    "activo": (
+                        form_values.get("activo")
+                        if form_values.get("activo") is not None
+                        else ("true" if row.activo else None)
+                    ),
                 },
                 "form_error": CatalogFormError(
                     message=error_message,

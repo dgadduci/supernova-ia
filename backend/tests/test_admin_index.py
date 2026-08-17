@@ -429,6 +429,7 @@ class AdminIndexStaticFilesTest(unittest.TestCase):
         for placeholder in (
             "{{ comercios_url }}",
             "{{ medios_pago_url }}",
+            "{{ metodos_entrega_url }}",
             "{{ operacion_url }}",
         ):
             with self.subTest(placeholder=placeholder):

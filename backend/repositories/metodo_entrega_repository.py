@@ -52,3 +52,30 @@ class MetodoEntregaRepository:
         self._session.add(row)
         self._session.flush()
         return row
+
+    def update(
+        self,
+        row: MetodosEntrega,
+        *,
+        descripcion: str | None,
+        orden: int | None,
+        activo: bool | None,
+    ) -> MetodosEntrega:
+        """Stage a global ``MetodosEntrega`` update.
+
+        The repository is intentionally limited to staging the
+        in-memory mutations the service has already validated: the
+        ``codigo`` is immutable by contract (the global catalog
+        identifier must stay stable across edits) and bridge /
+        per-commerce state is not touched by this repository. The
+        caller is responsible for the surrounding commit / rollback
+        sequence; the repository never opens a transaction.
+        """
+        if descripcion is not None:
+            row.descripcion = descripcion
+        if orden is not None:
+            row.orden = orden
+        if activo is not None:
+            row.activo = activo
+        self._session.flush()
+        return row

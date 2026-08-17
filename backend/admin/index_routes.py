@@ -45,11 +45,12 @@ router = APIRouter(
 def admin_index(request: Request) -> HTMLResponse:
     """Render the global administrative panel landing page.
 
-    The page is a navigation hub that lists the three documented
+    The page is a navigation hub that lists the documented
     entry points:
 
     * ``/admin/catalog/comercios`` — Comercios
     * ``/admin/catalog/medios-pago`` — Medios de pago
+    * ``/admin/catalog/metodos-entrega`` — Métodos de entrega
     * ``/admin/pilot/orders`` — Operación (panel piloto)
 
     The handler never opens a database session, never imports a
@@ -65,6 +66,7 @@ def admin_index(request: Request) -> HTMLResponse:
             "request": request,
             "comercios_url": "/admin/catalog/comercios",
             "medios_pago_url": "/admin/catalog/medios-pago",
+            "metodos_entrega_url": "/admin/catalog/metodos-entrega",
             "operacion_url": "/admin/pilot/orders",
         },
         status_code=200,
