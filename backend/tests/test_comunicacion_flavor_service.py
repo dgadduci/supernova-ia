@@ -166,7 +166,12 @@ class ComunicacionFlavorServiceActivationTest(unittest.TestCase):
                 {"id": self.comercio_id},
             ).first()
         self.assertEqual(int(stored), int(serio_id))
-        if previous_other is not None and other is not None:
+        if (
+            previous_other is not None
+            and other is not None
+            and previous_other[0] is not None
+            and other[0] is not None
+        ):
             self.assertEqual(int(previous_other[0]), int(other[0]))
 
     def test_assign_same_active_flavor_is_idempotent(self) -> None:

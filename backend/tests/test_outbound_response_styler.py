@@ -262,8 +262,12 @@ class SelectEligibleTest(unittest.TestCase):
 
 
 class FlavorResolutionTest(unittest.TestCase):
-    def test_neutro_flavor_is_not_usable(self) -> None:
-        db = _db_with_flavor(1, flavor=_flavor(NEUTRO_FLAVOR_CODE))
+    def test_absent_flavor_is_not_usable(self) -> None:
+        """An absent ``flavor_comunicacion`` (relation resolves to
+        ``None``) is the canonical no-style sentinel: no LLM call,
+        ``not_attempted`` outcome, no ``flavor_code`` in the event.
+        """
+        db = _db_with_flavor(1, flavor=None)
         responses = [
             CustomerResponse(
                 message="Hola", intent="saludo", status="executed"
@@ -275,6 +279,30 @@ class FlavorResolutionTest(unittest.TestCase):
         styled = style_responses(db, 1, responses, query_llm=client)
         self.assertEqual(styled[0].message, "Hola")
         self.assertEqual(client.request.call_count, 0)
+
+    def test_neutro_active_with_instruction_is_usable(self) -> None:
+        """The literal ``neutro`` code is no longer a special
+        sentinel. An active flavor with a non-empty instruction is
+        usable and triggers the standard bounded styling path.
+        """
+        flavor = _flavor(NEUTRO_FLAVOR_CODE, instruccion="Tono neutro.")
+        db = _db_with_flavor(1, flavor=flavor)
+        responses = [
+            CustomerResponse(
+                message="Hola", intent="saludo", status="executed"
+            )
+        ]
+        client = _llm(
+            {"items": [{"index": 0, "prefix": "¡Hey! ", "suffix": ""}]}
+        )
+        stream = io.StringIO()
+        styled, diagnostic = style_responses_with_diagnostic(
+            db, 1, responses, query_llm=client, stream=stream
+        )
+        self.assertEqual(client.request.call_count, 1)
+        self.assertEqual(styled[0].message, "¡Hey! Hola")
+        self.assertEqual(diagnostic.outcome, "applied")
+        self.assertEqual(diagnostic.flavor_code, NEUTRO_FLAVOR_CODE)
 
     def test_inactive_flavor_is_not_usable(self) -> None:
         db = _db_with_flavor(1, flavor=_flavor(activo=False))
@@ -959,8 +987,11 @@ class StyleResponsesFailureTest(unittest.TestCase):
         self.assertEqual(last_event["eligible_count"], 0)
         self.assertEqual(last_event["applied_count"], 0)
 
-    def test_event_emitted_when_flavor_is_neutro(self) -> None:
-        db = _db_with_flavor(1, flavor=_flavor(NEUTRO_FLAVOR_CODE))
+    def test_event_emitted_when_flavor_is_absent(self) -> None:
+        """An absent flavor emits the bounded ``not_attempted``
+        event with the eligible_count from the selection pass and
+        no flavor_code."""
+        db = _db_with_flavor(1, flavor=None)
         responses = [
             CustomerResponse(message="A", intent="saludo", status="executed"),
         ]
@@ -973,6 +1004,7 @@ class StyleResponsesFailureTest(unittest.TestCase):
         last_event = _last_event(stream)
         self.assertEqual(last_event["outcome"], OUTCOME_NOT_ATTEMPTED)
         self.assertEqual(last_event["eligible_count"], 1)
+        self.assertNotIn("flavor_code", last_event)
 
     def test_event_carries_static_template_identity_on_success(self) -> None:
         flavor = _flavor()
@@ -1449,8 +1481,12 @@ class EmptyWrapperContractTest(unittest.TestCase):
         # The prompt carries the bounded internal directive only.
         self.assertIn("Tono joven. Cero formalidad.", prompt)
 
-    def test_neutro_flavor_skips_styling_for_saludo(self) -> None:
-        db = _db_with_flavor(1, flavor=_flavor(NEUTRO_FLAVOR_CODE))
+    def test_absent_flavor_skips_styling_for_saludo(self) -> None:
+        """An absent flavor (``flavor_comunicacion_id = NULL``) is
+        the canonical no-style sentinel. The ``neutro`` literal
+        code is no longer treated as a special value; this test
+        pins the contract on the relation being absent."""
+        db = _db_with_flavor(1, flavor=None)
         responses = [
             CustomerResponse(
                 message=self._SALUDO, intent="saludo", status="executed"
@@ -1462,6 +1498,7 @@ class EmptyWrapperContractTest(unittest.TestCase):
         self.assertEqual(client.request.call_count, 0)
         last_event = _last_event(stream)
         self.assertEqual(last_event["outcome"], OUTCOME_NOT_ATTEMPTED)
+        self.assertNotIn("flavor_code", last_event)
 
     def test_desconocida_skips_styling_for_saludo_baseline(self) -> None:
         flavor = _flavor()
@@ -2095,10 +2132,13 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
         self.assertEqual(last_event["eligible_count"], 2)
         self.assertEqual(last_event["applied_count"], 2)
 
-    def test_neutro_flavor_makes_zero_llm_calls_even_with_expressive_prompt(
+    def test_absent_flavor_makes_zero_llm_calls_even_with_expressive_prompt(
         self,
     ) -> None:
-        db = _db_with_flavor(1, flavor=_flavor(NEUTRO_FLAVOR_CODE))
+        """An absent flavor must be the canonical no-style
+        sentinel regardless of how rich the LLM prompt envelope
+        would have been for an active flavor."""
+        db = _db_with_flavor(1, flavor=None)
         responses = [
             CustomerResponse(
                 message=self._SALUDO, intent="saludo", status="executed"
@@ -2126,6 +2166,7 @@ class ExpressiveWrapperCalibrationTest(unittest.TestCase):
         self.assertEqual(styled[1].message, self._AGG_SUCCESS)
         last_event = _last_event(stream)
         self.assertEqual(last_event["outcome"], OUTCOME_NOT_ATTEMPTED)
+        self.assertNotIn("flavor_code", last_event)
 
     def test_ineligible_responses_make_zero_llm_calls_under_expressive_envelope(
         self,
@@ -2668,10 +2709,13 @@ class MenuWrapperCalibrationTest(unittest.TestCase):
         style_responses(db, 1, responses, query_llm=client)
         self.assertEqual(client.request.call_count, 1)
 
-    def test_menu_full_ineligible_under_neutro_flavor(self) -> None:
-        """Under ``neutro`` the menu response MUST remain byte-for-byte
-        deterministic and the styler MUST NOT make any LLM call."""
-        db = _db_with_flavor(1, flavor=_flavor(NEUTRO_FLAVOR_CODE))
+    def test_menu_full_ineligible_under_absent_flavor(self) -> None:
+        """Under an absent flavor the menu response MUST remain
+        byte-for-byte deterministic and the styler MUST NOT make
+        any LLM call. The literal ``neutro`` code is no longer a
+        special-value sentinel; the only no-op is the absent
+        relation."""
+        db = _db_with_flavor(1, flavor=None)
         responses = [
             CustomerResponse(
                 message=self._MENU_MESSAGE,
@@ -2694,6 +2738,7 @@ class MenuWrapperCalibrationTest(unittest.TestCase):
         self.assertEqual(styled[0].message, self._MENU_MESSAGE)
         last_event = _last_event(stream)
         self.assertEqual(last_event["outcome"], OUTCOME_NOT_ATTEMPTED)
+        self.assertNotIn("flavor_code", last_event)
 
     def test_menu_full_preserves_existing_eligibility_token(self) -> None:
         """The eligibility surface for ``ver_menu`` MUST still map to
@@ -3226,12 +3271,12 @@ class FactualClaimGuardTest(unittest.TestCase):
         style_responses(db, 1, responses, query_llm=client)
         self.assertEqual(client.request.call_count, 1)
 
-    def test_neutro_flavor_remain_exact_no_op_under_claim_guard(self) -> None:
-        """``neutro`` MUST remain an exact no-op: no LLM call, the
-        original message is preserved, the event reports
-        ``not_attempted``. The guard is irrelevant for ``neutro``
-        because the LLM is never invoked."""
-        db = _db_with_flavor(1, flavor=_flavor(NEUTRO_FLAVOR_CODE))
+    def test_absent_flavor_remains_exact_no_op_under_claim_guard(self) -> None:
+        """An absent flavor MUST remain an exact no-op: no LLM
+        call, the original message is preserved, the event
+        reports ``not_attempted``. The guard is irrelevant for an
+        absent configuration because the LLM is never invoked."""
+        db = _db_with_flavor(1, flavor=None)
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
@@ -3258,6 +3303,7 @@ class FactualClaimGuardTest(unittest.TestCase):
         self.assertEqual(styled[0].message, self._AGG_SUCCESS)
         last_event = _last_event(stream)
         self.assertEqual(last_event["outcome"], OUTCOME_NOT_ATTEMPTED)
+        self.assertNotIn("flavor_code", last_event)
         self.assertEqual(last_event["eligible_count"], 1)
         self.assertEqual(last_event["applied_count"], 0)
 
@@ -3649,12 +3695,12 @@ class FactualClaimGuardNormalizationTest(unittest.TestCase):
             "Rejected wrapper must not be embedded in the prompt",
         )
 
-    def test_neutro_skips_guard_entirely(self) -> None:
-        """``neutro`` MUST remain an exact no-op: no LLM call,
-        the original message is preserved, and the guard
+    def test_absent_flavor_skips_guard_entirely(self) -> None:
+        """An absent flavor MUST remain an exact no-op: no LLM
+        call, the original message is preserved, and the guard
         normalization is irrelevant because the LLM is never
         invoked."""
-        db = _db_with_flavor(1, flavor=_flavor(NEUTRO_FLAVOR_CODE))
+        db = _db_with_flavor(1, flavor=None)
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
@@ -3681,6 +3727,7 @@ class FactualClaimGuardNormalizationTest(unittest.TestCase):
         self.assertEqual(styled[0].message, self._AGG_SUCCESS)
         last_event = _last_event(stream)
         self.assertEqual(last_event["outcome"], OUTCOME_NOT_ATTEMPTED)
+        self.assertNotIn("flavor_code", last_event)
         self.assertEqual(last_event["eligible_count"], 1)
         self.assertEqual(last_event["applied_count"], 0)
 
@@ -4083,11 +4130,12 @@ class WrapperFallbackReasonSplitTest(unittest.TestCase):
         style_responses(db, 1, responses, query_llm=client)
         self.assertEqual(client.request.call_count, 1)
 
-    def test_neutro_no_op_does_not_emit_new_categories(self) -> None:
-        """Under ``neutro`` the styler MUST remain an exact
+    def test_absent_flavor_no_op_does_not_emit_new_categories(self) -> None:
+        """Under an absent flavor the styler MUST remain an exact
         no-op: zero LLM calls, ``not_attempted`` outcome, no
-        shape/claim guard category."""
-        db = _db_with_flavor(1, flavor=_flavor(NEUTRO_FLAVOR_CODE))
+        shape/claim guard category. The literal ``neutro`` code
+        is no longer a special sentinel; absence is."""
+        db = _db_with_flavor(1, flavor=None)
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
@@ -4114,11 +4162,13 @@ class WrapperFallbackReasonSplitTest(unittest.TestCase):
         self.assertEqual(styled[0].message, self._AGG_SUCCESS)
         self.assertEqual(diagnostic.outcome, "not_attempted")
         self.assertIsNone(diagnostic.fallback_category)
+        self.assertIsNone(diagnostic.flavor_code)
         self.assertEqual(diagnostic.eligible_count, 1)
         self.assertEqual(diagnostic.applied_count, 0)
         last_event = _last_event(stream)
         self.assertEqual(last_event["outcome"], OUTCOME_NOT_ATTEMPTED)
         self.assertNotIn("failure_category", last_event)
+        self.assertNotIn("flavor_code", last_event)
 
     def test_no_database_transaction_control(self) -> None:
         """The split MUST be a pure lexical calculation; no
@@ -4279,8 +4329,15 @@ class StyleResponsesWithDiagnosticTest(unittest.TestCase):
         self.assertIsNone(diagnostic.flavor_code)
         self.assertEqual(diagnostic.template_version, OUTBOUND_STYLE_PROMPT_TEMPLATE_VERSION)
 
-    def test_flavor_not_usable_returns_not_attempted_with_response_types(self) -> None:
-        db = _db_with_flavor(1, flavor=_flavor(NEUTRO_FLAVOR_CODE))
+    def test_flavor_not_usable_returns_not_attempted_with_response_types(
+        self,
+    ) -> None:
+        """An absent flavor (the canonical no-style sentinel)
+        yields ``not_attempted`` with the eligible count from the
+        selection pass and a ``None`` ``flavor_code``. The
+        previously-special ``neutro`` literal code is no longer
+        treated as a special value."""
+        db = _db_with_flavor(1, flavor=None)
         responses = [
             CustomerResponse(
                 message=self._SALUDO, intent="saludo", status="executed"
@@ -4401,8 +4458,11 @@ class StyleResponsesWithDiagnosticTest(unittest.TestCase):
 
     def test_flavor_unusable_hides_flavor_code(self) -> None:
         """``flavor_code`` must be hidden when the flavor was
-        ``neutro``, inactive or had no instruction."""
-        db = _db_with_flavor(1, flavor=_flavor(NEUTRO_FLAVOR_CODE))
+        absent, inactive or had no instruction. The literal
+        ``neutro`` code is no longer a special sentinel; an
+        active ``neutro`` flavor with instruction is usable and
+        DOES carry the bounded ``flavor_code``."""
+        db = _db_with_flavor(1, flavor=None)
         responses = [
             CustomerResponse(
                 message=self._SALUDO, intent="saludo", status="executed"
@@ -4925,13 +4985,14 @@ class ClosedEligibilityBoundaryTest(unittest.TestCase):
         self.assertEqual(diagnostic.applied_count, 1)
         self.assertEqual(diagnostic.flavor_code, "joven")
 
-    def test_neutro_keeps_excluded_responses_byte_for_byte(self) -> None:
-        """Under ``neutro`` the closed eligibility boundary does
-        not introduce any new behavior: the styler is an exact
-        no-op, no LLM call is made, and every excluded
-        response is preserved byte-for-byte.
-        """
-        db = _db_with_flavor(1, flavor=_flavor(NEUTRO_FLAVOR_CODE))
+    def test_absent_flavor_keeps_excluded_responses_byte_for_byte(self) -> None:
+        """Under an absent flavor the closed eligibility boundary
+        does not introduce any new behavior: the styler is an
+        exact no-op, no LLM call is made, and every excluded
+        response is preserved byte-for-byte. The literal
+        ``neutro`` code is no longer a special sentinel; absence
+        is."""
+        db = _db_with_flavor(1, flavor=None)
         responses = [
             CustomerResponse(
                 message=self._AGG_SUCCESS,
@@ -4962,10 +5023,6 @@ class ClosedEligibilityBoundaryTest(unittest.TestCase):
         ])
         last_event = _last_event(stream)
         self.assertEqual(last_event["outcome"], OUTCOME_NOT_ATTEMPTED)
-        # ``neutro`` reports the eligible count from the bounded
-        # selection pass so the panel can surface it without
-        # revealing a flavor decision; the three excluded items
-        # still contribute zero eligible_count.
         self.assertEqual(last_event["eligible_count"], 0)
         self.assertEqual(last_event["applied_count"], 0)
         self.assertEqual(diagnostic.outcome, "not_attempted")

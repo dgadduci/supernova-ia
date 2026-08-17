@@ -36,11 +36,11 @@ class Comercio(Base):
     estado_id: Mapped[int] = mapped_column(ForeignKey("estado_comercio.id"), nullable=False)
     estado: Mapped[EstadoComercio] = relationship(EstadoComercio)
 
-    flavor_comunicacion_id: Mapped[int] = mapped_column(
+    flavor_comunicacion_id: Mapped[int | None] = mapped_column(
         ForeignKey("flavors_comunicacion.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
     )
-    flavor_comunicacion: Mapped["FlavorComunicacion"] = relationship(
+    flavor_comunicacion: Mapped["FlavorComunicacion | None"] = relationship(
         "FlavorComunicacion",
         back_populates="comercios",
     )

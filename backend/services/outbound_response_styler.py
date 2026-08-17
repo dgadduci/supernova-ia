@@ -328,7 +328,7 @@ def _is_flavor_usable(flavor: FlavorComunicacion | None) -> bool:
     code = getattr(flavor, "codigo", None)
     if not isinstance(code, str):
         return False
-    if code.strip() == "" or code.strip() == NEUTRO_FLAVOR_CODE:
+    if code.strip() == "":
         return False
     instruction = getattr(flavor, "instruccion_llm", None)
     return isinstance(instruction, str) and instruction.strip() != ""

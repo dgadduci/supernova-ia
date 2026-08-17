@@ -88,4 +88,4 @@ class ComercioConfiguracionResponse(BaseModel):
     estado: EstadoComercioDetalleResponse
     medios_pago: list[ComercioMedioPagoDetalleResponse]
     metodos_entrega: list[ComercioMetodoEntregaDetalleResponse]
-    flavor_comunicacion: FlavorComunicacionSummary
+    flavor_comunicacion: FlavorComunicacionSummary | None

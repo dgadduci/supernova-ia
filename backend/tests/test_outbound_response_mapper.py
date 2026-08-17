@@ -344,21 +344,21 @@ class OutboundMapperStylerIntegrationTest(unittest.TestCase):
             handler=SOCIAL_CONVERSATION_HANDLER,
         )
 
-    def test_neutral_flavor_does_not_invoke_styler(self) -> None:
+    def test_absent_flavor_does_not_invoke_styler(self) -> None:
+        """An absent ``flavor_comunicacion_id`` is the canonical
+        no-style sentinel. The literal ``neutro`` code is no
+        longer a special value; only absence is."""
         from backend.services import outbound_response_styler
 
         with patch.object(
             outbound_response_styler, "QueryLlm"
         ) as query_llm_cls:
             query_llm_cls.return_value.request.side_effect = AssertionError(
-                "QueryLlm must not be called for neutro"
+                "QueryLlm must not be called when flavor is absent"
             )
             db = MagicMock()
             session = MagicMock(id_comercio=1)
-            db.get.side_effect = [
-                MagicMock(flavor_comunicacion_id=1),
-                MagicMock(activo=True, codigo="neutro", instruccion_llm="neutro"),
-            ]
+            db.get.side_effect = [MagicMock(flavor_comunicacion_id=None), None]
             responses = build_customer_responses(
                 db, session, [self._saludo_intent()]
             )
