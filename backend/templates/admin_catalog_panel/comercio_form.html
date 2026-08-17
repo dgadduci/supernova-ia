@@ -1,0 +1,307 @@
+{% extends "base.html" %}
+{% block title %}{{ form_title }} — Panel administrativo{% endblock %}
+{% block crumb %}<span class="crumb">· <a href="/admin/catalog/comercios">Comercios</a>{% if is_edit and detail %} · <a href="/admin/catalog/comercios/{{ detail.id }}">#{{ detail.id }}</a>{% endif %} · {{ form_title }}</span>{% endblock %}
+{% block body %}
+<h1>{{ form_title }}</h1>
+<p class="muted">
+  {% if is_edit %}
+    Edición exacta del comercio. Los identificadores de ruteo son inmutables y se muestran sólo como referencia.
+  {% else %}
+    Alta de un nuevo comercio. Los identificadores de ruteo se fijan al crear y quedan inmutables.
+  {% endif %}
+</p>
+
+{% if form_error %}
+<section class="notice error" role="alert" aria-live="assertive" data-form-error>
+  <span class="label">Error</span>
+  <div class="body"><p style="margin: 0;">{{ form_error.message }}</p></div>
+</section>
+{% endif %}
+
+<section class="panel" aria-label="{{ form_title }}">
+  <form
+    method="post"
+    action="{{ form_action }}"
+    class="form-grid"
+    data-comercio-form
+    {% if is_edit %}data-comercio-edit{% else %}data-comercio-create{% endif %}
+  >
+    <input type="hidden" name="{{ csrf_nonce_field }}" value="{{ form_nonce }}">
+
+    <div class="grid-2">
+      <label class="form-field" for="nombre_fantasia">
+        Nombre de fantasía
+        <input
+          id="nombre_fantasia"
+          name="nombre_fantasia"
+          type="text"
+          maxlength="150"
+          required
+          value="{{ form_values.nombre_fantasia or '' }}"
+          {% if form_error and form_error.field_name == 'nombre_fantasia' %}aria-invalid="true" class="invalid"{% endif %}
+        >
+        <span class="hint">Etiqueta visible del comercio (1 a 150 caracteres).</span>
+      </label>
+
+      <label class="form-field" for="nombre_corto">
+        Nombre corto
+        <input
+          id="nombre_corto"
+          name="nombre_corto"
+          type="text"
+          maxlength="80"
+          required
+          value="{{ form_values.nombre_corto or '' }}"
+          {% if form_error and form_error.field_name == 'nombre_corto' %}aria-invalid="true" class="invalid"{% endif %}
+        >
+        <span class="hint">Identificador legible para listados (1 a 80 caracteres).</span>
+      </label>
+    </div>
+
+    <div class="grid-2">
+      <label class="form-field" for="razon_social">
+        Razón social
+        <input
+          id="razon_social"
+          name="razon_social"
+          type="text"
+          maxlength="200"
+          required
+          value="{{ form_values.razon_social or '' }}"
+          {% if form_error and form_error.field_name == 'razon_social' %}aria-invalid="true" class="invalid"{% endif %}
+        >
+        <span class="hint">Razón social legal del comercio (1 a 200 caracteres).</span>
+      </label>
+
+      <label class="form-field" for="cuit">
+        CUIT
+        <input
+          id="cuit"
+          name="cuit"
+          type="text"
+          maxlength="20"
+          required
+          value="{{ form_values.cuit or '' }}"
+          {% if form_error and form_error.field_name == 'cuit' %}aria-invalid="true" class="invalid"{% endif %}
+        >
+        <span class="hint">Identificador tributario, sin validación adicional en el panel.</span>
+      </label>
+    </div>
+
+    {% if is_edit %}
+    <div class="grid-2">
+      <label class="form-field" for="whatsapp_display">
+        WhatsApp
+        <input
+          id="whatsapp_display"
+          name="whatsapp_display"
+          type="text"
+          value="{{ detail.whatsapp if detail else form_values.whatsapp }}"
+          readonly
+          aria-readonly="true"
+          data-comercio-immutable
+        >
+        <span class="hint">Identificador de ruteo. Inmutable tras la creación.</span>
+      </label>
+
+      <label class="form-field" for="slug_display">
+        Slug
+        <input
+          id="slug_display"
+          name="slug_display"
+          type="text"
+          value="{{ detail.slug if detail else form_values.slug }}"
+          readonly
+          aria-readonly="true"
+          data-comercio-immutable
+        >
+        <span class="hint">Identificador único de catálogo. Inmutable tras la creación.</span>
+      </label>
+    </div>
+    {% else %}
+    <div class="grid-2">
+      <label class="form-field" for="whatsapp">
+        WhatsApp
+        <input
+          id="whatsapp"
+          name="whatsapp"
+          type="text"
+          maxlength="30"
+          required
+          value="{{ form_values.whatsapp or '' }}"
+          {% if form_error and form_error.field_name == 'whatsapp' %}aria-invalid="true" class="invalid"{% endif %}
+        >
+        <span class="hint">Número E.164 que se usa como identificador de ruteo (1 a 30 caracteres).</span>
+      </label>
+
+      <label class="form-field" for="slug">
+        Slug
+        <input
+          id="slug"
+          name="slug"
+          type="text"
+          maxlength="150"
+          required
+          value="{{ form_values.slug or '' }}"
+          {% if form_error and form_error.field_name == 'slug' %}aria-invalid="true" class="invalid"{% endif %}
+        >
+        <span class="hint">Identificador único de catálogo. Inmutable tras la creación.</span>
+      </label>
+    </div>
+    {% endif %}
+
+    <h3>Dirección</h3>
+    <div class="grid-2">
+      <label class="form-field" for="calle">
+        Calle
+        <input
+          id="calle"
+          name="calle"
+          type="text"
+          maxlength="150"
+          required
+          value="{{ form_values.calle or '' }}"
+          {% if form_error and form_error.field_name == 'calle' %}aria-invalid="true" class="invalid"{% endif %}
+        >
+      </label>
+
+      <label class="form-field" for="numero">
+        Número
+        <input
+          id="numero"
+          name="numero"
+          type="text"
+          maxlength="20"
+          required
+          value="{{ form_values.numero or '' }}"
+          {% if form_error and form_error.field_name == 'numero' %}aria-invalid="true" class="invalid"{% endif %}
+        >
+      </label>
+    </div>
+
+    <div class="grid-2">
+      <label class="form-field" for="piso_departamento">
+        Piso / Departamento
+        <input
+          id="piso_departamento"
+          name="piso_departamento"
+          type="text"
+          maxlength="50"
+          value="{{ form_values.piso_departamento or '' }}"
+          {% if form_error and form_error.field_name == 'piso_departamento' %}aria-invalid="true" class="invalid"{% endif %}
+        >
+        <span class="hint">Opcional. Deja vacío para borrar.</span>
+      </label>
+
+      <label class="form-field" for="codigo_postal">
+        Código postal
+        <input
+          id="codigo_postal"
+          name="codigo_postal"
+          type="text"
+          maxlength="20"
+          value="{{ form_values.codigo_postal or '' }}"
+          {% if form_error and form_error.field_name == 'codigo_postal' %}aria-invalid="true" class="invalid"{% endif %}
+        >
+        <span class="hint">Opcional.</span>
+      </label>
+    </div>
+
+    <div class="grid-2">
+      <label class="form-field" for="localidad">
+        Localidad
+        <input
+          id="localidad"
+          name="localidad"
+          type="text"
+          maxlength="100"
+          required
+          value="{{ form_values.localidad or '' }}"
+          {% if form_error and form_error.field_name == 'localidad' %}aria-invalid="true" class="invalid"{% endif %}
+        >
+      </label>
+
+      <label class="form-field" for="provincia">
+        Provincia
+        <input
+          id="provincia"
+          name="provincia"
+          type="text"
+          maxlength="100"
+          required
+          value="{{ form_values.provincia or '' }}"
+          {% if form_error and form_error.field_name == 'provincia' %}aria-invalid="true" class="invalid"{% endif %}
+        >
+      </label>
+    </div>
+
+    <h3>Configuración</h3>
+    <label class="form-field" for="estado_id">
+      Estado
+      <select
+        id="estado_id"
+        name="estado_id"
+        required
+        {% if form_error and form_error.field_name == 'estado_id' %}aria-invalid="true" class="invalid"{% endif %}
+      >
+        <option value="">— Seleccionar estado —</option>
+        {% for option in estados %}
+          <option value="{{ option.id }}" {% if form_values.estado_id and form_values.estado_id|string == option.id|string %}selected{% endif %}>
+            #{{ option.id }} — {{ option.estado }}
+          </option>
+        {% endfor %}
+      </select>
+      <span class="hint">El servicio valida que el id seleccionado exista antes de persistir.</span>
+    </label>
+
+    <div class="grid-3">
+      <label class="form-field" for="zona_horaria">
+        Zona horaria
+        <input
+          id="zona_horaria"
+          name="zona_horaria"
+          type="text"
+          maxlength="100"
+          required
+          value="{{ form_values.zona_horaria or '' }}"
+          {% if form_error and form_error.field_name == 'zona_horaria' %}aria-invalid="true" class="invalid"{% endif %}
+        >
+        <span class="hint">Identificador IANA, p.ej. <code>America/Argentina/Buenos_Aires</code>.</span>
+      </label>
+
+      <label class="form-field" for="moneda">
+        Moneda
+        <input
+          id="moneda"
+          name="moneda"
+          type="text"
+          maxlength="3"
+          required
+          value="{{ form_values.moneda or '' }}"
+          {% if form_error and form_error.field_name == 'moneda' %}aria-invalid="true" class="invalid"{% endif %}
+        >
+        <span class="hint">Código ISO 4217, p.ej. <code>ARS</code>.</span>
+      </label>
+
+      <label class="form-field" for="idioma">
+        Idioma
+        <input
+          id="idioma"
+          name="idioma"
+          type="text"
+          maxlength="10"
+          required
+          value="{{ form_values.idioma or '' }}"
+          {% if form_error and form_error.field_name == 'idioma' %}aria-invalid="true" class="invalid"{% endif %}
+        >
+        <span class="hint">Etiqueta IETF, p.ej. <code>es-AR</code>.</span>
+      </label>
+    </div>
+
+    <div class="actions">
+      <button class="primary" type="submit">{{ submit_label }}</button>
+      <a class="button secondary" href="{% if is_edit and detail %}/admin/catalog/comercios/{{ detail.id }}{% else %}/admin/catalog/comercios{% endif %}">Cancelar</a>
+    </div>
+  </form>
+</section>
+{% endblock %}
