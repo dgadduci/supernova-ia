@@ -17,27 +17,30 @@ proposal:
   ``instruccion_llm``.
 
 Both endpoints require the existing admin header token. The router
-owns the application transaction boundary for the assignment path:
-it commits on success and rolls back when the service raises a
-domain error. The selection service only ``flush()`` es the change
-so the router can own the commit / rollback. The GET listing path
-does not control the session transaction at all and must never
-issue commit, rollback, flush, refresh, begin, begin_nested or
-close.
+delegates the assignment path to :class:`CatalogCreateService`,
+which owns the application transaction boundary: it commits on
+success and rolls back when the service raises a domain error. The
+selection service only ``flush()`` es the change so the operation
+can own the commit / rollback. The GET listing path does not control
+the session transaction at all and must never issue commit,
+rollback, flush, refresh, begin, begin_nested or close.
 """
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from backend.config.settings import load_settings
 from backend.dependencies import get_session, require_admin_token
 from backend.schemas.comercio import ComercioResponse
 from backend.schemas.comunicacion_flavor import (
     ComercioFlavorAssignRequest,
     FlavorComunicacionResponse,
 )
-from backend.services.comercio_service import ComercioService
+from backend.services.catalog_create_service import CatalogCreateService
 from backend.services.comunicacion_flavor_service import (
     ComunicacionFlavorService,
 )
@@ -53,12 +56,20 @@ router = APIRouter(
 )
 
 
-def _service(session: Session = Depends(get_session)) -> ComunicacionFlavorService:  # noqa: B008
+def _service(session: Annotated[Session, Depends(get_session)]) -> ComunicacionFlavorService:
     return ComunicacionFlavorService(session)
 
 
-def _comercio_service(session: Session = Depends(get_session)) -> ComercioService:  # noqa: B008
-    return ComercioService(session)
+def _create_service(
+    session: Annotated[Session, Depends(get_session)],
+) -> CatalogCreateService:
+    settings = load_settings()
+    flavor_service = ComunicacionFlavorService(session)
+    return CatalogCreateService(
+        session=session,
+        settings=settings,
+        flavor_service=flavor_service,
+    )
 
 
 @router.get(
@@ -66,7 +77,7 @@ def _comercio_service(session: Session = Depends(get_session)) -> ComercioServic
     response_model=list[FlavorComunicacionResponse],
 )
 def list_flavors_comunicacion(
-    service: ComunicacionFlavorService = Depends(_service),  # noqa: B008
+    service: Annotated[ComunicacionFlavorService, Depends(_service)],
 ) -> list[FlavorComunicacionResponse]:
     return [
         FlavorComunicacionResponse.model_validate(flavor)
@@ -81,32 +92,19 @@ def list_flavors_comunicacion(
 def assign_flavor_comunicacion(
     comercio_id: int,
     payload: ComercioFlavorAssignRequest,
-    session: Session = Depends(get_session),  # noqa: B008
-    flavor_service: ComunicacionFlavorService = Depends(_service),  # noqa: B008
-    comercio_service: ComercioService = Depends(_comercio_service),  # noqa: B008
+    create_service: Annotated[CatalogCreateService, Depends(_create_service)],
 ) -> ComercioResponse:
-    requested_flavor_id = payload.flavor_comunicacion_id
     try:
-        flavor_service.assign_to_comercio(
-            comercio_id, requested_flavor_id
+        comercio, _flavor = create_service.assign_flavor(
+            comercio_id,
+            payload.flavor_comunicacion_id,
         )
     except ComercioNotFound as e:
-        session.rollback()
         raise HTTPException(status_code=404, detail=str(e)) from e
     except FlavorComunicacionNotFound as e:
-        session.rollback()
         raise HTTPException(status_code=404, detail=str(e)) from e
     except FlavorComunicacionInactivo as e:
-        session.rollback()
         raise HTTPException(status_code=409, detail=str(e)) from e
-
-    try:
-        comercio = comercio_service.get_by_id(comercio_id)
-    except ComercioNotFound as e:
-        session.rollback()
-        raise HTTPException(status_code=404, detail=str(e)) from e
-
-    session.commit()
     return ComercioResponse.model_validate(comercio)
 
 
