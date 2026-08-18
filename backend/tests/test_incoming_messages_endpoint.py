@@ -15,6 +15,12 @@ from backend.intents.orchestration.incoming_message_response_orchestrator import
 )
 from backend.intents.schemas.customer_response import CustomerResponse
 from backend.schemas.incoming_message import IncomingMessageRequest
+from backend.services.commerce_availability_service import (
+    CommerceAvailabilityOutcome,
+    CommerceAvailabilityService,
+    CommerceAvailabilityStatus,
+    CommerceUnavailableReason,
+)
 from backend.services.exceptions import SessionNotFound
 
 app = FastAPI()
@@ -50,9 +56,195 @@ class IncomingMessageSchemaTest(unittest.TestCase):
                     IncomingMessageRequest.model_validate(payload)
 
 
+class IncomingMessagesAvailabilityGuardTest(unittest.TestCase):
+    """Direct/test ingress MUST consult ``CommerceAvailabilityService``
+    before ``SessionService.get_active`` or the response orchestrator.
+
+    The endpoint returns a bounded ``409`` unavailable-commerce error
+    with no session lookup and no orchestrator call for blocked,
+    expired, or quota-exhausted commerce. Available commerce keeps
+    the existing happy path untouched.
+    """
+
+    def setUp(self):
+        db.reset_mock()
+
+    def assert_no_transaction_calls(self):
+        db.commit.assert_not_called()
+        db.rollback.assert_not_called()
+        db.flush.assert_not_called()
+        db.refresh.assert_not_called()
+        db.expire.assert_not_called()
+        db.begin.assert_not_called()
+
+    def _make_outcome(
+        self,
+        *,
+        status: CommerceAvailabilityStatus,
+        reason: CommerceUnavailableReason | None = None,
+    ) -> CommerceAvailabilityOutcome:
+        return CommerceAvailabilityOutcome(
+            status=status,
+            reason=reason,
+            comercio_id=1,
+            modo_operacion=None,
+            prueba_hasta=None,
+            prueba_max_pedidos=None,
+            prueba_pedidos_consumidos=0,
+        )
+
+    @patch.object(router_module, "process_incoming_message_with_responses")
+    @patch.object(router_module.SessionService, "get_active")
+    @patch.object(CommerceAvailabilityService, "evaluate")
+    def test_blocked_commerce_returns_409_without_session_or_orchestrator(
+        self, evaluate, get_active, process
+    ):
+        evaluate.return_value = self._make_outcome(
+            status=CommerceAvailabilityStatus.UNAVAILABLE,
+            reason=CommerceUnavailableReason.BLOCKED_STATE,
+        )
+
+        response = client.post(
+            "/comercios/1/clientes/2/incoming-messages",
+            json={"message": "hola"},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        detail = response.json()["detail"]
+        self.assertIn("comercio 1", detail)
+        self.assertIn("blocked_state", detail)
+        evaluate.assert_called_once_with(1)
+        get_active.assert_not_called()
+        process.assert_not_called()
+        self.assert_no_transaction_calls()
+
+    @patch.object(router_module, "process_incoming_message_with_responses")
+    @patch.object(router_module.SessionService, "get_active")
+    @patch.object(CommerceAvailabilityService, "evaluate")
+    def test_expired_trial_returns_409_without_session_or_orchestrator(
+        self, evaluate, get_active, process
+    ):
+        evaluate.return_value = self._make_outcome(
+            status=CommerceAvailabilityStatus.UNAVAILABLE,
+            reason=CommerceUnavailableReason.TRIAL_EXPIRED,
+        )
+
+        response = client.post(
+            "/comercios/7/clientes/3/incoming-messages",
+            json={"message": "hola"},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("trial_expired", response.json()["detail"])
+        evaluate.assert_called_once_with(7)
+        get_active.assert_not_called()
+        process.assert_not_called()
+        self.assert_no_transaction_calls()
+
+    @patch.object(router_module, "process_incoming_message_with_responses")
+    @patch.object(router_module.SessionService, "get_active")
+    @patch.object(CommerceAvailabilityService, "evaluate")
+    def test_quota_exhausted_returns_409_without_session_or_orchestrator(
+        self, evaluate, get_active, process
+    ):
+        evaluate.return_value = self._make_outcome(
+            status=CommerceAvailabilityStatus.UNAVAILABLE,
+            reason=CommerceUnavailableReason.TRIAL_QUOTA_EXHAUSTED,
+        )
+
+        response = client.post(
+            "/comercios/11/clientes/4/incoming-messages",
+            json={"message": "hola"},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn(
+            "trial_quota_exhausted", response.json()["detail"]
+        )
+        evaluate.assert_called_once_with(11)
+        get_active.assert_not_called()
+        process.assert_not_called()
+        self.assert_no_transaction_calls()
+
+    @patch.object(router_module, "process_incoming_message_with_responses")
+    @patch.object(router_module.SessionService, "get_active")
+    @patch.object(CommerceAvailabilityService, "evaluate")
+    def test_technical_availability_failure_propagates_without_fallback(
+        self, evaluate, get_active, process
+    ):
+        evaluate.side_effect = RuntimeError("availability db failure")
+
+        with self.assertRaises(RuntimeError):
+            client.post(
+                "/comercios/9/clientes/2/incoming-messages",
+                json={"message": "hola"},
+            )
+
+        evaluate.assert_called_once_with(9)
+        get_active.assert_not_called()
+        process.assert_not_called()
+
+    @patch.object(router_module, "process_incoming_message_with_responses")
+    @patch.object(router_module.SessionService, "get_active")
+    @patch.object(CommerceAvailabilityService, "evaluate")
+    def test_available_commerce_keeps_existing_flow(
+        self, evaluate, get_active, process
+    ):
+        evaluate.return_value = self._make_outcome(
+            status=CommerceAvailabilityStatus.AVAILABLE,
+        )
+        session = MagicMock(name="ConversationSession")
+        get_active.return_value = session
+        process.return_value = [
+            CustomerResponse(
+                message="ok",
+                intent="agregar_producto",
+                status="executed",
+            )
+        ]
+
+        response = client.post(
+            "/comercios/5/clientes/6/incoming-messages",
+            json={"message": "hola"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "responses": [
+                    {
+                        "message": "ok",
+                        "intent": "agregar_producto",
+                        "status": "executed",
+                    }
+                ]
+            },
+        )
+        evaluate.assert_called_once_with(5)
+        get_active.assert_called_once_with(5, 6)
+        process.assert_called_once_with(db, session, "hola")
+        self.assert_no_transaction_calls()
+
+
 class IncomingMessagesEndpointTest(unittest.TestCase):
     def setUp(self):
         db.reset_mock()
+        self._availability_patcher = patch.object(
+            CommerceAvailabilityService,
+            "evaluate",
+            return_value=CommerceAvailabilityOutcome(
+                status=CommerceAvailabilityStatus.AVAILABLE,
+                reason=None,
+                comercio_id=1,
+                modo_operacion=None,
+                prueba_hasta=None,
+                prueba_max_pedidos=None,
+                prueba_pedidos_consumidos=0,
+            ),
+        )
+        self._availability_patcher.start()
+        self.addCleanup(self._availability_patcher.stop)
 
     def assert_no_transaction_calls(self):
         db.commit.assert_not_called()

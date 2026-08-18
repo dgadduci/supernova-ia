@@ -57,14 +57,24 @@ the same transaction as changing the exact pedido from BORRADOR to INGRESADO.
 This makes the quota strict under concurrency and rolls back both changes on
 technical failure.
 
-### D4 — Receipt acceptance and order confirmation are distinct guards
+### D4 — Inbound acceptance, leased processing, and order confirmation are distinct guards
 
 Provider ingress/routing checks availability before accepting new customer
-work, so unavailable commerce cannot begin a new pipeline. A previously
-created draft might reach confirmation after a trial expires; therefore every
-actual `BORRADOR -> INGRESADO` transition rechecks/reserves availability.
-The API `PedidoService` and the draft-order closure are the only current
-confirmation seams and both must use the same policy.
+work, so unavailable commerce cannot begin a new pipeline. The authenticated
+direct/test ingress uses the same `evaluate(comercio_id)` call before loading a
+session or invoking the response orchestrator; unavailable returns a bounded
+HTTP error without a customer response.
+
+Provider work is asynchronous, so `process_lease` re-evaluates the policy after
+resolving the receipt's authoritative commerce id and before session, draft,
+intent, or outbox staging. An unavailable lease is terminalized with a bounded
+reason, is not retried, and never invokes the pipeline. This leaves receipt
+claiming, lease ownership, technical retries, and channel resolution unchanged.
+
+A previously created draft might reach confirmation after a trial expires;
+therefore every actual `BORRADOR -> INGRESADO` transition rechecks/reserves
+availability. The API `PedidoService` and the draft-order closure are the only
+current confirmation seams and both must use the same policy.
 
 ### D5 — Admin uses the existing commerce mutation path
 
@@ -87,7 +97,7 @@ with the new typed representation. No new endpoint is added.
 ## Interaction
 
 ```text
-provider/routing or order confirmation
+all inbound entry points, provider leased processing, routing, or order confirmation
   -> CommerceAvailabilityService
   -> exact Comercio + EstadoComercio
   -> typed available/unavailable
@@ -107,6 +117,9 @@ admin create/edit commerce
 
 - A partial refactor could leave an ACTIVO comparison behind. Mitigate with a
   repository-wide targeted search and regressions for every existing caller.
+- An adapter could bypass the policy and answer an unavailable commerce.
+  Mitigate with direct endpoint and provider acceptance/lease regressions;
+  future adapters must use this service before shared processing.
 - A counter increment outside confirmation could consume trial quota for
   drafts. Reserve only at BORRADOR-to-INGRESADO in the same transaction.
 - Concurrent confirmation could oversell the final quota. Lock the commerce

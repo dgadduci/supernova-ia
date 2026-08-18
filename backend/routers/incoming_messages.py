@@ -17,7 +17,11 @@ from backend.schemas.incoming_message import (
     IncomingMessageRequest,
     IncomingMessageResponse,
 )
-from backend.services.exceptions import SessionNotFound
+from backend.services.commerce_availability_service import (
+    CommerceAvailabilityService,
+    CommerceAvailabilityStatus,
+)
+from backend.services.exceptions import CommerceUnavailable, SessionNotFound
 from backend.services.session_service import SessionService
 
 router = APIRouter(
@@ -53,6 +57,22 @@ def post_incoming_message(
     db: DatabaseSession = Depends(get_session),
     sink: DiagnosticSink = Depends(get_diagnostic_sink),
 ) -> IncomingMessageResponse:
+    availability = CommerceAvailabilityService(db).evaluate(comercio_id)
+    if availability.status is not CommerceAvailabilityStatus.AVAILABLE:
+        reason = (
+            availability.reason.value
+            if availability.reason is not None
+            else "blocked_state"
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"comercio {comercio_id} no disponible: {reason}"
+            ),
+        ) from CommerceUnavailable(
+            f"comercio {comercio_id} no disponible: {reason}"
+        )
+
     try:
         session = service.get_active(comercio_id, cliente_id)
     except SessionNotFound as exc:

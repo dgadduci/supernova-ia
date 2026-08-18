@@ -475,6 +475,46 @@ class ProviderInboundMessageCoordinator:
         destinatario_e164 = self._destinatario_from_receipt(receipt)
 
         try:
+            availability = CommerceAvailabilityService(
+                self._session
+            ).evaluate(comercio_id)
+        except Exception as exc:  # noqa: BLE001 - coordinator owns the rollback
+            try:
+                self._session.rollback()
+            except Exception:
+                logger.exception(
+                    "twilio_inbound_processor_availability_rollback_failed",
+                    extra={"procesamiento_id": procesamiento_id},
+                )
+            return self._finalize_failure(
+                leased=leased,
+                attempts=attempts,
+                exc=exc,
+            )
+
+        if availability.status is not CommerceAvailabilityStatus.AVAILABLE:
+            reason = (
+                availability.reason.value
+                if availability.reason is not None
+                else "blocked_state"
+            )
+            codigo = f"unavailable_{reason}"
+            self._finalize_terminal(
+                leased=leased,
+                categoria=ProcesamientoMensajeProveedorFailureCategory.TERMINAL_PROCESSOR_ERROR,
+                codigo=codigo,
+            )
+            return ProviderInboundProcessingResult(
+                outcome=ProviderInboundProcessingOutcome.FAILED_TERMINAL,
+                procesamiento_id=procesamiento_id,
+                receipt_id=int(receipt.id),
+                intentos=attempts,
+                categoria=ProcesamientoMensajeProveedorFailureCategory.TERMINAL_PROCESSOR_ERROR,
+                codigo=codigo,
+                detalle=codigo,
+            )
+
+        try:
             session_row = self._session_repo.stage_active(
                 comercio_id, cliente_id
             )
