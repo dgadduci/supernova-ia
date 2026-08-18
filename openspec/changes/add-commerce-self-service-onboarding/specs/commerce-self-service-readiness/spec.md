@@ -3,25 +3,46 @@
 ### Requirement: An owner completes onboarding through a private draft
 
 The system SHALL keep incomplete registration data in an account-owned private
-onboarding draft. On valid completion, one atomic application-service
-transaction SHALL create an `INACTIVO` `Comercio`, its active OWNER
-`ComercioUsuario` membership, and the terminal transition of that exact draft.
+onboarding draft. On valid completion, one atomic, caller-owned application
+transaction SHALL create an `INACTIVO` `Comercio`, its active
+OWNER `ComercioUsuario` membership, and the terminal transition of that exact
+draft. The draft SHALL contain the required validated immutable `slug` before
+completion.
 
 #### Scenario: Valid draft completion creates a non-operational commerce
 
 - **WHEN** an authenticated owner completes every required basic commerce
-  field in its authorized draft
+  field, including `slug`, in its authorized draft
 - **THEN** the system SHALL create exactly one commerce in `INACTIVO` and its
   OWNER membership in the same transaction
 - **AND THEN** it SHALL not create a channel, customer, session, order,
-  catalogue row, provider work or trial reservation
+  catalogue row, payment association, delivery association, provider work,
+  readiness flag or trial reservation
 
-#### Scenario: Completion persistence failure is atomic
+#### Scenario: Incomplete or invalid draft remains resumable
 
-- **WHEN** any persistence failure occurs while completing the draft
-- **THEN** the system SHALL roll back the commerce, membership and draft
-  terminal transition together
-- **AND THEN** the owner SHALL be able to resume the prior authorized draft
+- **WHEN** the exact account-owned draft is incomplete or has an invalid slug,
+  duplicate routing value or other existing commerce validation error
+- **THEN** the system SHALL preserve the draft and create no commerce,
+  membership or terminal transition
+- **AND THEN** it SHALL show a bounded correction outcome without falling back
+  to another account, draft, slug or lifecycle state
+
+#### Scenario: Concurrent completion is idempotent
+
+- **WHEN** two authenticated requests concurrently complete the same draft
+- **THEN** the draft lock and database constraints SHALL allow exactly one
+  commerce and one OWNER membership
+- **AND THEN** the later request SHALL return the exact terminal result rather
+  than create a second commerce
+
+#### Scenario: Terminal persistence is caller-owned and atomic
+
+- **WHEN** a persistence failure occurs after any completion row has been
+  staged but before the caller commits
+- **THEN** the caller-owned rollback SHALL remove the commerce, membership and
+  terminal draft transition together
+- **AND THEN** the owner SHALL be able to resume the prior draft
 
 ### Requirement: Operational readiness is derived and controlled
 

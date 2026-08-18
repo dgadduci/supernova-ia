@@ -3,16 +3,17 @@ from backend.models.borrador_onboarding_comercio import (
     BorradorOnboardingComercio,
 )
 from backend.models.canal_whatsapp import CanalWhatsapp, CanalWhatsappMode
-from backend.models.cuenta_usuario import CuentaUsuario
 from backend.models.categorias_productos import CategoriaProducto
 from backend.models.cliente import Cliente
 from backend.models.comercio import Comercio
 from backend.models.comercio_canal_compartido import ComercioCanalCompartido
 from backend.models.comercio_medios_pago import ComercioMedioPago
 from backend.models.comercio_metodos_entrega import ComercioMetodoEntrega
+from backend.models.comercio_usuario import ComercioUsuario
 from backend.models.contexto_cliente_canal_whatsapp import (
     ContextoClienteCanalWhatsapp,
 )
+from backend.models.cuenta_usuario import CuentaUsuario
 from backend.models.estado_comercio import (
     EstadoComercio,
     EstadoComercioModoOperacion,
@@ -57,6 +58,7 @@ __all__ = [
     "ComercioCanalCompartido",
     "ComercioMedioPago",
     "ComercioMetodoEntrega",
+    "ComercioUsuario",
     "ContextoClienteCanalWhatsapp",
     "CuentaUsuario",
     "EmbeddingStatus",

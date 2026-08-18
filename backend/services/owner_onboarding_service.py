@@ -104,6 +104,10 @@ def resolve_or_create_cuenta(
       operator-driven admin operation, never the wizard.
     * The helper never mutates ``supabase_subject`` on an existing
       row; the field stays immutable.
+
+    Callers that own a multi-statement transaction (Phase 4A
+    completion) MUST invoke this helper BEFORE opening the
+    transaction so the legacy commit boundary is honoured.
     """
     subject = _subject_from_principal(principal)
     repo = CuentaUsuarioRepository(session)
@@ -129,6 +133,49 @@ def resolve_or_create_cuenta(
     if cuenta is None:
         raise OwnerOnboardingError(
             "CuentaUsuario could not be resolved for the principal"
+        )
+    if not cuenta.activo:
+        raise OwnerAccountInactive(
+            f"CuentaUsuario {cuenta.id} is inactive"
+        )
+    return cuenta
+
+
+def stage_only_resolve_cuenta(
+    session: Session, principal: AuthenticatedPrincipal
+) -> CuentaUsuario:
+    """Stage-only lookup of the application account row.
+
+    The helper is the Phase 4A completion transaction's
+    staging seam: it performs a single non-committing
+    ``SELECT`` against ``cuentas_usuario`` and refuses to
+    create a new row. The router / completion service MUST
+    call :func:`resolve_or_create_cuenta` first (outside the
+    completion transaction) so the legacy commit boundary is
+    honoured; this helper is the strictly-readonly view that
+    the completion transaction uses to bind the principal to
+    the staged commerce / membership / terminal draft.
+
+    The helper raises :class:`OwnerAccountInactive` for soft-
+    deactivated accounts and a typed :class:`OwnerOnboardingError`
+    when the account row is missing — the completion transaction
+    refuses to proceed on a missing row because the legacy
+    resolver was supposed to have committed it before the
+    completion transaction opened.
+    """
+    if not isinstance(principal, AuthenticatedPrincipal):
+        raise TypeError("principal must be an AuthenticatedPrincipal")
+    subject = principal.subject.strip()
+    if not subject:
+        raise OwnerOnboardingError(
+            "validated principal must carry a non-empty subject"
+        )
+    repo = CuentaUsuarioRepository(session)
+    cuenta = repo.get_by_subject(subject)
+    if cuenta is None:
+        raise OwnerOnboardingError(
+            f"CuentaUsuario for subject {subject!r} must be "
+            "resolved before opening the completion transaction"
         )
     if not cuenta.activo:
         raise OwnerAccountInactive(
@@ -214,4 +261,5 @@ __all__ = [
     "load_or_create_borrador",
     "resolve_or_create_cuenta",
     "save_borrador",
+    "stage_only_resolve_cuenta",
 ]

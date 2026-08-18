@@ -19,6 +19,11 @@ The contract:
   returning ``None`` when none exists. The unique FK constraint
   guarantees there is at most one row, so the helper never returns
   more than a single instance.
+* :func:`lock_for_account` — acquire a row-level
+  ``SELECT ... FOR UPDATE`` lock on the same single draft so the
+  completion transaction can serialise with concurrent save flows
+  and guarantee the "exactly one commerce per draft" invariant
+  documented in the Phase 4A OpenSpec change.
 * :func:`create_for_account` — stage a brand-new draft row for an
   account that has never had a draft. The repository stamps
   ``version = 0`` and the audit timestamps; it never accepts a
@@ -35,16 +40,26 @@ The contract:
   stamped ``fecha_ultima_modificacion``; when it affects zero rows
   the helper raises :class:`DraftConcurrencyError` and does not
   stage any in-memory change, so two sessions that pre-loaded the
-  same version can never both confirm a write.
+  same version can never both confirm a write. The helper refuses
+  to save on a terminal draft (one whose ``comercio_id`` /
+  ``completado_en`` pair is set) so the OpenSpec Phase 4A "no
+  editing of a terminal draft" invariant holds.
+* :func:`mark_terminal` — record the terminal transition with an
+  atomic, DB-level guard that the paired ``comercio_id`` /
+  ``completado_en`` columns were both ``NULL`` when the UPDATE
+  fired. The helper is the single stage step the completion
+  transaction uses and never calls ``commit`` / ``rollback``.
 
 The repository never touches ``comercios`` or
-``comercio_usuarios``; creating those rows is the Phase 4
-completion transaction's job.
+``comercio_usuarios`` other than to record the terminal
+``comercio_id``; creating those rows is the completion
+transaction's job, owned by the application caller.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime
 
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
@@ -64,6 +79,7 @@ REQUIRED_BASIC_FIELDS: tuple[str, ...] = (
     "numero",
     "localidad",
     "provincia",
+    "slug",
 )
 
 
@@ -75,6 +91,18 @@ class DraftConcurrencyError(Exception):
     short message asking the user to retry. The repository never
     stages the patch on a mismatch so no partial overwrite can
     land in the database.
+    """
+
+
+class DraftTerminalError(Exception):
+    """Raised when a save is attempted on a terminal draft.
+
+    A draft is terminal when its ``comercio_id`` /
+    ``completado_en`` paired columns are set, i.e. the Phase 4A
+    completion transaction has already produced the corresponding
+    commerce and owner membership. The OpenSpec change forbids any
+    further field mutation on a terminal draft; the wizard is
+    expected to render the bounded completed view instead.
     """
 
 
@@ -130,6 +158,32 @@ class BorradorOnboardingComercioRepository:
         )
         return self._session.execute(stmt).scalar_one_or_none()
 
+    def lock_for_account(
+        self, cuenta: CuentaUsuario
+    ) -> BorradorOnboardingComercio | None:
+        """Return the single draft row with a row-level lock.
+
+        The helper is the Phase 4A completion transaction's
+        concurrency seam: it issues ``SELECT ... FOR UPDATE`` so a
+        parallel save / completion call against the same draft
+        blocks until the holding transaction commits or rolls
+        back. Returns ``None`` when no draft exists so the
+        completion service can fail closed instead of mutating a
+        stranger's draft.
+        """
+        if cuenta is None:
+            raise ValueError("cuenta must be a CuentaUsuario instance")
+        if not isinstance(cuenta, CuentaUsuario):
+            raise TypeError("cuenta must be a CuentaUsuario instance")
+        stmt = (
+            select(BorradorOnboardingComercio)
+            .where(
+                BorradorOnboardingComercio.cuenta_usuario_id == cuenta.id
+            )
+            .with_for_update()
+        )
+        return self._session.execute(stmt).scalar_one_or_none()
+
     def create_for_account(
         self, cuenta: CuentaUsuario
     ) -> BorradorOnboardingComercio:
@@ -173,18 +227,24 @@ class BorradorOnboardingComercioRepository:
         without the helper noticing.
 
         The persistence is a single SQL ``UPDATE`` whose ``WHERE``
-        clause matches both the primary key and
-        ``expected_version``. The atomic conditional update is the
-        only authority: the helper never reads ``draft.version``
-        from the in-memory snapshot to decide whether to proceed,
-        so two sessions that pre-loaded the same version cannot
-        both confirm a write. When the conditional update affects
-        exactly one row the helper refreshes the in-memory
-        instance so the caller sees the new version, the
-        server-derived ``completo`` flag and the stamped
-        ``fecha_ultima_modificacion``; when it affects zero rows
-        the helper raises :class:`DraftConcurrencyError` and
+        clause matches the primary key, ``expected_version`` and
+        the "not terminal" guard. The atomic conditional update is
+        the only authority: the helper never reads
+        ``draft.version`` from the in-memory snapshot to decide
+        whether to proceed, so two sessions that pre-loaded the
+        same version cannot both confirm a write. When the
+        conditional update affects exactly one row the helper
+        refreshes the in-memory instance so the caller sees the
+        new version, the server-derived ``completo`` flag and the
+        stamped ``fecha_ultima_modificacion``; when it affects zero
+        rows the helper raises :class:`DraftConcurrencyError` and
         does not stage any in-memory change.
+
+        The helper refuses to save on a terminal draft (whose
+        ``comercio_id`` and ``completado_en`` paired columns are
+        set) by raising :class:`DraftTerminalError`. The wizard is
+        expected to detect the terminal state and render the
+        bounded completed view.
         """
         if not isinstance(draft, BorradorOnboardingComercio):
             raise TypeError(
@@ -192,6 +252,14 @@ class BorradorOnboardingComercioRepository:
             )
         if not isinstance(expected_version, int):
             raise TypeError("expected_version must be an int")
+        if (
+            draft.comercio_id is not None
+            or draft.completado_en is not None
+        ):
+            raise DraftTerminalError(
+                f"draft {draft.id} is terminal; further saves are "
+                "rejected"
+            )
 
         cleaned: dict[str, str | None] = {}
         for name in REQUIRED_BASIC_FIELDS + (
@@ -208,6 +276,8 @@ class BorradorOnboardingComercioRepository:
             .where(
                 BorradorOnboardingComercio.id == draft.id,
                 BorradorOnboardingComercio.version == expected_version,
+                BorradorOnboardingComercio.comercio_id.is_(None),
+                BorradorOnboardingComercio.completado_en.is_(None),
             )
             .values(
                 **cleaned,
@@ -227,9 +297,59 @@ class BorradorOnboardingComercioRepository:
         self._session.refresh(draft)
         return draft
 
+    def mark_terminal(
+        self,
+        draft: BorradorOnboardingComercio,
+        *,
+        comercio_id: int,
+        completado_en: datetime,
+    ) -> BorradorOnboardingComercio:
+        """Record the Phase 4A terminal transition atomically.
+
+        The helper stages the ``comercio_id`` / ``completado_en``
+        paired update with an explicit ``comercio_id IS NULL AND
+        completado_en IS NULL`` guard so a concurrent completion
+        request cannot land two terminal transitions on the same
+        row. The helper raises :class:`DraftConcurrencyError`
+        when the conditional update affects zero rows so the
+        caller can fail closed without auto-repair.
+        """
+        if not isinstance(draft, BorradorOnboardingComercio):
+            raise TypeError(
+                "draft must be a BorradorOnboardingComercio instance"
+            )
+        if not isinstance(comercio_id, int) or isinstance(comercio_id, bool):
+            raise TypeError("comercio_id must be a positive integer")
+        if not isinstance(completado_en, datetime):
+            raise TypeError("completado_en must be a datetime")
+
+        stmt = (
+            update(BorradorOnboardingComercio)
+            .where(
+                BorradorOnboardingComercio.id == draft.id,
+                BorradorOnboardingComercio.comercio_id.is_(None),
+                BorradorOnboardingComercio.completado_en.is_(None),
+            )
+            .values(
+                comercio_id=comercio_id,
+                completado_en=completado_en,
+                fecha_ultima_modificacion=func.now(),
+            )
+            .execution_options(synchronize_session="fetch")
+        )
+        result = self._session.execute(stmt)
+        if result.rowcount != 1:
+            raise DraftConcurrencyError(
+                f"terminal transition guard rowcount={result.rowcount}"
+            )
+
+        self._session.refresh(draft)
+        return draft
+
 
 __all__ = [
     "REQUIRED_BASIC_FIELDS",
     "BorradorOnboardingComercioRepository",
     "DraftConcurrencyError",
+    "DraftTerminalError",
 ]

@@ -352,6 +352,7 @@ class DraftIsolationAndScopeTest(unittest.TestCase):
             "razon_social": "Comercio A SRL",
             "cuit": "30-11111111-1",
             "whatsapp": "+5491111111111",
+            "slug": "comercio-a",
             "calle": "Av. A",
             "numero": "100",
             "localidad": "CABA",
@@ -450,6 +451,7 @@ class DraftIsolationAndScopeTest(unittest.TestCase):
                 "razon_social": "Comercio X SRL",
                 "cuit": "30-22222222-2",
                 "whatsapp": "+5491222222222",
+                "slug": "comercio-x",
                 "calle": "Av. X",
                 "numero": "200",
                 "localidad": "CABA",
@@ -478,13 +480,10 @@ class DraftIsolationAndScopeTest(unittest.TestCase):
                 sentinel_comercio,
                 "the wizard must not create a Comercio row",
             )
-            has_comercio_usuarios = conn.execute(
-                text(
-                    "SELECT to_regclass("
-                    "'public.comercio_usuarios')"
-                )
-            ).scalar()
-            self.assertIsNone(has_comercio_usuarios)
+            # The Phase 4A migration now creates the membership
+            # table; the wizard POST still does not write a
+            # ``comercio`` row, which is what the assertion
+            # above guarantees.
 
         with engine.connect() as conn:
             cuentas = conn.execute(
@@ -640,6 +639,7 @@ class ConcurrentSaveTest(unittest.TestCase):
                     "razon_social": "First SRL",
                     "cuit": "30-33333333-3",
                     "whatsapp": "+5491333333333",
+                    "slug": "first-slug",
                     "calle": "Av. 1",
                     "numero": "100",
                     "localidad": "CABA",
@@ -719,6 +719,7 @@ class ConcurrentSaveTest(unittest.TestCase):
                         "razon_social": "First SRL",
                         "cuit": "30-33333333-3",
                         "whatsapp": "+5491333333333",
+                        "slug": "first-slug",
                         "calle": "Av. 1",
                         "numero": "100",
                         "localidad": "CABA",
@@ -737,6 +738,7 @@ class ConcurrentSaveTest(unittest.TestCase):
                             "razon_social": "Second SRL",
                             "cuit": "30-44444444-4",
                             "whatsapp": "+5491444444444",
+                            "slug": "second-slug",
                             "calle": "Av. 2",
                             "numero": "200",
                             "localidad": "CABA",

@@ -14,11 +14,26 @@ The model is intentionally narrow:
   unique constraint. The uniqueness is what enforces exactly-one
   draft per account; the application MUST never disable the unique
   index or replace it with an optional relationship.
+* ``slug`` — nullable text column required by the Phase 4A
+  completion transaction. The column is nullable on purpose so
+  Phase 3 drafts survive the upgrade; the wizard saves enforce
+  non-empty server-side and the completion transaction refuses
+  to proceed while ``slug`` is ``NULL`` or blank. Uniqueness is
+  derived from the canonical ``comercios.slug`` unique index at
+  completion time rather than from the draft table.
 * ``version`` — monotonically incrementing counter used as the
   optimistic-concurrency token. The wizard embeds the loaded value
   in the form and re-sends it on every ``POST``; the repository
   rejects a save whose ``version`` does not match the row to
-  prevent two concurrent tabs from silently overwriting each other.
+  prevent two concurrent tabs from silently overwriting each
+  other.
+* ``comercio_id`` and ``completado_en`` — terminal-only fields
+  populated exclusively by the Phase 4A completion transaction.
+  The two columns are jointly constrained by a paired-nullability
+  check so the database itself rejects any row where one column
+  is set without the other. ``comercio_id`` also carries a unique
+  constraint so the same commerce cannot be referenced by more
+  than one draft.
 * ``fecha_alta`` and ``fecha_ultima_modificacion`` — UTC creation
   and update timestamps maintained by SQLAlchemy server defaults.
 * ``nombre_fantasia`` / ``nombre_corto`` / ``razon_social`` /
@@ -33,9 +48,10 @@ The model is intentionally narrow:
   value. The flag is never accepted from the form.
 
 The draft model never references ``comercios`` or
-``comercio_usuarios``. Phase 4 introduces those tables as the
-atomic completion transaction; until that phase is approved the
-draft remains the only persistence the wizard exercises.
+``comercio_usuarios`` in the wizard surface — the application
+*does* reference ``comercios.id`` via the terminal ``comercio_id``
+column, with the foreign key restricted so the draft cannot
+silently outlive its commerce.
 """
 
 from __future__ import annotations
@@ -44,6 +60,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Integer,
@@ -63,6 +80,17 @@ class BorradorOnboardingComercio(Base):
         UniqueConstraint(
             "cuenta_usuario_id",
             name="borrador_onboarding_comercio_cuenta_usuario_unique",
+        ),
+        UniqueConstraint(
+            "comercio_id",
+            name="borrador_onboarding_comercio_comercio_id_unique",
+        ),
+        CheckConstraint(
+            "(comercio_id IS NULL) = (completado_en IS NULL)",
+            name=(
+                "borrador_onboarding_comercio_"
+                "comercio_id_completado_en_paired"
+            ),
         ),
     )
 
@@ -85,6 +113,10 @@ class BorradorOnboardingComercio(Base):
         nullable=False,
         default=False,
         server_default="false",
+    )
+
+    slug: Mapped[str | None] = mapped_column(
+        String(150), nullable=True
     )
 
     nombre_fantasia: Mapped[str | None] = mapped_column(
@@ -113,6 +145,16 @@ class BorradorOnboardingComercio(Base):
     )
     codigo_postal: Mapped[str | None] = mapped_column(
         String(20), nullable=True
+    )
+
+    comercio_id: Mapped[int | None] = mapped_column(
+        ForeignKey("comercios.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+
+    completado_en: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
 
     fecha_alta: Mapped[datetime] = mapped_column(

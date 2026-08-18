@@ -63,36 +63,55 @@
 - [x] 4.5 Add focused account identity, draft isolation, concurrent save,
   migration and no-commerce-side-effect tests.
 
-## 5. Phase 4 — commerce creation and scoped essentials
+## 5. Phase 4A — commerce creation and owner membership
 
-- [ ] 5.1 Implement one atomic completion service that creates exactly one
-  INACTIVO commerce, one OWNER membership and the terminal draft transition.
-- [ ] 5.2 Reuse, do not duplicate, commerce validation and scoped payment/
-  delivery configuration boundaries for the owner panel.
-- [ ] 5.3 Implement readiness projection/dashboard with understandable next
-  actions and no self-editable readiness or lifecycle state.
-- [ ] 5.4 Add atomicity, concurrency, isolation and incomplete-readiness tests.
+- [x] 5.1 Extend the private draft and owner wizard with the required validated
+  `slug`; recompute `completo` server-side including that field.
+- [x] 5.2 Add `ComercioUsuario` with restricted FKs, unique account/commerce
+  pair, unique commerce/role pair, active timestamps and a closed `OWNER`
+  constraint. Add terminal draft `comercio_id` / `completado_en` columns and
+  paired-nullability/uniqueness constraints.
+- [x] 5.3 Extract a non-committing `ComercioService.stage_create()` that reuses
+  current normalization, lifecycle-state, duplicate WhatsApp and duplicate
+  slug validation. Preserve the existing committing Admin `create()` contract.
+- [x] 5.4 Implement the authenticated completion route and stage-only service:
+  lock the exact account-owned draft, create `INACTIVO` + `OWNER` + terminal
+  draft in one caller-owned transaction, reject terminal edits, and make
+  repeated completion idempotent.
+- [x] 5.5 Add focused migration, atomicity, rollback, concurrency, isolation,
+  idempotency, CSRF and no-side-effect tests. Do not add readiness, payments,
+  deliveries, channels, trials, catalogue or provider behavior.
 
-## 6. Phase 5 — controlled trial and channel handoff
+## 6. Phase 4B — deferred scoped essentials and readiness
 
-- [ ] 6.1 Add an owner review/trial request state that does not mutate lifecycle
+- [ ] 6.1 Reuse, do not duplicate, scoped payment/delivery configuration
+  boundaries for a future membership-authorized owner panel.
+- [ ] 6.2 Implement a read-only readiness projection/dashboard with
+  understandable next actions and no self-editable readiness or lifecycle
+  state.
+- [ ] 6.3 Add incomplete-readiness tests only when Phase 4B is separately
+  approved.
+
+## 7. Phase 5 — controlled trial and channel handoff
+
+- [ ] 7.1 Add an owner review/trial request state that does not mutate lifecycle
   limits or provider configuration.
-- [ ] 6.2 Surface Admin's existing approved decision outcomes to the owner:
+- [ ] 7.2 Surface Admin's existing approved decision outcomes to the owner:
   pending, changes requested, PRUEBA, available, expired or quota exhausted.
-- [ ] 6.3 Reuse existing channel provisioning/lifecycle policies; do not add a
+- [ ] 7.3 Reuse existing channel provisioning/lifecycle policies; do not add a
   parallel provider pipeline or route unavailable traffic.
 
-## 7. Phase 6 — verification and handoff
+## 8. Phase 6 — verification and handoff
 
-- [ ] 7.1 Run the exact focused pytest, Ruff, compileall, strict OpenSpec and
+- [ ] 8.1 Run the exact focused pytest, Ruff, compileall, strict OpenSpec and
   diff checks listed in `proposal.md`; report complete output.
-- [ ] 7.2 Complete visual QA: narrow/wide viewport, keyboard-only flow,
+- [ ] 8.2 Complete visual QA: narrow/wide viewport, keyboard-only flow,
   contrast, focus, error states, links, empty/loading states and no-JS
   readability where applicable.
-- [ ] 7.3 Run a controlled end-to-end test with a synthetic Supabase account
+- [ ] 8.3 Run a controlled end-to-end test with a synthetic Supabase account
   and non-production commerce; verify no cross-commerce access or provider
   traffic is created before Admin approval.
-- [ ] 7.4 Codex reviews implementation, tests, complete validation output,
+- [ ] 8.4 Codex reviews implementation, tests, complete validation output,
   visual evidence, scope and transaction boundaries.
-- [ ] 7.5 Obtain separate authorization before secrets, Supabase/Railway
+- [ ] 8.5 Obtain separate authorization before secrets, Supabase/Railway
   configuration, deploy, sync, archive or production activation.
