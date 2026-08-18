@@ -137,7 +137,28 @@ class ComercioService:
                 "un estado seleccionable."
             )
 
-    def create(self, payload: dict) -> Comercio:
+    def stage_create(self, payload: dict) -> Comercio:
+        """Stage a non-committing ``Comercio`` row inside the caller tx.
+
+        The helper is the Phase 4A owner-self-service onboarding
+        completion transaction's shared authoring seam. It reuses
+        every step of the Admin create flow — payload normalisation,
+        lifecycle-state validation, duplicate WhatsApp detection,
+        duplicate slug detection and trial configuration — but
+        flushes instead of committing so the surrounding caller-
+        owned ``session.begin()`` can decide whether the staged
+        commerce, the staged ``ComercioUsuario`` and the staged
+        draft terminal transition together reach durable storage.
+
+        The helper never calls ``commit`` or ``rollback``. Validation
+        exceptions (``ValueError``, ``EstadoComercioNotFound``,
+        ``EstadoComercioNotSelectable``, ``InvalidTrialConfiguration``,
+        ``DuplicateWhatsapp``, ``DuplicateSlug``) are raised before
+        the row is staged so a validation failure cannot leak partial
+        state. A flush-time ``IntegrityError`` is re-raised without
+        rolling back so the caller's transaction stays under its
+        exclusive control.
+        """
         cleaned, prueba_hasta, prueba_max_pedidos = (
             self._normalise_lifecycle_payload(
                 payload, require_routing_identifiers=True
@@ -167,10 +188,26 @@ class ComercioService:
         cleaned["prueba_max_pedidos"] = prueba_max_pedidos
         cleaned["prueba_pedidos_consumidos"] = 0
 
+        comercio = self._repo.create(cleaned)
+        self._session.flush()
+        return comercio
+
+    def create(self, payload: dict) -> Comercio:
+        """Create a ``Comercio`` row through the shared staging seam.
+
+        The Admin-facing create contract is preserved exactly: the
+        helper delegates every validation and staging step to the
+        shared :meth:`stage_create` seam and adds the
+        ``session.refresh`` / ``session.commit`` boundary the Admin
+        caller expects. On any exception after a successful stage
+        the helper rolls the transaction back so the staged row is
+        never left lingering.
+        """
         try:
-            comercio = self._repo.create(cleaned)
-            self._session.flush()
-            self._session.refresh(comercio, attribute_names=["flavor_comunicacion"])
+            comercio = self.stage_create(payload)
+            self._session.refresh(
+                comercio, attribute_names=["flavor_comunicacion"]
+            )
             self._session.commit()
             return comercio
         except Exception:

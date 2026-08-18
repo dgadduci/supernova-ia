@@ -44,12 +44,11 @@ commerce panel; it must not be continued through Admin by this change.
 - Add a NovaOrders account, commerce-membership and private onboarding-draft
   model. A membership maps an authenticated account to exactly authorized
   commerce resources; the initial role is `OWNER`.
-- Let a verified owner create/resume one private draft, complete basic commerce
-  data, and atomically create an `INACTIVO` commerce plus its owner membership.
-- Let an owner configure only its own eligible payment/delivery associations
-  through a future commerce panel boundary, and request trial/channel review.
-- Provide an owner-visible readiness checklist that is derived from exact
-  configuration rather than a user-editable "ready" flag.
+- Let a verified owner create/resume one private draft, including the required
+  immutable routing slug, and atomically create an `INACTIVO` commerce plus its
+  owner membership.
+- Keep payment/delivery associations, readiness, review requests and channel
+  handoff in later phases; this phase creates no operational configuration.
 - Give Admin the existing authority to grant/extend PRUEBA, configure its
   deadline/quota, approve operational readiness, configure/verify channels,
   and activate/deactivate a commerce.
@@ -123,13 +122,31 @@ form submissions require the existing authenticated principal, an
 account-resolution boundary and dedicated same-origin/CSRF protection. No
 route accepts or authorizes a commerce id in this phase.
 
-### Phase 4 — create commerce and configure essentials
+### Phase 4A — create commerce and owner membership
 
-On completion, one onboarding application service validates the draft and
-atomically creates `Comercio` in `INACTIVO`, `ComercioUsuario(OWNER)`, and a
-completed draft record. The owner then configures eligible payment and delivery
-associations for that exact commerce through a scoped panel; no internal HTTP
-calls or Admin credential reuse.
+On completion, the authenticated owner submits no commerce identifier and no
+second copy of the commerce payload: the application validates the exact
+account-owned draft and atomically stages `Comercio` in `INACTIVO`,
+`ComercioUsuario(OWNER)`, and the terminal transition of that draft.
+`Comercio.slug` is collected in the draft, validated with the existing commerce
+rules and remains immutable after creation.
+
+The completion service and repositories are staging-only. The endpoint/caller
+owns one explicit transaction around the commerce, membership and terminal
+draft writes. Existing `ComercioService.create()` keeps its current
+commit/rollback contract through a new non-committing staging seam; onboarding
+does not call the committing method.
+
+The owner sees a bounded completed state. No channel, customer, session, order,
+catalogue, payment, delivery, trial, provider work or readiness projection is
+created.
+
+### Phase 4B — deferred scoped essentials and readiness
+
+Only after Phase 4A is separately reviewed may a membership-scoped owner panel
+configure eligible payment/delivery associations and expose a read-only
+readiness projection. Those surfaces remain outside the current implementation
+prompt and cannot mutate lifecycle, trial, channels, catalogue or availability.
 
 ### Phase 5 — controlled operational handoff
 
@@ -167,9 +184,11 @@ state. Draft, commerce and readiness outcomes remain later-phase outcomes.
 ## Security, isolation and fallback
 
 When implemented in Phase 3, the `CuentaUsuario` external subject will be
-unique and immutable. When implemented in Phase 4, `ComercioUsuario` will use unique
-`(cuenta_usuario_id, comercio_id)` membership, an active flag and a closed
-role set. Phase 2 has no commerce authorization boundary because it has no
+unique and immutable. When implemented in Phase 4A, `ComercioUsuario` will use
+unique `(cuenta_usuario_id, comercio_id)` membership, unique
+`(comercio_id, rol)` to keep one `OWNER` membership for the new commerce, an
+active flag and a closed `OWNER` role constraint. Phase 2 has no commerce
+authorization boundary because it has no
 application account or membership. Later commerce-panel queries must derive
 scope from the authenticated membership; route IDs are selectors only and
 must match it. No request may select an arbitrary commerce, inherit global
@@ -185,12 +204,15 @@ boundaries remain unchanged and are not replaced by this identity flow.
 ## Transactions, rollback and reversibility
 
 Auth/JWT dependencies and readiness projections are read-only and own no
-transactions. Phase 2 owns no application persistence transaction. The
-onboarding completion service owns one explicit atomic
-transaction only when it creates the exact commerce, owner membership and
-draft completion; any failure rolls all three back. Scoped payment/delivery
-services retain their established transaction ownership. Lifecycle quota
-reservation stays caller-owned in `CommerceAvailabilityService`.
+transactions. Phase 2 owns no application persistence transaction. In Phase
+4A, repositories, `ComercioService.stage_create()` and the completion service
+never call `commit` or `rollback`; the route/application caller owns one
+explicit transaction around the exact commerce, owner membership and terminal
+draft transition. Any failure rolls all three back. Existing
+`ComercioService.create()` retains its current Admin-facing transaction
+contract. Scoped payment/delivery services retain their established
+transaction ownership. Lifecycle quota reservation stays caller-owned in
+`CommerceAvailabilityService`.
 
 Rollback of a release is feature-route removal/disablement and revoking new
 sessions, not deletion of persisted onboarding records. An account or commerce
@@ -215,11 +237,11 @@ JWTs, URLs with tokens, payment values, message content or provider secrets.
   denial tests. No account, membership, draft or migration files belong to
   this phase.
 - Account and draft models, repositories, schemas, service, owner-onboarding
-  route/templates and an Alembic migration are Phase 3 work. Membership,
-  commerce creation, scoped commerce-owner routes and readiness remain later
-  phases.
-- Scoped commerce-owner routes/views and readiness projection remain later
-  phases.
+  route/templates and an Alembic migration are Phase 3 work. Phase 4A adds the
+  draft slug, `ComercioUsuario`, terminal draft columns, the non-committing
+  commerce staging seam, completion route/templates and its migration.
+- Scoped payment/delivery owner routes and readiness projection remain Phase
+  4B work and are not part of the Phase 4A implementation.
 - Focused tests for public UX contracts and Phase 2 authentication; tenancy
   isolation, draft/completion atomicity, lifecycle handoff and readiness tests
   remain later-phase gates.
@@ -248,6 +270,17 @@ provide complete output:
 PYTHONPATH=. venv/bin/python -m pytest backend/tests/test_owner_onboarding_draft.py backend/tests/test_owner_onboarding_migration.py backend/tests/test_supabase_magic_link_auth.py -q
 PYTHONPATH=. venv/bin/ruff check backend/models/cuenta_usuario.py backend/models/borrador_onboarding_comercio.py backend/repositories/cuenta_usuario_repository.py backend/repositories/borrador_onboarding_comercio_repository.py backend/services/owner_onboarding_service.py backend/routers/owner_onboarding.py backend/tests/test_owner_onboarding_draft.py backend/tests/test_owner_onboarding_migration.py
 PYTHONPATH=. venv/bin/python -m compileall -q backend/models/cuenta_usuario.py backend/models/borrador_onboarding_comercio.py backend/repositories/cuenta_usuario_repository.py backend/repositories/borrador_onboarding_comercio_repository.py backend/services/owner_onboarding_service.py backend/routers/owner_onboarding.py
+PYTHONPATH=. venv/bin/openspec validate add-commerce-self-service-onboarding --strict
+git diff --check
+```
+
+For the approved Phase 4A boundary, the implementer must run locally and
+provide complete output:
+
+```text
+PYTHONPATH=. venv/bin/python -m pytest backend/tests/test_owner_onboarding_completion.py backend/tests/test_owner_onboarding_migration.py backend/tests/test_commerce_lifecycle_policy.py -q
+PYTHONPATH=. venv/bin/ruff check backend/models backend/repositories backend/services/comercio_service.py backend/services/owner_onboarding_completion_service.py backend/routers/owner_onboarding.py backend/tests/test_owner_onboarding_completion.py backend/tests/test_owner_onboarding_migration.py
+PYTHONPATH=. venv/bin/python -m compileall -q backend/models backend/repositories backend/services/comercio_service.py backend/services/owner_onboarding_completion_service.py backend/routers/owner_onboarding.py
 PYTHONPATH=. venv/bin/openspec validate add-commerce-self-service-onboarding --strict
 git diff --check
 ```

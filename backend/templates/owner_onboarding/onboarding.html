@@ -325,7 +325,7 @@
         Guardamos los cambios en tu borrador.
       </div>
     {% endif %}
-    <form method="post" action="/onboarding" novalidate>
+    <form id="wizard-form" method="post" action="/onboarding" novalidate>
       <input type="hidden" name="{{ form_nonce_field | e }}"
         value="{{ form_nonce | e }}">
       <input type="hidden" name="expected_version"
@@ -365,6 +365,13 @@
               value="{{ field_values.whatsapp | e }}">
           </label>
         </div>
+        <label class="field" for="slug">
+          <span>Slug del comercio</span>
+          <input id="slug" name="slug" type="text" maxlength="150"
+            pattern="[A-Za-z0-9._-]+"
+            autocomplete="off" inputmode="text"
+            value="{{ field_values.slug | e }}">
+        </label>
       </fieldset>
       <fieldset class="group" aria-labelledby="address-heading">
         <legend id="address-heading">Dirección del local</legend>
@@ -407,13 +414,33 @@
             value="{{ field_values.codigo_postal | e }}">
         </label>
       </fieldset>
-      <div class="actions">
-        <button class="cta" type="submit" data-cta="save-draft">
-          Guardar borrador
-        </button>
-        <a class="back-link" href="/auth/verificado">Volver a la identidad verificada</a>
-      </div>
     </form>
+    {% if progress.completo %}
+    <div class="actions">
+      <form id="completion-form" method="post"
+        action="/onboarding/completar" novalidate
+        class="complete-form">
+        <input type="hidden" name="{{ form_nonce_field | e }}"
+          value="{{ completion_form_nonce | e }}">
+        <button class="cta" type="submit" data-cta="complete-onboarding">
+          Crear mi comercio
+        </button>
+      </form>
+      <button class="cta" type="submit" form="wizard-form"
+        data-cta="save-draft" formnovalidate>
+        Actualizar borrador
+      </button>
+      <a class="back-link" href="/auth/verificado">Volver a la identidad verificada</a>
+    </div>
+    {% else %}
+    <div class="actions">
+      <button class="cta" type="submit" form="wizard-form"
+        data-cta="save-draft">
+        Guardar borrador
+      </button>
+      <a class="back-link" href="/auth/verificado">Volver a la identidad verificada</a>
+    </div>
+    {% endif %}
     <p class="meta">
       Borrador #{{ draft_id }} · versión {{ version }} ·
       identificado por subject <code>{{ subject | e }}</code>.

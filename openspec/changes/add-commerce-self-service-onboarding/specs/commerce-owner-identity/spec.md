@@ -47,7 +47,10 @@ resource.
 
 The system SHALL authorize commerce-owner actions from an active
 `ComercioUsuario` membership for the authenticated `CuentaUsuario` and the
-exact commerce. The initial role set SHALL contain only `OWNER`.
+exact commerce. The initial role set SHALL contain only `OWNER`. The database
+SHALL enforce a unique `(cuenta_usuario_id, comercio_id)` pair, a unique
+`(comercio_id, rol)` pair for the initial owner membership, and a closed
+`OWNER` role constraint.
 
 #### Scenario: Tampered commerce ID cannot cross tenant boundary
 

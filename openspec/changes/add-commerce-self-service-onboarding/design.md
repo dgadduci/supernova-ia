@@ -91,9 +91,9 @@ external `sub` is its sole external identity input.
 
 - exactly one draft row per owner account, enforced by a unique owner FK;
 - private owner FK, optimistic version/timestamps and structured basic-commerce
-  fields;
+  fields, including the required immutable `slug`;
 - progress derived from server-side validation, not a client-provided flag;
-- no terminal state or resulting commerce FK until Phase 4.
+- no terminal state or resulting commerce FK until Phase 4A.
 
 The owner surface is server-rendered at `/onboarding`. Authentication resolves
 the existing signed session principal first; only then does a narrow resolver
@@ -103,24 +103,52 @@ CSRF proof; they never accept a commerce id. Missing/tampered authentication,
 an unavailable identity configuration, or persistence failure has no fallback
 to email, Admin, another account or another draft.
 
-`ComercioUsuario` (Phase 4)
+`ComercioUsuario` (Phase 4A)
 
 - `id` internal PK;
 - `cuenta_usuario_id` and `comercio_id` FKs with unique pair;
-- closed enum `OWNER` for this change;
+- closed `OWNER` role enforced by a database check and unique `(comercio_id,
+  rol)` so the created commerce has exactly one owner membership;
 - `activo`, timestamps and optional revocation timestamp/reason category.
 
 The draft has no provider secrets, trial counter, Admin decision, or catalogue
 data. A new `Comercio` remains canonical for legal/routing fields after
 completion. The migration must not mutate existing commerce/order data.
 
-## Onboarding completion and readiness
+## Phase 4A onboarding completion
 
-The completion service first authorizes the account against the exact draft,
-validates all required `ComercioService` data and creates the commerce in
-selectable `INACTIVO`. In one transaction it creates the owner membership and
-marks the exact draft completed. It does not create a channel, customer,
-session, pedido, catalogue row or provider work.
+The completion route resolves the authenticated subject to its exact
+`CuentaUsuario`, loads the one draft for that account and locks that draft with
+`FOR UPDATE`. It never accepts a commerce id or a second copy of the commerce
+payload. The server recomputes completeness from persisted fields, including
+`slug`, then delegates all commerce validation to the existing validation logic
+through a new `ComercioService.stage_create()` seam.
+
+`stage_create()` and the completion service only flush/stage. The caller owns
+the surrounding `session.begin()` and the single commit/rollback boundary. A
+successful transaction creates the commerce with the canonical `INACTIVO`
+state, one active `OWNER` membership and the draft's terminal `comercio_id` /
+`completado_en` values. The existing committing `ComercioService.create()`
+remains unchanged for Admin callers except for delegating to the shared staging
+logic.
+
+The terminal draft stores `comercio_id` and `completado_en`; a database check
+requires both to be null or both to be present, and the commerce FK is unique.
+After terminal completion, draft saves are rejected. A repeated completion
+locks and returns the exact existing result. A terminal draft with a missing
+membership or any other inconsistent state fails closed and is not repaired by
+the owner route.
+
+The transaction creates no channel, customer, session, pedido, catalogue row,
+payment, delivery, trial reservation, provider work or readiness flag.
+
+## Deferred Phase 4B readiness and scoped essentials
+
+Payment/delivery owner configuration and readiness remain separate work. When
+later approved, those routes must derive authorization from active membership
+for the exact commerce and must reuse existing payment/delivery and lifecycle
+boundaries. They cannot activate a commerce, set trial limits, mutate
+availability or create a parallel provider pipeline.
 
 Readiness is a read-only projection composed from exact facts:
 
@@ -163,18 +191,22 @@ Admin credential and vice versa.
 | Invalid/expired/missing provider session | Bounded sign-in-required state; no database mutation. |
 | JWT/JWKS/provider configuration failure | Fail closed; generic service-unavailable state; no fallback identity. |
 | Draft outside authenticated account | 404/forbidden-safe outcome; no existence disclosure or alternative draft. |
-| Invalid completion input | Preserve draft; show field-local escaped validation feedback. |
+| Draft incomplete or slug invalid | Preserve the exact draft; no commerce-side write occurs. |
+| Missing INACTIVO state or lifecycle misconfiguration | Fail closed; no fallback to ACTIVO, PRUEBA or another state. |
 | Concurrent double completion | Exactly one commerce/membership result; other request reloads exact terminal draft. |
-| Persistence failure | Roll back commerce, membership and draft terminal transition together. |
-| Missing readiness prerequisite | Show exact bounded checklist item; commerce remains INACTIVO. |
+| Terminal draft with inconsistent membership | Fail closed; do not repair or create a second commerce. |
+| Persistence failure | Caller rollback removes commerce, membership and draft terminal transition together. |
+| Missing readiness prerequisite | Deferred until Phase 4B; commerce remains INACTIVO. |
 | Channel/lifecycle unavailable | Existing fail-closed availability behavior; never route elsewhere. |
 
 ## Testing and release gates
 
 Tests cover JWT verification with synthetic keys, issuer/audience/expiry
 rejection, owner tenancy isolation, direct-ID tampering, generic link responses,
-completion atomicity/concurrency, INACTIVO creation, readiness derivation, and
-no changes to existing availability confirmation. UI checks cover server
+completion atomicity/concurrency, slug validation, INACTIVO creation, terminal
+draft idempotency, caller-owned transaction control and no forbidden side
+effects. Readiness derivation is a Phase 4B gate, not a Phase 4A acceptance
+requirement. UI checks cover server
 rendered semantic landmarks, labels, focusable controls, escape-safe content,
 small-screen layout snapshots and critical CTA/callback navigation.
 
