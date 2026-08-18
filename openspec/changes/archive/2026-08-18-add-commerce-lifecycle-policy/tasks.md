@@ -55,7 +55,7 @@
 
 ## 5. Unified inbound availability guard
 
-- [ ] 5.corr.1 Normalize the ``prueba_hasta`` HTML ``datetime-local`` input
+- [x] 5.corr.1 Normalize the ``prueba_hasta`` HTML ``datetime-local`` input
   with the panel ``zona_horaria`` in the server-rendered admin adapter
   (``POST /admin/catalog/comercios/nuevo`` and
   ``POST /admin/catalog/comercios/{comercio_id}/editar``): preserve the

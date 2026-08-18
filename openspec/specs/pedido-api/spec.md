@@ -3,9 +3,7 @@
 ## Purpose
 
 Define the HTTP layer over the `Pedido` model, covering creation, retrieval, in-progress field updates on a borrador pedido, and explicit state transitions, so the order lifecycle can be driven through the same FastAPI conventions established in earlier API subphases.
-
 ## Requirements
-
 ### Requirement: Create pedido
 The system SHALL provide `POST /pedidos` that creates a new pedido. The new row SHALL have `estado_pedido = borrador` regardless of the request body. The fields `id_medio_pago`, `id_metodo_entrega`, and `datetime_entrega_programada` SHALL each be accepted as nullable. The response SHALL return the persisted pedido. When the request body supplies a non-null `id_medio_pago` or `id_metodo_entrega` that does not exist in the corresponding catalog, the system SHALL return HTTP 400 and persist no row.
 
@@ -160,3 +158,22 @@ The system SHALL provide `GET /pedidos/{pedido_id}/detalle` that returns the ped
 #### Scenario: Endpoint is read-only
 - **WHEN** the operator calls `GET /pedidos/{pedido_id}/detalle`
 - **THEN** the system does not call `db.commit`, `db.rollback`, `db.flush`, `db.refresh`, `db.expire`, or `db.begin`; the pedido and its line items are unchanged in the database
+
+### Requirement: Confirmed orders reserve trial quota atomically
+
+Every transition of a comercio's pedido from `BORRADOR` to `INGRESADO` SHALL
+re-evaluate availability. For a PRUEBA commerce it SHALL lock and reserve one
+quota unit in the same caller-owned transaction as the state transition. The
+reservation SHALL not commit independently.
+
+#### Scenario: Final trial quota admits only one concurrent confirmation
+
+- **WHEN** two confirmations race while exactly one trial quota unit remains
+- **THEN** exactly one pedido becomes INGRESADO and increments consumption
+- **AND** the other remains non-confirmed with a typed unavailable outcome
+
+#### Scenario: Failed confirmation does not consume quota
+
+- **WHEN** a technical failure rolls back a confirmation after a trial
+  reservation was staged
+- **THEN** neither the pedido transition nor the counter increment persists
