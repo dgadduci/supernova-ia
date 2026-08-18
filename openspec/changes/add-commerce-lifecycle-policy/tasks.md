@@ -55,16 +55,27 @@
 
 ## 5. Unified inbound availability guard
 
-- [x] 5.1 Apply `CommerceAvailabilityService` at direct/test ingress before
-  session lookup or response orchestration. Preserve auth; unavailable returns
-  a bounded error with no mutation or customer response.
+- [x] 5.1 Apply `CommerceAvailabilityService` at the Admin Pilot local-test
+  ingress `POST /admin/pilot/orders/{pedido_id}/local-test` after the exact
+  `Pedido` and `Session` are resolved and before any processor, classifier,
+  `process_initial_order_status_query` or response-builder call. Cover both
+  the `BORRADOR` branch and the confirmed/no-borrador branch. Preserve the
+  Basic Auth, `X-Local-Test-Origin` and successful-response contracts; an
+  unavailable commerce returns the documented bounded generic local
+  rejection without filtering the internal reason, without invoking the
+  pipeline, and without creating responses, sessions, pedidos, outbox rows
+  or provider work.
 - [x] 5.2 Re-evaluate the policy in provider `process_lease` after receipt
   resolution and before session/draft/intent/outbox staging. Terminalize an
   unavailable lease without retry or outbound work, preserving transactions.
 - [x] 5.3 Keep provider acceptance guarded and ensure no current ingress
   interprets lifecycle codes or labels locally.
-- [x] 5.4 Add regressions for blocked, expired, and quota-exhausted commerce at
-  direct ingress, provider acceptance, and a lease accepted before deactivation.
-  Prove pipeline/orchestrator/outbox are not called and available behavior stays.
+- [x] 5.4 Add regressions for blocked, expired and quota-exhausted commerce
+  at the Admin Pilot local-test ingress
+  `POST /admin/pilot/orders/{pedido_id}/local-test` for both the `BORRADOR`
+  and confirmed/no-borrador branches, plus an available-commerce regression
+  proving the existing flow stays unchanged. Prove the message processor,
+  classifier, `process_initial_order_status_query` and response builder are
+  not called and no mutation occurs.
 - [x] 5.5 Run and report the revised validation commands, strict OpenSpec
   validation, and `git diff --check`.
