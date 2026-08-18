@@ -9,8 +9,9 @@
 - [x] 0.3 Define the Supabase magic-link, account/membership/draft boundary and
   preserve existing lifecycle/channel transaction ownership.
 - [x] 0.4 Define staged public experience and aesthetic acceptance criteria.
-- [ ] 0.5 Obtain explicit approval of this OpenSpec and the listed product
-  decisions before implementation or provider configuration.
+- [x] 0.5 Obtain explicit approval of the Phase 2 boundary and technical
+  decisions before implementation. Product decisions for later phases and
+  provider configuration remain separately gated.
 
 ## 1. Phase 0 — visual and product decisions
 
@@ -32,14 +33,20 @@
 
 ## 3. Phase 2 — Supabase magic-link identity
 
-- [ ] 3.1 Add validated Supabase configuration, allowed callback origins and
-  secret-handling guidance; do not commit provider keys.
-- [ ] 3.2 Implement link-request, callback/session and logout boundaries with
-  neutral enumeration-safe request responses and bounded failure views.
-- [ ] 3.3 Implement server-side JWT validation (signature/JWKS, issuer,
-  audience, expiry and immutable subject) before application access.
-- [ ] 3.4 Add rate-limit/CAPTCHA protection chosen during approval and focused
-  auth/no-token/expired-token/misconfiguration tests.
+- [x] 3.1 Add validated, feature-gated Supabase configuration, one exact HTTPS
+  callback URL and secret-handling guidance; do not commit provider keys or
+  service-role credentials.
+- [x] 3.2 Implement link-request, callback/session and logout boundaries with
+  neutral enumeration-safe request responses, clean callback redirects and
+  bounded failure views.
+- [x] 3.3 Implement server-side JWT validation (allowlisted signature/JWKS,
+  issuer, audience, expiry and immutable subject) before application access;
+  expose only a request principal and do not persist identity.
+- [x] 3.4 Integrate the approved edge/hosting abuse-guard contract, fail closed
+  when unavailable, defer CAPTCHA, and add focused auth/no-token/expired-
+  token/misconfiguration/provider-failure tests.
+- [x] 3.5 Verify Phase 2 does not add models, repositories, migrations,
+  account/membership/draft persistence or commerce authorization.
 
 ## 4. Phase 3 — identity and draft persistence
 

@@ -13,6 +13,7 @@ from backend.services.exceptions import (
     InvalidProviderProcessingWorkerConfig,
     InvalidShadowHybridMinScoreGap,
     InvalidShadowVectorTopK,
+    InvalidSupabaseAuthConfig,
     InvalidTwilioOutboundDispatchConfig,
     InvalidTwilioWebhookAuthToken,
     InvalidTwilioWebhookBaseUrl,
@@ -285,6 +286,79 @@ def _admin_panel_allowed_origin_env(name: str) -> str | None:
     return cleaned
 
 
+def _https_absolute_url_env(
+    name: str, error_cls: type[Exception]
+) -> str | None:
+    """Resolve an absolute ``https://`` URL without query or fragment.
+
+    The helper centralises the contract used by the Phase 2 Supabase
+    configuration: missing / blank values stay ``None`` so the
+    feature remains off by default, while a non-empty value must be
+    a canonical ``https://`` URL. The helper rejects URLs that carry
+    query strings or fragments because the configured callback and
+    JWKS URLs are pinned values — anything appended to them would
+    be a configuration drift that the runtime cannot safely accept.
+    """
+    raw = _optional_str_env(name, None)
+    if raw is None:
+        return None
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+    parsed = urlparse(cleaned)
+    if parsed.scheme.lower() != "https":
+        raise error_cls(
+            f"{name} must use the https scheme (got {cleaned!r})"
+        )
+    if not parsed.netloc:
+        raise error_cls(
+            f"{name} must be an absolute https URL (got {cleaned!r})"
+        )
+    if parsed.query or parsed.fragment:
+        raise error_cls(
+            f"{name} must not contain a query string or fragment "
+            f"(got {cleaned!r})"
+        )
+    return cleaned
+
+
+def _supabase_publishable_key_env(name: str) -> str | None:
+    """Resolve the optional Supabase publishable / anon key.
+
+    The helper enforces the publishable-only contract: any key that
+    looks like a service-role key, an admin token, or a JWT is
+    rejected at process start. The Phase 2 link-request path uses
+    the publishable key only to call Supabase Auth; it must never
+    carry enough privilege to mint arbitrary sessions.
+    """
+    raw = _optional_str_env(name, None)
+    if raw is None:
+        return None
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+    lowered = cleaned.lower()
+    forbidden_markers = (
+        "service_role",
+        "service-role",
+        "service role",
+        "sb_secret",
+        "sbp_",
+    )
+    for marker in forbidden_markers:
+        if marker in lowered:
+            raise InvalidSupabaseAuthConfig(
+                f"{name} must not contain a service-role key "
+                f"(got a redacted marker)"
+            )
+    if not cleaned.startswith("eyJ"):
+        raise InvalidSupabaseAuthConfig(
+            f"{name} must be a publishable JWT-shaped key "
+            f"starting with 'eyJ'"
+        )
+    return cleaned
+
+
 def _twilio_webhook_base_url_env(name: str) -> str | None:
     raw = _optional_str_env(name, None)
     if raw is None:
@@ -399,6 +473,20 @@ DEFAULT_PROVIDER_PROCESSING_WORKER_ENABLED = False
 DEFAULT_PROVIDER_PROCESSING_WORKER_POLL_INTERVAL_SECONDS = 5
 DEFAULT_PROVIDER_PROCESSING_WORKER_INBOUND_MAX_ITEMS_PER_PASS = 1
 DEFAULT_PROVIDER_PROCESSING_WORKER_OUTBOUND_MAX_ATTEMPTS_PER_PASS = 16
+DEFAULT_SUPABASE_AUTH_ENABLED = False
+DEFAULT_SUPABASE_PROJECT_URL: str | None = None
+DEFAULT_SUPABASE_JWT_ISSUER: str | None = None
+DEFAULT_SUPABASE_JWT_AUDIENCE = "authenticated"
+DEFAULT_SUPABASE_CALLBACK_URL: str | None = None
+DEFAULT_SUPABASE_JWKS_URL: str | None = None
+DEFAULT_SUPABASE_PUBLISHABLE_KEY: str | None = None
+DEFAULT_SUPABASE_SESSION_SECRET: str | None = None
+DEFAULT_SUPABASE_PKCE_COOKIE_MAX_AGE_SECONDS = 60 * 5
+DEFAULT_SUPABASE_SESSION_MAX_AGE_SECONDS = 60 * 30
+DEFAULT_SUPABASE_ALLOWED_ALGORITHMS = ("ES256", "RS256", "PS256", "EdDSA")
+DEFAULT_SUPABASE_ABUSE_GUARD_URL: str | None = None
+DEFAULT_SUPABASE_ABUSE_GUARD_TOKEN: str | None = None
+DEFAULT_SUPABASE_REQUEST_TIMEOUT_SECONDS = 10
 
 
 def _provider_processing_worker_positive_int_env(
@@ -407,6 +495,93 @@ def _provider_processing_worker_positive_int_env(
     value = _int_env(name, default)
     if value <= 0:
         raise InvalidProviderProcessingWorkerConfig(
+            f"{name} must be greater than zero (got {value})"
+        )
+    return value
+
+
+def _supabase_session_max_age_env(name: str, default: int) -> int:
+    """Resolve the bounded local-session max-age in seconds.
+
+    Phase 2 uses a short-lived local session that expires well
+    before the provider JWT so a revoked Supabase session cannot
+    outlive its underlying token. The bound is positive to keep the
+    cookie header consistent across the router.
+    """
+    value = _int_env(name, default)
+    if value <= 0:
+        raise InvalidSupabaseAuthConfig(
+            f"{name} must be greater than zero (got {value})"
+        )
+    return value
+
+
+def _supabase_session_secret_env(name: str) -> str | None:
+    """Resolve the optional local-session signing secret.
+
+    The secret signs the short-lived local session cookie. It must
+    be a non-empty stripped string when Supabase auth is enabled;
+    an unset value keeps the feature off. Service-role markers and
+    JWT-shaped strings are rejected to keep the secret distinct
+    from any provider-issued credential.
+    """
+    raw = _optional_str_env(name, None)
+    if raw is None:
+        return None
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+    lowered = cleaned.lower()
+    if (
+        "service_role" in lowered
+        or "service-role" in lowered
+        or cleaned.startswith("eyJ")
+    ):
+        raise InvalidSupabaseAuthConfig(
+            f"{name} must not be a JWT-shaped or service-role value"
+        )
+    return cleaned
+
+
+def _supabase_abuse_guard_token_env(name: str) -> str | None:
+    """Resolve the optional edge/hosting abuse-guard token.
+
+    The token is the operator-pinned shared secret the edge/hosting
+    layer uses to authenticate its rate-limit gate. It is not a
+    Supabase credential and must remain a non-empty stripped string.
+    When the operator enables the feature without configuring the
+    guard the application refuses to issue or resend a magic link.
+    """
+    raw = _optional_str_env(name, None)
+    if raw is None:
+        return None
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+    return cleaned
+
+
+def _supabase_request_timeout_env(name: str, default: int) -> int:
+    value = _int_env(name, default)
+    if value <= 0:
+        raise InvalidSupabaseAuthConfig(
+            f"{name} must be greater than zero (got {value})"
+        )
+    return value
+
+
+def _supabase_pkce_cookie_max_age_env(name: str, default: int) -> int:
+    """Resolve the bounded PKCE temp-cookie max-age in seconds.
+
+    The PKCE temp cookie carries the server-issued ``code_verifier``
+    between the link-request and the callback. It is intentionally
+    short-lived so a replay cannot outlive the email link it pairs
+    with; the bound must remain positive so the cookie header is
+    always emitted with a finite lifetime.
+    """
+    value = _int_env(name, default)
+    if value <= 0:
+        raise InvalidSupabaseAuthConfig(
             f"{name} must be greater than zero (got {value})"
         )
     return value
@@ -472,6 +647,28 @@ class Settings:
     order_management_admin_token: str | None = None
     admin_panel_csrf_secret: str | None = None
     admin_panel_allowed_origin: str | None = None
+    supabase_auth_enabled: bool = DEFAULT_SUPABASE_AUTH_ENABLED
+    supabase_project_url: str | None = DEFAULT_SUPABASE_PROJECT_URL
+    supabase_jwt_issuer: str | None = DEFAULT_SUPABASE_JWT_ISSUER
+    supabase_jwt_audience: str = DEFAULT_SUPABASE_JWT_AUDIENCE
+    supabase_callback_url: str | None = DEFAULT_SUPABASE_CALLBACK_URL
+    supabase_jwks_url: str | None = DEFAULT_SUPABASE_JWKS_URL
+    supabase_publishable_key: str | None = DEFAULT_SUPABASE_PUBLISHABLE_KEY
+    supabase_session_secret: str | None = DEFAULT_SUPABASE_SESSION_SECRET
+    supabase_pkce_cookie_max_age_seconds: int = (
+        DEFAULT_SUPABASE_PKCE_COOKIE_MAX_AGE_SECONDS
+    )
+    supabase_session_max_age_seconds: int = (
+        DEFAULT_SUPABASE_SESSION_MAX_AGE_SECONDS
+    )
+    supabase_allowed_algorithms: tuple[str, ...] = (
+        DEFAULT_SUPABASE_ALLOWED_ALGORITHMS
+    )
+    supabase_abuse_guard_url: str | None = DEFAULT_SUPABASE_ABUSE_GUARD_URL
+    supabase_abuse_guard_token: str | None = DEFAULT_SUPABASE_ABUSE_GUARD_TOKEN
+    supabase_request_timeout_seconds: int = (
+        DEFAULT_SUPABASE_REQUEST_TIMEOUT_SECONDS
+    )
 
 
 def load_settings() -> Settings:
@@ -582,6 +779,49 @@ def load_settings() -> Settings:
         admin_panel_allowed_origin=_admin_panel_allowed_origin_env(
             "ADMIN_PANEL_ALLOWED_ORIGIN"
         ),
+        supabase_auth_enabled=_bool_env(
+            "SUPABASE_AUTH_ENABLED", DEFAULT_SUPABASE_AUTH_ENABLED
+        ),
+        supabase_project_url=_https_absolute_url_env(
+            "SUPABASE_PROJECT_URL", InvalidSupabaseAuthConfig
+        ),
+        supabase_jwt_issuer=_optional_str_env(
+            "SUPABASE_JWT_ISSUER", DEFAULT_SUPABASE_JWT_ISSUER
+        ),
+        supabase_jwt_audience=_str_env(
+            "SUPABASE_JWT_AUDIENCE", DEFAULT_SUPABASE_JWT_AUDIENCE
+        ),
+        supabase_callback_url=_https_absolute_url_env(
+            "SUPABASE_CALLBACK_URL", InvalidSupabaseAuthConfig
+        ),
+        supabase_jwks_url=_https_absolute_url_env(
+            "SUPABASE_JWKS_URL", InvalidSupabaseAuthConfig
+        ),
+        supabase_publishable_key=_supabase_publishable_key_env(
+            "SUPABASE_PUBLISHABLE_KEY"
+        ),
+        supabase_session_secret=_supabase_session_secret_env(
+            "SUPABASE_SESSION_SECRET"
+        ),
+        supabase_pkce_cookie_max_age_seconds=_supabase_pkce_cookie_max_age_env(
+            "SUPABASE_PKCE_COOKIE_MAX_AGE_SECONDS",
+            DEFAULT_SUPABASE_PKCE_COOKIE_MAX_AGE_SECONDS,
+        ),
+        supabase_session_max_age_seconds=_supabase_session_max_age_env(
+            "SUPABASE_SESSION_MAX_AGE_SECONDS",
+            DEFAULT_SUPABASE_SESSION_MAX_AGE_SECONDS,
+        ),
+        supabase_allowed_algorithms=DEFAULT_SUPABASE_ALLOWED_ALGORITHMS,
+        supabase_abuse_guard_url=_https_absolute_url_env(
+            "SUPABASE_ABUSE_GUARD_URL", InvalidSupabaseAuthConfig
+        ),
+        supabase_abuse_guard_token=_supabase_abuse_guard_token_env(
+            "SUPABASE_ABUSE_GUARD_TOKEN"
+        ),
+        supabase_request_timeout_seconds=_supabase_request_timeout_env(
+            "SUPABASE_REQUEST_TIMEOUT_SECONDS",
+            DEFAULT_SUPABASE_REQUEST_TIMEOUT_SECONDS,
+        ),
     )
 
 
@@ -599,6 +839,20 @@ __all__ = [
     "DEFAULT_PROVIDER_PROCESSING_WORKER_POLL_INTERVAL_SECONDS",
     "DEFAULT_SHADOW_HYBRID_MIN_SCORE_GAP",
     "DEFAULT_SHADOW_VECTOR_TOP_K",
+    "DEFAULT_SUPABASE_ABUSE_GUARD_TOKEN",
+    "DEFAULT_SUPABASE_ABUSE_GUARD_URL",
+    "DEFAULT_SUPABASE_ALLOWED_ALGORITHMS",
+    "DEFAULT_SUPABASE_AUTH_ENABLED",
+    "DEFAULT_SUPABASE_CALLBACK_URL",
+    "DEFAULT_SUPABASE_JWKS_URL",
+    "DEFAULT_SUPABASE_JWT_AUDIENCE",
+    "DEFAULT_SUPABASE_JWT_ISSUER",
+    "DEFAULT_SUPABASE_PKCE_COOKIE_MAX_AGE_SECONDS",
+    "DEFAULT_SUPABASE_PROJECT_URL",
+    "DEFAULT_SUPABASE_PUBLISHABLE_KEY",
+    "DEFAULT_SUPABASE_REQUEST_TIMEOUT_SECONDS",
+    "DEFAULT_SUPABASE_SESSION_MAX_AGE_SECONDS",
+    "DEFAULT_SUPABASE_SESSION_SECRET",
     "DEFAULT_TWILIO_CALLBACK_STATUS_URL",
     "DEFAULT_TWILIO_OUTBOUND_INITIAL_BACKOFF_SECONDS",
     "DEFAULT_TWILIO_OUTBOUND_LEASE_SECONDS",

@@ -12,11 +12,12 @@ Public landing → Supabase magic-link identity → NovaOrders owner authorizati
                existing lifecycle/configuration/channel availability controls
 ```
 
-Supabase is only the authentication system. NovaOrders stores no password and
-uses the verified external `sub` as the account's immutable identity key.
-`CuentaUsuario` and `ComercioUsuario` are application-owned authorization data;
-therefore deleting/updating browser claims cannot grant access to another
-commerce.
+Supabase is only the authentication system. NovaOrders stores no password.
+Phase 2 creates no NovaOrders identity or authorization row: it exposes a
+validated request principal containing only the immutable external `sub` and a
+short-lived local session. `CuentaUsuario` and `ComercioUsuario` are
+application-owned authorization data deferred to Phase 3; therefore a valid
+Supabase session alone cannot grant access to any commerce.
 
 ## Visual experience decision
 
@@ -38,27 +39,43 @@ fit the existing application. A new SPA/design-system platform is explicitly
 out of scope. Visual acceptance requires rendered desktop and mobile review,
 not only template/unit assertions.
 
-## Identity flow
+## Phase 2 identity flow
 
 1. Visitor selects the landing CTA and sees an email request screen.
-2. The request is sent to Supabase Auth with a fixed allowlisted callback URL.
-   The answer shown is generic whether the account exists or not.
-3. Supabase emails a single-use, time-bound magic link. Its hosted service
-   manages email verification and session issuance.
-4. Callback establishes the application session from a validated Supabase JWT.
-   The backend validates signature/JWKS, issuer, audience, expiry and subject.
-5. The account-provisioning service upserts `CuentaUsuario` by external subject
-   after successful validation. Email is profile/contact data, not the stable
-   authorization key.
-6. The authenticated owner is redirected to its draft or dashboard.
+2. The request is sent to Supabase Auth with one fixed HTTPS callback URL and
+   the configured abuse guard. The answer shown is generic whether the email
+   exists or not.
+3. Supabase emails a single-use, time-bound magic link.
+4. The server callback exchanges/verifies the provider result, validates
+   signature/JWKS, issuer, audience, expiry and non-empty immutable subject,
+   then establishes a short-lived local session. The callback immediately
+   redirects to a clean URL; token-bearing query values are never rendered or
+   logged.
+5. The authenticated result is a request principal only. No account,
+   membership, draft, commerce or other application row is created.
+6. The visitor sees a bounded "identidad verificada; onboarding aún no
+   habilitado" view. Account provisioning and private draft routing begin in
+   Phase 3.
 
-The callback accepts only configured redirect origins. Tokens, callback URLs
-containing tokens, full headers and raw identity-provider errors are never
-logged. Logout clears the local session/cookie and does not mutate commerce
-data. Rate-limit/CAPTCHA selection is a pre-implementation approval item;
-there is no permissive fallback when the protection is unavailable.
+The callback accepts only the one configured exact redirect URL. Tokens,
+callback URLs containing tokens, full headers and raw identity-provider errors
+are never logged. Logout clears the local session/cookie and does not mutate
+commerce data. The production abuse control is edge/hosting rate limiting;
+CAPTCHA is deferred. If the configured guard is unavailable, link issuance
+fails closed rather than falling back to an in-process permissive path.
 
-## Data model
+The application settings are feature-gated and fail closed: the Supabase
+project URL/issuer, exact callback URL, publishable/anon key used only for the
+link request, `authenticated` audience, local session secret and HTTPS cookie
+policy must be complete before the route can issue or accept a session. A
+service-role key is never accepted. JWKS verification is the only local
+signature path; missing/empty JWKS or unsupported signing material is an
+authentication failure.
+
+## Later-phase data model
+
+The following model is intentionally not part of Phase 2 and must not be
+created by its callback or session dependency.
 
 `CuentaUsuario`
 

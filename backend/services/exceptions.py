@@ -745,3 +745,41 @@ class InvalidDeliveryOrden(ValueError):
     so the panel can render a closed validation error before any
     persistence attempt.
     """
+
+
+class InvalidSupabaseAuthConfig(ValueError):
+    """Raised when the Phase 2 Supabase magic-link identity boundary
+    receives an unusable configuration value.
+
+    The settings module fails closed before any application code can
+    call Supabase Auth. The validation covers every required input:
+
+    * ``supabase_project_url`` must be an absolute ``https://`` URL
+      without a query string or fragment.
+    * ``supabase_jwt_issuer`` must match the exact issuer Supabase
+      stamps on the JWT (the project URL joined with
+      ``/auth/v1``).
+    * ``supabase_jwt_audience`` must equal the literal ``authenticated``
+      value Supabase uses for the user session.
+    * ``supabase_callback_url`` must be an absolute ``https://`` URL
+      without query string or fragment, anchored at the exact
+      configured callback path (``/auth/callback``).
+    * ``supabase_jwks_url`` must be an absolute ``https://`` URL;
+      the Phase 2 contract forbids HMAC validation, so a JWKS
+      endpoint is the only supported verification path.
+    * ``supabase_publishable_key`` must be the publishable / anon key
+      used only for the magic-link request; the service-role key is
+      rejected.
+    * ``supabase_allowed_algorithms`` must list only the asymmetric
+      algorithms Supabase emits; HMAC algorithms are rejected at
+      process start.
+    * ``supabase_session_secret`` must be a non-empty stripped string.
+    * ``supabase_session_max_age_seconds`` must be a positive integer.
+    * ``supabase_abuse_guard_url`` and ``supabase_abuse_guard_token``
+      must be configured together; a missing or partial abuse guard
+      fails closed at link issuance.
+
+    A configuration error raises a typed ``ValueError`` so the
+    operator gets a single actionable message at process start
+    instead of an obscure runtime failure inside the first callback.
+    """

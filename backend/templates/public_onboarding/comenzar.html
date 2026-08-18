@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="es-AR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Solicitá el acceso para registrar tu comercio en NovaOrders. Te enviaremos un enlace a tu casilla de email para confirmar la identidad.">
+<meta name="robots"="noindex,nofollow">
+<meta name="color-scheme" content="light dark">
+<title>NovaOrders · Solicitar acceso</title>
+<style>
+  :root {
+    --bg: #f7f7fb;
+    --bg-elevated: #ffffff;
+    --panel: #ffffff;
+    --border: #d8d8e3;
+    --border-strong: #b9b9c8;
+    --fg: #14141d;
+    --fg-muted: #4f4f60;
+    --fg-faint: #76768a;
+    --accent: #4b3aff;
+    --accent-strong: #3a2bd6;
+    --accent-ink: #ffffff;
+    --accent-soft: #ece9ff;
+    --danger: #b3261e;
+    --focus-ring: #ffbf3f;
+    --shadow-sm: 0 1px 2px rgba(20, 20, 29, 0.04), 0 4px 12px rgba(20, 20, 29, 0.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0c0c14;
+      --bg-elevated: #15151f;
+      --panel: #15151f;
+      --border: #2a2a3a;
+      --border-strong: #3b3b50;
+      --fg: #f3f3fa;
+      --fg-muted: #b6b6c8;
+      --fg-faint: #84849a;
+      --accent: #b6a6ff;
+      --accent-strong: #cbbcff;
+      --accent-ink: #0a0510;
+      --accent-soft: #211b3b;
+      --danger: #ff8a80;
+      --focus-ring: #ffd166;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45), 0 4px 12px rgba(0, 0, 0, 0.35);
+    }
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.55;
+    font-size: 17px;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  a {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  a:hover, a:focus-visible { color: var(--accent-strong); }
+  :focus-visible {
+    outline: 3px solid var(--focus-ring);
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+  button:focus-visible,
+  input:focus-visible,
+  .cta:focus-visible,
+  .back-link:focus-visible {
+    outline: 3px solid var(--focus-ring);
+    outline-offset: 3px;
+  }
+  h1, h2 { margin: 0; line-height: 1.25; }
+  p { margin: 0 0 1em; }
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    top: auto;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+  }
+  .skip-link:focus {
+    position: static;
+    width: auto;
+    height: auto;
+    background: var(--accent);
+    color: var(--accent-ink);
+    padding: 10px 14px;
+    display: inline-block;
+    margin: 12px;
+    border-radius: 6px;
+    text-decoration: none;
+  }
+  header.site-header {
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 24px;
+  }
+  header.site-header .brand {
+    font-weight: 700;
+    font-size: 1.05rem;
+    color: var(--fg);
+    text-decoration: none;
+  }
+  header.site-header .brand:focus-visible {
+    outline: 3px solid var(--focus-ring);
+    outline-offset: 4px;
+    border-radius: 4px;
+  }
+  main.form-main {
+    max-width: 520px;
+    margin: 0 auto;
+    padding: 40px 24px 64px;
+  }
+  section.request-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 32px 28px;
+    box-shadow: var(--shadow-sm);
+  }
+  section.request-card .eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.8rem;
+    color: var(--accent);
+    font-weight: 700;
+    margin-bottom: 12px;
+  }
+  section.request-card h1 {
+    font-size: clamp(1.5rem, 3vw + 0.8rem, 2rem);
+    margin-bottom: 8px;
+  }
+  section.request-card p.intro {
+    color: var(--fg-muted);
+    margin-bottom: 24px;
+  }
+  form.email-form {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  label.email-label {
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: var(--fg);
+  }
+  input.email-input {
+    min-height: 48px;
+    padding: 10px 14px;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    font-size: 1rem;
+    font-family: inherit;
+    background: var(--bg-elevated);
+    color: var(--fg);
+  }
+  input.email-input:invalid {
+    border-color: var(--danger);
+  }
+  button.submit-button {
+    min-height: 48px;
+    padding: 12px 22px;
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-weight: 700;
+    font-size: 1rem;
+    border-radius: 10px;
+    border: 1px solid var(--accent);
+    cursor: pointer;
+    font-family: inherit;
+  }
+  button.submit-button:hover,
+  button.submit-button:focus-visible {
+    background: var(--accent-strong);
+    border-color: var(--accent-strong);
+  }
+  .actions {
+    margin-top: 22px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+  }
+  a.back-link {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 6px;
+    color: var(--fg-muted);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  footer.site-footer {
+    border-top: 1px solid var(--border);
+    padding: 22px 24px 28px;
+    color: var(--fg-faint);
+    font-size: 0.9rem;
+    text-align: center;
+    max-width: 720px;
+    margin: 0 auto;
+  }
+  @media (max-width: 600px) {
+    main.form-main { padding: 24px 18px 48px; }
+    section.request-card { padding: 24px 20px; }
+    header.site-header { padding: 12px 18px; }
+  }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main-content">Saltar al contenido principal</a>
+<header class="site-header" role="banner">
+  <a class="brand" href="/" aria-label="NovaOrders, ir al inicio">NovaOrders</a>
+</header>
+<main class="form-main" id="main-content" tabindex="-1">
+  <section class="request-card" aria-labelledby="request-title">
+    <p class="eyebrow">Solicitar acceso</p>
+    <h1 id="request-title">Pedí tu enlace de acceso</h1>
+    <p class="intro">
+      Dejanos tu email y te enviaremos un enlace para confirmar tu identidad.
+      Después continuaremos con la configuración de tu comercio.
+    </p>
+    <form class="email-form" method="post" action="/comenzar" autocomplete="off" novalidate>
+      <label class="email-label" for="email">Email de contacto</label>
+      <input
+        class="email-input"
+        id="email"
+        name="email"
+        type="email"
+        inputmode="email"
+        autocomplete="email"
+        spellcheck="false"
+        required
+        aria-describedby="email-help"
+        value="{{ submitted_email | e }}"
+      >
+      <p id="email-help" class="intro" style="margin-bottom: 0;">
+        Te enviaremos un único enlace a esta casilla. No la compartimos ni la usamos para enviarte otras comunicaciones.
+      </p>
+      <button class="submit-button" type="submit" data-cta="submit-email">Enviar enlace</button>
+    </form>
+    <div class="actions">
+      <a class="back-link" href="/">Volver al inicio</a>
+    </div>
+  </section>
+</main>
+<footer class="site-footer" role="contentinfo">
+  <span>© NovaOrders</span>
+</footer>
+</body>
+</html>

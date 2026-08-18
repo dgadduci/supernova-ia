@@ -15,11 +15,12 @@ configuration readiness, lifecycle, and availability.
 
 ## Current execution path
 
-The application is FastAPI with server-rendered Jinja panels. Its public HTTP
-surface is limited to health and signed Twilio webhooks. Every existing
+The application is FastAPI with server-rendered Jinja panels. Phase 1 now adds
+the public server-rendered landing and the transparent `/comenzar` placeholder;
+neither opens a database session or accepts identity data. Every existing
 business/admin route uses one global administrative token or browser Basic
-authentication; there is no user, account, JWT, session-login, commerce-role,
-or self-service panel model.
+authentication; there is no application user/account, JWT session, commerce
+role, or self-service panel model.
 
 `Comercio` requires complete legal, routing, address and lifecycle data, so it
 cannot safely be used as a partially completed registration. `ComercioService`
@@ -89,13 +90,18 @@ operational routes.
 
 ### Phase 2 — passwordless identity boundary
 
-Configure a dedicated Supabase Auth project and allowed callback URLs. Add the
-request-link, callback/session establishment, logout, JWT validation and
-bounded failure views. The server validates issuer, audience, expiration and
+Add the code boundary for Supabase Auth email magic links: request-link,
+server callback/session establishment, logout, JWT validation and bounded
+failure views. The server validates issuer, audience, expiration and
 signature/key material; it does not trust frontend claims or Supabase email
-metadata for authorization. Apply rate limiting/CAPTCHA decisions at this
-public abuse boundary. Magic-link issuance and resend requests always return a
-generic response.
+metadata for authorization. This phase creates no `CuentaUsuario`,
+`ComercioUsuario`, draft, commerce, migration or other application record.
+The authenticated result is an in-memory/request principal containing only the
+validated external subject, followed by a bounded "onboarding not yet
+enabled" view. Magic-link issuance and resend requests always return a generic
+response. Production rate limiting is an edge/hosting prerequisite; if the
+configured abuse guard is unavailable, issuance fails closed. No CAPTCHA is
+added in this phase.
 
 ### Phase 3 — account and draft ownership
 
@@ -138,21 +144,23 @@ approval.
 | Admin operator | Approves trial/readiness, manages lifecycle limits, and provisions/verifies a provider channel. |
 | Automation | Evaluates existing availability/readiness; it never expands a trial or activates a commerce. |
 
-Expected valid business outcomes are: link requested, verified account,
-draft saved, incomplete draft, commerce created INACTIVO, configuration
-incomplete, review requested, trial granted, and readiness rejected with a
-bounded actionable reason. A missing/invalid membership, invalid JWT, absent
-or misconfigured provider verification, unknown commerce, unavailable
-commerce, or technical persistence error is not a valid success state.
+Expected outcomes for Phase 2 are: link requested, bounded neutral
+confirmation, verified external subject, authenticated session, onboarding not
+enabled, and bounded authentication failure. A missing/invalid membership,
+invalid JWT, absent or misconfigured provider verification, unknown commerce,
+unavailable commerce, or technical persistence error is not a valid success
+state. Draft, commerce and readiness outcomes remain later-phase outcomes.
 
 ## Security, isolation and fallback
 
-The `CuentaUsuario` external subject is unique and immutable. `ComercioUsuario`
-uses unique `(cuenta_usuario_id, comercio_id)` membership, an active flag and a
-closed role set. Every commerce-panel query must derive the commerce scope from
-the authenticated membership; route IDs are selectors only and must match it.
-No request may select an arbitrary commerce, inherit global Admin access, or
-fall back to another account/draft/membership/channel.
+When implemented in Phase 3, the `CuentaUsuario` external subject will be
+unique and immutable. `ComercioUsuario` will use unique
+`(cuenta_usuario_id, comercio_id)` membership, an active flag and a closed
+role set. Phase 2 has no commerce authorization boundary because it has no
+application account or membership. Later commerce-panel queries must derive
+scope from the authenticated membership; route IDs are selectors only and
+must match it. No request may select an arbitrary commerce, inherit global
+Admin access, or fall back to another account/draft/membership/channel.
 
 JWT validation failure is fail-closed before session/database business work.
 Supabase unavailability, JWKS/key fetch failure or database error fails the
@@ -164,7 +172,8 @@ boundaries remain unchanged and are not replaced by this identity flow.
 ## Transactions, rollback and reversibility
 
 Auth/JWT dependencies and readiness projections are read-only and own no
-transactions. The onboarding completion service owns one explicit atomic
+transactions. Phase 2 owns no application persistence transaction. The
+onboarding completion service owns one explicit atomic
 transaction only when it creates the exact commerce, owner membership and
 draft completion; any failure rolls all three back. Scoped payment/delivery
 services retain their established transaction ownership. Lifecycle quota
@@ -189,24 +198,33 @@ JWTs, URLs with tokens, payment values, message content or provider secrets.
 - A new public/onboarding route and server-rendered templates plus deliberately
   small scoped CSS/static assets.
 - Settings and authentication dependency/adapters for Supabase JWT validation.
+- Phase 2 request/callback/logout templates and routes plus focused JWT/auth
+  denial tests. No account, membership, draft or migration files belong to
+  this phase.
 - Account, membership and draft models, repositories, schemas, services and an
-  Alembic migration.
-- Scoped commerce-owner routes/views and readiness projection.
-- Focused tests for public UX contracts, JWT/auth denial, tenancy isolation,
-  draft/completion atomicity, lifecycle handoff and accessibility regression.
+  Alembic migration remain Phase 3 work.
+- Scoped commerce-owner routes/views and readiness projection remain later
+  phases.
+- Focused tests for public UX contracts and Phase 2 authentication; tenancy
+  isolation, draft/completion atomicity, lifecycle handoff and readiness tests
+  remain later-phase gates.
 - Spec deltas in this change only.
 
 ## Focused validation
 
-The implementer must run locally and provide complete output:
+For Phase 2, the implementer must run locally and provide complete output:
 
 ```text
-PYTHONPATH=. venv/bin/python -m pytest backend/tests/test_public_onboarding_landing.py backend/tests/test_supabase_magic_link_auth.py backend/tests/test_commerce_owner_authorization.py backend/tests/test_commerce_onboarding_service.py backend/tests/test_commerce_onboarding_panel.py backend/tests/test_commerce_lifecycle_policy.py backend/tests/test_commerce_payment_delivery_configuration_service.py -q
-PYTHONPATH=. venv/bin/ruff check backend/config backend/dependencies.py backend/models backend/repositories backend/services backend/routers backend/templates backend/tests/test_public_onboarding_landing.py backend/tests/test_supabase_magic_link_auth.py backend/tests/test_commerce_owner_authorization.py backend/tests/test_commerce_onboarding_service.py
-PYTHONPATH=. venv/bin/python -m compileall -q backend/config backend/dependencies.py backend/models backend/repositories backend/services backend/routers
+PYTHONPATH=. venv/bin/python -m pytest backend/tests/test_public_onboarding_landing.py backend/tests/test_supabase_magic_link_auth.py -q
+PYTHONPATH=. venv/bin/ruff check backend/config/settings.py backend/dependencies.py backend/routers/public_onboarding.py backend/auth backend/tests/test_public_onboarding_landing.py backend/tests/test_supabase_magic_link_auth.py
+PYTHONPATH=. venv/bin/python -m compileall -q backend/config/settings.py backend/dependencies.py backend/routers/public_onboarding.py backend/auth
 PYTHONPATH=. venv/bin/openspec validate add-commerce-self-service-onboarding --strict
 git diff --check
 ```
+
+The broader onboarding, tenancy, completion, readiness and lifecycle test
+commands remain release gates for their respective later phases and are not a
+Phase 2 acceptance requirement.
 
 ## Decisions required before implementation
 
