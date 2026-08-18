@@ -55,6 +55,24 @@
 
 ## 5. Unified inbound availability guard
 
+- [ ] 5.corr.1 Normalize the ``prueba_hasta`` HTML ``datetime-local`` input
+  with the panel ``zona_horaria`` in the server-rendered admin adapter
+  (``POST /admin/catalog/comercios/nuevo`` and
+  ``POST /admin/catalog/comercios/{comercio_id}/editar``): preserve the
+  Pydantic-validated ``ComercioCreateForm``/``ComercioUpdateForm``
+  result, convert the typed ``prueba_max_pedidos`` and a timezone-aware
+  ``prueba_hasta`` (using ``zoneinfo.ZoneInfo``) into the typed
+  payload the shared :class:`ComercioService` expects, and surface
+  bounded errors for invalid zone or unparseable local date before the
+  service is reached. Re-render the form keeping the submitted values.
+  Do NOT move this conversion into :class:`ComercioService` (its contract
+  must remain the closed typed datetime / int so a future public
+  registration path can send the same payload directly). Do NOT modify
+  models, migrations, lifecycle states, the availability policy, PRUEBA
+  reservation rules, Basic Auth, same-origin, exact-path CSRF,
+  autoescaping, PRG, Admin Pilot, Twilio, worker,
+  recognition/fuzzy, or ``add-safe-outbound-response-styling``.
+
 - [x] 5.1 Apply `CommerceAvailabilityService` at the Admin Pilot local-test
   ingress `POST /admin/pilot/orders/{pedido_id}/local-test` after the exact
   `Pedido` and `Session` are resolved and before any processor, classifier,

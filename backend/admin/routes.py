@@ -16,10 +16,12 @@ existing ``get_session`` dependency owns the transaction boundary.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path as PathLib
 from typing import Annotated, Any
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, Form, Path, Request
 from fastapi.params import Form as FormParam
@@ -276,6 +278,54 @@ def _coerce_optional_int(raw_value: str | None) -> int | None:
         return int(cleaned)
     except ValueError as exc:
         raise ValueError("integer field must be a non-negative integer") from exc
+
+
+def _coerce_trial_prueba_hasta(
+    raw_value: str | None,
+    *,
+    zona_horaria: str | None,
+) -> datetime | None:
+    """Coerce the ``prueba_hasta`` HTML ``datetime-local`` value.
+
+    The browser always sends ``<input type="datetime-local">`` values as
+    ISO-8601 strings without timezone information (e.g.
+    ``2026-12-31T23:59``). The panel adapter interprets that string as
+    the wall-clock time in the operator-supplied
+    :class:`zoneinfo.ZoneInfo` zone and pins the returned
+    :class:`datetime` to that zone so the shared
+    :class:`ComercioService` receives the typed contract it expects.
+
+    Returns ``None`` when the field was not posted or was left blank so
+    the form contract stays optional. Raises :class:`ValueError` when a
+    non-blank value cannot be parsed as an ISO-8601 local datetime, when
+    the supplied zone is blank, or when ``zoneinfo`` cannot resolve the
+    supplied identifier; the panel catches ``ValueError`` and re-renders
+    the form with a bounded message so the shared service is never
+    called with invalid trial data.
+    """
+    if raw_value is None:
+        return None
+    cleaned = raw_value.strip()
+    if cleaned == "":
+        return None
+    zone_label = zona_horaria.strip() if isinstance(zona_horaria, str) else ""
+    if zone_label == "":
+        raise ValueError(
+            "zona_horaria es obligatoria para interpretar prueba_hasta."
+        )
+    try:
+        zone = ZoneInfo(zone_label)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError(
+            "zona_horaria debe ser un identificador IANA válido."
+        ) from exc
+    try:
+        naive = datetime.fromisoformat(cleaned)
+    except ValueError as exc:
+        raise ValueError(
+            "prueba_hasta debe ser una fecha y hora local ISO-8601 válida."
+        ) from exc
+    return naive.replace(tzinfo=zone)
 
 
 @dataclass(frozen=True)
@@ -606,38 +656,44 @@ def create_comercio(
         "prueba_max_pedidos": prueba_max_pedidos,
     }
 
-    try:
-        coerced_estado_id = _coerce_estado_id(estado_id)
-    except ValueError as exc:
+    def _re_render(error_message: str, field_name: str | None) -> Response:
         return _re_render_comercio_form(
             request=request,
             service=service,
             form_path=form_path,
             is_edit=False,
             form_values={"estado_id": estado_id, **payload},
-            error_message=str(exc),
-            field_name="estado_id",
+            error_message=error_message,
+            field_name=field_name,
         )
+
+    try:
+        coerced_estado_id = _coerce_estado_id(estado_id)
+    except ValueError as exc:
+        return _re_render(str(exc), "estado_id")
 
     payload["estado_id"] = coerced_estado_id
 
     try:
-        from backend.admin.forms import ComercioCreateForm
-
-        ComercioCreateForm(**payload)
-    except Exception as exc:  # noqa: BLE001 - adapter boundary
-        return _re_render_comercio_form(
-            request=request,
-            service=service,
-            form_path=form_path,
-            is_edit=False,
-            form_values={"estado_id": estado_id, **payload},
-            error_message=str(exc),
-            field_name=None,
+        parsed_prueba_hasta = _coerce_trial_prueba_hasta(
+            prueba_hasta, zona_horaria=zona_horaria
         )
+    except ValueError as exc:
+        return _re_render(str(exc), "prueba_hasta")
 
     try:
-        row = comercio_service.create(payload)
+        from backend.admin.forms import ComercioCreateForm
+
+        form = ComercioCreateForm(**payload)
+    except Exception as exc:  # noqa: BLE001 - adapter boundary
+        return _re_render(str(exc), None)
+
+    service_payload: dict[str, Any] = dict(payload)
+    service_payload["prueba_hasta"] = parsed_prueba_hasta
+    service_payload["prueba_max_pedidos"] = form.prueba_max_pedidos
+
+    try:
+        row = comercio_service.create(service_payload)
     except Exception as exc:  # noqa: BLE001 - panel intentionally sanitises any failure
         mapping = _map_domain_exception(exc)
         if not mapping.render_form:
@@ -654,14 +710,9 @@ def create_comercio(
                 ),
                 status_code=mapping.status_code,
             )
-        return _re_render_comercio_form(
-            request=request,
-            service=service,
-            form_path=form_path,
-            is_edit=False,
-            form_values={"estado_id": estado_id, **payload},
-            error_message=mapping.message,
-            field_name=(
+        return _re_render(
+            mapping.message,
+            (
                 "whatsapp"
                 if isinstance(exc, DuplicateWhatsapp)
                 else "slug"
@@ -953,35 +1004,6 @@ def update_comercio(
 
     form_path = f"/admin/catalog/comercios/{parsed_comercio_id}/editar"
 
-    try:
-        coerced_estado_id = _coerce_estado_id(estado_id)
-    except ValueError as exc:
-        return _re_render_comercio_edit_form(
-            request=request,
-            service=service,
-            comercio_id=parsed_comercio_id,
-            form_values={
-                "estado_id": estado_id,
-                "nombre_fantasia": nombre_fantasia,
-                "nombre_corto": nombre_corto,
-                "razon_social": razon_social,
-                "cuit": cuit,
-                "calle": calle,
-                "numero": numero,
-                "piso_departamento": piso_departamento,
-                "localidad": localidad,
-                "provincia": provincia,
-                "codigo_postal": codigo_postal,
-                "prueba_hasta": prueba_hasta,
-                "prueba_max_pedidos": prueba_max_pedidos,
-                "zona_horaria": zona_horaria,
-                "moneda": moneda,
-                "idioma": idioma,
-            },
-            error_message=str(exc),
-            field_name="estado_id",
-        )
-
     payload: dict[str, Any] = {
         "nombre_fantasia": nombre_fantasia,
         "nombre_corto": nombre_corto,
@@ -993,7 +1015,6 @@ def update_comercio(
         "localidad": localidad,
         "provincia": provincia,
         "codigo_postal": codigo_postal,
-        "estado_id": coerced_estado_id,
         "prueba_hasta": prueba_hasta,
         "prueba_max_pedidos": prueba_max_pedidos,
         "zona_horaria": zona_horaria,
@@ -1001,22 +1022,44 @@ def update_comercio(
         "idioma": idioma,
     }
 
-    try:
-        from backend.admin.forms import ComercioUpdateForm
-
-        ComercioUpdateForm(**payload)
-    except Exception as exc:  # noqa: BLE001 - adapter boundary
+    def _re_render(error_message: str, field_name: str | None) -> Response:
+        merged = {"estado_id": estado_id, **payload}
         return _re_render_comercio_edit_form(
             request=request,
             service=service,
             comercio_id=parsed_comercio_id,
-            form_values=payload,
-            error_message=str(exc),
-            field_name=None,
+            form_values=merged,
+            error_message=error_message,
+            field_name=field_name,
         )
 
     try:
-        row = comercio_service.update(parsed_comercio_id, payload)
+        coerced_estado_id = _coerce_estado_id(estado_id)
+    except ValueError as exc:
+        return _re_render(str(exc), "estado_id")
+
+    payload["estado_id"] = coerced_estado_id
+
+    try:
+        parsed_prueba_hasta = _coerce_trial_prueba_hasta(
+            prueba_hasta, zona_horaria=zona_horaria
+        )
+    except ValueError as exc:
+        return _re_render(str(exc), "prueba_hasta")
+
+    try:
+        from backend.admin.forms import ComercioUpdateForm
+
+        form = ComercioUpdateForm(**payload)
+    except Exception as exc:  # noqa: BLE001 - adapter boundary
+        return _re_render(str(exc), None)
+
+    service_payload: dict[str, Any] = dict(payload)
+    service_payload["prueba_hasta"] = parsed_prueba_hasta
+    service_payload["prueba_max_pedidos"] = form.prueba_max_pedidos
+
+    try:
+        row = comercio_service.update(parsed_comercio_id, service_payload)
     except ComercioNotFound:
         return _render(
             request,
@@ -1034,13 +1077,8 @@ def update_comercio(
     except Exception as exc:  # noqa: BLE001 - panel intentionally sanitises any failure
         mapping = _map_domain_exception(exc)
         if isinstance(exc, (DuplicateWhatsapp, DuplicateSlug)):
-            return _re_render_comercio_edit_form(
-                request=request,
-                service=service,
-                comercio_id=parsed_comercio_id,
-                form_values=payload,
-                error_message="Los identificadores de ruteo son inmutables.",
-                field_name=None,
+            return _re_render(
+                "Los identificadores de ruteo son inmutables.", None
             )
         if not mapping.render_form:
             return _render(
@@ -1056,13 +1094,9 @@ def update_comercio(
                 ),
                 status_code=mapping.status_code,
             )
-        return _re_render_comercio_edit_form(
-            request=request,
-            service=service,
-            comercio_id=parsed_comercio_id,
-            form_values=payload,
-            error_message=mapping.message,
-            field_name=(
+        return _re_render(
+            mapping.message,
+            (
                 "estado_id"
                 if isinstance(
                     exc,
