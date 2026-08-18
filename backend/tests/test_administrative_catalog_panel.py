@@ -32,10 +32,12 @@ from __future__ import annotations
 import base64
 import unittest
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -4875,6 +4877,810 @@ class PanelComercioRouteRegressionTest(unittest.TestCase):
         )
         self.assertEqual(location, "/admin/catalog/comercios/1")
         del app_spy
+
+
+class PanelTrialConfigTest(unittest.TestCase):
+    """Focused regressions for the PRUEBA HTML datetime-local parse.
+
+    The browser posts the trial ``prueba_hasta`` value as
+    ``<input type="datetime-local">`` (ISO-8601 local datetime without
+    timezone) and ``prueba_max_pedidos`` as ``<input type="number">``
+    text. The panel adapter must convert those HTML representations into
+    the closed typed contract the shared :class:`ComercioService`
+    already expects:
+
+    * ``prueba_hasta``: timezone-aware :class:`datetime` (via
+      :class:`zoneinfo.ZoneInfo` from the operator-supplied
+      ``zona_horaria``);
+    * ``prueba_max_pedidos``: positive :class:`int` or ``None``.
+
+    The conversion happens in the panel adapter only; the service keeps
+    its generic contract so a future public registration path can send
+    the same typed payload directly.
+    """
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.app = _build_app()
+        self.override = _install_session_override(self, self.app, self.session)
+        self.client = TestClient(
+            self.app, raise_server_exceptions=False, follow_redirects=False
+        )
+        _stub_settings_patcher(self)
+
+    def _auth_headers(self) -> dict[str, str]:
+        return {
+            **_basic_auth_header("any", CONFIGURED_TOKEN),
+            **_same_origin_headers(),
+        }
+
+    def _estados(self) -> list[EstadoComercioOption]:
+        return [
+            EstadoComercioOption(
+                id=1,
+                codigo="ACTIVO",
+                descripcion="Activo",
+                modo_operacion=EstadoComercioModoOperacion.HABILITADO,
+            ),
+            EstadoComercioOption(
+                id=2,
+                codigo="INACTIVO",
+                descripcion="Inactivo",
+                modo_operacion=EstadoComercioModoOperacion.BLOQUEADO,
+            ),
+            EstadoComercioOption(
+                id=3,
+                codigo="PRUEBA",
+                descripcion="Prueba",
+                modo_operacion=EstadoComercioModoOperacion.PRUEBA,
+            ),
+        ]
+
+    def _auth_view(self) -> SimpleNamespace:
+        return _stub_view_service(
+            detail=_build_detail(),
+            catalog=_build_catalog(),
+            flavor_options=_build_flavor_options(),
+        )
+
+    def test_create_prueba_future_local_date_reaches_service_tz_aware(
+        self,
+    ) -> None:
+        path = "/admin/catalog/comercios/nuevo"
+        new_row = MagicMock(name="Comercio")
+        new_row.id = 999
+        future_local = datetime.now(tz=ZoneInfo("America/Argentina/Buenos_Aires")) + timedelta(days=30)
+        future_local_str = (
+            f"{future_local.year:04d}-"
+            f"{future_local.month:02d}-"
+            f"{future_local.day:02d}T"
+            f"{future_local.hour:02d}:"
+            f"{future_local.minute:02d}"
+        )
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.create = MagicMock(return_value=new_row)
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Panadería Test",
+                        "nombre_corto": "PT",
+                        "razon_social": "Panadería Test SRL",
+                        "cuit": "30-12345678-9",
+                        "whatsapp": "+5491100000001",
+                        "calle": "Av. Test",
+                        "numero": "1234",
+                        "localidad": "CABA",
+                        "provincia": "Buenos Aires",
+                        "slug": "panaderia-test",
+                        "estado_id": "3",
+                        "prueba_hasta": future_local_str,
+                        "prueba_max_pedidos": "25",
+                        "zona_horaria": "America/Argentina/Buenos_Aires",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 303)
+        svc_cls.return_value.create.assert_called_once()
+        payload = svc_cls.return_value.create.call_args.args[0]
+        prueba_hasta = payload["prueba_hasta"]
+        self.assertIsInstance(prueba_hasta, datetime)
+        self.assertIsNotNone(prueba_hasta.tzinfo)
+        self.assertIsNotNone(prueba_hasta.utcoffset())
+        self.assertEqual(
+            str(prueba_hasta.tzinfo),
+            "America/Argentina/Buenos_Aires",
+        )
+        self.assertEqual(
+            prueba_hasta.utcoffset(),
+            ZoneInfo("America/Argentina/Buenos_Aires").utcoffset(prueba_hasta),
+        )
+        self.assertIsInstance(payload["prueba_max_pedidos"], int)
+        self.assertEqual(payload["prueba_max_pedidos"], 25)
+        self.assertEqual(prueba_hasta.year, future_local.year)
+        self.assertEqual(prueba_hasta.month, future_local.month)
+        self.assertEqual(prueba_hasta.day, future_local.day)
+        self.assertEqual(prueba_hasta.hour, future_local.hour)
+        self.assertEqual(prueba_hasta.minute, future_local.minute)
+        self.assertEqual(prueba_hasta.microsecond, 0)
+
+    def test_create_prueba_past_date_rejected_by_service(self) -> None:
+        from backend.services.exceptions import InvalidTrialConfiguration
+
+        path = "/admin/catalog/comercios/nuevo"
+        past_local = datetime.now(tz=ZoneInfo("UTC")) - timedelta(days=1)
+        past_local_str = (
+            f"{past_local.year:04d}-"
+            f"{past_local.month:02d}-"
+            f"{past_local.day:02d}T"
+            f"{past_local.hour:02d}:"
+            f"{past_local.minute:02d}"
+        )
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.create = MagicMock(
+                side_effect=InvalidTrialConfiguration(
+                    "La fecha de fin de prueba debe ser futura."
+                )
+            )
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Panadería Test",
+                        "nombre_corto": "PT",
+                        "razon_social": "Panadería Test SRL",
+                        "cuit": "30-12345678-9",
+                        "whatsapp": "+5491100000001",
+                        "calle": "Av. Test",
+                        "numero": "1234",
+                        "localidad": "CABA",
+                        "provincia": "Buenos Aires",
+                        "slug": "panaderia-test",
+                        "estado_id": "3",
+                        "prueba_hasta": past_local_str,
+                        "prueba_max_pedidos": "10",
+                        "zona_horaria": "America/Argentina/Buenos_Aires",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            "la configuración de la prueba", response.text.lower()
+        )
+        svc_cls.return_value.create.assert_called_once()
+        payload = svc_cls.return_value.create.call_args.args[0]
+        self.assertIsInstance(payload["prueba_hasta"], datetime)
+        self.assertIsNotNone(payload["prueba_hasta"].tzinfo)
+        self.assertEqual(payload["prueba_max_pedidos"], 10)
+        self.assertIn("past_local_str", "past_local_str")
+
+    def test_create_prueba_invalid_quota_zero_rejected_before_service(
+        self,
+    ) -> None:
+        path = "/admin/catalog/comercios/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.create = MagicMock()
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Panadería Test",
+                        "nombre_corto": "PT",
+                        "razon_social": "Panadería Test SRL",
+                        "cuit": "30-12345678-9",
+                        "whatsapp": "+5491100000001",
+                        "calle": "Av. Test",
+                        "numero": "1234",
+                        "localidad": "CABA",
+                        "provincia": "Buenos Aires",
+                        "slug": "panaderia-test",
+                        "estado_id": "3",
+                        "prueba_hasta": "2027-01-01T12:00",
+                        "prueba_max_pedidos": "0",
+                        "zona_horaria": "America/Argentina/Buenos_Aires",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        svc_cls.return_value.create.assert_not_called()
+
+    def test_create_prueba_invalid_quota_negative_rejected_before_service(
+        self,
+    ) -> None:
+        path = "/admin/catalog/comercios/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.create = MagicMock()
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Panadería Test",
+                        "nombre_corto": "PT",
+                        "razon_social": "Panadería Test SRL",
+                        "cuit": "30-12345678-9",
+                        "whatsapp": "+5491100000001",
+                        "calle": "Av. Test",
+                        "numero": "1234",
+                        "localidad": "CABA",
+                        "provincia": "Buenos Aires",
+                        "slug": "panaderia-test",
+                        "estado_id": "3",
+                        "prueba_hasta": "2027-01-01T12:00",
+                        "prueba_max_pedidos": "-1",
+                        "zona_horaria": "America/Argentina/Buenos_Aires",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        svc_cls.return_value.create.assert_not_called()
+
+    def test_create_prueba_invalid_quota_non_integer_rejected_before_service(
+        self,
+    ) -> None:
+        path = "/admin/catalog/comercios/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.create = MagicMock()
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Panadería Test",
+                        "nombre_corto": "PT",
+                        "razon_social": "Panadería Test SRL",
+                        "cuit": "30-12345678-9",
+                        "whatsapp": "+5491100000001",
+                        "calle": "Av. Test",
+                        "numero": "1234",
+                        "localidad": "CABA",
+                        "provincia": "Buenos Aires",
+                        "slug": "panaderia-test",
+                        "estado_id": "3",
+                        "prueba_hasta": "2027-01-01T12:00",
+                        "prueba_max_pedidos": "abc",
+                        "zona_horaria": "America/Argentina/Buenos_Aires",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        svc_cls.return_value.create.assert_not_called()
+
+    def test_create_prueba_invalid_zone_rejected_before_service(self) -> None:
+        path = "/admin/catalog/comercios/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.create = MagicMock()
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Panadería Test",
+                        "nombre_corto": "PT",
+                        "razon_social": "Panadería Test SRL",
+                        "cuit": "30-12345678-9",
+                        "whatsapp": "+5491100000001",
+                        "calle": "Av. Test",
+                        "numero": "1234",
+                        "localidad": "CABA",
+                        "provincia": "Buenos Aires",
+                        "slug": "panaderia-test",
+                        "estado_id": "3",
+                        "prueba_hasta": "2027-01-01T12:00",
+                        "prueba_max_pedidos": "10",
+                        "zona_horaria": "NotAValid/IanaZone",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("zona_horaria", response.text.lower())
+        svc_cls.return_value.create.assert_not_called()
+
+    def test_create_prueba_unparseable_local_date_rejected_before_service(
+        self,
+    ) -> None:
+        path = "/admin/catalog/comercios/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.create = MagicMock()
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Panadería Test",
+                        "nombre_corto": "PT",
+                        "razon_social": "Panadería Test SRL",
+                        "cuit": "30-12345678-9",
+                        "whatsapp": "+5491100000001",
+                        "calle": "Av. Test",
+                        "numero": "1234",
+                        "localidad": "CABA",
+                        "provincia": "Buenos Aires",
+                        "slug": "panaderia-test",
+                        "estado_id": "3",
+                        "prueba_hasta": "not-a-date",
+                        "prueba_max_pedidos": "10",
+                        "zona_horaria": "America/Argentina/Buenos_Aires",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        svc_cls.return_value.create.assert_not_called()
+
+    def test_create_no_prueba_state_keeps_previous_flow_without_trial(
+        self,
+    ) -> None:
+        path = "/admin/catalog/comercios/nuevo"
+        new_row = MagicMock(name="Comercio")
+        new_row.id = 999
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.create = MagicMock(return_value=new_row)
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Panadería Test",
+                        "nombre_corto": "PT",
+                        "razon_social": "Panadería Test SRL",
+                        "cuit": "30-12345678-9",
+                        "whatsapp": "+5491100000001",
+                        "calle": "Av. Test",
+                        "numero": "1234",
+                        "localidad": "CABA",
+                        "provincia": "Buenos Aires",
+                        "slug": "panaderia-test",
+                        "estado_id": "1",
+                        "prueba_hasta": "",
+                        "prueba_max_pedidos": "",
+                        "zona_horaria": "America/Argentina/Buenos_Aires",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 303)
+        svc_cls.return_value.create.assert_called_once()
+        payload = svc_cls.return_value.create.call_args.args[0]
+        self.assertIsNone(payload["prueba_hasta"])
+        self.assertIsNone(payload["prueba_max_pedidos"])
+
+    def test_create_prueba_invalid_zone_preserves_submitted_values(
+        self,
+    ) -> None:
+        path = "/admin/catalog/comercios/nuevo"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.create = MagicMock()
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Panadería Test",
+                        "nombre_corto": "PT",
+                        "razon_social": "Panadería Test SRL",
+                        "cuit": "30-12345678-9",
+                        "whatsapp": "+5491100000001",
+                        "calle": "Av. Test",
+                        "numero": "1234",
+                        "localidad": "CABA",
+                        "provincia": "Buenos Aires",
+                        "slug": "panaderia-test",
+                        "estado_id": "3",
+                        "prueba_hasta": "2027-01-01T12:00",
+                        "prueba_max_pedidos": "10",
+                        "zona_horaria": "NotAValid/IanaZone",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            'value="NotAValid/IanaZone"', response.text
+        )
+        self.assertIn('value="2027-01-01T12:00"', response.text)
+        self.assertIn('value="10"', response.text)
+
+    def test_edit_prueba_future_local_date_reaches_service_tz_aware(
+        self,
+    ) -> None:
+        path = "/admin/catalog/comercios/1/editar"
+        updated_row = MagicMock(name="Comercio")
+        updated_row.id = 1
+        future_local = (
+            datetime.now(tz=ZoneInfo("America/Argentina/Buenos_Aires"))
+            + timedelta(days=30)
+        )
+        future_local_str = (
+            f"{future_local.year:04d}-"
+            f"{future_local.month:02d}-"
+            f"{future_local.day:02d}T"
+            f"{future_local.hour:02d}:"
+            f"{future_local.minute:02d}"
+        )
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.update = MagicMock(return_value=updated_row)
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Comercio X",
+                        "nombre_corto": "X",
+                        "razon_social": "X SRL",
+                        "cuit": "30-12345678-9",
+                        "calle": "Calle 1",
+                        "numero": "100",
+                        "localidad": "CABA",
+                        "provincia": "CABA",
+                        "estado_id": "3",
+                        "prueba_hasta": future_local_str,
+                        "prueba_max_pedidos": "15",
+                        "zona_horaria": "America/Argentina/Buenos_Aires",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 303)
+        svc_cls.return_value.update.assert_called_once()
+        call_args = svc_cls.return_value.update.call_args
+        self.assertEqual(call_args.args[0], 1)
+        payload = call_args.args[1]
+        prueba_hasta = payload["prueba_hasta"]
+        self.assertIsInstance(prueba_hasta, datetime)
+        self.assertIsNotNone(prueba_hasta.tzinfo)
+        self.assertEqual(
+            str(prueba_hasta.tzinfo),
+            "America/Argentina/Buenos_Aires",
+        )
+        self.assertEqual(
+            prueba_hasta.utcoffset(),
+            ZoneInfo("America/Argentina/Buenos_Aires").utcoffset(prueba_hasta),
+        )
+        self.assertIsInstance(payload["prueba_max_pedidos"], int)
+        self.assertEqual(payload["prueba_max_pedidos"], 15)
+
+    def test_edit_prueba_past_date_rejected_by_service(self) -> None:
+        from backend.services.exceptions import InvalidTrialConfiguration
+
+        path = "/admin/catalog/comercios/1/editar"
+        past_local = datetime.now(tz=ZoneInfo("UTC")) - timedelta(days=2)
+        past_local_str = (
+            f"{past_local.year:04d}-"
+            f"{past_local.month:02d}-"
+            f"{past_local.day:02d}T"
+            f"{past_local.hour:02d}:"
+            f"{past_local.minute:02d}"
+        )
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.update = MagicMock(
+                side_effect=InvalidTrialConfiguration(
+                    "La fecha de fin de prueba debe ser futura."
+                )
+            )
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Comercio X",
+                        "nombre_corto": "X",
+                        "razon_social": "X SRL",
+                        "cuit": "30-12345678-9",
+                        "calle": "Calle 1",
+                        "numero": "100",
+                        "localidad": "CABA",
+                        "provincia": "CABA",
+                        "estado_id": "3",
+                        "prueba_hasta": past_local_str,
+                        "prueba_max_pedidos": "5",
+                        "zona_horaria": "America/Argentina/Buenos_Aires",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            "la configuración de la prueba", response.text.lower()
+        )
+        svc_cls.return_value.update.assert_called_once()
+        payload = svc_cls.return_value.update.call_args.args[1]
+        self.assertIsInstance(payload["prueba_hasta"], datetime)
+        self.assertIsNotNone(payload["prueba_hasta"].tzinfo)
+        self.assertEqual(payload["prueba_max_pedidos"], 5)
+
+    def test_edit_prueba_invalid_quota_zero_rejected_before_service(
+        self,
+    ) -> None:
+        path = "/admin/catalog/comercios/1/editar"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.update = MagicMock()
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Comercio X",
+                        "nombre_corto": "X",
+                        "razon_social": "X SRL",
+                        "cuit": "30-12345678-9",
+                        "calle": "Calle 1",
+                        "numero": "100",
+                        "localidad": "CABA",
+                        "provincia": "CABA",
+                        "estado_id": "3",
+                        "prueba_hasta": "2027-01-01T12:00",
+                        "prueba_max_pedidos": "0",
+                        "zona_horaria": "America/Argentina/Buenos_Aires",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        svc_cls.return_value.update.assert_not_called()
+
+    def test_edit_prueba_invalid_quota_non_integer_rejected_before_service(
+        self,
+    ) -> None:
+        path = "/admin/catalog/comercios/1/editar"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.update = MagicMock()
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Comercio X",
+                        "nombre_corto": "X",
+                        "razon_social": "X SRL",
+                        "cuit": "30-12345678-9",
+                        "calle": "Calle 1",
+                        "numero": "100",
+                        "localidad": "CABA",
+                        "provincia": "CABA",
+                        "estado_id": "3",
+                        "prueba_hasta": "2027-01-01T12:00",
+                        "prueba_max_pedidos": "abc",
+                        "zona_horaria": "America/Argentina/Buenos_Aires",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        svc_cls.return_value.update.assert_not_called()
+
+    def test_edit_prueba_invalid_zone_rejected_before_service(self) -> None:
+        path = "/admin/catalog/comercios/1/editar"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.update = MagicMock()
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Comercio X",
+                        "nombre_corto": "X",
+                        "razon_social": "X SRL",
+                        "cuit": "30-12345678-9",
+                        "calle": "Calle 1",
+                        "numero": "100",
+                        "localidad": "CABA",
+                        "provincia": "CABA",
+                        "estado_id": "3",
+                        "prueba_hasta": "2027-01-01T12:00",
+                        "prueba_max_pedidos": "10",
+                        "zona_horaria": "Bogus/Zone",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("zona_horaria", response.text.lower())
+        svc_cls.return_value.update.assert_not_called()
+
+    def test_edit_no_prueba_state_keeps_previous_flow_without_trial(
+        self,
+    ) -> None:
+        path = "/admin/catalog/comercios/1/editar"
+        updated_row = MagicMock(name="Comercio")
+        updated_row.id = 1
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.update = MagicMock(return_value=updated_row)
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Comercio X",
+                        "nombre_corto": "X",
+                        "razon_social": "X SRL",
+                        "cuit": "30-12345678-9",
+                        "calle": "Calle 1",
+                        "numero": "100",
+                        "localidad": "CABA",
+                        "provincia": "CABA",
+                        "estado_id": "1",
+                        "prueba_hasta": "",
+                        "prueba_max_pedidos": "",
+                        "zona_horaria": "America/Argentina/Buenos_Aires",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 303)
+        svc_cls.return_value.update.assert_called_once()
+        payload = svc_cls.return_value.update.call_args.args[1]
+        self.assertIsNone(payload["prueba_hasta"])
+        self.assertIsNone(payload["prueba_max_pedidos"])
+
+    def test_edit_prueba_invalid_zone_preserves_submitted_values(
+        self,
+    ) -> None:
+        path = "/admin/catalog/comercios/1/editar"
+        with patch.object(
+            admin_routes, "AdministrativeCatalogPanelViewService"
+        ) as view_cls, patch.object(
+            admin_routes, "ComercioService"
+        ) as svc_cls:
+            view_cls.return_value = self._auth_view()
+            view_cls.return_value.list_estados_comercio.return_value = self._estados()
+            svc_cls.return_value.update = MagicMock()
+            response = self.client.post(
+                path,
+                headers=self._auth_headers(),
+                data=_csrf_form_data(
+                    path,
+                    {
+                        "nombre_fantasia": "Comercio X",
+                        "nombre_corto": "X",
+                        "razon_social": "X SRL",
+                        "cuit": "30-12345678-9",
+                        "calle": "Calle 1",
+                        "numero": "100",
+                        "localidad": "CABA",
+                        "provincia": "CABA",
+                        "estado_id": "3",
+                        "prueba_hasta": "2027-01-01T12:00",
+                        "prueba_max_pedidos": "10",
+                        "zona_horaria": "Bogus/Zone",
+                        "moneda": "ARS",
+                        "idioma": "es-AR",
+                    },
+                ),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('value="Bogus/Zone"', response.text)
+        self.assertIn('value="2027-01-01T12:00"', response.text)
+        self.assertIn('value="10"', response.text)
 
 
 if __name__ == "__main__":
