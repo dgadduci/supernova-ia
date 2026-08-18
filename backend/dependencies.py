@@ -3,7 +3,7 @@ import hmac
 import os
 import secrets
 from collections.abc import Iterator
-from typing import Annotated
+from typing import Annotated, Any
 from urllib.parse import urlparse
 
 from fastapi import Depends, Header, HTTPException, Request, status
@@ -11,8 +11,17 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from backend.auth import (
+    AuthenticatedPrincipal,
+    resolve_supabase_auth_settings,
+)
+from backend.auth.session import (
+    SessionValidationError,
+    parse_session_cookie,
+)
 from backend.config.database_url import normalize_database_url
 from backend.config.settings import load_settings
+from backend.services.exceptions import InvalidSupabaseAuthConfig
 
 DEFAULT_URL = "postgresql+psycopg:///supernova_test"
 
@@ -369,8 +378,8 @@ def resolve_panel_csrf_secret() -> bytes:
     """Return the panel CSRF secret used to sign form nonces.
 
     The helper reuses the configured administrative token when no
-    panel-specific secret is configured so the panel works out of the
-    box without a new deployment setting. The secret is normalised
+    panel-specific secret is configured so the panel works out of
+    the box without a new deployment setting. The secret is normalised
     once so every form nonce is derived from a stable byte sequence.
     The non-secret path-bound nonce plus the same-origin
     proof-of-origin are the actual security boundary; the secret
@@ -387,6 +396,125 @@ def resolve_panel_csrf_secret() -> bytes:
     return configured_token.encode("utf-8")
 
 
+_PHASE2_OWNER_SIGNIN_REQUIRED_DETAIL = (
+    "Owner authentication required"
+)
+_PHASE2_OWNER_FEATURE_DISABLED_DETAIL = (
+    "Owner authentication is not configured"
+)
+_PHASE2_OWNER_CONFIG_INVALID_DETAIL = (
+    "Owner authentication is not configured correctly"
+)
+
+
+class _Phase2ConfigInvalid(Exception):
+    """Internal signal for an invalid Phase 2 Supabase configuration.
+
+    The router converts this signal into a bounded 503 response.
+    The exception detail is intentionally generic and is never
+    rendered to the visitor.
+    """
+
+
+def _resolve_phase2_settings() -> Any:
+    """Resolve the Phase 2 settings, converting errors into a
+    dedicated typed exception that the router can map to a 503."""
+    try:
+        return resolve_supabase_auth_settings()
+    except InvalidSupabaseAuthConfig as exc:
+        raise _Phase2ConfigInvalid(str(exc)) from exc
+
+
+def _resolve_phase2_principal(
+    request: Request,
+) -> AuthenticatedPrincipal | None:
+    """Resolve the Phase 2 principal from the local session cookie.
+
+    The helper is intentionally lenient: a missing cookie returns
+    ``None`` and a tampered cookie raises
+    :class:`SessionValidationError`. It never opens a database
+    session and never logs the cookie value.
+    """
+    settings = resolve_supabase_auth_settings()
+    if not settings.enabled:
+        return None
+    cookie_header = request.headers.get("cookie")
+    headers = {"cookie": cookie_header} if cookie_header else {}
+    session = parse_session_cookie(headers, settings=settings)
+    if session is None:
+        return None
+    return AuthenticatedPrincipal(
+        subject=session.subject,
+        issuer=session.issuer,
+        audience=session.audience,
+    )
+
+
+def require_authenticated_owner_principal(
+    request: Request,
+) -> AuthenticatedPrincipal:
+    """Return the authenticated Phase 2 principal or raise.
+
+    The dependency is the single business boundary that produces an
+    :class:`backend.auth.AuthenticatedPrincipal` after the local
+    session cookie has been validated. It MUST run before any
+    owner-scoped business code so a missing / expired / tampered
+    cookie can never reach a database query.
+
+    When the feature is disabled the dependency surfaces a ``503``
+    with a generic detail so the boundary stays explicit; the
+    router is responsible for translating the signal into the
+    appropriate view. A configuration error also surfaces a bounded
+    ``503`` so the dependency never leaks a 500.
+
+    The dependency never opens a database session, never reads the
+    provider JWT directly and never logs the cookie value.
+    """
+    try:
+        settings = _resolve_phase2_settings()
+    except _Phase2ConfigInvalid:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_PHASE2_OWNER_CONFIG_INVALID_DETAIL,
+        )
+    if not settings.enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_PHASE2_OWNER_FEATURE_DISABLED_DETAIL,
+        )
+    try:
+        principal = _resolve_phase2_principal(request)
+    except SessionValidationError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=_PHASE2_OWNER_SIGNIN_REQUIRED_DETAIL,
+        )
+    if principal is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=_PHASE2_OWNER_SIGNIN_REQUIRED_DETAIL,
+        )
+    return principal
+
+
+def try_authenticated_owner_principal(
+    request: Request,
+) -> AuthenticatedPrincipal | None:
+    """Return the Phase 2 principal without raising on failure.
+
+    The dependency is the lenient counterpart to
+    :func:`require_authenticated_owner_principal`. It returns
+    ``None`` when the feature is disabled, when the configuration
+    is invalid, when the cookie is absent, or when the cookie
+    fails any validation check. The router is responsible for
+    rendering the bounded sign-in-required view in those cases.
+    """
+    try:
+        return _resolve_phase2_principal(request)
+    except (SessionValidationError, _Phase2ConfigInvalid):
+        return None
+
+
 __all__ = [
     "ADMIN_TOKEN_HEADER",
     "PANEL_FORM_NONCE_FIELD",
@@ -395,6 +523,8 @@ __all__ = [
     "require_admin_browser_basic",
     "require_admin_pilot_basic",
     "require_admin_token",
+    "require_authenticated_owner_principal",
     "require_same_origin_panel_form",
     "resolve_panel_csrf_secret",
+    "try_authenticated_owner_principal",
 ]

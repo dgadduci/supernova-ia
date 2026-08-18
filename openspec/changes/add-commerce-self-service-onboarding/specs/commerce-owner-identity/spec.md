@@ -1,19 +1,32 @@
 ## ADDED Requirements
 
-### Requirement: Supabase magic link authenticates but does not authorize a commerce
+### Requirement: Phase 2 Supabase magic link creates only an authenticated principal
 
-The system SHALL use a validated Supabase Auth email magic-link session to
-authenticate an account. It SHALL validate the provider JWT signature/key,
-issuer, audience, expiry and immutable subject before application access.
-Authentication alone SHALL NOT authorize any commerce resource.
+During Phase 2, the system SHALL use a validated Supabase Auth email magic-link
+session to authenticate a request principal. It SHALL validate the provider JWT
+signature/key, issuer, audience, expiry and immutable subject before
+application access. Phase 2 SHALL NOT create or update `CuentaUsuario`,
+`ComercioUsuario`, an onboarding draft, a `Comercio`, a migration or any other
+NovaOrders persistence. Authentication alone SHALL NOT authorize any commerce
+resource.
 
-#### Scenario: Verified magic-link account receives its private onboarding scope
+#### Scenario: Verified magic-link subject receives a bounded Phase 2 session
 
 - **WHEN** a valid provider session with a verified subject reaches the
   callback
-- **THEN** the system SHALL create or update only the matching
-  `CuentaUsuario` projection for that subject
-- **AND THEN** it SHALL redirect to that account's private onboarding scope
+- **THEN** the system SHALL establish only a short-lived local session carrying
+  the validated subject
+- **AND THEN** it SHALL show a bounded onboarding-not-enabled outcome
+- **AND THEN** it SHALL not perform application persistence or authorize a
+  commerce resource
+
+#### Scenario: Link requests are enumeration-safe
+
+- **WHEN** a visitor requests a magic link for any syntactically valid email
+- **THEN** the system SHALL show the same neutral confirmation regardless of
+  whether Supabase recognizes the email
+- **AND THEN** it SHALL not expose provider identity errors or account
+  existence
 
 #### Scenario: Invalid provider token fails closed
 
@@ -22,6 +35,13 @@ Authentication alone SHALL NOT authorize any commerce resource.
 - **THEN** the system SHALL deny the request with a bounded authentication
   outcome before commerce business work
 - **AND THEN** it SHALL not fall back to an email, browser claim or route ID
+
+#### Scenario: Missing abuse protection fails closed
+
+- **WHEN** the configured edge/application abuse guard is unavailable
+- **THEN** the system SHALL not issue or resend a magic link
+- **AND THEN** it SHALL return a bounded service-unavailable outcome without a
+  permissive in-process fallback
 
 ### Requirement: Commerce ownership is membership-scoped
 
