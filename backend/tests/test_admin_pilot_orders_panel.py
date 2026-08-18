@@ -41,6 +41,9 @@ from backend.diagnostics.outbound_response_style_prompt_template import (
 from backend.intents.schemas.intent_classification import IntentName
 from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.models import EstadoPedido, EstadoSession
+from backend.services.commerce_availability_service import (
+    CommerceAvailabilityService,
+)
 from backend.services.pilot_order_operations_view_service import (
     ClientSummary,
     CommerceSummary,
@@ -114,6 +117,46 @@ class _SessionOverride:
             raise AssertionError(
                 f"session override was called {self.call_count} time(s)"
             )
+
+
+def _start_local_test_availability_patcher(test_instance) -> None:
+    """Start a ``CommerceAvailabilityService.evaluate`` patcher on
+    ``test_instance`` that returns ``AVAILABLE``.
+
+    Tests that exercise the existing happy path of
+    ``local_test_message`` MUST install this patcher in ``setUp``
+    so the new inbound availability guard never blocks their
+    MagicMock-driven session/processor interactions. Tests that
+    intentionally exercise the unavailable-commerce branch must
+    NOT use this helper; they drive ``_commerce_availability_outcome``
+    directly.
+    """
+    from backend.services.commerce_availability_service import (
+        CommerceAvailabilityOutcome,
+        CommerceAvailabilityStatus,
+    )
+
+    patcher = patch.object(
+        CommerceAvailabilityService,
+        "evaluate",
+        return_value=CommerceAvailabilityOutcome(
+            status=CommerceAvailabilityStatus.AVAILABLE,
+            reason=None,
+            comercio_id=1,
+            modo_operacion=None,
+            prueba_hasta=None,
+            prueba_max_pedidos=None,
+            prueba_pedidos_consumidos=0,
+        ),
+    )
+    test_instance._availability_patcher = patcher
+    patcher.start()
+
+
+def _stop_local_test_availability_patcher(test_instance) -> None:
+    patcher = getattr(test_instance, "_availability_patcher", None)
+    if patcher is not None:
+        patcher.stop()
 
 
 def _stub_service(
@@ -317,8 +360,10 @@ class PanelAuthMisconfiguredTest(unittest.TestCase):
             dependencies_module, "load_settings", return_value=_settings(token=None)
         )
         self._settings_patcher.start()
+        _start_local_test_availability_patcher(self)
 
     def tearDown(self) -> None:
+        _stop_local_test_availability_patcher(self)
         self._settings_patcher.stop()
         self.app.dependency_overrides.clear()
 
@@ -1673,8 +1718,10 @@ class PanelExecutionStateResponseTest(unittest.TestCase):
             dependencies_module, "load_settings", return_value=_settings()
         )
         self._settings_patcher.start()
+        _start_local_test_availability_patcher(self)
 
     def tearDown(self) -> None:
+        _stop_local_test_availability_patcher(self)
         self._settings_patcher.stop()
         self.app.dependency_overrides.clear()
 
@@ -2642,8 +2689,10 @@ class PanelLocalTestAuthExactTargetNoProviderRegressionTest(
             dependencies_module, "load_settings", return_value=_settings()
         )
         self._settings_patcher.start()
+        _start_local_test_availability_patcher(self)
 
     def tearDown(self) -> None:
+        _stop_local_test_availability_patcher(self)
         self._settings_patcher.stop()
         self.app.dependency_overrides.clear()
 
@@ -3125,8 +3174,10 @@ class PanelLocalTestRouteHappyPathTest(unittest.TestCase):
             dependencies_module, "load_settings", return_value=_settings()
         )
         self._settings_patcher.start()
+        _start_local_test_availability_patcher(self)
 
     def tearDown(self) -> None:
+        _stop_local_test_availability_patcher(self)
         self._settings_patcher.stop()
         self.app.dependency_overrides.clear()
 
@@ -3271,8 +3322,10 @@ class PanelLocalTestRouteNoMutationTest(unittest.TestCase):
             dependencies_module, "load_settings", return_value=_settings()
         )
         self._settings_patcher.start()
+        _start_local_test_availability_patcher(self)
 
     def tearDown(self) -> None:
+        _stop_local_test_availability_patcher(self)
         self._settings_patcher.stop()
         self.app.dependency_overrides.clear()
 
@@ -3419,8 +3472,10 @@ class PanelLocalTestRouteOrderLinesSnapshotTest(unittest.TestCase):
             dependencies_module, "load_settings", return_value=_settings()
         )
         self._settings_patcher.start()
+        _start_local_test_availability_patcher(self)
 
     def tearDown(self) -> None:
+        _stop_local_test_availability_patcher(self)
         self._settings_patcher.stop()
         self.app.dependency_overrides.clear()
 
@@ -4541,8 +4596,10 @@ class PanelLocalTestConfirmedOrderStatusTest(unittest.TestCase):
             dependencies_module, "load_settings", return_value=_settings()
         )
         self._settings_patcher.start()
+        _start_local_test_availability_patcher(self)
 
     def tearDown(self) -> None:
+        _stop_local_test_availability_patcher(self)
         self._settings_patcher.stop()
         self.app.dependency_overrides.clear()
 
@@ -5613,8 +5670,10 @@ class PanelOutboundStyleDiagnosticTest(unittest.TestCase):
             dependencies_module, "load_settings", return_value=_settings()
         )
         self._settings_patcher.start()
+        _start_local_test_availability_patcher(self)
 
     def tearDown(self) -> None:
+        _stop_local_test_availability_patcher(self)
         self._settings_patcher.stop()
         self.app.dependency_overrides.clear()
 
@@ -6020,6 +6079,546 @@ class PanelOutboundStyleTemplateTest(unittest.TestCase):
         ):
             with self.subTest(label=label):
                 self.assertIn(label, body_no_css)
+
+
+class PanelLocalTestRouteAvailabilityGuardTest(unittest.TestCase):
+    """The Admin Pilot local-test channel
+    ``POST /admin/pilot/orders/{pedido_id}/local-test`` MUST consult
+    ``CommerceAvailabilityService`` for the exact selected Session
+    after the exact Pedido and Session are resolved and BEFORE any
+    message processor, classifier, ``process_initial_order_status_query``
+    or response-builder call. The guard must cover both the
+    ``BORRADOR`` branch and the confirmed/no-``BORRADOR`` branch.
+
+    Unavailable commerce returns the documented bounded generic
+    local rejection, never leaks the internal reason
+    (``blocked_state``, ``trial_expired``, ``trial_quota_exhausted``)
+    and never invokes any of the four forbidden collaborators nor
+    mutates the database session. Available commerce keeps the
+    existing flow untouched.
+    """
+
+    FORBIDDEN_REASON_TOKENS: tuple[str, ...] = (
+        "blocked_state",
+        "trial_expired",
+        "trial_quota_exhausted",
+    )
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def _post(self, pedido_id: str = "42"):
+        headers = _basic_auth_header("ignored", CONFIGURED_TOKEN)
+        headers["X-Local-Test-Origin"] = "same-origin"
+        return self.client.post(
+            f"/admin/pilot/orders/{pedido_id}/local-test",
+            json={"message": "hola"},
+            headers=headers,
+        )
+
+    def _make_borrador_session(self) -> MagicMock:
+        exact_session = MagicMock(name="ExactBorradorSession")
+        exact_session.id = 21
+        exact_session.id_pedido = 42
+        exact_session.id_comercio = 1
+        exact_session.id_cliente = 31
+        exact_session.estado_session = "activa"
+        exact_session.context_type = None
+        exact_session.pending_intents = None
+        return exact_session
+
+    def _make_confirmed_session(self) -> MagicMock:
+        exact_session = MagicMock(name="ExactConfirmedSession")
+        exact_session.id = 22
+        exact_session.id_pedido = 42
+        exact_session.id_comercio = 1
+        exact_session.id_cliente = 31
+        exact_session.estado_session = "activa"
+        exact_session.context_type = None
+        exact_session.pending_intents = None
+        return exact_session
+
+    def _assert_no_transaction_calls(self) -> None:
+        self.session.commit.assert_not_called()
+        self.session.rollback.assert_not_called()
+        self.session.flush.assert_not_called()
+        self.session.refresh.assert_not_called()
+        self.session.begin.assert_not_called()
+        self.session.close.assert_not_called()
+        self.session.expire.assert_not_called()
+
+    def _assert_generic_rejection(self, response) -> None:
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertEqual(body.get("responses"), [])
+        self.assertIn("message", body)
+        for token in self.FORBIDDEN_REASON_TOKENS:
+            with self.subTest(token=token):
+                self.assertNotIn(token, body.get("message", ""))
+                self.assertNotIn(token, response.text)
+        self.assertNotIn("execution_state", body)
+        self.assertNotIn("order_lines", body)
+        self.assertNotIn("outbound_style", body)
+
+    # ---- BORRADOR branch (process_incoming_message_with_style_diagnostic) ----
+
+    def test_borrador_branch_blocked_commerce_returns_generic_rejection(self) -> None:
+        from backend.services.commerce_availability_service import (
+            CommerceAvailabilityStatus as _Status,
+        )
+
+        exact_session = self._make_borrador_session()
+        exact_pedido = MagicMock(name="ExactPedido")
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "_commerce_availability_outcome",
+            return_value=_Status.UNAVAILABLE,
+        ), patch.object(
+            router_module,
+            "process_incoming_message_with_style_diagnostic",
+        ) as process_mock, patch.object(
+            router_module,
+            "IntentClassifier",
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_initial_order_status_query",
+        ) as status_query_mock, patch.object(
+            router_module,
+            "build_customer_responses_with_diagnostic",
+        ) as builder_mock, patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+        ) as snapshot_loader:
+            response = self._post()
+        self._assert_generic_rejection(response)
+        process_mock.assert_not_called()
+        classifier_cls.assert_not_called()
+        status_query_mock.assert_not_called()
+        builder_mock.assert_not_called()
+        snapshot_loader.assert_not_called()
+        self._assert_no_transaction_calls()
+
+    def test_borrador_branch_expired_trial_returns_generic_rejection(self) -> None:
+        from backend.services.commerce_availability_service import (
+            CommerceAvailabilityStatus as _Status,
+        )
+
+        exact_session = self._make_borrador_session()
+        exact_pedido = MagicMock(name="ExactPedido")
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "_commerce_availability_outcome",
+            return_value=_Status.UNAVAILABLE,
+        ), patch.object(
+            router_module,
+            "process_incoming_message_with_style_diagnostic",
+        ) as process_mock, patch.object(
+            router_module,
+            "IntentClassifier",
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_initial_order_status_query",
+        ) as status_query_mock, patch.object(
+            router_module,
+            "build_customer_responses_with_diagnostic",
+        ) as builder_mock, patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+        ) as snapshot_loader:
+            response = self._post()
+        self._assert_generic_rejection(response)
+        process_mock.assert_not_called()
+        classifier_cls.assert_not_called()
+        status_query_mock.assert_not_called()
+        builder_mock.assert_not_called()
+        snapshot_loader.assert_not_called()
+        self._assert_no_transaction_calls()
+
+    def test_borrador_branch_quota_exhausted_returns_generic_rejection(self) -> None:
+        from backend.services.commerce_availability_service import (
+            CommerceAvailabilityStatus as _Status,
+        )
+
+        exact_session = self._make_borrador_session()
+        exact_pedido = MagicMock(name="ExactPedido")
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "_commerce_availability_outcome",
+            return_value=_Status.UNAVAILABLE,
+        ), patch.object(
+            router_module,
+            "process_incoming_message_with_style_diagnostic",
+        ) as process_mock, patch.object(
+            router_module,
+            "IntentClassifier",
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_initial_order_status_query",
+        ) as status_query_mock, patch.object(
+            router_module,
+            "build_customer_responses_with_diagnostic",
+        ) as builder_mock, patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+        ) as snapshot_loader:
+            response = self._post()
+        self._assert_generic_rejection(response)
+        process_mock.assert_not_called()
+        classifier_cls.assert_not_called()
+        status_query_mock.assert_not_called()
+        builder_mock.assert_not_called()
+        snapshot_loader.assert_not_called()
+        self._assert_no_transaction_calls()
+
+    # ---- Confirmed / no-BORRADOR branch (classifier + status query + builder) ----
+
+    def test_confirmed_branch_blocked_commerce_returns_generic_rejection(self) -> None:
+        from backend.services.commerce_availability_service import (
+            CommerceAvailabilityStatus as _Status,
+        )
+
+        exact_session = self._make_confirmed_session()
+        exact_pedido = MagicMock(name="ExactPedido")
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=None,
+        ), patch.object(
+            router_module,
+            "_load_confirmed_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "_commerce_availability_outcome",
+            return_value=_Status.UNAVAILABLE,
+        ), patch.object(
+            router_module,
+            "process_incoming_message_with_style_diagnostic",
+        ) as process_mock, patch.object(
+            router_module,
+            "IntentClassifier",
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_initial_order_status_query",
+        ) as status_query_mock, patch.object(
+            router_module,
+            "build_customer_responses_with_diagnostic",
+        ) as builder_mock, patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+        ) as snapshot_loader, patch.object(
+            router_module,
+            "_is_confirmed_clean_context",
+            return_value=True,
+        ) as clean_context:
+            response = self._post()
+        self._assert_generic_rejection(response)
+        process_mock.assert_not_called()
+        classifier_cls.assert_not_called()
+        status_query_mock.assert_not_called()
+        builder_mock.assert_not_called()
+        clean_context.assert_not_called()
+        snapshot_loader.assert_not_called()
+        self._assert_no_transaction_calls()
+
+    def test_confirmed_branch_expired_trial_returns_generic_rejection(self) -> None:
+        from backend.services.commerce_availability_service import (
+            CommerceAvailabilityStatus as _Status,
+        )
+
+        exact_session = self._make_confirmed_session()
+        exact_pedido = MagicMock(name="ExactPedido")
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=None,
+        ), patch.object(
+            router_module,
+            "_load_confirmed_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "_commerce_availability_outcome",
+            return_value=_Status.UNAVAILABLE,
+        ), patch.object(
+            router_module,
+            "process_incoming_message_with_style_diagnostic",
+        ) as process_mock, patch.object(
+            router_module,
+            "IntentClassifier",
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_initial_order_status_query",
+        ) as status_query_mock, patch.object(
+            router_module,
+            "build_customer_responses_with_diagnostic",
+        ) as builder_mock, patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+        ) as snapshot_loader, patch.object(
+            router_module,
+            "_is_confirmed_clean_context",
+            return_value=True,
+        ) as clean_context:
+            response = self._post()
+        self._assert_generic_rejection(response)
+        process_mock.assert_not_called()
+        classifier_cls.assert_not_called()
+        status_query_mock.assert_not_called()
+        builder_mock.assert_not_called()
+        clean_context.assert_not_called()
+        snapshot_loader.assert_not_called()
+        self._assert_no_transaction_calls()
+
+    def test_confirmed_branch_quota_exhausted_returns_generic_rejection(self) -> None:
+        from backend.services.commerce_availability_service import (
+            CommerceAvailabilityStatus as _Status,
+        )
+
+        exact_session = self._make_confirmed_session()
+        exact_pedido = MagicMock(name="ExactPedido")
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=None,
+        ), patch.object(
+            router_module,
+            "_load_confirmed_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "_commerce_availability_outcome",
+            return_value=_Status.UNAVAILABLE,
+        ), patch.object(
+            router_module,
+            "process_incoming_message_with_style_diagnostic",
+        ) as process_mock, patch.object(
+            router_module,
+            "IntentClassifier",
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_initial_order_status_query",
+        ) as status_query_mock, patch.object(
+            router_module,
+            "build_customer_responses_with_diagnostic",
+        ) as builder_mock, patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+        ) as snapshot_loader, patch.object(
+            router_module,
+            "_is_confirmed_clean_context",
+            return_value=True,
+        ) as clean_context:
+            response = self._post()
+        self._assert_generic_rejection(response)
+        process_mock.assert_not_called()
+        classifier_cls.assert_not_called()
+        status_query_mock.assert_not_called()
+        builder_mock.assert_not_called()
+        clean_context.assert_not_called()
+        snapshot_loader.assert_not_called()
+        self._assert_no_transaction_calls()
+
+    # ---- Available commerce: existing flow preserved ----
+
+    def test_borrador_branch_available_commerce_invokes_processor(self) -> None:
+        from backend.services.commerce_availability_service import (
+            CommerceAvailabilityStatus as _Status,
+        )
+
+        exact_session = self._make_borrador_session()
+        exact_pedido = MagicMock(name="ExactPedido")
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ) as loader, patch.object(
+            router_module,
+            "_commerce_availability_outcome",
+            return_value=_Status.AVAILABLE,
+        ), patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "process_incoming_message_with_style_diagnostic",
+        ) as process_mock, patch.object(
+            router_module,
+            "IntentClassifier",
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_initial_order_status_query",
+        ) as status_query_mock, patch.object(
+            router_module,
+            "build_customer_responses_with_diagnostic",
+        ) as builder_mock:
+            from backend.intents.schemas.customer_response import CustomerResponse
+
+            process_mock.return_value = (
+                [
+                    CustomerResponse(
+                        message="ok",
+                        intent="saludo",
+                        status="executed",
+                    )
+                ],
+                _style_diagnostic_not_attempted(),
+            )
+            response = self._post()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(loader.call_count, 1)
+        process_mock.assert_called_once()
+        self.assertIs(process_mock.call_args.args[1], exact_session)
+        classifier_cls.assert_not_called()
+        status_query_mock.assert_not_called()
+        builder_mock.assert_not_called()
+
+    def test_confirmed_branch_available_commerce_invokes_status_query(self) -> None:
+        from backend.intents.schemas.customer_response import CustomerResponse
+        from backend.intents.schemas.intent_classification import (
+            ClassifiedIntent,
+            IntentClassificationResult,
+            IntentName,
+        )
+        from backend.services.commerce_availability_service import (
+            CommerceAvailabilityStatus as _Status,
+        )
+
+        exact_session = self._make_confirmed_session()
+        exact_pedido = MagicMock(name="ExactPedido")
+        with patch.object(
+            router_module,
+            "_load_local_test_session",
+            return_value=None,
+        ), patch.object(
+            router_module,
+            "_load_confirmed_local_test_session",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "_commerce_availability_outcome",
+            return_value=_Status.AVAILABLE,
+        ), patch.object(
+            router_module,
+            "_is_confirmed_clean_context",
+            return_value=True,
+        ), patch.object(
+            router_module,
+            "IntentClassifier",
+        ) as classifier_cls, patch.object(
+            router_module,
+            "process_initial_order_status_query",
+        ) as status_query_mock, patch.object(
+            router_module,
+            "build_customer_responses_with_diagnostic",
+        ) as builder_mock, patch.object(
+            router_module,
+            "_reload_exact_session_for_snapshot",
+            return_value=(exact_pedido, exact_session),
+        ), patch.object(
+            router_module,
+            "process_incoming_message_with_style_diagnostic",
+        ) as process_mock:
+            classifier_instance = MagicMock(name="ClassifierInstance")
+            classifier_cls.return_value = classifier_instance
+            classifier_instance.query.return_value = (
+                IntentClassificationResult(
+                    intents=[
+                        ClassifiedIntent(
+                            intent=IntentName.CONSULTAR_ESTADO_PEDIDO,
+                            mensaje="hola",
+                        )
+                    ],
+                    mensaje="hola",
+                )
+            )
+            processed_intent = MagicMock(name="ProcessedIntent")
+            status_query_mock.return_value = processed_intent
+            builder_mock.return_value = (
+                [
+                    CustomerResponse(
+                        message="ok",
+                        intent="consultar_estado_pedido",
+                        status="executed",
+                    )
+                ],
+                _style_diagnostic_not_attempted(),
+            )
+            response = self._post()
+        self.assertEqual(response.status_code, 200)
+        process_mock.assert_not_called()
+        classifier_cls.assert_called_once_with()
+        classifier_instance.query.assert_called_once_with("hola")
+        status_query_mock.assert_called_once()
+        builder_mock.assert_called_once()
+
+    def test_guard_runs_before_processor_after_session_resolution(self) -> None:
+        """The guard MUST execute after the exact Pedido/Session
+        resolvers return a non-``None`` target and BEFORE the
+        processor, classifier, status query or response builder is
+        invoked. A failure in the policy evaluation order therefore
+        fails closed at the boundary, never inside the pipeline.
+        """
+        from backend.services.commerce_availability_service import (
+            CommerceAvailabilityStatus as _Status,
+        )
+
+        exact_session = self._make_borrador_session()
+        exact_pedido = MagicMock(name="ExactPedido")
+        call_order: list[str] = []
+
+        def _loader(_db, _pedido_id):
+            call_order.append("loader")
+            return exact_pedido, exact_session
+
+        def _guard(_db, _session):
+            call_order.append("guard")
+            return _Status.UNAVAILABLE
+
+        def _process(*_args, **_kwargs):
+            call_order.append("process")
+            return ([], _style_diagnostic_not_attempted())
+
+        with patch.object(
+            router_module, "_load_local_test_session", side_effect=_loader
+        ), patch.object(
+            router_module,
+            "_commerce_availability_outcome",
+            side_effect=_guard,
+        ), patch.object(
+            router_module,
+            "process_incoming_message_with_style_diagnostic",
+            side_effect=_process,
+        ):
+            response = self._post()
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(call_order, ["loader", "guard"])
+        self.assertNotIn("process", call_order)
 
 
 if __name__ == "__main__":

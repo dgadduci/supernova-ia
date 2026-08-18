@@ -91,6 +91,10 @@ from backend.models import (
 from backend.models import (
     Session as SessionModel,
 )
+from backend.services.commerce_availability_service import (
+    CommerceAvailabilityService,
+    CommerceAvailabilityStatus,
+)
 from backend.services.outbound_response_mapper import (
     build_customer_responses_with_diagnostic,
 )
@@ -280,6 +284,32 @@ def _load_confirmed_local_test_session(
     if session.id_cliente != pedido.session.cliente.id:
         return None
     return pedido, session
+
+
+def _commerce_availability_outcome(
+    db: Session,
+    exact_session: SessionModel,
+) -> CommerceAvailabilityStatus:
+    """Evaluate ``CommerceAvailabilityService`` for the exact Session.
+
+    The helper reads only ``exact_session.id_comercio`` and never
+    inspects lifecycle codes, descriptions or labels. A missing or
+    non-positive ``id_comercio`` collapses to the documented
+    unavailable outcome so the caller can branch on a single
+    attribute. The session is the unique transaction owner; the
+    policy itself never commits or rolls back.
+
+    The helper is the only place in the route that touches
+    ``CommerceAvailabilityService``. It is reused by both the
+    ``BORRADOR`` branch and the confirmed/no-``BORRADOR`` branch so
+    the panel-local test channel can never process a message for
+    a blocked, expired-trial or quota-exhausted commerce.
+    """
+    comercio_id = getattr(exact_session, "id_comercio", None)
+    if not isinstance(comercio_id, int) or comercio_id <= 0:
+        return CommerceAvailabilityStatus.UNAVAILABLE
+    availability = CommerceAvailabilityService(db).evaluate(comercio_id)
+    return availability.status
 
 
 def _is_confirmed_clean_context(
@@ -737,6 +767,11 @@ def local_test_message(
     loaded = _load_local_test_session(db, parsed_id)
     if loaded is not None:
         _, exact_session = loaded
+        if (
+            _commerce_availability_outcome(db, exact_session)
+            is not CommerceAvailabilityStatus.AVAILABLE
+        ):
+            return _reject_local_test("comercio no disponible")
         responses, style_diagnostic = process_incoming_message_with_style_diagnostic(
             db, exact_session, payload.message
         )
@@ -745,6 +780,11 @@ def local_test_message(
         if confirmed is None:
             return _reject_local_test("target not eligible")
         _, exact_session = confirmed
+        if (
+            _commerce_availability_outcome(db, exact_session)
+            is not CommerceAvailabilityStatus.AVAILABLE
+        ):
+            return _reject_local_test("comercio no disponible")
 
         if not _is_confirmed_clean_context(
             raw_context_type=exact_session.context_type,
