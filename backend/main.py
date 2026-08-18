@@ -15,6 +15,7 @@ from backend.routers import (
     incoming_messages,
     medios_pago,
     metodos_entrega,
+    owner_onboarding,
     pedido_productos,
     pedidos,
     precios,
@@ -29,6 +30,7 @@ from backend.routers import (
 
 app = FastAPI(title="supernova-ia API")
 app.include_router(public_onboarding.router)
+app.include_router(owner_onboarding.router)
 app.include_router(health.router)
 app.include_router(comercios.router)
 app.include_router(estados_comercios.router)

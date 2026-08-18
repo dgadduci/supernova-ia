@@ -1,0 +1,132 @@
+"""Private per-account draft for the self-service onboarding wizard.
+
+The :class:`BorradorOnboardingComercio` row is the NovaOrders-side
+workspace where an authenticated owner stages the basic commerce
+data required by the eventual ``Comercio`` create transaction. It
+is private to its owning account and is *not* an operational
+record: it carries no lifecycle, provider, channel, payment,
+delivery, trial or catalogue data.
+
+The model is intentionally narrow:
+
+* ``id`` — internal surrogate primary key.
+* ``cuenta_usuario_id`` — internal owner foreign key with a
+  unique constraint. The uniqueness is what enforces exactly-one
+  draft per account; the application MUST never disable the unique
+  index or replace it with an optional relationship.
+* ``version`` — monotonically incrementing counter used as the
+  optimistic-concurrency token. The wizard embeds the loaded value
+  in the form and re-sends it on every ``POST``; the repository
+  rejects a save whose ``version`` does not match the row to
+  prevent two concurrent tabs from silently overwriting each other.
+* ``fecha_alta`` and ``fecha_ultima_modificacion`` — UTC creation
+  and update timestamps maintained by SQLAlchemy server defaults.
+* ``nombre_fantasia`` / ``nombre_corto`` / ``razon_social`` /
+  ``cuit`` / ``whatsapp`` / ``calle`` / ``numero`` /
+  ``piso_departamento`` / ``localidad`` / ``provincia`` /
+  ``codigo_postal`` — the closed set of basic-commerce fields the
+  Phase 4 completion transaction consumes. They mirror the
+  canonical ``Comercio`` columns for the same names so the future
+  atomic create does not need to remap.
+* ``completo`` — server-derived flag set by the wizard once every
+  documented required basic field holds a non-empty stripped
+  value. The flag is never accepted from the form.
+
+The draft model never references ``comercios`` or
+``comercio_usuarios``. Phase 4 introduces those tables as the
+atomic completion transaction; until that phase is approved the
+draft remains the only persistence the wizard exercises.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.orm import Mapped, mapped_column
+
+from backend.models.base import Base
+
+
+class BorradorOnboardingComercio(Base):
+    __tablename__ = "borrador_onboarding_comercio"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "cuenta_usuario_id",
+            name="borrador_onboarding_comercio_cuenta_usuario_unique",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+
+    cuenta_usuario_id: Mapped[int] = mapped_column(
+        ForeignKey("cuentas_usuario.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+
+    completo: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
+
+    nombre_fantasia: Mapped[str | None] = mapped_column(
+        String(150), nullable=True
+    )
+    nombre_corto: Mapped[str | None] = mapped_column(
+        String(80), nullable=True
+    )
+    razon_social: Mapped[str | None] = mapped_column(
+        String(200), nullable=True
+    )
+    cuit: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    whatsapp: Mapped[str | None] = mapped_column(
+        String(30), nullable=True
+    )
+    calle: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    numero: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    piso_departamento: Mapped[str | None] = mapped_column(
+        String(50), nullable=True
+    )
+    localidad: Mapped[str | None] = mapped_column(
+        String(100), nullable=True
+    )
+    provincia: Mapped[str | None] = mapped_column(
+        String(100), nullable=True
+    )
+    codigo_postal: Mapped[str | None] = mapped_column(
+        String(20), nullable=True
+    )
+
+    fecha_alta: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    fecha_ultima_modificacion: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+__all__ = ["BorradorOnboardingComercio"]

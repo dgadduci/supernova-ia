@@ -1,5 +1,9 @@
 from backend.models.base import Base
+from backend.models.borrador_onboarding_comercio import (
+    BorradorOnboardingComercio,
+)
 from backend.models.canal_whatsapp import CanalWhatsapp, CanalWhatsappMode
+from backend.models.cuenta_usuario import CuentaUsuario
 from backend.models.categorias_productos import CategoriaProducto
 from backend.models.cliente import Cliente
 from backend.models.comercio import Comercio
@@ -44,6 +48,7 @@ from backend.models.session import EstadoSession, Session
 
 __all__ = [
     "Base",
+    "BorradorOnboardingComercio",
     "CanalWhatsapp",
     "CanalWhatsappMode",
     "CategoriaProducto",
@@ -53,6 +58,7 @@ __all__ = [
     "ComercioMedioPago",
     "ComercioMetodoEntrega",
     "ContextoClienteCanalWhatsapp",
+    "CuentaUsuario",
     "EmbeddingStatus",
     "EstadoComercio",
     "EstadoComercioModoOperacion",

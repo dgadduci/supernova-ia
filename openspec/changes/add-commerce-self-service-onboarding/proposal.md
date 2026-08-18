@@ -107,8 +107,21 @@ added in this phase.
 
 Persist `CuentaUsuario` keyed by immutable external subject, plus a private
 `BorradorOnboardingComercio`. An authenticated account can read/write only its
-own draft. The visual flow is a short progress-aware wizard with save/resume,
-plain-language field help and exact validation beside the relevant field.
+own draft. This approved phase deliberately creates neither `Comercio` nor
+`ComercioUsuario`: the latter has no valid target before commerce creation and
+both records belong to the future atomic completion transaction. The visual
+flow is a short progress-aware wizard with save/resume, plain-language field
+help and exact validation beside the relevant field.
+
+The minimal persisted account contains only its internal id, immutable unique
+`supabase_subject`, active flag and audit timestamps. It does not project or
+store an email in this phase. The draft has exactly one row per account,
+version/timestamps and structured basic-commerce input; progress is derived
+server-side. It has no lifecycle, catalogue, provider, channel, payment,
+delivery, trial or readiness data. `GET /onboarding` and its state-changing
+form submissions require the existing authenticated principal, an
+account-resolution boundary and dedicated same-origin/CSRF protection. No
+route accepts or authorizes a commerce id in this phase.
 
 ### Phase 4 — create commerce and configure essentials
 
@@ -154,7 +167,7 @@ state. Draft, commerce and readiness outcomes remain later-phase outcomes.
 ## Security, isolation and fallback
 
 When implemented in Phase 3, the `CuentaUsuario` external subject will be
-unique and immutable. `ComercioUsuario` will use unique
+unique and immutable. When implemented in Phase 4, `ComercioUsuario` will use unique
 `(cuenta_usuario_id, comercio_id)` membership, an active flag and a closed
 role set. Phase 2 has no commerce authorization boundary because it has no
 application account or membership. Later commerce-panel queries must derive
@@ -201,8 +214,10 @@ JWTs, URLs with tokens, payment values, message content or provider secrets.
 - Phase 2 request/callback/logout templates and routes plus focused JWT/auth
   denial tests. No account, membership, draft or migration files belong to
   this phase.
-- Account, membership and draft models, repositories, schemas, services and an
-  Alembic migration remain Phase 3 work.
+- Account and draft models, repositories, schemas, service, owner-onboarding
+  route/templates and an Alembic migration are Phase 3 work. Membership,
+  commerce creation, scoped commerce-owner routes and readiness remain later
+  phases.
 - Scoped commerce-owner routes/views and readiness projection remain later
   phases.
 - Focused tests for public UX contracts and Phase 2 authentication; tenancy
@@ -225,6 +240,17 @@ git diff --check
 The broader onboarding, tenancy, completion, readiness and lifecycle test
 commands remain release gates for their respective later phases and are not a
 Phase 2 acceptance requirement.
+
+For the approved Phase 3 boundary, the implementer must run locally and
+provide complete output:
+
+```text
+PYTHONPATH=. venv/bin/python -m pytest backend/tests/test_owner_onboarding_draft.py backend/tests/test_owner_onboarding_migration.py backend/tests/test_supabase_magic_link_auth.py -q
+PYTHONPATH=. venv/bin/ruff check backend/models/cuenta_usuario.py backend/models/borrador_onboarding_comercio.py backend/repositories/cuenta_usuario_repository.py backend/repositories/borrador_onboarding_comercio_repository.py backend/services/owner_onboarding_service.py backend/routers/owner_onboarding.py backend/tests/test_owner_onboarding_draft.py backend/tests/test_owner_onboarding_migration.py
+PYTHONPATH=. venv/bin/python -m compileall -q backend/models/cuenta_usuario.py backend/models/borrador_onboarding_comercio.py backend/repositories/cuenta_usuario_repository.py backend/repositories/borrador_onboarding_comercio_repository.py backend/services/owner_onboarding_service.py backend/routers/owner_onboarding.py
+PYTHONPATH=. venv/bin/openspec validate add-commerce-self-service-onboarding --strict
+git diff --check
+```
 
 ## Decisions required before implementation
 

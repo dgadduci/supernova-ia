@@ -515,15 +515,194 @@ def try_authenticated_owner_principal(
         return None
 
 
+def _resolve_owner_onboarding_csrf_secret() -> bytes:
+    """Return the Phase 3 owner-onboarding CSRF signing secret.
+
+    The helper reuses the configured administrative token when no
+    owner-specific secret is configured so the wizard works out of
+    the box without a new deployment setting. The non-secret
+    path-bound nonce plus the same-origin proof-of-origin are the
+    actual security boundary; the secret only binds a nonce to a
+    single installation so cross-deployment replays stay invalid.
+    A future Phase 3 hardening can add a dedicated
+    ``OWNER_ONBOARDING_CSRF_SECRET`` env so the wizard no longer
+    relies on the administrative token.
+    """
+    settings = load_settings()
+    raw = settings.owner_onboarding_csrf_secret
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip().encode("utf-8")
+    configured_token = _resolve_browser_admin_token()
+    if configured_token is None:
+        return b"supernova-owner-onboarding-csrf-fallback"
+    return configured_token.encode("utf-8")
+
+
+OWNER_FORM_NONCE_FIELD = "_owner_nonce"
+OWNER_FORM_NONCE_MISSING_MESSAGE = (
+    "El wizard de onboarding rechazó la solicitud por token CSRF "
+    "inválido o ausente."
+)
+OWNER_FORM_ORIGIN_MISSING_MESSAGE = (
+    "El wizard de onboarding rechazó la solicitud por falta de "
+    "encabezado de origen."
+)
+OWNER_FORM_ORIGIN_MISMING_MESSAGE = (
+    "El wizard de onboarding rechazó la solicitud por origen no "
+    "permitido."
+)
+
+
+def compute_owner_onboarding_form_nonce(*, path: str, secret: bytes) -> str:
+    """Return the deterministic form nonce for the owner wizard.
+
+    The helper mirrors :func:`compute_panel_form_nonce` but uses the
+    owner-onboarding CSRF secret so a nonce stolen from the admin
+    panel cannot be replayed against the wizard and vice versa.
+    """
+    if not isinstance(path, str):
+        raise TypeError("path must be a str")
+    digest = hashlib.sha256(secret + b"\x00" + path.encode("utf-8")).hexdigest()
+    return digest
+
+
+def _owner_request_origin(request: Request) -> str | None:
+    """Return the owner onboarding submission origin URL.
+
+    Mirrors :func:`_panel_request_origin` so the wizard enforces the
+    same-origin check on exactly the same headers.
+    """
+    origin = request.headers.get("origin")
+    if origin:
+        cleaned = origin.strip()
+        return cleaned or None
+    referer = request.headers.get("referer")
+    if referer:
+        cleaned = referer.strip()
+        return cleaned or None
+    return None
+
+
+def _owner_configured_allowed_origin() -> str | None:
+    """Return the operator-pinned wizard allowed-origin or ``None``.
+
+    Reads ``OWNER_ONBOARDING_ALLOWED_ORIGIN`` when configured; falls
+    back to ``ADMIN_PANEL_ALLOWED_ORIGIN`` so an operator who has
+    already pinned the panel origin does not need to repeat the
+    value for the wizard.
+    """
+    settings = load_settings()
+    raw = settings.owner_onboarding_allowed_origin
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    raw_panel = settings.admin_panel_allowed_origin
+    if isinstance(raw_panel, str) and raw_panel.strip():
+        return raw_panel.strip()
+    return None
+
+
+async def require_same_origin_owner_onboarding_form(
+    request: Request,
+) -> None:
+    """Reject owner wizard submissions that lack same-origin + CSRF.
+
+    The dependency mirrors
+    :func:`require_same_origin_panel_form` for the Phase 3 wizard
+    boundary. Two independent checks must hold for every state-
+    changing submission:
+
+    1. The form body must carry the ``_owner_nonce`` field whose
+       value equals the SHA-256 digest over the submission path
+       keyed by the owner-onboarding CSRF secret. The dependency
+       recomputes the nonce from the exact path and compares it in
+       constant time so a cross-site attacker cannot replay a
+       nonce captured from a different wizard path.
+    2. The submission must originate from the wizard's own origin.
+       The helper reads ``Origin`` (preferred) or ``Referer``
+       (fallback) and matches the parsed origin against either the
+       ``OWNER_ONBOARDING_ALLOWED_ORIGIN`` pin, the
+       ``ADMIN_PANEL_ALLOWED_ORIGIN`` pin, or the effective
+       ``scheme://host[:port]`` the request itself. The check
+       stays active when no operator pin is configured.
+
+    GET / HEAD / OPTIONS requests bypass the dependency so the
+    router can stay mounted without breaking navigation. A
+    submission that arrives without ``Origin`` and ``Referer`` is
+    always rejected.
+    """
+    method = request.method.upper()
+    if method not in _PANEL_FORM_PROTECTED_METHODS:
+        return
+
+    try:
+        form = await request.form()
+    except (ValueError, TypeError, RuntimeError):
+        form = None
+    submitted_nonce: str | None = None
+    if form is not None:
+        try:
+            raw_value = form.get(OWNER_FORM_NONCE_FIELD)
+        except (TypeError, AttributeError):
+            raw_value = None
+        if isinstance(raw_value, str):
+            submitted_nonce = raw_value
+        elif raw_value is not None:
+            submitted_nonce = str(raw_value)
+
+    expected_nonce = compute_owner_onboarding_form_nonce(
+        path=request.url.path,
+        secret=_resolve_owner_onboarding_csrf_secret(),
+    )
+    if (
+        submitted_nonce is None
+        or not hmac.compare_digest(
+            submitted_nonce.encode("utf-8"),
+            expected_nonce.encode("utf-8"),
+        )
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=OWNER_FORM_NONCE_MISSING_MESSAGE,
+        )
+
+    submitted_origin = _owner_request_origin(request)
+    if submitted_origin is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=OWNER_FORM_ORIGIN_MISSING_MESSAGE,
+        )
+
+    allowed_origin = _owner_configured_allowed_origin() or _effective_request_origin(
+        request
+    )
+    submitted_origin_parsed = urlparse(submitted_origin)
+    submitted_origin_only = (
+        f"{submitted_origin_parsed.scheme}://{submitted_origin_parsed.netloc}"
+        if submitted_origin_parsed.scheme and submitted_origin_parsed.netloc
+        else submitted_origin
+    )
+    if not hmac.compare_digest(
+        submitted_origin_only.encode("utf-8"),
+        allowed_origin.encode("utf-8"),
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=OWNER_FORM_ORIGIN_MISMING_MESSAGE,
+        )
+
+
 __all__ = [
     "ADMIN_TOKEN_HEADER",
+    "OWNER_FORM_NONCE_FIELD",
     "PANEL_FORM_NONCE_FIELD",
+    "compute_owner_onboarding_form_nonce",
     "compute_panel_form_nonce",
     "get_session",
     "require_admin_browser_basic",
     "require_admin_pilot_basic",
     "require_admin_token",
     "require_authenticated_owner_principal",
+    "require_same_origin_owner_onboarding_form",
     "require_same_origin_panel_form",
     "resolve_panel_csrf_secret",
     "try_authenticated_owner_principal",

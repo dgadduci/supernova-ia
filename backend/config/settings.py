@@ -647,6 +647,8 @@ class Settings:
     order_management_admin_token: str | None = None
     admin_panel_csrf_secret: str | None = None
     admin_panel_allowed_origin: str | None = None
+    owner_onboarding_csrf_secret: str | None = None
+    owner_onboarding_allowed_origin: str | None = None
     supabase_auth_enabled: bool = DEFAULT_SUPABASE_AUTH_ENABLED
     supabase_project_url: str | None = DEFAULT_SUPABASE_PROJECT_URL
     supabase_jwt_issuer: str | None = DEFAULT_SUPABASE_JWT_ISSUER
@@ -778,6 +780,12 @@ def load_settings() -> Settings:
         ),
         admin_panel_allowed_origin=_admin_panel_allowed_origin_env(
             "ADMIN_PANEL_ALLOWED_ORIGIN"
+        ),
+        owner_onboarding_csrf_secret=_admin_panel_csrf_secret_env(
+            "OWNER_ONBOARDING_CSRF_SECRET"
+        ),
+        owner_onboarding_allowed_origin=_admin_panel_allowed_origin_env(
+            "OWNER_ONBOARDING_ALLOWED_ORIGIN"
         ),
         supabase_auth_enabled=_bool_env(
             "SUPABASE_AUTH_ENABLED", DEFAULT_SUPABASE_AUTH_ENABLED

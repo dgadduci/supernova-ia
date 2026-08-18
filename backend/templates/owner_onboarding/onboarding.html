@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="es-AR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="NovaOrders · borrador de onboarding del comercio. Guardá tus datos básicos para retomar más tarde.">
+<meta name="robots" content="noindex,nofollow">
+<meta name="color-scheme" content="light dark">
+<title>NovaOrders · Borrador de onboarding</title>
+<style>
+  :root {
+    --bg: #f7f7fb;
+    --bg-elevated: #ffffff;
+    --panel: #ffffff;
+    --panel-strong: #f2f2f8;
+    --border: #d8d8e3;
+    --border-strong: #b9b9c8;
+    --fg: #14141d;
+    --fg-muted: #4f4f60;
+    --fg-faint: #76768a;
+    --accent: #4b3aff;
+    --accent-strong: #3a2bd6;
+    --accent-ink: #ffffff;
+    --accent-soft: #ece9ff;
+    --success: #1f7a4d;
+    --danger: #b3261e;
+    --danger-ink: #ffffff;
+    --focus-ring: #ffbf3f;
+    --shadow-sm: 0 1px 2px rgba(20, 20, 29, 0.04), 0 4px 12px rgba(20, 20, 29, 0.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0c0c14;
+      --bg-elevated: #15151f;
+      --panel: #15151f;
+      --panel-strong: #1c1c2a;
+      --border: #2a2a3a;
+      --border-strong: #3b3b50;
+      --fg: #f3f3fa;
+      --fg-muted: #b6b6c8;
+      --fg-faint: #84849a;
+      --accent: #b6a6ff;
+      --accent-strong: #cbbcff;
+      --accent-ink: #0a0510;
+      --accent-soft: #211b3b;
+      --success: #66d9a4;
+      --danger: #ff8a80;
+      --danger-ink: #1c0606;
+      --focus-ring: #ffd166;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45), 0 4px 12px rgba(0, 0, 0, 0.35);
+    }
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.55;
+    font-size: 17px;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  a {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  a:hover, a:focus-visible { color: var(--accent-strong); }
+  :focus-visible {
+    outline: 3px solid var(--focus-ring);
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    top: auto;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+  }
+  .skip-link:focus {
+    position: static;
+    width: auto;
+    height: auto;
+    background: var(--accent);
+    color: var(--accent-ink);
+    padding: 10px 14px;
+    display: inline-block;
+    margin: 12px;
+    border-radius: 6px;
+    text-decoration: none;
+  }
+  header.site-header {
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 24px;
+  }
+  header.site-header .brand {
+    font-weight: 700;
+    font-size: 1.05rem;
+    color: var(--fg);
+    text-decoration: none;
+  }
+  header.site-header .session {
+    float: right;
+    font-size: 0.9rem;
+    color: var(--fg-muted);
+  }
+  main.wizard-main {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 32px 24px 64px;
+  }
+  section.wizard-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 28px 28px 32px;
+    box-shadow: var(--shadow-sm);
+  }
+  section.wizard-card .eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.78rem;
+    color: var(--accent);
+    font-weight: 700;
+    margin-bottom: 12px;
+  }
+  section.wizard-card h1 {
+    font-size: clamp(1.4rem, 3vw + 0.6rem, 1.9rem);
+    margin: 0 0 8px;
+    line-height: 1.25;
+  }
+  section.wizard-card p.lede {
+    color: var(--fg-muted);
+    margin-bottom: 18px;
+  }
+  .progress {
+    background: var(--panel-strong);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin: 0 0 22px;
+    border: 1px solid var(--border);
+  }
+  .progress .bar {
+    height: 10px;
+    background: var(--accent-soft);
+    border-radius: 999px;
+    overflow: hidden;
+    margin-top: 8px;
+  }
+  .progress .bar > span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    border-radius: inherit;
+  }
+  .progress .label {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-size: 0.95rem;
+    color: var(--fg);
+  }
+  fieldset.group {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px 18px;
+    margin: 0 0 16px;
+    background: var(--bg-elevated);
+  }
+  fieldset.group legend {
+    font-size: 0.9rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--fg-muted);
+    padding: 0 6px;
+  }
+  label.field {
+    display: block;
+    margin: 12px 0;
+    font-size: 0.95rem;
+    color: var(--fg);
+  }
+  label.field > span {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 6px;
+    color: var(--fg);
+  }
+  label.field input {
+    width: 100%;
+    font: inherit;
+    padding: 12px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--border-strong);
+    background: var(--panel);
+    color: var(--fg);
+    min-height: 44px;
+  }
+  label.field input:focus-visible {
+    border-color: var(--accent);
+    outline: 3px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+  @media (max-width: 600px) {
+    .grid-2 { grid-template-columns: 1fr; }
+  }
+  .actions {
+    margin-top: 24px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+  }
+  button.cta {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 48px;
+    padding: 12px 22px;
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-weight: 700;
+    font-size: 1rem;
+    border-radius: 10px;
+    border: 1px solid var(--accent);
+    cursor: pointer;
+    font-family: inherit;
+  }
+  button.cta:hover, button.cta:focus-visible {
+    background: var(--accent-strong);
+    border-color: var(--accent-strong);
+  }
+  a.back-link, a.logout-link {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 6px;
+    color: var(--fg-muted);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .alert {
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin: 0 0 18px;
+    border: 1px solid var(--border);
+    font-size: 0.95rem;
+  }
+  .alert.alert-error {
+    background: rgba(179, 38, 30, 0.08);
+    color: var(--danger);
+    border-color: var(--danger);
+  }
+  .alert.alert-success {
+    background: rgba(31, 122, 77, 0.10);
+    color: var(--success);
+    border-color: var(--success);
+  }
+  .meta {
+    font-size: 0.85rem;
+    color: var(--fg-faint);
+    margin-top: 18px;
+  }
+  footer.site-footer {
+    border-top: 1px solid var(--border);
+    padding: 22px 24px 28px;
+    color: var(--fg-faint);
+    font-size: 0.9rem;
+    text-align: center;
+    max-width: 720px;
+    margin: 0 auto;
+  }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main-content">Saltar al contenido principal</a>
+<header class="site-header" role="banner">
+  <a class="brand" href="/" aria-label="NovaOrders, ir al inicio">NovaOrders</a>
+  <span class="session">Sesión verificada · cuenta {{ cuenta_id }}</span>
+</header>
+<main class="wizard-main" id="main-content" tabindex="-1">
+  <section class="wizard-card" aria-labelledby="wizard-title">
+    <p class="eyebrow">{{ phase_label | e }}</p>
+    <h1 id="wizard-title">Datos básicos del comercio</h1>
+    <p class="lede">
+      Vamos a guardar los datos mínimos para crear tu comercio en una
+      próxima etapa. Podés volver cuando quieras; tus respuestas se
+      conservan en este borrador.
+    </p>
+    <div class="progress" aria-live="polite">
+      <div class="label">
+        <span>Progreso del borrador</span>
+        <span>
+          <strong>{{ progress.completed }}</strong> / {{ progress.total }}
+          {% if progress.completo %}
+            <span aria-hidden="true"> · listo</span>
+          {% endif %}
+        </span>
+      </div>
+      <div class="bar" role="progressbar"
+        aria-valuemin="0"
+        aria-valuemax="{{ progress.total }}"
+        aria-valuenow="{{ progress.completed }}">
+        <span style="width: {{ (progress.completed * 100 / progress.total) | round(1, 'floor') }}%;"></span>
+      </div>
+    </div>
+    {% if error %}
+      <div class="alert alert-error" role="alert">
+        {{ error | e }}
+      </div>
+    {% endif %}
+    {% if success %}
+      <div class="alert alert-success" role="status">
+        Guardamos los cambios en tu borrador.
+      </div>
+    {% endif %}
+    <form method="post" action="/onboarding" novalidate>
+      <input type="hidden" name="{{ form_nonce_field | e }}"
+        value="{{ form_nonce | e }}">
+      <input type="hidden" name="expected_version"
+        value="{{ version | e }}">
+      <fieldset class="group" aria-labelledby="legal-heading">
+        <legend id="legal-heading">Datos del titular</legend>
+        <div class="grid-2">
+          <label class="field" for="nombre_fantasia">
+            <span>Nombre de fantasía</span>
+            <input id="nombre_fantasia" name="nombre_fantasia" type="text"
+              autocomplete="organization" maxlength="150"
+              value="{{ field_values.nombre_fantasia | e }}">
+          </label>
+          <label class="field" for="nombre_corto">
+            <span>Nombre corto</span>
+            <input id="nombre_corto" name="nombre_corto" type="text"
+              maxlength="80"
+              value="{{ field_values.nombre_corto | e }}">
+          </label>
+        </div>
+        <label class="field" for="razon_social">
+          <span>Razón social</span>
+          <input id="razon_social" name="razon_social" type="text"
+            maxlength="200"
+            value="{{ field_values.razon_social | e }}">
+        </label>
+        <div class="grid-2">
+          <label class="field" for="cuit">
+            <span>CUIT</span>
+            <input id="cuit" name="cuit" type="text" maxlength="20"
+              value="{{ field_values.cuit | e }}">
+          </label>
+          <label class="field" for="whatsapp">
+            <span>WhatsApp del comercio</span>
+            <input id="whatsapp" name="whatsapp" type="tel"
+              maxlength="30"
+              value="{{ field_values.whatsapp | e }}">
+          </label>
+        </div>
+      </fieldset>
+      <fieldset class="group" aria-labelledby="address-heading">
+        <legend id="address-heading">Dirección del local</legend>
+        <div class="grid-2">
+          <label class="field" for="calle">
+            <span>Calle</span>
+            <input id="calle" name="calle" type="text" maxlength="150"
+              value="{{ field_values.calle | e }}">
+          </label>
+          <label class="field" for="numero">
+            <span>Número</span>
+            <input id="numero" name="numero" type="text" maxlength="20"
+              value="{{ field_values.numero | e }}">
+          </label>
+        </div>
+        <label class="field" for="piso_departamento">
+          <span>Piso / departamento (opcional)</span>
+          <input id="piso_departamento" name="piso_departamento"
+            type="text" maxlength="50"
+            value="{{ field_values.piso_departamento | e }}">
+        </label>
+        <div class="grid-2">
+          <label class="field" for="localidad">
+            <span>Localidad</span>
+            <input id="localidad" name="localidad" type="text"
+              maxlength="100"
+              value="{{ field_values.localidad | e }}">
+          </label>
+          <label class="field" for="provincia">
+            <span>Provincia</span>
+            <input id="provincia" name="provincia" type="text"
+              maxlength="100"
+              value="{{ field_values.provincia | e }}">
+          </label>
+        </div>
+        <label class="field" for="codigo_postal">
+          <span>Código postal (opcional)</span>
+          <input id="codigo_postal" name="codigo_postal" type="text"
+            maxlength="20"
+            value="{{ field_values.codigo_postal | e }}">
+        </label>
+      </fieldset>
+      <div class="actions">
+        <button class="cta" type="submit" data-cta="save-draft">
+          Guardar borrador
+        </button>
+        <a class="back-link" href="/auth/verificado">Volver a la identidad verificada</a>
+      </div>
+    </form>
+    <p class="meta">
+      Borrador #{{ draft_id }} · versión {{ version }} ·
+      identificado por subject <code>{{ subject | e }}</code>.
+    </p>
+  </section>
+</main>
+<footer class="site-footer" role="contentinfo">
+  <span>© NovaOrders</span>
+</footer>
+</body>
+</html>
