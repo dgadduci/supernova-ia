@@ -15,9 +15,10 @@ Public landing → Supabase magic-link identity → NovaOrders owner authorizati
 Supabase is only the authentication system. NovaOrders stores no password.
 Phase 2 creates no NovaOrders identity or authorization row: it exposes a
 validated request principal containing only the immutable external `sub` and a
-short-lived local session. `CuentaUsuario` and `ComercioUsuario` are
-application-owned authorization data deferred to Phase 3; therefore a valid
-Supabase session alone cannot grant access to any commerce.
+short-lived local session. `CuentaUsuario` is application-owned identity data
+deferred to Phase 3 and `ComercioUsuario` is commerce authorization data
+deferred to Phase 4; therefore a valid Supabase session alone cannot grant
+access to any commerce.
 
 ## Visual experience decision
 
@@ -72,7 +73,7 @@ service-role key is never accepted. JWKS verification is the only local
 signature path; missing/empty JWKS or unsupported signing material is an
 authentication failure.
 
-## Later-phase data model
+## Approved Phase 3 data model and route boundary
 
 The following model is intentionally not part of Phase 2 and must not be
 created by its callback or session dependency.
@@ -81,22 +82,33 @@ created by its callback or session dependency.
 
 - `id` internal PK;
 - `supabase_subject` unique, immutable external ID;
-- `email` and `email_verificado_en` as current verified profile projection;
 - `activo`, `fecha_alta`, `fecha_ultima_modificacion`, `fecha_baja`.
 
-`ComercioUsuario`
+Phase 3 does not store email or other provider profile metadata. The validated
+external `sub` is its sole external identity input.
+
+`BorradorOnboardingComercio`
+
+- exactly one draft row per owner account, enforced by a unique owner FK;
+- private owner FK, optimistic version/timestamps and structured basic-commerce
+  fields;
+- progress derived from server-side validation, not a client-provided flag;
+- no terminal state or resulting commerce FK until Phase 4.
+
+The owner surface is server-rendered at `/onboarding`. Authentication resolves
+the existing signed session principal first; only then does a narrow resolver
+load or create the account for that exact immutable subject. Every draft query
+is scoped by that account id. State-changing form posts require same-origin and
+CSRF proof; they never accept a commerce id. Missing/tampered authentication,
+an unavailable identity configuration, or persistence failure has no fallback
+to email, Admin, another account or another draft.
+
+`ComercioUsuario` (Phase 4)
 
 - `id` internal PK;
 - `cuenta_usuario_id` and `comercio_id` FKs with unique pair;
 - closed enum `OWNER` for this change;
 - `activo`, timestamps and optional revocation timestamp/reason category.
-
-`BorradorOnboardingComercio`
-
-- exactly one active draft per owner for the first iteration;
-- private owner FK, version/timestamps and structured basic-commerce fields;
-- explicit progress marker derived from validated sections, not client input;
-- terminal `completado_en` and resulting `comercio_id` after success.
 
 The draft has no provider secrets, trial counter, Admin decision, or catalogue
 data. A new `Comercio` remains canonical for legal/routing fields after

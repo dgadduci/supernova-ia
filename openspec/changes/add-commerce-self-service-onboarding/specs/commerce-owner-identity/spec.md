@@ -55,3 +55,26 @@ exact commerce. The initial role set SHALL contain only `OWNER`.
   commerce without its active membership
 - **THEN** the system SHALL return a bounded forbidden/not-found outcome
 - **AND THEN** it SHALL not reveal, read or mutate the other commerce data
+
+### Requirement: Phase 3 draft ownership is account-scoped
+
+The system SHALL resolve one active `CuentaUsuario` from the validated immutable
+Supabase subject and SHALL scope every `BorradorOnboardingComercio` read or
+write to that exact account. Phase 3 SHALL enforce at most one draft row per
+account and SHALL NOT create `Comercio`, `ComercioUsuario`, a channel, a trial
+or any other commerce-scoped operational record.
+
+#### Scenario: Authenticated account saves only its own private draft
+
+- **WHEN** a validated principal opens or saves the Phase 3 onboarding form
+- **THEN** the system SHALL load or create only the account and draft associated
+  with that principal's immutable subject
+- **AND THEN** it SHALL persist no commerce, membership, channel, payment,
+  delivery, catalogue or lifecycle record
+
+#### Scenario: State-changing onboarding form lacks a valid same-origin or CSRF proof
+
+- **WHEN** a request attempts to create or save a draft without the required
+  same-origin and CSRF proof
+- **THEN** the system SHALL reject it before draft persistence
+- **AND THEN** it SHALL not fall back to a permissive browser-session path

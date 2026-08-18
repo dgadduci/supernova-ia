@@ -50,13 +50,18 @@
 
 ## 4. Phase 3 — identity and draft persistence
 
-- [ ] 4.1 Add account, membership and onboarding-draft models/repositories,
-  migration and safe indexes/constraints without changing historical commerce
-  or order data.
-- [ ] 4.2 Add the authenticated-account and membership authorization
-  dependencies; prove route-ID tampering cannot cross commerce boundaries.
-- [ ] 4.3 Implement private draft create/save/resume with a concise,
-  progress-aware, accessible owner wizard.
+- [x] 4.1 Approve the narrow Phase 3 boundary: account plus one private draft;
+  defer `Comercio`, `ComercioUsuario`, readiness and all scoped commerce
+  configuration to Phase 4 or later.
+- [x] 4.2 Add account and onboarding-draft models/repositories, migration and
+  safe unique constraints without changing historical commerce or order data.
+- [x] 4.3 Add the authenticated-account resolver and a server-rendered
+  `/onboarding` boundary; prove all draft reads/writes are account-scoped and
+  protected by same-origin/CSRF checks.
+- [x] 4.4 Implement private draft create/save/resume with a concise,
+  progress-aware, accessible owner wizard; do not accept a commerce id.
+- [x] 4.5 Add focused account identity, draft isolation, concurrent save,
+  migration and no-commerce-side-effect tests.
 
 ## 5. Phase 4 — commerce creation and scoped essentials
 

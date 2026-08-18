@@ -23,13 +23,19 @@ Phase 2 surface (feature-gated):
 * ``GET /auth/callback`` exchanges the one-time ``code`` for an
   access JWT through the documented Supabase PKCE token endpoint,
   validates the JWT through the JWKS asymmetric contract, sets a
-  short-lived local session and redirects to the bounded
-  ``/auth/verificado`` view with a clean URL. The endpoint refuses
+  short-lived local session and redirects to the Phase 3
+  ``/onboarding`` wizard with a clean URL. The endpoint refuses
   to mint a session cookie when the request is not HTTPS and
   refuses to act on raw ``token`` / ``access_token`` / ``error``
   query values.
-* ``GET /auth/verificado`` exposes the authenticated principal
-  view: "identidad verificada; onboarding aún no habilitado".
+* ``GET /auth/verificado`` is the bounded failure view: every
+  callback outcome that does NOT successfully mint a session
+  (missing / invalid / expired code, missing PKCE cookie, code
+  exchange failure, JWT validation failure, configuration error,
+  insecure request) lands here. The view renders the
+  "identidad verificada; onboarding aún no habilitado" copy when
+  the cookie is present and the sign-in-required view otherwise.
+  The callback never uses this view as the success destination.
 * ``POST /auth/logout`` clears the local session cookie without
   touching commerce data.
 
@@ -397,7 +403,7 @@ def auth_callback(
     request: Request,
     code: str = "",
 ) -> Response:
-    """Exchange the one-time ``code`` and redirect to the verified view.
+    """Exchange the one-time ``code`` and redirect to the wizard.
 
     The handler enforces the clean-redirect contract:
 
@@ -411,12 +417,14 @@ def auth_callback(
       timeout.
     * The handler validates the resulting JWT through the JWKS
       asymmetric contract (signature, issuer, audience, expiry,
-      subject). A failure maps to the bounded sign-in-required
-      view without leaking the reason.
+      subject). A failure maps to the bounded failure view at
+      ``/auth/verificado`` without leaking the reason.
     * When validation succeeds the handler sets the local session
-      cookie and redirects to ``/auth/verificado``. The redirect
-      URL never carries the code, the token, the original query
-      string, the error code or any other sensitive value.
+      cookie and redirects to ``/onboarding`` with HTTP 303 and a
+      clean URL (no query string, no fragment, no echoed code /
+      token / error). ``/auth/verificado`` is reserved for the
+      bounded failure outcomes; it is never the success
+      destination.
     * The handler refuses to mint an authenticated cookie when the
       request was served over plain HTTP — the callback must be
       reached over HTTPS so the signed cookie cannot be observed
@@ -508,7 +516,7 @@ def auth_callback(
         )
 
     response = RedirectResponse(
-        url="/auth/verificado",
+        url="/onboarding",
         status_code=status.HTTP_303_SEE_OTHER,
     )
     response.headers.append("Set-Cookie", cookie_value)
@@ -524,13 +532,18 @@ def auth_callback(
 def _redirect_to_verified(
     settings: Any, *, request_is_secure: bool
 ) -> Response:
-    """Redirect to the bounded verified view.
+    """Redirect to the bounded failure view.
 
     The helper centralises the failure redirect so the callback
     can never leak the token, the original query string or the
     provider error description. The redirect target is the
-    verified view; the view itself raises the sign-in-required
-    outcome when the cookie is absent.
+    failure view at ``/auth/verificado``; the view itself raises
+    the sign-in-required outcome when no session cookie is
+    present and the verified view when a valid cookie survives.
+    The helper is the ONLY path that points the callback at
+    ``/auth/verificado`` — the success destination is
+    ``/onboarding`` and is issued directly by
+    :func:`auth_callback`.
     """
     response = RedirectResponse(
         url="/auth/verificado",
@@ -557,18 +570,25 @@ def auth_verificado(
         Depends(try_authenticated_owner_principal),
     ],
 ) -> Response:
-    """Render the bounded verified principal view.
+    """Render the bounded failure view reached from a non-success callback.
 
-    The view is the only authenticated surface Phase 2 exposes.
-    It intentionally displays the "identidad verificada; onboarding
-    aún no habilitado" copy and never claims that the visitor can
-    configure a commerce, accept orders or perform any operational
-    action.
+    The view is the destination of every callback outcome that did
+    NOT successfully mint a session: missing / invalid / expired
+    code, missing PKCE cookie, code exchange failure, JWT
+    validation failure, insecure request, configuration error or
+    disabled feature. The successful callback redirects to
+    ``/onboarding`` instead and never lands here.
 
     When the dependency returns ``None`` (missing cookie, expired
     cookie, feature disabled, configuration error) the route
     renders the bounded sign-in-required view so a visitor can
-    recover without leaking the underlying reason.
+    recover without leaking the underlying reason. When a valid
+    cookie survives (e.g. a previous successful callback) the
+    route renders the "identidad verificada; onboarding aún no
+    habilitado" copy; the view still does not claim that the
+    visitor can configure a commerce, accept orders or perform
+    any operational action — those surfaces live behind
+    ``/onboarding``.
     """
     settings = _resolve_phase2_settings(request)
     if isinstance(settings, _Phase2ShortCircuit):

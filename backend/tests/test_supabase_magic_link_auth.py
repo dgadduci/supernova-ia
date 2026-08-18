@@ -1153,7 +1153,7 @@ class CallbackRouteTest(unittest.TestCase):
         pair = generate_pkce_pair()
         return encode_pkce_cookie(pair=pair, settings=settings)
 
-    def test_valid_code_redirects_to_verified(self) -> None:
+    def test_valid_code_redirects_to_onboarding(self) -> None:
         settings, _ = _with_settings(self)
         token = _mint_token(
             settings=settings,
@@ -1186,7 +1186,7 @@ class CallbackRouteTest(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 303)
         self.assertEqual(
-            response.headers.get("location"), "/auth/verificado"
+            response.headers.get("location"), "/onboarding"
         )
         cookies = response.headers.get_list("set-cookie")
         session_cookie = next(
@@ -1198,7 +1198,18 @@ class CallbackRouteTest(unittest.TestCase):
         self.assertIn("SameSite=lax", session_cookie)
         self.assertIn("Secure", session_cookie)
 
-    def test_redirect_does_not_carry_code_token_or_error(self) -> None:
+    def test_success_redirect_url_is_clean_and_carries_no_secrets(
+        self,
+    ) -> None:
+        """The successful redirect is a clean ``/onboarding`` URL.
+
+        The location header must point to the wizard with no
+        query string, no fragment, no echoed ``code`` / JWT /
+        ``access_token`` / ``error`` / ``error_description`` and
+        no other sensitive value. The callback must never echo
+        anything the provider returned, even when the request
+        carried extra query parameters that the helper ignores.
+        """
         settings, _ = _with_settings(self)
         token = _mint_token(
             settings=settings,
@@ -1220,7 +1231,11 @@ class CallbackRouteTest(unittest.TestCase):
             )
             response = self.client.get(
                 "/auth/callback",
-                params={"code": "code-123", "error_description": "leak"},
+                params={
+                    "code": "code-123",
+                    "error_description": "leak",
+                    "access_token": "leak-token",
+                },
                 headers={
                     "cookie": (
                         f"{PKCE_COOKIE_NAME}="
@@ -1230,11 +1245,15 @@ class CallbackRouteTest(unittest.TestCase):
                 },
             )
         location = response.headers.get("location", "")
+        self.assertEqual(location, "/onboarding")
+        self.assertNotIn("?", location)
+        self.assertNotIn("#", location)
         self.assertNotIn("code=", location)
         self.assertNotIn("error_description", location)
         self.assertNotIn("leak", location)
         self.assertNotIn("access_token=", location)
         self.assertNotIn("token=", location)
+        self.assertNotIn("eyJ", location)
 
     def test_raw_jwt_in_query_is_rejected(self) -> None:
         settings, _ = _with_settings(self)
