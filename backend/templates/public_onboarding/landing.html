@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="es-AR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="NovaOrders: recibí y administrá los pedidos de tu comercio por WhatsApp, con control de tu configuración y acompañamiento antes de salir en vivo.">
+<meta name="robots" content="index,follow">
+<meta name="color-scheme" content="light dark">
+<title>NovaOrders · Recibí pedidos por WhatsApp con control</title>
+<style>
+  :root {
+    --bg: #f7f7fb;
+    --bg-elevated: #ffffff;
+    --bg-sunken: #ececf3;
+    --panel: #ffffff;
+    --panel-strong: #f2f2f8;
+    --border: #d8d8e3;
+    --border-strong: #b9b9c8;
+    --fg: #14141d;
+    --fg-muted: #4f4f60;
+    --fg-faint: #76768a;
+    --accent: #4b3aff;
+    --accent-strong: #3a2bd6;
+    --accent-ink: #ffffff;
+    --accent-soft: #ece9ff;
+    --success: #1f7a4d;
+    --success-ink: #ffffff;
+    --focus-ring: #ffbf3f;
+    --shadow-sm: 0 1px 2px rgba(20, 20, 29, 0.04), 0 4px 12px rgba(20, 20, 29, 0.06);
+    --shadow-md: 0 6px 24px rgba(20, 20, 29, 0.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0c0c14;
+      --bg-elevated: #15151f;
+      --bg-sunken: #08080e;
+      --panel: #15151f;
+      --panel-strong: #1c1c2a;
+      --border: #2a2a3a;
+      --border-strong: #3b3b50;
+      --fg: #f3f3fa;
+      --fg-muted: #b6b6c8;
+      --fg-faint: #84849a;
+      --accent: #b6a6ff;
+      --accent-strong: #cbbcff;
+      --accent-ink: #0a0510;
+      --accent-soft: #211b3b;
+      --success: #66d9a4;
+      --success-ink: #042414;
+      --focus-ring: #ffd166;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45), 0 4px 12px rgba(0, 0, 0, 0.35);
+      --shadow-md: 0 6px 24px rgba(0, 0, 0, 0.40);
+    }
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.55;
+    font-size: 17px;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  img, svg { max-width: 100%; display: block; }
+  a {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    text-decoration-thickness: 1.5px;
+  }
+  a:hover, a:focus-visible { color: var(--accent-strong); }
+  :focus-visible {
+    outline: 3px solid var(--focus-ring);
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+  button:focus-visible,
+  .cta:focus-visible,
+  .nav-link:focus-visible,
+  .footer-link:focus-visible {
+    outline: 3px solid var(--focus-ring);
+    outline-offset: 3px;
+  }
+  h1, h2, h3 { margin: 0; line-height: 1.2; letter-spacing: -0.01em; }
+  p { margin: 0 0 1em; }
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    top: auto;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+  }
+  .skip-link:focus {
+    position: static;
+    width: auto;
+    height: auto;
+    background: var(--accent);
+    color: var(--accent-ink);
+    padding: 10px 14px;
+    display: inline-block;
+    margin: 12px;
+    border-radius: 6px;
+    text-decoration: none;
+  }
+  header.site-header {
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 24px;
+    display: flex;
+    gap: 18px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  header.site-header .brand {
+    font-weight: 700;
+    font-size: 1.05rem;
+    letter-spacing: 0.01em;
+    color: var(--fg);
+    text-decoration: none;
+  }
+  header.site-header .brand:focus-visible {
+    outline: 3px solid var(--focus-ring);
+    outline-offset: 4px;
+    border-radius: 4px;
+  }
+  header.site-header nav.primary {
+    margin-left: auto;
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  header.site-header nav.primary a.nav-link {
+    color: var(--fg-muted);
+    text-decoration: none;
+    padding: 8px 10px;
+    border-radius: 6px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+  header.site-header nav.primary a.nav-link:hover {
+    color: var(--fg);
+    background: var(--panel-strong);
+  }
+  main.landing-main {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 32px 24px 64px;
+  }
+  section {
+    padding: 32px 0;
+  }
+  section.hero {
+    text-align: left;
+    padding-top: 24px;
+  }
+  section.hero .eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.8rem;
+    color: var(--accent);
+    font-weight: 700;
+    margin-bottom: 14px;
+  }
+  section.hero h1 {
+    font-size: clamp(2rem, 4vw + 1rem, 3rem);
+    margin: 0 0 16px;
+    max-width: 22ch;
+  }
+  section.hero p.lede {
+    font-size: 1.15rem;
+    color: var(--fg-muted);
+    max-width: 56ch;
+    margin-bottom: 28px;
+  }
+  section.hero .cta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+  }
+  a.cta {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 48px;
+    padding: 12px 22px;
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-weight: 700;
+    font-size: 1rem;
+    border-radius: 10px;
+    text-decoration: none;
+    border: 1px solid var(--accent);
+    box-shadow: var(--shadow-sm);
+  }
+  a.cta:hover, a.cta:focus-visible {
+    background: var(--accent-strong);
+    border-color: var(--accent-strong);
+    color: var(--accent-ink);
+  }
+  section.benefits h2,
+  section.process h2,
+  section.trust h2,
+  section.cta-final h2 {
+    font-size: 1.5rem;
+    margin-bottom: 6px;
+  }
+  section > .section-intro {
+    color: var(--fg-muted);
+    max-width: 60ch;
+    margin-bottom: 24px;
+  }
+  ul.benefit-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+  @media (min-width: 720px) {
+    ul.benefit-list { grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  }
+  ul.benefit-list li {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 22px 22px 20px;
+    box-shadow: var(--shadow-sm);
+  }
+  ul.benefit-list h3 {
+    font-size: 1.08rem;
+    margin-bottom: 8px;
+  }
+  ul.benefit-list p {
+    margin: 0;
+    color: var(--fg-muted);
+    font-size: 0.98rem;
+  }
+  ol.process-list {
+    list-style: none;
+    counter-reset: step;
+    padding: 0;
+    margin: 0;
+    display: grid;
+    gap: 14px;
+  }
+  @media (min-width: 720px) {
+    ol.process-list { grid-template-columns: repeat(2, 1fr); gap: 18px; }
+  }
+  ol.process-list li {
+    counter-increment: step;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px 18px 64px;
+    position: relative;
+    min-height: 64px;
+  }
+  ol.process-list li::before {
+    content: counter(step);
+    position: absolute;
+    left: 18px;
+    top: 18px;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.95rem;
+  }
+  ol.process-list h3 {
+    font-size: 1.02rem;
+    margin-bottom: 4px;
+  }
+  ol.process-list p {
+    margin: 0;
+    color: var(--fg-muted);
+    font-size: 0.95rem;
+  }
+  ul.trust-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: grid;
+    gap: 12px;
+  }
+  ul.trust-list li {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--accent);
+    border-radius: 8px;
+    padding: 14px 18px;
+  }
+  ul.trust-list li strong {
+    color: var(--fg);
+    font-weight: 700;
+  }
+  ul.trust-list li p {
+    margin: 4px 0 0;
+    color: var(--fg-muted);
+    font-size: 0.95rem;
+  }
+  section.cta-final {
+    text-align: center;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 36px 24px;
+    box-shadow: var(--shadow-md);
+  }
+  section.cta-final h2 {
+    margin-bottom: 8px;
+  }
+  section.cta-final p {
+    color: var(--fg-muted);
+    max-width: 52ch;
+    margin: 0 auto 22px;
+  }
+  footer.site-footer {
+    border-top: 1px solid var(--border);
+    padding: 22px 24px 28px;
+    color: var(--fg-faint);
+    font-size: 0.9rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: space-between;
+    align-items: center;
+    max-width: 1080px;
+    margin: 0 auto;
+  }
+  footer.site-footer a.footer-link {
+    color: var(--fg-muted);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 6px;
+  }
+  @media (max-width: 600px) {
+    main.landing-main { padding: 20px 18px 48px; }
+    header.site-header { padding: 12px 18px; }
+    section { padding: 24px 0; }
+    section.cta-final { padding: 28px 18px; }
+    footer.site-footer { padding: 18px; }
+    section.hero h1 { font-size: 1.8rem; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0s !important;
+      transition-duration: 0s !important;
+    }
+  }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main-content">Saltar al contenido principal</a>
+<header class="site-header" role="banner">
+  <a class="brand" href="/" aria-label="NovaOrders, ir al inicio">NovaOrders</a>
+  <nav class="primary" aria-label="Navegación principal">
+    <a class="nav-link" href="#beneficios">Beneficios</a>
+    <a class="nav-link" href="#como-funciona">Cómo va a funcionar</a>
+    <a class="nav-link" href="#privacidad">Privacidad</a>
+    <a class="cta nav-cta" href="{{ comenzar_url }}" data-cta="hero-nav">Próximamente</a>
+  </nav>
+</header>
+<main class="landing-main" id="main-content" tabindex="-1">
+  <section class="hero" aria-labelledby="hero-title">
+    <p class="eyebrow">NovaOrders para tu comercio</p>
+    <h1 id="hero-title">Recibí y administrá los pedidos de tu local por WhatsApp, sin perder el control.</h1>
+    <p class="lede">
+      NovaOrders ayuda a tu comercio a recibir y operar pedidos por WhatsApp con su propia configuración. El registro público de nuevos comercios aún no está abierto: esta página adelanta el flujo previsto para cuando se habilite la solicitud de acceso.
+    </p>
+    <div class="cta-row">
+      <a class="cta" href="{{ comenzar_url }}" data-cta="hero-primary">Próximamente</a>
+      <a class="nav-link" href="#como-funciona">Ver el flujo previsto</a>
+    </div>
+  </section>
+
+  <section class="benefits" id="beneficios" aria-labelledby="beneficios-title">
+    <h2 id="beneficios-title">Tres beneficios concretos para tu comercio</h2>
+    <p class="section-intro">El producto apunta a lo que mueve la operación diaria: claridad en cada pedido, configuración por comercio y revisión operativa antes de salir en vivo.</p>
+    <ul class="benefit-list">
+      <li>
+        <h3>Pedidos claros y consistentes</h3>
+        <p>Cada pedido llega con cliente, productos, cantidades y entrega bien definidos, listos para confirmar y preparar.</p>
+      </li>
+      <li>
+        <h3>Configuración a tu medida</h3>
+        <p>Cada comercio define sus medios de pago, métodos de entrega y reglas operativas, aislados del resto.</p>
+      </li>
+      <li>
+        <h3>Revisión operativa antes de activar</h3>
+        <p>La salida en vivo queda sujeta a la revisión de la configuración y del canal antes de aceptar pedidos reales.</p>
+      </li>
+    </ul>
+  </section>
+
+  <section class="process" id="como-funciona" aria-labelledby="proceso-title">
+    <h2 id="proceso-title">Cómo va a funcionar la prueba, paso a paso</h2>
+    <p class="section-intro">Este es el flujo previsto. La apertura del registro público se habilitará próximamente; los pasos siguientes describen cómo se va a recorrer esa experiencia cuando esté disponible.</p>
+    <ol class="process-list">
+      <li>
+        <h3>Apertura del registro</h3>
+        <p>Cuando se habilite la solicitud, vas a poder iniciar el pedido de acceso desde esta página sin compartir datos sensibles en ese momento.</p>
+      </li>
+      <li>
+        <h3>Configuración del comercio</h3>
+        <p>Cargarás los datos básicos del comercio y elegirás medios de pago y métodos de entrega, con ayuda contextual en cada paso.</p>
+      </li>
+      <li>
+        <h3>Validación en modo PRUEBA</h3>
+        <p>Se habilitará un canal controlado para validar el flujo completo antes de aceptar pedidos reales.</p>
+      </li>
+      <li>
+        <h3>Salida en vivo con acompañamiento</h3>
+        <p>El pase a activo se decide tras la revisión operativa y la configuración verificada del canal.</p>
+      </li>
+    </ol>
+  </section>
+
+  <section class="trust" id="privacidad" aria-labelledby="privacidad-title">
+    <h2 id="privacidad-title">Aislamiento y configuración por comercio</h2>
+    <p class="section-intro">El diseño del producto parte de un principio: la configuración, el catálogo y la operación de cada comercio están separados del resto.</p>
+    <ul class="trust-list">
+      <li>
+        <strong>Datos aislados por comercio</strong>
+        <p>Cada comercio opera con su propia configuración, catálogo y operación, sin compartir información operativa con otros comercios.</p>
+      </li>
+      <li>
+        <strong>Configuración previa a la salida en vivo</strong>
+        <p>Antes de operar, el flujo previsto contemplará configurar medios de pago, métodos de entrega y un canal verificado.</p>
+      </li>
+      <li>
+        <strong>Disponibilidad controlada por el sistema</strong>
+        <p>Una política única decide si un comercio puede recibir pedidos, según su estado y su configuración vigente.</p>
+      </li>
+    </ul>
+  </section>
+
+  <section class="cta-final" aria-labelledby="cta-final-title">
+    <h2 id="cta-final-title">Cuándo se abre el registro</h2>
+    <p>La solicitud de acceso para nuevos comercios aún no está habilitada. Esta página solo confirma el estado actual y describe el flujo previsto; volvé más adelante si querés ver novedades.</p>
+    <a class="cta" href="{{ comenzar_url }}" data-cta="final">Próximamente</a>
+  </section>
+</main>
+<footer class="site-footer" role="contentinfo">
+  <span>© NovaOrders</span>
+</footer>
+</body>
+</html>

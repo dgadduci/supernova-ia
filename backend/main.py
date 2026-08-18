@@ -21,12 +21,14 @@ from backend.routers import (
     presentaciones,
     producto_queries,
     productos,
+    public_onboarding,
     sessions,
     twilio_delivery_callback,
     twilio_webhook,
 )
 
 app = FastAPI(title="supernova-ia API")
+app.include_router(public_onboarding.router)
 app.include_router(health.router)
 app.include_router(comercios.router)
 app.include_router(estados_comercios.router)
