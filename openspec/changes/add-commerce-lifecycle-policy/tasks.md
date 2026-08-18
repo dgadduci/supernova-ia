@@ -52,3 +52,19 @@
   can.
 - [x] 4.4 Run and report the exact validation commands in `proposal.md`, plus
   the migration upgrade/downgrade check against the project test database.
+
+## 5. Unified inbound availability guard
+
+- [x] 5.1 Apply `CommerceAvailabilityService` at direct/test ingress before
+  session lookup or response orchestration. Preserve auth; unavailable returns
+  a bounded error with no mutation or customer response.
+- [x] 5.2 Re-evaluate the policy in provider `process_lease` after receipt
+  resolution and before session/draft/intent/outbox staging. Terminalize an
+  unavailable lease without retry or outbound work, preserving transactions.
+- [x] 5.3 Keep provider acceptance guarded and ensure no current ingress
+  interprets lifecycle codes or labels locally.
+- [x] 5.4 Add regressions for blocked, expired, and quota-exhausted commerce at
+  direct ingress, provider acceptance, and a lease accepted before deactivation.
+  Prove pipeline/orchestrator/outbox are not called and available behavior stays.
+- [x] 5.5 Run and report the revised validation commands, strict OpenSpec
+  validation, and `git diff --check`.

@@ -32,6 +32,12 @@ from unittest.mock import MagicMock, patch
 from backend.models.canal_whatsapp import CanalWhatsappMode
 from backend.repositories.session_repository import SessionRepository
 from backend.services import provider_inbound_message_coordinator as coord_mod
+from backend.services.commerce_availability_service import (
+    CommerceAvailabilityOutcome,
+    CommerceAvailabilityService,
+    CommerceAvailabilityStatus,
+    CommerceUnavailableReason,
+)
 from backend.services.exceptions import (
     InvalidProviderInboundMessageCommand,
 )
@@ -39,6 +45,7 @@ from backend.services.provider_inbound_message_coordinator import (
     ProviderInboundMessageCommand,
     ProviderInboundMessageCoordinator,
     ProviderInboundMessageStatus,
+    ProviderInboundProcessingOutcome,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -756,6 +763,276 @@ class RollbackAtomicityTest(unittest.TestCase):
         self.assertEqual(env["db"].commit.call_count, 1)
         self.assertEqual(env["db"].rollback.call_count, 1)
         pipeline.assert_not_called()
+
+
+class LeaseAvailabilityReevaluationTest(unittest.TestCase):
+    """``process_lease`` MUST re-evaluate
+    ``CommerceAvailabilityService`` after receipt resolution and
+    before any session/pedido/intent/outbox staging.
+
+    A lease accepted while the commerce was available but processed
+    after the commerce became unavailable terminates the work as
+    non-retryable with a bounded policy reason, without invoking
+    the pipeline or staging any outbound work. A technical failure
+    while evaluating availability preserves the existing rollback
+    and retry semantics; it never enables processing.
+    """
+
+    def setUp(self) -> None:
+        importlib.reload(coord_mod)
+
+    def _build_leased(
+        self,
+        *,
+        comercio_id: int,
+        procesamiento_id: int = 555,
+        receipt_id: int = 1,
+        body: str = "hola",
+    ) -> tuple[MagicMock, dict[str, MagicMock]]:
+        leased = MagicMock(name="LeasedProcesamiento")
+        leased.id = procesamiento_id
+        leased.token_lease = "lease-token"
+        leased.mensaje = body
+        leased.intentos = 0
+        leased.recepcion_mensaje_proveedor_id = receipt_id
+        receipt = MagicMock(name="Receipt")
+        receipt.id = receipt_id
+        receipt.cliente_id = 2
+        receipt.comercio_id = comercio_id
+        receipt.proveedor = "twilio"
+        receipt.whatsapp = "+5491100000000"
+        env = _wire_dependencies(
+            canal=_make_canal_dedicado(comercio_id=comercio_id),
+            existing_context=None,
+        )
+        env["recepcion_repo"].find_by_id.return_value = receipt
+        env["procesamiento_repo"].finalize_terminal.return_value = True
+        return leased, env
+
+    def _unavailable(
+        self, reason: CommerceUnavailableReason
+    ) -> CommerceAvailabilityOutcome:
+        return CommerceAvailabilityOutcome(
+            status=CommerceAvailabilityStatus.UNAVAILABLE,
+            reason=reason,
+            comercio_id=3,
+            modo_operacion=None,
+            prueba_hasta=None,
+            prueba_max_pedidos=None,
+            prueba_pedidos_consumidos=0,
+        )
+
+    def _available(self) -> CommerceAvailabilityOutcome:
+        return CommerceAvailabilityOutcome(
+            status=CommerceAvailabilityStatus.AVAILABLE,
+            reason=None,
+            comercio_id=3,
+            modo_operacion=None,
+            prueba_hasta=None,
+            prueba_max_pedidos=None,
+            prueba_pedidos_consumidos=0,
+        )
+
+    def test_unavailable_commerce_terminates_lease_without_retry(
+        self,
+    ) -> None:
+        leased, env = self._build_leased(comercio_id=3)
+
+        with patch.object(
+            CommerceAvailabilityService, "evaluate"
+        ) as evaluate, patch.object(
+            coord_mod, "process_incoming_message"
+        ) as pipeline:
+            evaluate.return_value = self._unavailable(
+                CommerceUnavailableReason.BLOCKED_STATE
+            )
+            result = env["coordinator"].process_lease(leased)
+
+        self.assertEqual(
+            result.outcome,
+            ProviderInboundProcessingOutcome.FAILED_TERMINAL,
+        )
+        self.assertEqual(result.codigo, "unavailable_blocked_state")
+        self.assertEqual(
+            result.categoria.value, "terminal_processor_error"
+        )
+        pipeline.assert_not_called()
+        env["session_repo"].stage_active.assert_not_called()
+        env["pedido_repo"].stage_draft_for_session.assert_not_called()
+        env["outbox_repo"].stage.assert_not_called()
+        env["procesamiento_repo"].finalize_processed.assert_not_called()
+        env["procesamiento_repo"].finalize_retryable.assert_not_called()
+        env["procesamiento_repo"].finalize_terminal.assert_called_once()
+        terminal_kwargs = (
+            env["procesamiento_repo"].finalize_terminal.call_args.kwargs
+        )
+        self.assertEqual(
+            terminal_kwargs["codigo"], "unavailable_blocked_state"
+        )
+        self.assertEqual(
+            terminal_kwargs["categoria"], "terminal_processor_error"
+        )
+
+    def test_expired_trial_terminates_lease_with_bounded_reason(
+        self,
+    ) -> None:
+        leased, env = self._build_leased(comercio_id=3)
+
+        with patch.object(
+            CommerceAvailabilityService, "evaluate"
+        ) as evaluate, patch.object(
+            coord_mod, "process_incoming_message"
+        ) as pipeline:
+            evaluate.return_value = self._unavailable(
+                CommerceUnavailableReason.TRIAL_EXPIRED
+            )
+            result = env["coordinator"].process_lease(leased)
+
+        self.assertEqual(
+            result.outcome,
+            ProviderInboundProcessingOutcome.FAILED_TERMINAL,
+        )
+        self.assertEqual(result.codigo, "unavailable_trial_expired")
+        self.assertEqual(
+            result.categoria.value, "terminal_processor_error"
+        )
+        pipeline.assert_not_called()
+        env["outbox_repo"].stage.assert_not_called()
+        env["procesamiento_repo"].finalize_terminal.assert_called_once()
+
+    def test_quota_exhausted_terminates_lease_with_bounded_reason(
+        self,
+    ) -> None:
+        leased, env = self._build_leased(comercio_id=3)
+
+        with patch.object(
+            CommerceAvailabilityService, "evaluate"
+        ) as evaluate, patch.object(
+            coord_mod, "process_incoming_message"
+        ) as pipeline:
+            evaluate.return_value = self._unavailable(
+                CommerceUnavailableReason.TRIAL_QUOTA_EXHAUSTED
+            )
+            result = env["coordinator"].process_lease(leased)
+
+        self.assertEqual(
+            result.outcome,
+            ProviderInboundProcessingOutcome.FAILED_TERMINAL,
+        )
+        self.assertEqual(
+            result.codigo, "unavailable_trial_quota_exhausted"
+        )
+        pipeline.assert_not_called()
+        env["outbox_repo"].stage.assert_not_called()
+        env["procesamiento_repo"].finalize_terminal.assert_called_once()
+
+    def test_technical_availability_failure_preserves_rollback_and_retry(
+        self,
+    ) -> None:
+        leased, env = self._build_leased(comercio_id=3)
+
+        def _explode(*_args, **_kwargs):
+            raise RuntimeError("availability db failure")
+
+        with patch.object(
+            CommerceAvailabilityService, "evaluate", side_effect=_explode
+        ) as evaluate, patch.object(
+            coord_mod, "process_incoming_message"
+        ) as pipeline:
+            result = env["coordinator"].process_lease(leased)
+
+        self.assertEqual(
+            result.outcome,
+            ProviderInboundProcessingOutcome.RETRY_SCHEDULED,
+        )
+        assert result.categoria is not None
+        self.assertEqual(
+            result.categoria.value,
+            "pipeline_error",
+        )
+        self.assertEqual(result.codigo, "pipeline_error")
+        self.assertEqual(result.intentos, 0)
+        self.assertIsNone(result.detalle)
+        evaluate.assert_called_once_with(3)
+        pipeline.assert_not_called()
+        env["session_repo"].stage_active.assert_not_called()
+        env["pedido_repo"].stage_draft_for_session.assert_not_called()
+        env["outbox_repo"].stage.assert_not_called()
+        env["procesamiento_repo"].finalize_processed.assert_not_called()
+        env["procesamiento_repo"].finalize_terminal.assert_not_called()
+        env["procesamiento_repo"].finalize_retryable.assert_called_once()
+        retryable_kwargs = (
+            env["procesamiento_repo"].finalize_retryable.call_args.kwargs
+        )
+        self.assertEqual(retryable_kwargs["categoria"], "pipeline_error")
+        self.assertEqual(retryable_kwargs["codigo"], "pipeline_error")
+        self.assertIsNotNone(retryable_kwargs["proximo_intento_en"])
+        env["db"].rollback.assert_called()
+
+    def test_technical_availability_failure_with_exhausted_budget_terminates(
+        self,
+    ) -> None:
+        leased, env = self._build_leased(comercio_id=3)
+        leased.intentos = 3
+        env["procesamiento_repo"].finalize_terminal.return_value = True
+
+        def _explode(*_args, **_kwargs):
+            raise RuntimeError("availability db failure")
+
+        with patch.object(
+            CommerceAvailabilityService, "evaluate", side_effect=_explode
+        ) as evaluate, patch.object(
+            coord_mod, "process_incoming_message"
+        ) as pipeline:
+            result = env["coordinator"].process_lease(leased)
+
+        self.assertEqual(
+            result.outcome,
+            ProviderInboundProcessingOutcome.FAILED_TERMINAL,
+        )
+        assert result.categoria is not None
+        self.assertEqual(
+            result.categoria.value,
+            "pipeline_error",
+        )
+        self.assertEqual(result.codigo, "pipeline_error")
+        self.assertEqual(result.intentos, 3)
+        self.assertEqual(result.detalle, "budget_exhausted")
+        evaluate.assert_called_once_with(3)
+        pipeline.assert_not_called()
+        env["session_repo"].stage_active.assert_not_called()
+        env["pedido_repo"].stage_draft_for_session.assert_not_called()
+        env["outbox_repo"].stage.assert_not_called()
+        env["procesamiento_repo"].finalize_processed.assert_not_called()
+        env["procesamiento_repo"].finalize_retryable.assert_not_called()
+        env["procesamiento_repo"].finalize_terminal.assert_called_once()
+        terminal_kwargs = (
+            env["procesamiento_repo"].finalize_terminal.call_args.kwargs
+        )
+        self.assertEqual(terminal_kwargs["categoria"], "pipeline_error")
+        self.assertEqual(terminal_kwargs["codigo"], "pipeline_error")
+        env["db"].rollback.assert_called()
+
+    def test_available_commerce_processes_lease_normally(self) -> None:
+        leased, env = self._build_leased(comercio_id=3)
+
+        with patch.object(
+            CommerceAvailabilityService, "evaluate"
+        ) as evaluate, patch.object(
+            coord_mod, "process_incoming_message", return_value=[]
+        ) as pipeline, patch.object(
+            coord_mod, "stage_outbound_rows"
+        ) as outbound:
+            evaluate.return_value = self._available()
+            result = env["coordinator"].process_lease(leased)
+
+        self.assertEqual(
+            result.outcome,
+            ProviderInboundProcessingOutcome.PROCESSED,
+        )
+        evaluate.assert_called_once_with(3)
+        pipeline.assert_called_once()
+        outbound.assert_called_once()
 
 
 class StaticBoundariesTest(unittest.TestCase):

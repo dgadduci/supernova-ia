@@ -18,6 +18,11 @@ the literal `"ACTIVO"`. The admin commerce form can already change
 `estado_id`, but it has no trial configuration. A confirmed customer order is
 the transition of its `Pedido` from `BORRADOR` to `INGRESADO`; both the API
 service and the draft-order closure own such a transition today.
+Provider webhook acceptance already evaluates the policy before claiming a
+receipt, but the authenticated direct-message endpoint invokes the response
+orchestrator without that evaluation. Provider work accepted while available is
+also processed later without a second evaluation, so deactivation between
+acceptance and lease processing can still create a reply.
 
 ## Scope
 
@@ -31,6 +36,10 @@ service and the draft-order closure own such a transition today.
 - Centralize availability evaluation and quota reservation in one shared
   service/repository boundary, reused by all existing ingress/routing and
   `BORRADOR -> INGRESADO` paths.
+- Complete the ingress boundary: provider webhook and authenticated direct/test
+  ingress evaluate the same policy before business processing, and provider
+  lease processing evaluates it again before session, draft, intent, or outbox
+  staging.
 - Extend the authenticated admin create/edit form to configure deadline and
   quota only for PRUEBA; show the consumed counter read-only.
 - Make entering PRUEBA reset the counter atomically; editing an already trial
@@ -46,6 +55,8 @@ service and the draft-order closure own such a transition today.
 - No deletion of commerce, orders, sessions, channels, catalog rows, or
   associations; no rewrite of historical orders.
 - No new provider API or recognition/fuzzy/hybrid roadmap work.
+- No change to channel resolution, receipt idempotency, retry backoff, outbound
+  wording, or confirmation-reservation semantics.
 - No status catalogue CRUD. Existing `SUSPENDIDO` and `BAJA` rows remain
   historical blocked/non-selectable configuration during this phase.
 
@@ -73,6 +84,9 @@ and owns its one commit/rollback.
 | PRUEBA at/after deadline or at quota | Commerce is unavailable; no order becomes INGRESADO and no counter changes. |
 | Concurrent final confirmation for final quota unit | At most one reservation succeeds; the other gets typed unavailable. |
 | Trial field invalid or absent for a selected PRUEBA | Admin mutation is rejected atomically. |
+| New inbound message for unavailable commerce | It is not processed: no session/draft/order mutation or outbound response. Provider webhook keeps its safe acknowledgement; direct/test ingress returns a bounded unavailable-commerce error. |
+| Previously accepted provider work whose commerce becomes unavailable before lease processing | The worker terminalizes it as non-retryable unavailable work without invoking the pipeline or staging outbound work. |
+| Technical/database failure while evaluating availability | The caller preserves existing error/rollback behavior; it must not process or answer the message. |
 | Technical/database failure | Caller rolls back its full transaction; no counter or pedido partial write. |
 
 An unavailable commerce must never silently route to another commerce, create
@@ -82,12 +96,11 @@ successful draft/order outcome.
 ## Observability and Reversibility
 
 Existing typed unavailable outcomes remain the external signal at routing and
-provider ingress. Add a bounded reason (`blocked_state`, `trial_expired`, or
-`trial_quota_exhausted`) for internal/operator-visible diagnostics without
-logging customer message content or credentials. The admin detail shows the
-configured deadline, quota, consumed count, and derived availability. The
-current seeded rows define the initial lifecycle, but no concrete status code
-is an operational condition in Python.
+provider ingress. Direct/test ingress exposes only a bounded unavailable-commerce
+error; provider processing records a bounded terminal reason. The policy reason
+is `blocked_state`, `trial_expired`, or `trial_quota_exhausted`; diagnostics
+must not log customer message content or credentials. The admin detail shows
+the configured deadline, quota, consumed count, and derived availability.
 
 This change requires an Alembic migration. The upgrade adds nullable trial
 configuration and backfills status metadata without changing existing
@@ -102,9 +115,9 @@ used discards configuration and therefore is not an automatic recovery action.
   and one Alembic revision
 - status/commerce repositories, schemas, and services; a new small shared
   availability policy module
-- existing channel, provider-ingress, shared-routing, order-service, and
-  draft-order-confirmation seams only where they currently decide active
-  commerce or finalize `INGRESADO`
+- existing channel, provider-ingress/worker, direct incoming-message endpoint,
+  shared-routing, order-service, and draft-order-confirmation seams only where
+  they decide availability, process inbound work, or finalize `INGRESADO`
 - admin forms, views, view service, routes, and commerce template
 - focused lifecycle, panel, routing/provider, and order regressions
 - this change's OpenSpec artifacts
@@ -117,6 +130,9 @@ used discards configuration and therefore is not an automatic recovery action.
   failed confirmation rolls back both counter and pedido change.
 - Regression: dedicated/shared/provider paths reject unavailable commerce and
   do not select a fallback; ACTIVO behavior remains available.
+- Ingress: direct/test ingress does not invoke the response orchestrator when
+  unavailable; a leased provider item that becomes unavailable is terminalized
+  without session, draft, intent, or outbox staging.
 - Admin: only canonical states are selectable; PRUEBA requires valid deadline
   and positive quota; edit does not reset consumption; entering PRUEBA does.
 - Migration/seed: existing rows retain IDs/references and legacy rows block.
@@ -124,9 +140,9 @@ used discards configuration and therefore is not an automatic recovery action.
 The implementer runs locally and reports complete output:
 
 ```text
-venv/bin/python -m pytest backend/tests/test_administrative_catalog_panel.py backend/tests/test_commerce_channel_resolver.py backend/tests/test_shared_channel_manual_selection.py backend/tests/test_provider_inbound_message_coordinator.py backend/tests/test_pedido_service.py
-venv/bin/ruff check backend/admin backend/models backend/repositories backend/services backend/intents/orchestration/draft_order_closure.py
-venv/bin/python -m compileall backend/admin backend/models backend/repositories backend/services backend/intents/orchestration/draft_order_closure.py
+venv/bin/python -m pytest backend/tests/test_administrative_catalog_panel.py backend/tests/test_commerce_channel_resolver.py backend/tests/test_shared_channel_manual_selection.py backend/tests/test_provider_inbound_processing.py backend/tests/test_provider_processing_worker.py backend/tests/test_twilio_webhook.py backend/tests/test_incoming_messages_endpoint.py backend/tests/test_pedido_service.py
+venv/bin/ruff check backend/admin backend/models backend/repositories backend/services backend/routers/incoming_messages.py backend/intents/orchestration/draft_order_closure.py
+venv/bin/python -m compileall backend/admin backend/models backend/repositories backend/services backend/routers/incoming_messages.py backend/intents/orchestration/draft_order_closure.py
 venv/bin/openspec validate add-commerce-lifecycle-policy --strict
 git diff --check
 ```
