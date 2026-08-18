@@ -12,6 +12,13 @@
 - [x] 1.4 Load state options from `seleccionable` configuration rather than
   hardcoding codes, and retire arbitrary runtime state creation without adding
   replacement CRUD.
+- [x] 1.5 Apply a follow-up Alembic revision that seeds the five canonical
+  lifecycle states idempotently (`ACTIVO`/`INACTIVO`/`PRUEBA` selectable;
+  `SUSPENDIDO`/`BAJA` blocked/non-selectable) without altering pre-existing
+  `id` values, and add a focused migration test that proves the five codes,
+  exact attributes, pre-existing `ACTIVO` id preservation, the
+  repository/panel selectable listing returning exactly `ACTIVO`,
+  `INACTIVO` and `PRUEBA`, and idempotent re-application.
 
 ## 2. Central policy and transactional confirmation
 
