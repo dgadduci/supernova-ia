@@ -3,9 +3,7 @@
 ## Purpose
 
 Define the `Comercio` SQLAlchemy model — the central entity of the multi-commerce WhatsApp ordering system. Each `Comercio` represents one business on the platform: it stores the business profile, the dispatch address, locale preferences, lifecycle timestamps, and a foreign-key reference to the `estado_comercio` lookup table that records its current status.
-
 ## Requirements
-
 ### Requirement: Comercio model definition
 The system SHALL define a SQLAlchemy model named `Comercio` that exposes the column set required by Subphase 1.2: a primary-key integer `id`; business-profile fields (`nombre_fantasia`, `nombre_corto`, `razon_social`, `cuit`, `whatsapp`); address fields (`calle`, `numero`, `piso_departamento`, `localidad`, `provincia`, `codigo_postal`); a unique `slug`; a foreign-key `estado_id` referencing `estado_comercio.id` with a corresponding `estado` relationship; locale fields with defaults (`zona_horaria`, `moneda`, `idioma`); and lifecycle timestamps (`fecha_alta`, `fecha_ultima_modificacion`, `fecha_baja`).
 
@@ -22,3 +20,42 @@ The system SHALL define a SQLAlchemy model named `Comercio` that exposes the col
 - **WHEN** the `Comercio` model is imported and its columns and relationships are inspected
 - **THEN** it exposes `estado_id` as a non-null integer ForeignKey to `estado_comercio.id`
 - **AND** it exposes an `estado` relationship attribute that resolves to an `EstadoComercio` instance
+
+### Requirement: Commerce stores its own trial limits
+
+A `Comercio` SHALL store nullable timezone-aware `prueba_hasta`, nullable
+positive `prueba_max_pedidos`, and non-negative
+`prueba_pedidos_consumidos`. Deadline and maximum SHALL be present when its
+state mode is PRUEBA. Consumption belongs to the commerce, not to the shared
+state row.
+
+#### Scenario: Entering a trial initializes consumption
+
+- **WHEN** an operator changes a non-trial commerce to PRUEBA with valid
+  deadline and quota
+- **THEN** the configuration is persisted atomically
+- **AND** `prueba_pedidos_consumidos` becomes zero
+
+#### Scenario: Editing active trial limits preserves consumption
+
+- **WHEN** an operator changes deadline and/or quota of a commerce already in
+  PRUEBA
+- **THEN** the new limits are persisted atomically
+- **AND** its existing consumed counter is unchanged
+
+### Requirement: Availability is centralized and fail-closed
+
+The system SHALL evaluate a commerce through one typed availability policy.
+HABILITADO is available; BLOQUEADO, missing, and legacy states are unavailable;
+PRUEBA is available only before its deadline and below its quota.
+
+#### Scenario: Trial expiration wins over unused quota
+
+- **WHEN** current time is at or after `prueba_hasta` and consumption remains
+  below the configured maximum
+- **THEN** the commerce is unavailable
+
+#### Scenario: Trial quota exhaustion wins before deadline
+
+- **WHEN** consumption equals the configured maximum before `prueba_hasta`
+- **THEN** the commerce is unavailable
