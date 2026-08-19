@@ -142,13 +142,29 @@ the owner route.
 The transaction creates no channel, customer, session, pedido, catalogue row,
 payment, delivery, trial reservation, provider work or readiness flag.
 
-## Deferred Phase 4B readiness and scoped essentials
+## Phase 4B — approved read-only readiness
 
-Payment/delivery owner configuration and readiness remain separate work. When
-later approved, those routes must derive authorization from active membership
-for the exact commerce and must reuse existing payment/delivery and lifecycle
-boundaries. They cannot activate a commerce, set trial limits, mutate
-availability or create a parallel provider pipeline.
+Phase 4B adds only a membership-scoped read projection to the existing owner
+onboarding surface. It is not a configuration panel. The route resolves the
+validated Supabase principal to its `CuentaUsuario`, derives the terminal
+commerce from that account's single draft, and verifies an active `OWNER`
+`ComercioUsuario` for that exact commerce before it reads any projection fact.
+It accepts no `comercio_id` from the browser. Missing, inactive or mismatched
+membership is a bounded fail-closed result and never falls back to a different
+commerce.
+
+The projection is recomputed on every GET and owns no transaction, lock, commit
+or rollback. It has no mutable readiness row and does not call a mutation
+service. The dashboard uses plain next-action language while keeping the
+commerce in `INACTIVO`; a displayed complete checklist is never an activation
+decision or an assertion that orders can be accepted.
+
+Payment/delivery owner configuration is deferred. The existing
+`CommercePaymentDeliveryConfigurationService` is an Admin-authorized mutation
+boundary that owns `commit`/`rollback`; using it for owner self-service needs a
+separate approval of authorization, payment-field handling, CSRF and transaction
+ownership. Phase 4B must not mutate a payment/delivery bridge, lifecycle, trial,
+channel, catalogue, availability, provider or outbox.
 
 Readiness is a read-only projection composed from exact facts:
 
@@ -160,10 +176,15 @@ Readiness is a read-only projection composed from exact facts:
 | At least one eligible active delivery method | commerce delivery association |
 | Channel ready | Admin/provisioning/channel resolver |
 | Trial or active lifecycle | existing lifecycle/Admin authority |
-| Catalogue ready | future commerce catalogue authority |
+| Catalogue ready | no approved authority exists; it is not a Phase 4B prerequisite |
 
-The projection reports bounded missing requirements. It cannot write a
-"ready" state, set `prueba_hasta`, change quota, activate a channel or alter
+An eligible payment/delivery association requires both an active commerce bridge
+row and an active corresponding global catalog row. Channel configuration is
+reported only from its existing authoritative rows (active dedicated channel for
+the commerce or active shared-channel membership); an absent, inactive or
+technically indeterminate channel is reported as pending, never inferred ready.
+The projection reports bounded missing requirements. It cannot write a "ready"
+state, set `prueba_hasta`, change quota, activate a channel or alter
 `EstadoComercio`. Only after all approved activation requirements are satisfied
 may Admin use the existing lifecycle path to grant `PRUEBA` or `ACTIVO`.
 
@@ -196,7 +217,7 @@ Admin credential and vice versa.
 | Concurrent double completion | Exactly one commerce/membership result; other request reloads exact terminal draft. |
 | Terminal draft with inconsistent membership | Fail closed; do not repair or create a second commerce. |
 | Persistence failure | Caller rollback removes commerce, membership and draft terminal transition together. |
-| Missing readiness prerequisite | Deferred until Phase 4B; commerce remains INACTIVO. |
+| Missing, globally inactive or technically indeterminate readiness prerequisite | Show it as pending; commerce remains INACTIVO. |
 | Channel/lifecycle unavailable | Existing fail-closed availability behavior; never route elsewhere. |
 
 ## Testing and release gates
