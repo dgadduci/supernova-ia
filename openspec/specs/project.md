@@ -4,7 +4,23 @@
 
 Build a multi-commerce ordering system that receives free-text customer orders through WhatsApp.
 
-The system will use one central WhatsApp number. Customers will reach it from each commerce's own WhatsApp channel, and the system will route each order to the correct commerce.
+The NovaOrders core does not use one shared WhatsApp sender. When a commerce
+uses WhatsApp, that commerce owns and configures its own Meta/Twilio assets and
+runs one isolated Twilio–Commerce (T-C) web service. T-C services reuse the
+same adapter code and may be distributed across multiple Railway projects as
+service capacity is consumed; the NovaOrders core and central data remain in
+the core project. Each T-C service receives its commerce's provider webhook,
+sends a normalized event to the NovaOrders core, and sends the core's outbound
+command through that commerce's own Twilio account. The core owns ordering
+logic and commerce isolation, not provider credentials or provider-specific
+webhooks. A future native NovaOrders chat is a separate channel and is not
+part of this WhatsApp boundary.
+
+The self-service commerce-onboarding track is currently paused after the
+read-only readiness work. Its owner configuration, review and operational
+handoff screens may be narrowed or rewritten once the per-commerce adapter
+architecture is implemented; no future onboarding task is authorized by this
+note alone.
 
 ## Working Rules
 
@@ -38,6 +54,12 @@ Future phases:
 - Twilio
 - Railway deployment
 - PostgreSQL persistence on Railway
+
+Provider integration is commerce-isolated: a future Twilio phase must not
+reintroduce a shared central WhatsApp sender or move commerce credentials into
+the NovaOrders core. A T-C service in another Railway project communicates with
+the core over authenticated HTTPS; Railway private networking is only a
+same-project/environment boundary.
 
 
 ## FastAPI Rules

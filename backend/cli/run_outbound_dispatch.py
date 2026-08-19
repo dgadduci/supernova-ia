@@ -191,6 +191,10 @@ def _validate_outbound_settings(settings: Settings) -> None:
     ``InvalidTwilioOutboundDispatchConfig`` so the CLI can fail
     non-zero with a clear operational message instead of an
     obscure ``RuntimeError`` trace.
+
+    ``TWILIO_CALLBACK_STATUS_URL`` is now optional: when missing
+    or blank the dispatcher omits ``status_callback`` from
+    ``messages.create`` instead of inventing a placeholder URL.
     """
     if not settings.twilio_auth_token:
         raise InvalidTwilioOutboundDispatchConfig(
@@ -215,11 +219,6 @@ def _validate_outbound_settings(settings: Settings) -> None:
     if not settings.twilio_outbound_sender_e164:
         raise InvalidTwilioOutboundDispatchConfig(
             "TWILIO_OUTBOUND_SENDER_E164 is required by the outbound "
-            "dispatch CLI"
-        )
-    if not settings.twilio_callback_status_url:
-        raise InvalidTwilioOutboundDispatchConfig(
-            "TWILIO_CALLBACK_STATUS_URL is required by the outbound "
             "dispatch CLI"
         )
 

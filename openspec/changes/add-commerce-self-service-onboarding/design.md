@@ -1,5 +1,10 @@
 # Design: commerce self-service onboarding
 
+> **Status:** The Phase 4A/4B onboarding implementation is retained as current
+> state, but further onboarding and operational handoff work is paused. The
+> provider architecture below is the approved direction for the next design
+> pass; it is documentation only and does not authorize implementation.
+
 ## Architecture decision
 
 Use a three-boundary design:
@@ -19,6 +24,64 @@ short-lived local session. `CuentaUsuario` is application-owned identity data
 deferred to Phase 3 and `ComercioUsuario` is commerce authorization data
 deferred to Phase 4; therefore a valid Supabase session alone cannot grant
 access to any commerce.
+
+## Future provider boundary: one T-C adapter per commerce
+
+The target provider design intentionally moves the Twilio-specific edge out of
+the NovaOrders core. Each commerce owns its Meta/WABA/Twilio relationship and
+has one isolated T-C web service created from the shared adapter implementation.
+T-C services may be distributed across multiple Railway projects as service
+capacity is consumed. There is no shared NovaOrders WhatsApp sender in this
+design.
+
+```text
+Twilio webhook (merchant sender)
+        │ form POST + X-Twilio-Signature
+        ▼
+Commerce T-C adapter
+        │ canonical inbound event
+        ▼
+NovaOrders core/order domain
+        │ one idempotent outbound command
+        ▼
+Commerce T-C adapter ── one Twilio API send ──► merchant Twilio account
+        │
+        └── empty <Response></Response> acknowledgement to inbound webhook
+```
+
+The T-C adapter validates the signature before any forwarding, derives the
+commerce installation from its deployment/configuration, and translates the
+native form payload into a versioned canonical event. It forwards that event to
+a fast core-acceptance boundary that only authenticates, deduplicates and
+persists deferred work; it does not run recognition, LLM or order processing in
+the provider request. After acceptance, T-C returns the empty acknowledgement
+and the core later delivers an idempotent outbound command to T-C. The core
+never receives the merchant webhook directly or stores the merchant's Twilio
+credentials. The adapter is the only component that calls Twilio.
+
+The empty TwiML acknowledgement is deliberately not a customer response. The
+adapter must not include a `<Message>` in that acknowledgement and then send a
+second API message for the same event. Exactly one real outbound API send is
+created for each accepted outbound command, protected by an idempotency key and
+the existing bounded retry/status policy.
+
+The owner is responsible for Meta/Twilio registration, sender/WABA status,
+templates, billing, credentials and webhook configuration. NovaOrders may later
+provision a T-C service in whichever Railway project has capacity, but that
+does not make the core the owner of provider assets or authorize automated
+Meta/Twilio onboarding. T-C services in the same project may use Railway
+private networking to reach the core; services in another project must use the
+core's stable authenticated HTTPS endpoint. Sandbox and production share the
+same adapter contract; only provider configuration and provider capabilities
+differ.
+
+Any invalid signature, missing edge configuration, unknown installation,
+cross-commerce identifier or technical provider failure fails closed for that
+commerce. If the core cannot confirm inbound acceptance, T-C returns a
+non-success provider response so the provider can retry; it never acknowledges
+a lost event. No fallback to another sender/channel is permitted. Diagnostics
+are bounded and privacy-safe: no message bodies, phone numbers, credentials,
+signatures or raw provider payloads.
 
 ## Visual experience decision
 

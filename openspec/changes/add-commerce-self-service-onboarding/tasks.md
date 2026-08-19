@@ -93,6 +93,24 @@
 - [x] 6.3 Add focused owner-isolation, incomplete/indeterminate readiness,
   lifecycle read-only and no-write tests.
 
+## Pause gate — provider architecture pivot [x]
+
+This gate records a product decision and documentation only. It does not mark
+the future operational-handoff work as implemented.
+
+- [x] Record that the current onboarding track pauses after Phase 4B while the
+  owner flow and provider boundary are reconsidered.
+- [x] Document the target one-commerce/one-T-C-service boundary, the ability
+  to distribute T-C services across multiple Railway projects, the canonical
+  core contract, empty TwiML acknowledgement and single real outbound send.
+- [x] Update the permanent OpenSpec project context because the prior
+  central-WhatsApp description is no longer the target architecture.
+- [ ] Revisit and, if approved, rewrite the onboarding proposal, owner setup
+  flow and readiness requirements before any further implementation.
+
+Tasks below remain paused and must not be started from this documentation
+update alone.
+
 ## 7. Phase 5 — controlled trial and channel handoff
 
 - [ ] 7.1 Add an owner review/trial request state that does not mutate lifecycle

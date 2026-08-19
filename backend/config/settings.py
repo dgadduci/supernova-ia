@@ -487,6 +487,9 @@ DEFAULT_SUPABASE_ALLOWED_ALGORITHMS = ("ES256", "RS256", "PS256", "EdDSA")
 DEFAULT_SUPABASE_ABUSE_GUARD_URL: str | None = None
 DEFAULT_SUPABASE_ABUSE_GUARD_TOKEN: str | None = None
 DEFAULT_SUPABASE_REQUEST_TIMEOUT_SECONDS = 10
+DEFAULT_COMMERCE_ISOLATED_OUTBOUND_ENABLED = False
+DEFAULT_COMMERCE_ISOLATED_TC_BASE_URL: str | None = None
+DEFAULT_COMMERCE_ISOLATED_HTTP_TIMEOUT_SECONDS = 5
 
 
 def _provider_processing_worker_positive_int_env(
@@ -671,6 +674,15 @@ class Settings:
     supabase_request_timeout_seconds: int = (
         DEFAULT_SUPABASE_REQUEST_TIMEOUT_SECONDS
     )
+    commerce_isolated_outbound_enabled: bool = (
+        DEFAULT_COMMERCE_ISOLATED_OUTBOUND_ENABLED
+    )
+    commerce_isolated_tc_base_url_legacy: str | None = (
+        DEFAULT_COMMERCE_ISOLATED_TC_BASE_URL
+    )
+    commerce_isolated_http_timeout_seconds: int = (
+        DEFAULT_COMMERCE_ISOLATED_HTTP_TIMEOUT_SECONDS
+    )
 
 
 def load_settings() -> Settings:
@@ -829,6 +841,18 @@ def load_settings() -> Settings:
         supabase_request_timeout_seconds=_supabase_request_timeout_env(
             "SUPABASE_REQUEST_TIMEOUT_SECONDS",
             DEFAULT_SUPABASE_REQUEST_TIMEOUT_SECONDS,
+        ),
+        commerce_isolated_outbound_enabled=_bool_env(
+            "COMMERCE_ISOLATED_OUTBOUND_ENABLED",
+            DEFAULT_COMMERCE_ISOLATED_OUTBOUND_ENABLED,
+        ),
+        commerce_isolated_tc_base_url_legacy=_optional_str_env(
+            "COMMERCE_ISOLATED_TC_BASE_URL",
+            DEFAULT_COMMERCE_ISOLATED_TC_BASE_URL,
+        ),
+        commerce_isolated_http_timeout_seconds=_supabase_request_timeout_env(
+            "COMMERCE_ISOLATED_HTTP_TIMEOUT_SECONDS",
+            DEFAULT_COMMERCE_ISOLATED_HTTP_TIMEOUT_SECONDS,
         ),
     )
 

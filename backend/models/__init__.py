@@ -19,6 +19,16 @@ from backend.models.estado_comercio import (
     EstadoComercioModoOperacion,
 )
 from backend.models.flavor_comunicacion import FlavorComunicacion
+from backend.models.instalacion_twilio_comercio import (
+    INSTALLACION_ID_PATTERN,
+    InstalacionTwilioComercio,
+    active_installation_index_ddl,
+    active_installation_index_drop_ddl,
+)
+from backend.models.instalacion_twilio_comercio_idempotencia import (
+    IdempotencyStatus,
+    InstalacionTwilioComercioIdempotencia,
+)
 from backend.models.medios_pago import MediosPago
 from backend.models.mensaje_proveedor_saliente import (
     MensajeProveedorSaliente,
@@ -67,6 +77,8 @@ __all__ = [
     "EstadoPedido",
     "EstadoSession",
     "FlavorComunicacion",
+    "INSTALLACION_ID_PATTERN",
+    "InstalacionTwilioComercio",
     "MediosPago",
     "MensajeProveedorSaliente",
     "MetodosEntrega",

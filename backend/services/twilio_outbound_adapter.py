@@ -88,12 +88,16 @@ class TwilioSendRequest:
 
     Every field is the exact value the Twilio SDK requires. No
     secrets, no raw provider bodies and no internal ids are present.
+
+    ``status_callback_url`` is optional: when ``None`` the SDK call
+    omits the kwarg so the dispatcher never invents a placeholder
+    URL for production or staging.
     """
 
     destinatario_e164: str
     sender_e164: str
     cuerpo: str
-    status_callback_url: str
+    status_callback_url: str | None
     idempotency_key: str
 
 
@@ -155,7 +159,7 @@ def build_send_request(
     payload: OutboundDispatchPayload,
     *,
     sender_e164: str,
-    status_callback_url: str,
+    status_callback_url: str | None,
 ) -> TwilioSendRequest:
     """Translate the dispatcher's payload into the exact Twilio
     SDK payload.
@@ -163,6 +167,10 @@ def build_send_request(
     The ``idempotency_key`` is derived from the stable outbox row id
     so two parallel dispatchers cannot accidentally trigger two
     independent sends for the same row.
+
+    ``status_callback_url`` is optional: when ``None`` the SDK call
+    omits the kwarg so the dispatcher never invents a placeholder
+    URL for production or staging.
     """
     return TwilioSendRequest(
         destinatario_e164=payload.destinatario_e164,
@@ -185,12 +193,16 @@ def send(
     repository's finalization primitives check the lease token.
     """
     try:
-        message = client.create(
-            to=_as_whatsapp_address(request.destinatario_e164),
-            from_=_as_whatsapp_address(request.sender_e164),
-            body=request.cuerpo,
-            status_callback=request.status_callback_url,
-        )
+        create_kwargs: dict[str, Any] = {
+            "to": _as_whatsapp_address(request.destinatario_e164),
+            "from_": _as_whatsapp_address(request.sender_e164),
+            "body": request.cuerpo,
+        }
+        if request.status_callback_url:
+            create_kwargs["status_callback"] = str(
+                request.status_callback_url
+            )
+        message = client.create(**create_kwargs)
     except _TwilioTransportError as exc:
         return _retryable(exc, OutboundFailureCategory.RETRYABLE_TIMEOUT, "transport_error")
     except TwilioRestException as exc:

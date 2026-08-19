@@ -68,6 +68,12 @@ from backend.observability import (
 from backend.repositories.mensaje_proveedor_saliente_repository import (
     MensajeProveedorSalienteRepository,
 )
+from backend.services.outbound_command_dispatcher import (
+    OutboundCommandAmbiguous,
+    OutboundCommandDispatcher,
+    OutboundCommandResult,
+    OutboundCommandSkipped,
+)
 from backend.services.outbound_dispatch_types import (
     OutboundAttemptEvent,
     OutboundAttemptOutcome,
@@ -103,6 +109,106 @@ def _to_model_category(
         return None
     return OutboundFailureCategory(str(value.value))
 
+
+def _to_twilio_send_result(
+    helper_result: OutboundCommandResult,
+) -> TwilioSendResult:
+    """Translate the bounded helper outcome into the central
+    dispatcher's adapter result.
+
+    The mapping keeps the central dispatcher's finalization
+    vocabulary unchanged: the helper's ``sent`` status maps to the
+    adapter's ``SENT`` with the returned SID; the helper's
+    ``retryable`` status maps to the adapter's ``RETRYABLE`` with
+    the documented safe codigo and HTTP status; the helper's
+    ``terminal`` status maps to the adapter's ``TERMINAL`` with
+    the same surface; the helper's ``in_progress`` / ``already_claimed``
+    / ``ambiguous`` states are translated to a typed
+    ``RETRYABLE_TIMEOUT`` outcome so the bounded CLI preserves the
+    existing outbox state machine.
+    """
+    status = str(helper_result.status or "").lower()
+    http_status = int(helper_result.http_status or 0)
+    codigo = str(helper_result.code or "") or None
+    if status == "sent":
+        return TwilioSendResult(
+            status=TwilioSendStatus.SENT,
+            message_sid=helper_result.message_sid,
+            categoria=None,
+            codigo=None,
+            http_status=http_status or None,
+            detalle=None,
+        )
+    if status in {"terminal"}:
+        return TwilioSendResult(
+            status=TwilioSendStatus.TERMINAL,
+            message_sid=None,
+            categoria=AdapterFailureCategory.TERMINAL_4XX,
+            codigo=codigo,
+            http_status=http_status or None,
+            detalle=None,
+        )
+    if status in {"retryable", "in_progress", "already_claimed"}:
+        return TwilioSendResult(
+            status=TwilioSendStatus.RETRYABLE,
+            message_sid=None,
+            categoria=AdapterFailureCategory.RETRYABLE_TIMEOUT,
+            codigo=codigo,
+            http_status=http_status or None,
+            detalle=None,
+        )
+    return TwilioSendResult(
+        status=TwilioSendStatus.RETRYABLE,
+        message_sid=None,
+        categoria=AdapterFailureCategory.RETRYABLE_TIMEOUT,
+        codigo=codigo or "unknown_helper_status",
+        http_status=http_status or None,
+        detalle=None,
+    )
+
+
+_AMBIGUOUS_HELPER_CODE: str = "ambiguous_tc_response"
+
+
+def _ambiguous_helper_result(
+    *, claimed: MensajeProveedorSaliente
+) -> OutboundCommandResult:
+    """Synthesize the typed outcome for an ambiguous helper result.
+
+    The bounded helper raises :class:`OutboundCommandAmbiguous`
+    when the T-C adapter returns no typed response (timeout,
+    connection drop, malformed body, invalid
+    ``CanonicalOutboundResponse`` or unknown ``4xx`` status code).
+    The dispatcher captures the exception and synthesizes an
+    :class:`OutboundCommandResult` whose ``status`` is
+    ``"in_progress"`` so the central finalize path finalizes the
+    outbox row as ``retryable`` through the existing caller-owned
+    transaction. The dispatcher NEVER falls back to the documented
+    central Twilio path on an ambiguous result: the bounded CLI /
+    outbox lease stays the single owner of the row and the next
+    dispatch drives the documented bounded retry path on the same
+    row. The durable
+    ``instalaciones_twilio_comercio_idempotencia`` claim row stays
+    in ``in_progress`` state — the helper never finalizes it on
+    an ambiguous result — so a retry on the same key
+    short-circuits to the durable state without firing a second
+    ``messages.create``.
+
+    The ``instalacion_id`` and ``comercio_id`` fields are only
+    consumed by observability surfaces; the central finalize path
+    does not need them so the synthetic result fills them with the
+    ``MensajeProveedorSaliente.id`` tail as a safe surrogate.
+    """
+    safe_outbox_id = int(getattr(claimed, "id", 0) or 0)
+    return OutboundCommandResult(
+        status="in_progress",
+        message_sid=None,
+        code=_AMBIGUOUS_HELPER_CODE,
+        http_status=0,
+        instalacion_id="",
+        comercio_id=safe_outbox_id,
+    )
+
 _DURABLE_STATE_BY_OUTCOME: dict[OutboundDispatchOutcome, str] = {
     OutboundDispatchOutcome.SENT: "accepted",
     OutboundDispatchOutcome.RETRY_SCHEDULED: "retryable",
@@ -136,10 +242,15 @@ class OutboundDispatchConfig:
     The fields are pinned at ``Settings.load()`` time so the
     dispatcher reads a single immutable snapshot. Changing any
     retry bound requires restarting the dispatcher.
+
+    ``status_callback_url`` is optional: when ``None`` the central
+    Twilio path omits the kwarg from ``messages.create`` so the
+    dispatcher never invents a placeholder URL for production or
+    staging.
     """
 
     sender_e164: str
-    status_callback_url: str
+    status_callback_url: str | None
     lease_seconds: int
     initial_backoff_seconds: int
     max_backoff_seconds: int
@@ -158,6 +269,9 @@ class OutboundMessageDispatcher:
         outbox_repo_factory: OutboxRepoFactory | None = None,
         settings: Settings | None = None,
         now: datetime | None = None,
+        isolated_dispatcher_factory: (
+            Callable[[Callable[[], SqlSession]], OutboundCommandDispatcher] | None
+        ) = None,
     ) -> None:
         if session_factory is None:
             raise ValueError(
@@ -171,11 +285,67 @@ class OutboundMessageDispatcher:
             outbox_repo_factory or MensajeProveedorSalienteRepository
         )
         self._now = now
+        self._isolated_dispatcher_factory = isolated_dispatcher_factory
 
     def _now_or(self) -> datetime:
         if self._now is not None:
             return self._now
         return datetime.now(tz=_utc())
+
+    def _dispatch_via_isolated_helper(
+        self,
+        *,
+        claimed: MensajeProveedorSaliente,
+        now: datetime,
+    ) -> OutboundCommandResult | None:
+        """Run the bounded helper when the feature flag is on.
+
+        The helper is invoked only when
+        ``COMMERCE_ISOLATED_OUTBOUND_ENABLED`` is on. The helper
+        raises :class:`OutboundCommandSkipped` for every condition
+        the dispatcher treats as a no-op (helper disabled, no active
+        installation, no related receipt); those branches return
+        ``None`` so the dispatcher falls back to the documented
+        central Twilio path. Every other outcome returns a typed
+        :class:`OutboundCommandResult` that the dispatcher maps
+        back to its own durable outcome vocabulary.
+
+        When the helper raises :class:`OutboundCommandAmbiguous` the
+        dispatcher synthesizes a typed ``OutboundCommandResult``
+        whose ``status`` is ``"in_progress"`` so the central
+        dispatcher finalizes the outbox row as ``retryable`` through
+        its existing caller-owned finalize transaction. The
+        dispatcher NEVER falls back to the documented central Twilio
+        path on an ambiguous result: the bounded CLI / outbox lease
+        stays the single owner of the row and the next dispatch
+        drives the documented bounded retry path. The helper leaves
+        the durable ``instalaciones_twilio_comercio_idempotencia``
+        claim row in ``in_progress`` state so a retry on the same
+        key short-circuits to the durable state without firing a
+        second ``messages.create``.
+
+        The helper is constructed with the dispatcher's
+        ``session_factory`` so the claim and the finalize each run in
+        their own short-lived transaction; the central dispatcher's
+        outbox transaction is never mixed with the helper's claim or
+        finalize transactions.
+        """
+        if not bool(self._settings.commerce_isolated_outbound_enabled):
+            return None
+        helper: OutboundCommandDispatcher
+        if self._isolated_dispatcher_factory is not None:
+            helper = self._isolated_dispatcher_factory(self._session_factory)
+        else:
+            helper = OutboundCommandDispatcher(
+                session_factory=self._session_factory,
+                settings=self._settings,
+            )
+        try:
+            return helper.dispatch(outbox_row=claimed)
+        except OutboundCommandSkipped:
+            return None
+        except OutboundCommandAmbiguous:
+            return _ambiguous_helper_result(claimed=claimed)
 
     def _open_session(self) -> SqlSession:
         return self._session_factory()
@@ -399,10 +569,24 @@ class OutboundMessageDispatcher:
         existing ``provider_outbound_attempt`` log record and the
         repository-level ``database_technical_failure`` event stay
         the only safe surface for that path.
+
+        When ``COMMERCE_ISOLATED_OUTBOUND_ENABLED`` is on and the
+        claimed row resolves to an active installation the
+        dispatcher delegates the network call to
+        :class:`OutboundCommandDispatcher`, which uses the
+        per-installation ``tc_service_url`` and the durable
+        ``(instalacion_id, idempotency_key)`` claim lifecycle. The
+        finalization still happens in the caller-owned narrow
+        transaction so the dispatcher's commit / rollback discipline
+        stays intact. When the helper raises
+        :class:`OutboundCommandSkipped` the dispatcher falls back
+        to the documented central Twilio path so a missing
+        installation never blocks an existing outbox row.
         """
         now = self._now_or()
         claimed: MensajeProveedorSaliente | None = None
         send_result: TwilioSendResult | None = None
+        isolated_result: OutboundCommandResult | None = None
         try:
             claimed = self._claim(now)
             if claimed is None:
@@ -410,6 +594,23 @@ class OutboundMessageDispatcher:
                 _emit_attempt_event(
                     event=_build_attempt_event(
                         result=result, send_result=None
+                    ),
+                    logger_=logger,
+                )
+                _emit_outbound_event(result)
+                return result
+
+            isolated_result = self._dispatch_via_isolated_helper(
+                claimed=claimed, now=now
+            )
+            if isolated_result is not None:
+                send_result = _to_twilio_send_result(isolated_result)
+                result = self._finalize(
+                    claimed=claimed, send_result=send_result, now=now
+                )
+                _emit_attempt_event(
+                    event=_build_attempt_event(
+                        result=result, send_result=send_result
                     ),
                     logger_=logger,
                 )
@@ -585,16 +786,12 @@ def _config_from_settings(settings: Settings) -> OutboundDispatchConfig:
         raise RuntimeError(
             "TWILIO_OUTBOUND_SENDER_E164 is required by the dispatcher"
         )
-    if (
-        not isinstance(callback, str)
-        or not callback.strip()
-    ):
-        raise RuntimeError(
-            "TWILIO_CALLBACK_STATUS_URL is required by the dispatcher"
-        )
+    cleaned_callback: str | None = None
+    if isinstance(callback, str) and callback.strip():
+        cleaned_callback = callback.strip()
     return OutboundDispatchConfig(
         sender_e164=sender.strip(),
-        status_callback_url=callback.strip(),
+        status_callback_url=cleaned_callback,
         lease_seconds=int(settings.twilio_outbound_lease_seconds),
         initial_backoff_seconds=int(
             settings.twilio_outbound_initial_backoff_seconds
