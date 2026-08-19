@@ -783,3 +783,90 @@ class InvalidSupabaseAuthConfig(ValueError):
     operator gets a single actionable message at process start
     instead of an obscure runtime failure inside the first callback.
     """
+
+
+class InvalidInstallationMasterKey(ValueError):
+    """Raised when ``COMMERCE_INSTALLATION_MASTER_KEY`` is missing or
+    cannot be parsed as a Fernet URL-safe base64 key.
+
+    The bounded installation provisioning CLI and the internal ingress
+    dependency both raise this typed value when the master key is not
+    available. The application must refuse to start any operation
+    that touches the installation secret envelope.
+    """
+
+
+class InvalidInstallationSecretEnvelope(ValueError):
+    """Raised when a stored Fernet envelope cannot be decrypted or is
+    not a valid Fernet token.
+
+    The bounded ingress dependency raises this typed value when the
+    envelope stored on the installation row cannot be decrypted with
+    any of the configured master keys (current or previous). The
+    adapter receives a typed ``502`` so Twilio retries.
+    """
+
+
+class InstalacionTwilioComercioNotFound(LookupError):
+    """Raised when the bounded ingress dependency cannot find an
+    installation row for the supplied ``instalacion_id``.
+    """
+
+
+class InstalacionTwilioComercioInactiva(Exception):
+    """Raised when the bounded ingress dependency finds an inactive
+    installation row. The adapter receives a typed ``401`` so Twilio
+    retries.
+    """
+
+
+class DuplicateInstalacionTwilioComercio(Exception):
+    """Raised when a second active installation row is requested for a
+    comercio that already has one. The bounded provisioning seam
+    surfaces this as a ``409``-equivalent error so the operator can
+    deactivate the previous row first.
+    """
+
+
+class InvalidInstallationIdentificador(ValueError):
+    """Raised when a generated or supplied ``instalacion_id`` is not
+    a 24-character lowercase alphanumeric string.
+    """
+
+
+class InvalidInstallationTcServiceUrl(ValueError):
+    """Raised when the configured ``tc_service_url`` is not a valid
+    per-installation T-C service URL.
+
+    The validator rejects:
+
+    * non-absolute URLs;
+    * URLs that carry credentials, query string or fragment;
+    * plain HTTP URLs unless the hostname matches the documented
+      Railway private networking pattern (``*.railway.internal``);
+    * any other shape that would let the dispatcher send the
+      outbound command outside the controlled scope.
+    """
+
+
+class InvalidInstallationComandoSalida(ValueError):
+    """Raised when an outbound command has a missing or mismatched
+    ``instalacion_id``/``comercio_id`` pair, or when the installation
+    cannot be found in NovaOrders.
+    """
+
+
+class InvalidInstallationHmacSignature(ValueError):
+    """Raised when the HMAC signature on the internal ingress request
+    is missing or fails verification. The adapter receives a typed
+    ``401`` so Twilio retries; NovaOrders never invokes the coordinator
+    or mutates state.
+    """
+
+
+class InvalidInstallationCanonicalEvent(ValueError):
+    """Raised when the canonical inbound event payload is missing a
+    required field or carries a value the bounded ingress cannot
+    accept. The adapter receives a typed ``200`` reject so Twilio
+    does not retry an unprocessable event.
+    """

@@ -1,5 +1,23 @@
 # Proposal: add commerce self-service onboarding
 
+## Status and pause decision
+
+Phase 4A commerce creation and the Phase 4B read-only readiness projection are
+complete. Further onboarding work is paused by product decision while the
+provider boundary is redesigned. In particular, the current Phase 5 trial and
+channel-handoff path must not be implemented, synced or archived as if it were
+still the target architecture.
+
+The future target is a commerce-isolated Twilio edge: each commerce owns its
+Meta/Twilio account, sender and credentials and runs one small T-C web service.
+Those services reuse one adapter implementation and may be distributed across
+multiple Railway projects when a project reaches its service capacity;
+NovaOrders remains the central order domain and data store. Revisiting the
+owner wizard, review flow and readiness requirements is deferred until this
+boundary is specified in an approved implementation change. This document
+records the direction; it does not authorize implementation of the adapter or
+a rewrite of onboarding.
+
 ## Objective
 
 Create the future-facing entry journey for NovaOrders: a public, polished and
@@ -33,6 +51,129 @@ are fail-closed at inbound, processing and confirmation boundaries.
 Payment and delivery associations are commerce-scoped and currently
 operator-configured. Catalogue ownership is intentionally deferred to a future
 commerce panel; it must not be continued through Admin by this change.
+
+The current Twilio webhook path is a central application path and is retained
+only as historical/current-state context for the already completed work. It is
+not the target for new commerce onboarding. The target provider boundary is
+documented below and must be implemented as a separately approved, isolated
+adapter change before the onboarding flow is extended.
+
+## Target provider architecture (documented, not implemented)
+
+The target is one small T-C (Twilio–Commerce) web service per commerce, with no
+shared WhatsApp sender. Multiple T-C services can live in the core Railway
+project or in later Railway projects; this is a deployment-capacity decision,
+not a change to commerce isolation:
+
+```text
+Customer WhatsApp
+      │
+      ▼
+Merchant Meta/WABA/Twilio sender
+      │ signed form webhook
+      ▼
+Commerce T-C web service
+      │ normalized inbound event
+      ▼
+NovaOrders core ── outbound command ──► T-C adapter
+      ▲                                  │
+      └──────── order/business logic ◄───┘
+                                         │ one real API send
+                                         ▼
+                                  Merchant Twilio account
+```
+
+### Ownership boundary
+
+- The commerce owner performs and maintains the Meta/Twilio onboarding,
+  sender/WABA registration, billing, templates and webhook configuration.
+- The commerce's T-C service stores only the provider configuration needed by
+  that commerce's integration. It validates Twilio signatures, translates the
+  provider payload, sends outbound messages through the commerce's account and
+  returns provider acknowledgement. The service may run in any NovaOrders
+  Railway project assigned to it; it is not a separate business database.
+- The NovaOrders core owns commerce identity, customer/order/session logic,
+  isolation, and the normalized inbound/outbound contract. It does not store
+  merchant Twilio credentials, receive the merchant's Twilio webhook directly,
+  or send through a shared number.
+
+### Message and acknowledgement contract
+
+Twilio's inbound WhatsApp request is accepted as its native
+`application/x-www-form-urlencoded` webhook. The T-C adapter validates
+`X-Twilio-Signature` against the exact public URL and configured credential,
+then maps the request to a versioned canonical event. The adapter must not
+make the core depend on raw Twilio field names; optional provider fields are
+preserved only in a bounded, privacy-safe extension area.
+
+The T-C adapter forwards the event to a fast core-acceptance boundary. That
+boundary authenticates the adapter, deduplicates the provider identifier and
+durably records deferred work; it must not run recognition, LLM or order
+processing in the webhook request. Only after the core confirms acceptance does
+T-C immediately return an empty TwiML response
+(`<Response></Response>`) to Twilio. That is an HTTP/provider acknowledgement,
+not a customer message. If the core cannot confirm acceptance, T-C returns a
+non-success response so Twilio can retry; it must not acknowledge a lost event.
+
+The core processes the accepted work asynchronously, emits one outbound
+command (with an idempotency key), and delivers it to T-C. T-C performs the
+single real Twilio API send. T-C must not both return a `<Message>` in the
+acknowledgement and send the same response through the API, because that would
+duplicate the customer message and its provider charge.
+
+The inbound path is idempotent by provider/message identifier. The outbound
+path is idempotent by core command identifier and must retain the existing
+bounded retry/status rules at the edge. T-C and the core must keep transaction
+ownership explicit: adapters do not commit the core database, and the core
+does not commit a commerce's provider-side state.
+
+### Sandbox and production
+
+Sandbox and production use the same canonical adapter contract and differ only
+in provider configuration and capabilities. Sandbox uses Twilio's shared test
+sender, join requirement and pre-approved test templates; production uses the
+commerce's registered sender/WABA and its approved templates. The adapter must
+not assume that sandbox-only numbers, templates or join behavior exist in
+production.
+
+### Isolation, failure and observability
+
+The commerce identity is derived from the isolated deployment/configuration and
+is not trusted from an arbitrary inbound body field. A missing or invalid
+signature, missing edge configuration, unknown installation, invalid outbound
+command or provider technical failure fails closed for that commerce and never
+falls back to another commerce, sender or channel. Core business failures do
+not cause T-C to invent a provider success or send a second message.
+
+Logs and metrics contain only bounded event names, installation/commerce
+surrogates, provider/message identifiers where operationally necessary, status
+categories and latency. They must not contain message bodies, phone numbers,
+credentials, signatures, access tokens, templates with customer data or raw
+provider payloads.
+
+### Deployment shape and deferred work
+
+The core service and central PostgreSQL remain in the main NovaOrders Railway
+project. Each commerce receives one T-C web service, created from the shared
+adapter image/code and configured with that commerce's installation and Twilio
+secrets. T-C services may be placed in the core project until its service limit
+is reached and then in additional Railway projects. A T-C in another project
+cannot use Railway private DNS to reach the core; it uses the core's stable
+HTTPS endpoint with installation-scoped authentication. Twilio uses each T-C
+service's own public HTTPS domain.
+
+Railway plan limits and resource pricing are operational inputs, not business
+guarantees; they must be rechecked before each capacity decision. Cross-project
+HTTP traffic, shared-project resource contention, project-wide outages and
+service provisioning rate limits must be measured before onboarding more
+commerces. Project/service provisioning, secret delivery, health checks,
+rotation, owner-facing setup guidance and deprovisioning require a later
+implementation decision.
+
+The following remain explicitly deferred: Meta/Twilio onboarding automation or
+Embedded Signup, owner self-service correction rules, payment/delivery
+configuration, catalogue loading, lifecycle activation/trial policy, a shared
+WhatsApp channel, and the future native NovaOrders chat.
 
 ## Scope
 

@@ -24,6 +24,12 @@ from backend.models.contexto_cliente_canal_whatsapp import (
 from backend.models.cuenta_usuario import CuentaUsuario
 from backend.models.estado_comercio import EstadoComercio
 from backend.models.flavor_comunicacion import FlavorComunicacion
+from backend.models.instalacion_twilio_comercio import (
+    InstalacionTwilioComercio,
+)
+from backend.models.instalacion_twilio_comercio_idempotencia import (
+    InstalacionTwilioComercioIdempotencia,
+)
 from backend.models.medios_pago import MediosPago
 from backend.models.mensaje_proveedor_saliente import (
     MensajeProveedorSaliente,

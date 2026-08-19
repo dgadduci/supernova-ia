@@ -119,6 +119,7 @@ def _settings_stub(
     initial_backoff: int = 30,
     max_backoff: int = 300,
     max_attempts: int = 5,
+    isolated_enabled: bool = False,
 ) -> MagicMock:
     settings = MagicMock(name="Settings")
     settings.twilio_outbound_sender_e164 = sender
@@ -127,6 +128,9 @@ def _settings_stub(
     settings.twilio_outbound_initial_backoff_seconds = initial_backoff
     settings.twilio_outbound_max_backoff_seconds = max_backoff
     settings.twilio_outbound_max_attempts = max_attempts
+    settings.commerce_isolated_outbound_enabled = bool(isolated_enabled)
+    settings.commerce_isolated_http_timeout_seconds = 5
+    settings.commerce_isolated_tc_base_url_legacy = None
     return settings
 
 

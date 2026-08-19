@@ -517,21 +517,28 @@ class CliConfigurationFailureTest(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "")
         self.assertIn("invalid_outbound_settings", stderr.getvalue())
 
-    def test_missing_callback_url_fails_with_exit_code_two(self) -> None:
-        with _capture_stdout() as stdout, _capture_stderr() as stderr:
+    def test_missing_callback_url_succeeds_with_exit_code_zero(self) -> None:
+        """``TWILIO_CALLBACK_STATUS_URL`` is optional; the CLI no
+        longer rejects a missing value. The dispatcher omits the
+        ``status_callback`` kwarg from ``messages.create`` instead
+        of inventing a placeholder URL.
+        """
+        dispatcher = _build_dispatcher_mock(results=_ok_results())
+        with _capture_stdout() as stdout:
             exit_code = main(
                 argv=["--max-attempts-per-pass", "8"],
                 settings_loader=lambda: _settings(callback_url=None),
                 messages_client_builder=lambda **_kwargs: MagicMock(
                     name="TwilioMessagesClient"
                 ),
-                dispatcher_builder=lambda **_: MagicMock(
-                    name="OutboundMessageDispatcher"
-                ),
+                dispatcher_builder=lambda **_: dispatcher,
             )
-        self.assertEqual(exit_code, 2)
-        self.assertEqual(stdout.getvalue(), "")
-        self.assertIn("invalid_outbound_settings", stderr.getvalue())
+        self.assertEqual(exit_code, 0)
+        rendered = stdout.getvalue()
+        self.assertIn("sent=1", rendered)
+        self.assertNotIn(
+            "https://status.novaorders.local/disabled", rendered
+        )
 
 
 class CliEarlySettingsFailureSafeAggregateTest(unittest.TestCase):
