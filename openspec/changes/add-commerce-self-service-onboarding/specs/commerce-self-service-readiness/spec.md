@@ -47,10 +47,16 @@ completion.
 ### Requirement: Operational readiness is derived and controlled
 
 The system SHALL show an owner a read-only readiness projection from the exact
-commerce profile, eligible active payment/delivery associations, channel state,
-catalogue readiness and existing lifecycle policy. An owner SHALL NOT set
+commerce profile, eligible active payment/delivery associations, channel state
+and existing lifecycle policy. Phase 4B SHALL derive the exact commerce from
+the authenticated account's terminal draft and active `OWNER` membership; it
+SHALL NOT accept a browser-selected commerce id. An eligible payment/delivery
+association SHALL require both an active commerce bridge row and an active
+global catalog row. Catalogue readiness is deferred because no authoritative
+catalogue-readiness contract exists. An owner SHALL NOT set
 `prueba_hasta`, `prueba_max_pedidos`, `prueba_pedidos_consumidos`, lifecycle
-state, channel activation or a mutable "ready" flag.
+state, channel activation, payment/delivery association or a mutable "ready"
+flag.
 
 #### Scenario: Missing configuration keeps the commerce unavailable
 

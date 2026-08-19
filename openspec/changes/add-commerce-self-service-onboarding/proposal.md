@@ -141,12 +141,22 @@ The owner sees a bounded completed state. No channel, customer, session, order,
 catalogue, payment, delivery, trial, provider work or readiness projection is
 created.
 
-### Phase 4B — deferred scoped essentials and readiness
+### Phase 4B — approved read-only readiness
 
-Only after Phase 4A is separately reviewed may a membership-scoped owner panel
-configure eligible payment/delivery associations and expose a read-only
-readiness projection. Those surfaces remain outside the current implementation
-prompt and cannot mutate lifecycle, trial, channels, catalogue or availability.
+Phase 4B is limited to a membership-scoped, read-only readiness dashboard with
+clear next actions. It derives the exact terminal commerce from the authenticated
+account-owned draft and its active `OWNER` membership; it does not accept a
+browser-selected commerce id. The dashboard reports only authoritative facts:
+basic commerce profile, eligible active payment/delivery associations, channel
+configuration, and existing lifecycle availability. It does not persist a
+mutable "ready" flag and the commerce remains `INACTIVO` throughout this phase.
+
+Self-service payment/delivery configuration is explicitly deferred to a later
+subphase. The existing Admin service owns its own commit/rollback boundary and
+uses a separate Admin authorization model; reusing it for an owner would require
+a separately approved owner authorization, sensitive-field and transaction
+contract. Phase 4B cannot mutate lifecycle, trial, channels, catalogue,
+availability, payment or delivery associations.
 
 ### Phase 5 — controlled operational handoff
 
@@ -240,8 +250,10 @@ JWTs, URLs with tokens, payment values, message content or provider secrets.
   route/templates and an Alembic migration are Phase 3 work. Phase 4A adds the
   draft slug, `ComercioUsuario`, terminal draft columns, the non-committing
   commerce staging seam, completion route/templates and its migration.
-- Scoped payment/delivery owner routes and readiness projection remain Phase
-  4B work and are not part of the Phase 4A implementation.
+- The Phase 4B read-only readiness route/template and focused isolation,
+  incomplete-readiness and no-write tests extend the existing owner-onboarding
+  surface. Scoped payment/delivery owner routes remain deferred work, not Phase
+  4B work.
 - Focused tests for public UX contracts and Phase 2 authentication; tenancy
   isolation, draft/completion atomicity, lifecycle handoff and readiness tests
   remain later-phase gates.

@@ -1450,6 +1450,67 @@ class CompletionRouteContractTest(
             ).scalar_one()
             self.assertEqual(int(slug_count), 1)
 
+    def test_terminal_view_renders_readiness_dashboard_link(
+        self,
+    ) -> None:
+        """The terminal onboarding view exposes a visible link to
+        ``GET /onboarding/readiness``.
+
+        The completion view is the entry point an authenticated
+        owner sees after the commerce has been staged in
+        ``INACTIVO``. Without an explicit link the owner has to
+        type the readiness URL by hand. The test fires the real
+        ``POST /onboarding/completar`` surface through the wired
+        FastAPI app and asserts the rendered HTML:
+
+        * contains the readiness URL so the owner can reach the
+          dashboard through the normal flow;
+        * contains the visible ``Ver estado y próximos pasos``
+          link text, matching the dashboard's own heading;
+        * still preserves the existing
+          ``Volver a la identidad verificada`` link, so the
+          back-link surface is not regressed.
+
+        The test does NOT assert a redirect, does NOT submit a
+        ``comercio_id`` and does NOT touch the readiness service:
+        the readiness contract is owned by the dedicated Phase 4B
+        test suite and the terminal view is read-only by design.
+        """
+        slug = f"phase4a-readiness-link-{_suffix()}"
+        self.cleanup.track_slug(slug)
+
+        principal = _make_principal(self.subject)
+        with TestingSessionLocal() as session:
+            cuenta = resolve_or_create_cuenta(session, principal)
+            draft = load_or_create_borrador(session, cuenta)
+            fields = _build_complete_draft_fields(slug=slug)
+            save_borrador(
+                session,
+                draft,
+                expected_version=0,
+                fields=fields,
+            )
+
+        nonce = self._completion_nonce()
+        cookie = self._principal_cookie()
+        response = self.client.post(
+            "/onboarding/completar",
+            data={OWNER_FORM_NONCE_FIELD: nonce},
+            headers={
+                "cookie": f"{SESSION_COOKIE_NAME}={cookie}",
+                "origin": "http://testserver",
+                "x-forwarded-proto": "https",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Tu comercio fue creado", response.text)
+        self.assertIn("/onboarding/readiness", response.text)
+        self.assertIn("Ver estado y próximos pasos", response.text)
+        self.assertIn(
+            "Volver a la identidad verificada", response.text
+        )
+        self.assertIn('href="/auth/verificado"', response.text)
+
 
 class ServiceStageOnlyBoundaryTest(unittest.TestCase):
     """The completion service and its collaborators never commit / rollback."""

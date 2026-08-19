@@ -46,6 +46,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Form, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend.auth.principal import AuthenticatedPrincipal
@@ -75,6 +76,16 @@ from backend.services.owner_onboarding_completion_service import (
     OwnerOnboardingTerminalInconsistent,
     OwnerOnboardingUnicityRace,
     complete_onboarding,
+)
+from backend.services.owner_onboarding_readiness_service import (
+    OwnerOnboardingReadinessProjection,
+    OwnerReadinessAccountMissing,
+    OwnerReadinessComercioMissing,
+    OwnerReadinessDraftMissing,
+    OwnerReadinessDraftNotTerminal,
+    OwnerReadinessError,
+    OwnerReadinessMembershipMissing,
+    build_owner_readiness,
 )
 from backend.services.owner_onboarding_service import (
     OwnerAccountInactive,
@@ -607,6 +618,255 @@ async def onboarding_post(
         subject=principal.subject,
         draft=saved,
         success=True,
+    )
+
+
+_READINESS_PATH = "/onboarding/readiness"
+
+
+def _render_readiness(
+    request: Request,
+    *,
+    principal: AuthenticatedPrincipal,
+    projection: OwnerOnboardingReadinessProjection,
+) -> HTMLResponse:
+    """Render the bounded read-only readiness dashboard.
+
+    The helper escapes every projected value before handing it
+    to the Jinja template so the dashboard cannot leak an
+    unescaped slug / id / WhatsApp number. The template is
+    the only consumer of the typed
+    :class:`OwnerOnboardingReadinessProjection` and is
+    intentionally read-only — there is no form, no submit
+    button and no mutation seam.
+    """
+    context: dict[str, object] = {
+        "request": request,
+        "subject": _escape(principal.subject),
+        "cuenta_id": int(projection.cuenta_id),
+        "draft_id": int(projection.draft_id),
+        "comercio_id": int(projection.profile.comercio_id),
+        "comercio_slug": _escape(projection.profile.slug),
+        "comercio_nombre": _escape(projection.profile.nombre_fantasia),
+        "comercio_nombre_corto": _escape(projection.profile.nombre_corto),
+        "comercio_razon_social": _escape(projection.profile.razon_social),
+        "comercio_cuit": _escape(projection.profile.cuit),
+        "comercio_whatsapp": _escape(projection.profile.whatsapp),
+        "comercio_estado_codigo": _escape(
+            projection.profile.estado_codigo
+        ),
+        "comercio_estado_modo": _escape(
+            projection.profile.estado_modo_operacion.value
+            if projection.profile.estado_modo_operacion is not None
+            else "indeterminado"
+        ),
+        "lifecycle_status": _escape(projection.lifecycle.status.value),
+        "lifecycle_reason": _escape(
+            projection.lifecycle.reason.value
+            if projection.lifecycle.reason is not None
+            else ""
+        ),
+        "lifecycle_prueba_hasta": (
+            projection.lifecycle.prueba_hasta.isoformat()
+            if projection.lifecycle.prueba_hasta is not None
+            else ""
+        ),
+        "lifecycle_prueba_max_pedidos": (
+            int(projection.lifecycle.prueba_max_pedidos)
+            if projection.lifecycle.prueba_max_pedidos is not None
+            else ""
+        ),
+        "lifecycle_prueba_pedidos_consumidos": int(
+            projection.lifecycle.prueba_pedidos_consumidos
+        ),
+        "payments_ready": projection.payments.has_eligible_payment,
+        "payments_count": int(projection.payments.eligible_count),
+        "payments_codigos": tuple(
+            _escape(codigo)
+            for codigo in projection.payments.eligible_codigos
+        ),
+        "deliveries_ready": projection.deliveries.has_eligible_delivery,
+        "deliveries_count": int(projection.deliveries.eligible_count),
+        "deliveries_codigos": tuple(
+            _escape(codigo)
+            for codigo in projection.deliveries.eligible_codigos
+        ),
+        "channel_dedicated_ready": projection.channel.has_dedicated_channel,
+        "channel_shared_ready": projection.channel.has_shared_membership,
+        "channel_dedicated_id": (
+            int(projection.channel.dedicated_channel_id)
+            if projection.channel.dedicated_channel_id is not None
+            else ""
+        ),
+        "channel_shared_id": (
+            int(projection.channel.shared_membership_id)
+            if projection.channel.shared_membership_id is not None
+            else ""
+        ),
+        "completed_at_iso": _escape(
+            projection.completed_at.isoformat()
+        ),
+        "phase_label": "Fase 4B · estado y próximos pasos",
+    }
+    return _templates.TemplateResponse(
+        request=request,
+        name="onboarding_readiness.html",
+        context=context,
+        status_code=200,
+    )
+
+
+def _readiness_no_account_error(request: Request) -> HTMLResponse:
+    return _service_unavailable_response(
+        request,
+        "No encontramos tu cuenta; volvé a iniciar sesión "
+        "para revisar tu registro.",
+    )
+
+
+def _readiness_no_draft_error(request: Request) -> HTMLResponse:
+    return _service_unavailable_response(
+        request,
+        "No encontramos tu borrador; volvé al wizard para "
+        "completar el registro antes de revisar el estado.",
+    )
+
+
+def _readiness_draft_not_terminal_error(request: Request) -> HTMLResponse:
+    return _service_unavailable_response(
+        request,
+        "Tu registro todavía no está completo; volvé al wizard "
+        "y terminá los datos antes de revisar el estado.",
+    )
+
+
+def _readiness_membership_error(request: Request) -> HTMLResponse:
+    return _service_unavailable_response(
+        request,
+        "No podemos mostrar el estado de tu comercio porque "
+        "falta la membresía del propietario. Contactanos para "
+        "revisarlo. No expusimos tu comercio.",
+    )
+
+
+def _readiness_commerce_missing_error(request: Request) -> HTMLResponse:
+    return _service_unavailable_response(
+        request,
+        "Tu registro está en un estado inconsistente; "
+        "contactanos para revisarlo. No expusimos tu comercio.",
+    )
+
+
+def _readiness_generic_error(request: Request) -> HTMLResponse:
+    return _service_unavailable_response(
+        request,
+        "No pudimos leer el estado de tu comercio ahora; "
+        "volvé a intentarlo en unos minutos.",
+    )
+
+
+@router.get(
+    _READINESS_PATH,
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+def onboarding_readiness_get(
+    request: Request,
+    principal: Annotated[
+        AuthenticatedPrincipal,
+        Depends(require_authenticated_owner_principal),
+    ],
+    session: Annotated[Session, Depends(get_session)],
+) -> Response:
+    """Render the read-only readiness dashboard.
+
+    The route is the single Phase 4B surface. It is GET-only
+    and refuses to read a ``comercio_id`` from any input
+    channel (URL path, query string, form or body). The
+    :class:`AuthenticatedPrincipal` is the only selector the
+    route accepts; the dashboard derives the exact
+    :class:`Comercio` from the principal -> ``CuentaUsuario``
+    -> terminal draft -> active ``OWNER`` membership chain so
+    a forged ``comercio_id`` can never reach the projection.
+
+    The route NEVER:
+
+    * accepts a ``comercio_id`` or any second commerce
+      payload;
+    * opens a writable transaction (no ``session.add``,
+      ``session.commit`` or ``session.rollback``);
+    * invokes the existing payment / delivery configuration
+      mutation boundary, the catalog, the channel / outbox /
+      Twilio pipelines or any trial / lifecycle seam;
+    * calls :meth:`CommerceAvailabilityService.reserve_confirmed_order`
+      so the trial counter can never be incremented from a
+      dashboard read.
+
+    The route maps each typed service failure to a bounded
+    ``503`` view:
+
+    * missing or inactive account ->
+      :class:`OwnerReadinessAccountMissing`;
+    * missing or non-terminal draft ->
+      :class:`OwnerReadinessDraftMissing` /
+      :class:`OwnerReadinessDraftNotTerminal`;
+    * missing / inactive / mismatched membership ->
+      :class:`OwnerReadinessMembershipMissing`;
+    * terminal draft pointing at a removed comercio ->
+      :class:`OwnerReadinessComercioMissing`;
+    * persistence error -> generic ``SQLAlchemyError`` catch
+      that renders a bounded ``503`` view and never falls back
+      to another commerce, draft or state.
+    """
+    try:
+        projection = build_owner_readiness(session, principal)
+    except OwnerReadinessAccountMissing as exc:
+        logger.info(
+            "owner_readiness_account_missing",
+            extra={"reason": type(exc).__name__},
+        )
+        return _readiness_no_account_error(request)
+    except OwnerReadinessDraftMissing as exc:
+        logger.info(
+            "owner_readiness_draft_missing",
+            extra={"reason": type(exc).__name__},
+        )
+        return _readiness_no_draft_error(request)
+    except OwnerReadinessDraftNotTerminal as exc:
+        logger.info(
+            "owner_readiness_draft_not_terminal",
+            extra={"reason": type(exc).__name__},
+        )
+        return _readiness_draft_not_terminal_error(request)
+    except OwnerReadinessMembershipMissing as exc:
+        logger.error(
+            "owner_readiness_membership_missing",
+            extra={"reason": type(exc).__name__},
+        )
+        return _readiness_membership_error(request)
+    except OwnerReadinessComercioMissing as exc:
+        logger.error(
+            "owner_readiness_comercio_missing",
+            extra={"reason": type(exc).__name__},
+        )
+        return _readiness_commerce_missing_error(request)
+    except OwnerReadinessError as exc:
+        logger.error(
+            "owner_readiness_failed",
+            extra={"reason": type(exc).__name__},
+        )
+        return _readiness_generic_error(request)
+    except SQLAlchemyError:
+        logger.error(
+            "owner_readiness_persistence_failed",
+            extra={"reason": "sqlalchemy_error"},
+        )
+        return _readiness_generic_error(request)
+
+    return _render_readiness(
+        request,
+        principal=principal,
+        projection=projection,
     )
 
 

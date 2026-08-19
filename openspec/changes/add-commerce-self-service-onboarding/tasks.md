@@ -82,15 +82,16 @@
   idempotency, CSRF and no-side-effect tests. Do not add readiness, payments,
   deliveries, channels, trials, catalogue or provider behavior.
 
-## 6. Phase 4B — deferred scoped essentials and readiness
+## 6. Phase 4B — approved read-only readiness
 
-- [ ] 6.1 Reuse, do not duplicate, scoped payment/delivery configuration
-  boundaries for a future membership-authorized owner panel.
-- [ ] 6.2 Implement a read-only readiness projection/dashboard with
-  understandable next actions and no self-editable readiness or lifecycle
-  state.
-- [ ] 6.3 Add incomplete-readiness tests only when Phase 4B is separately
-  approved.
+- [x] 6.1 Approve the narrow Phase 4B boundary: a membership-scoped,
+  read-only readiness dashboard; defer payment/delivery owner mutations to a
+  separately approved subphase.
+- [x] 6.2 Implement the read-only readiness projection/dashboard with
+  understandable next actions, no browser-selected commerce id, no mutable
+  readiness/lifecycle state, and `INACTIVO` preserved.
+- [x] 6.3 Add focused owner-isolation, incomplete/indeterminate readiness,
+  lifecycle read-only and no-write tests.
 
 ## 7. Phase 5 — controlled trial and channel handoff
 

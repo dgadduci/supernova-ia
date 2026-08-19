@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="es-AR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="NovaOrders · estado y próximos pasos del comercio recién registrado. Vista de solo lectura.">
+<meta name="robots" content="noindex,nofollow">
+<meta name="color-scheme" content light dark">
+<title>NovaOrders · Estado del comercio</title>
+<style>
+  :root {
+    --bg: #f7f7fb;
+    --bg-elevated: #ffffff;
+    --panel: #ffffff;
+    --panel-strong: #f2f2f8;
+    --border: #d8d8e3;
+    --border-strong: #b9b9c8;
+    --fg: #14141d;
+    --fg-muted: #4f4f60;
+    --fg-faint: #76768a;
+    --accent: #4b3aff;
+    --accent-strong: #3a2bd6;
+    --accent-ink: #ffffff;
+    --accent-soft: #ece9ff;
+    --success: #1f7a4d;
+    --success-soft: rgba(31, 122, 77, 0.10);
+    --warning: #8a5a00;
+    --warning-soft: rgba(138, 90, 0, 0.10);
+    --danger: #b3261e;
+    --danger-soft: rgba(179, 38, 30, 0.08);
+    --focus-ring: #ffbf3f;
+    --shadow-sm: 0 1px 2px rgba(20, 20, 29, 0.04), 0 4px 12px rgba(20, 20, 29, 0.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0c0c14;
+      --bg-elevated: #15151f;
+      --panel: #15151f;
+      --panel-strong: #1c1c2a;
+      --border: #2a2a3a;
+      --border-strong: #3b3b50;
+      --fg: #f3f3fa;
+      --fg-muted: #b6b6c8;
+      --fg-faint: #84849a;
+      --accent: #b6a6ff;
+      --accent-strong: #cbbcff;
+      --accent-ink: #0a0510;
+      --accent-soft: #211b3b;
+      --success: #66d9a4;
+      --success-soft: rgba(102, 217, 164, 0.14);
+      --warning: #ffd166;
+      --warning-soft: rgba(255, 209, 102, 0.14);
+      --danger: #ff8a80;
+      --danger-soft: rgba(255, 138, 128, 0.14);
+      --focus-ring: #ffd166;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45), 0 4px 12px rgba(0, 0, 0, 0.35);
+    }
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.55;
+    font-size: 17px;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  a {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  a:hover, a:focus-visible { color: var(--accent-strong); }
+  :focus-visible {
+    outline: 3px solid var(--focus-ring);
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    top: auto;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+  }
+  .skip-link:focus {
+    position: static;
+    width: auto;
+    height: auto;
+    background: var(--accent);
+    color: var(--accent-ink);
+    padding: 10px 14px;
+    display: inline-block;
+    margin: 12px;
+    border-radius: 6px;
+    text-decoration: none;
+  }
+  header.site-header {
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 24px;
+  }
+  header.site-header .brand {
+    font-weight: 700;
+    font-size: 1.05rem;
+    color: var(--fg);
+    text-decoration: none;
+  }
+  header.site-header .session {
+    float: right;
+    font-size: 0.9rem;
+    color: var(--fg-muted);
+  }
+  main.readiness-main {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 32px 24px 64px;
+  }
+  section.readiness-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 28px 28px 32px;
+    box-shadow: var(--shadow-sm);
+    margin-bottom: 22px;
+  }
+  section.readiness-card .eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.78rem;
+    color: var(--accent);
+    font-weight: 700;
+    margin-bottom: 12px;
+  }
+  section.readiness-card h1 {
+    font-size: clamp(1.4rem, 3vw + 0.6rem, 1.9rem);
+    margin: 0 0 8px;
+    line-height: 1.25;
+  }
+  section.readiness-card p.lede {
+    color: var(--fg-muted);
+    margin-bottom: 18px;
+  }
+  .profile-grid {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 6px 16px;
+    margin: 0 0 22px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 18px;
+    background: var(--panel-strong);
+  }
+  .profile-grid dt {
+    font-size: 0.85rem;
+    color: var(--fg-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    align-self: center;
+  }
+  .profile-grid dd {
+    margin: 0;
+    font-size: 1rem;
+    color: var(--fg);
+    word-break: break-word;
+  }
+  .checklist {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 22px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--panel-strong);
+  }
+  .checklist li {
+    display: grid;
+    grid-template-columns: 28px 1fr max-content;
+    gap: 12px;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    align-items: center;
+  }
+  .checklist li:last-child { border-bottom: 0; }
+  .checklist .indicator {
+    display: inline-flex;
+    width: 22px;
+    height: 22px;
+    border-radius: 999px;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.85rem;
+    font-weight: 700;
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .checklist .indicator.indicator-pending {
+    background: var(--warning-soft);
+    color: var(--warning);
+  }
+  .checklist .indicator.indicator-ready {
+    background: var(--success-soft);
+    color: var(--success);
+  }
+  .checklist .label {
+    font-size: 1rem;
+    color: var(--fg);
+  }
+  .checklist .label small {
+    display: block;
+    color: var(--fg-muted);
+    font-size: 0.85rem;
+    margin-top: 2px;
+  }
+  .checklist .status-pill {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    color: var(--fg-muted);
+    background: var(--bg-elevated);
+  }
+  .checklist .status-pill.status-pill-ready {
+    background: var(--success-soft);
+    color: var(--success);
+    border-color: var(--success);
+  }
+  .checklist .status-pill.status-pill-pending {
+    background: var(--warning-soft);
+    color: var(--warning);
+    border-color: var(--warning);
+  }
+  .next-actions {
+    list-style: disc;
+    padding-left: 22px;
+    color: var(--fg-muted);
+    margin: 0 0 12px;
+  }
+  .next-actions li { margin: 6px 0; }
+  .alert {
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin: 0 0 18px;
+    border: 1px solid var(--border);
+    font-size: 0.95rem;
+  }
+  .alert.alert-info {
+    background: var(--accent-soft);
+    color: var(--fg);
+    border-color: var(--accent);
+  }
+  .alert.alert-warning {
+    background: var(--warning-soft);
+    color: var(--warning);
+    border-color: var(--warning);
+  }
+  .alert.alert-danger {
+    background: var(--danger-soft);
+    color: var(--danger);
+    border-color: var(--danger);
+  }
+  .meta {
+    font-size: 0.85rem;
+    color: var(--fg-faint);
+    margin-top: 18px;
+  }
+  a.back-link {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 6px;
+    color: var(--fg-muted);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  footer.site-footer {
+    border-top: 1px solid var(--border);
+    padding: 22px 24px 28px;
+    color: var(--fg-faint);
+    font-size: 0.9rem;
+    text-align: center;
+    max-width: 760px;
+    margin: 0 auto;
+  }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main-content">Saltar al contenido principal</a>
+<header class="site-header" role="banner">
+  <a class="brand" href="/" aria-label="NovaOrders, ir al inicio">NovaOrders</a>
+  <span class="session">Sesión verificada · cuenta {{ cuenta_id }}</span>
+</header>
+<main class="readiness-main" id="main-content" tabindex="-1">
+  <section class="readiness-card" aria-labelledby="readiness-title">
+    <p class="eyebrow">{{ phase_label | e }}</p>
+    <h1 id="readiness-title">Estado y próximos pasos</h1>
+    <p class="lede">
+      Esta es una vista de solo lectura: no podés modificar el
+      comercio desde acá. Tu comercio sigue en estado
+      <strong>INACTIVO</strong>; el equipo de NovaOrders tiene
+      que revisarlo antes de habilitar pedidos.
+    </p>
+    <div class="alert alert-info" role="status">
+      El checklist de abajo es informativo. Una lista completa
+      no autoriza pedidos ni habilita el comercio automáticamente.
+    </div>
+    <dl class="profile-grid" aria-label="Datos básicos del comercio">
+      <dt>Comercio</dt>
+      <dd><code>#{{ comercio_id }}</code> · slug <code>{{ comercio_slug | e }}</code></dd>
+      <dt>Nombre</dt>
+      <dd>{{ comercio_nombre | e }}</dd>
+      <dt>Nombre corto</dt>
+      <dd>{{ comercio_nombre_corto | e }}</dd>
+      <dt>Razón social</dt>
+      <dd>{{ comercio_razon_social | e }}</dd>
+      <dt>CUIT</dt>
+      <dd>{{ comercio_cuit | e }}</dd>
+      <dt>WhatsApp</dt>
+      <dd>{{ comercio_whatsapp | e }}</dd>
+      <dt>Estado</dt>
+      <dd><code>{{ comercio_estado_codigo | e }}</code> ({{ comercio_estado_modo | e }})</dd>
+      <dt>Registro</dt>
+      <dd>{{ completed_at_iso | e }}</dd>
+    </dl>
+  </section>
+
+  <section class="readiness-card" aria-labelledby="checklist-title">
+    <h2 id="checklist-title">Checklist de configuración</h2>
+    <p class="lede">
+      Cada requisito se muestra como pendiente hasta que se
+      configure desde el panel administrativo. Esta pantalla
+      no los modifica.
+    </p>
+    <ul class="checklist">
+      <li>
+        <span class="indicator indicator-ready" aria-hidden="true">✓</span>
+        <span class="label">
+          Datos básicos del comercio
+          <small>Registrados al completar el wizard.</small>
+        </span>
+        <span class="status-pill status-pill-ready">Listo</span>
+      </li>
+      <li>
+        <span class="indicator {% if payments_ready %}indicator-ready{% else %}indicator-pending{% endif %}"
+              aria-hidden="true">{% if payments_ready %}✓{% else %}…{% endif %}</span>
+        <span class="label">
+          Medio de pago elegible
+          <small>
+            {% if payments_ready %}
+              {{ payments_count }} medio(s) de pago activos:
+              {% for codigo in payments_codigos %}
+                <code>{{ codigo | e }}</code>{% if not loop.last %}, {% endif %}
+              {% endfor %}.
+            {% else %}
+              No hay un medio de pago activo. La asociación se
+              configura desde el panel administrativo.
+            {% endif %}
+          </small>
+        </span>
+        <span class="status-pill {% if payments_ready %}status-pill-ready{% else %}status-pill-pending{% endif %}">
+          {% if payments_ready %}Elegible{% else %}Pendiente{% endif %}
+        </span>
+      </li>
+      <li>
+        <span class="indicator {% if deliveries_ready %}indicator-ready{% else %}indicator-pending{% endif %}"
+              aria-hidden="true">{% if deliveries_ready %}✓{% else %}…{% endif %}</span>
+        <span class="label">
+          Método de entrega elegible
+          <small>
+            {% if deliveries_ready %}
+              {{ deliveries_count }} método(s) de entrega activos:
+              {% for codigo in deliveries_codigos %}
+                <code>{{ codigo | e }}</code>{% if not loop.last %}, {% endif %}
+              {% endfor %}.
+            {% else %}
+              No hay un método de entrega activo. La asociación
+              se configura desde el panel administrativo.
+            {% endif %}
+          </small>
+        </span>
+        <span class="status-pill {% if deliveries_ready %}status-pill-ready{% else %}status-pill-pending{% endif %}">
+          {% if deliveries_ready %}Elegible{% else %}Pendiente{% endif %}
+        </span>
+      </li>
+      <li>
+        <span class="indicator {% if channel_dedicated_ready or channel_shared_ready %}indicator-ready{% else %}indicator-pending{% endif %}"
+              aria-hidden="true">{% if channel_dedicated_ready or channel_shared_ready %}✓{% else %}…{% endif %}</span>
+        <span class="label">
+          Canal de WhatsApp
+          <small>
+            {% if channel_dedicated_ready %}
+              Canal dedicado activo (id <code>#{{ channel_dedicated_id }}</code>).
+            {% elif channel_shared_ready %}
+              Membresía compartida activa (id <code>#{{ channel_shared_id }}</code>).
+            {% else %}
+              Aún no hay un canal dedicado activo ni una
+              membresía compartida activa para este comercio.
+            {% endif %}
+          </small>
+        </span>
+        <span class="status-pill {% if channel_dedicated_ready or channel_shared_ready %}status-pill-ready{% else %}status-pill-pending{% endif %}">
+          {% if channel_dedicated_ready or channel_shared_ready %}Configurado{% else %}Pendiente{% endif %}
+        </span>
+      </li>
+      <li>
+        <span class="indicator indicator-pending" aria-hidden="true">…</span>
+        <span class="label">
+          Estado del ciclo de vida
+          <small>
+            <code>{{ comercio_estado_codigo | e }}</code> ·
+            disponibilidad actual <code>{{ lifecycle_status | e }}</code>{% if lifecycle_reason %} ({{ lifecycle_reason | e }}){% endif %}.
+            El comercio no recibe pedidos hasta que el equipo
+            de NovaOrders lo habilite.
+          </small>
+        </span>
+        <span class="status-pill status-pill-pending">{{ comercio_estado_codigo | e }}</span>
+      </li>
+    </ul>
+  </section>
+
+  <section class="readiness-card" aria-labelledby="next-title">
+    <h2 id="next-title">Próximos pasos</h2>
+    <p class="lede">
+      Esta pantalla es informativa. Las acciones operativas se
+      realizan desde el panel administrativo o las próximas
+      fases del onboarding.
+    </p>
+    <ul class="next-actions">
+      {% if not payments_ready %}
+      <li>Esperá a que el equipo configure al menos un medio de pago.</li>
+      {% endif %}
+      {% if not deliveries_ready %}
+      <li>Esperá a que el equipo configure al menos un método de entrega.</li>
+      {% endif %}
+      {% if not (channel_dedicated_ready or channel_shared_ready) %}
+      <li>Esperá a que el equipo asigne un canal de WhatsApp dedicado o compartido.</li>
+      {% endif %}
+      <li>El comercio seguirá en estado INACTIVO hasta que el equipo lo habilite.</li>
+      <li>Volvé a esta pantalla más adelante para ver los avances.</li>
+    </ul>
+    <a class="back-link" href="/onboarding">Volver al wizard</a>
+    <a class="back-link" href="/auth/verificado">Volver a la identidad verificada</a>
+    <p class="meta">
+      Borrador #{{ draft_id }} · comercio #{{ comercio_id }} ·
+      identificado por subject <code>{{ subject | e }}</code>.
+    </p>
+  </section>
+</main>
+<footer class="site-footer" role="contentinfo">
+  <span>© NovaOrders</span>
+</footer>
+</body>
+</html>
