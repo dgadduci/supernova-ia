@@ -23,18 +23,25 @@ raw Twilio payloads. It never embeds a ``<Message>`` in the
 acknowledgement and never sends a real Twilio API call in the webhook
 path.
 
+The route emits exactly one bounded
+``commerce_installation_inbound_outcome`` event per outcome branch
+through :mod:`commerce_adapter.app.observability`. The emitter is
+backend-independent, validates the closed outcome and reason
+allowlist, swallows its own errors and never alters the documented
+HTTP/TwiML response path.
+
 The async form read is isolated in :func:`read_full_form` so the rest
 of the handler stays synchronous; this mirrors the existing central
 Twilio webhook contract.
 """
 from __future__ import annotations
 
-import logging
 from collections.abc import Mapping
 
 from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import Response
 
+from commerce_adapter.app import observability
 from commerce_adapter.app.canonical_event import (
     InvalidTwilioForm,
     empty_twiml_response,
@@ -45,6 +52,7 @@ from commerce_adapter.app.dependencies import (
     build_config_dependency,
 )
 from commerce_adapter.app.novaorders_client import (
+    NovaOrdersInvalidResponse,
     NovaOrdersUnreachable,
 )
 from commerce_adapter.app.novaorders_client import (
@@ -56,9 +64,6 @@ from commerce_adapter.app.security import (
     build_twilio_validation_url,
     validate_twilio_signature,
 )
-
-logger = logging.getLogger(__name__)
-
 
 ROUTE_PATH: str = "/webhooks/twilio/whatsapp/inbound"
 
@@ -82,21 +87,6 @@ async def read_full_form(request: Request) -> dict[str, str]:
     }
 
 
-def _address_marker(value: str) -> str:
-    if not isinstance(value, str) or not value:
-        return "unknown"
-    digits = "".join(ch for ch in value if ch.isdigit())
-    if len(digits) < 4:
-        return "short"
-    return f"tail-{digits[-4:]}"
-
-
-def _message_sid_marker(value: str) -> str:
-    if not isinstance(value, str) or len(value) < 6:
-        return "short"
-    return f"tail-{value[-6:]}"
-
-
 def _xml_response(body: str, status_code: int) -> Response:
     return Response(
         content=body,
@@ -107,6 +97,22 @@ def _xml_response(body: str, status_code: int) -> Response:
 
 def _resolve_forward_event():
     return _default_forward_event
+
+
+def _emit_outcome(*, outcome: str, reason: str | None = None,
+                  http_status: int | None = None) -> None:
+    """Emit the bounded adapter outcome event.
+
+    The wrapper exists so the route only writes the documented
+    fields. Any emitter failure is intentionally absorbed by
+    :func:`commerce_adapter.app.observability.emit` so the HTTP/TwiML
+    response path is never altered.
+    """
+    observability.emit(
+        outcome=outcome,
+        reason=reason,
+        http_status=http_status,
+    )
 
 
 @router.post(ROUTE_PATH)
@@ -140,12 +146,9 @@ def post_twilio_whatsapp_inbound(
         signature=x_twilio_signature,
     )
     if not signature_valid:
-        logger.info(
-            "commerce_adapter_inbound_outcome",
-            extra={
-                "instalacion_id": config.installation_id,
-                "status": "signature_rejected",
-            },
+        _emit_outcome(
+            outcome=observability.OUTCOME_REJECTED,
+            reason=observability.REASON_SIGNATURE_REJECTED,
         )
         return _xml_response("", 403)
 
@@ -156,25 +159,18 @@ def post_twilio_whatsapp_inbound(
             comercio_id=0,
         )
     except InvalidTwilioForm:
-        logger.info(
-            "commerce_adapter_inbound_outcome",
-            extra={
-                "instalacion_id": config.installation_id,
-                "status": "invalid_form",
-            },
+        _emit_outcome(
+            outcome=observability.OUTCOME_REJECTED,
+            reason=observability.REASON_INVALID_FORM,
         )
         return _xml_response(empty_twiml_response(), 200)
 
     try:
         comercio_id = int(config.comercio_id)
-    except (TypeError, ValueError) as exc:
-        logger.info(
-            "commerce_adapter_inbound_outcome",
-            extra={
-                "instalacion_id": config.installation_id,
-                "status": "missing_comercio_id",
-                "error": type(exc).__name__,
-            },
+    except (TypeError, ValueError):
+        _emit_outcome(
+            outcome=observability.OUTCOME_REJECTED,
+            reason=observability.REASON_MISSING_COMERCIO_ID,
         )
         return _xml_response(empty_twiml_response(), 200)
 
@@ -192,54 +188,61 @@ def post_twilio_whatsapp_inbound(
 
     try:
         result = forward_event(config=config, event=event)
-    except NovaOrdersUnreachable as exc:
-        logger.info(
-            "commerce_adapter_inbound_outcome",
-            extra={
-                "instalacion_id": config.installation_id,
-                "message_sid": _message_sid_marker(canonical.message_sid),
-                "status": "novaorders_unreachable",
-                "error": type(exc).__name__,
-            },
+    except NovaOrdersInvalidResponse:
+        _emit_outcome(
+            outcome=observability.OUTCOME_UNREACHABLE,
+            reason=observability.REASON_CORE_INVALID_RESPONSE,
+        )
+        return _xml_response("", 502)
+    except NovaOrdersUnreachable:
+        _emit_outcome(
+            outcome=observability.OUTCOME_UNREACHABLE,
+            reason=observability.REASON_CORE_HTTP_FAILURE,
         )
         return _xml_response("", 502)
 
-    if result.is_accepted:
-        logger.info(
-            "commerce_adapter_inbound_outcome",
-            extra={
-                "instalacion_id": config.installation_id,
-                "message_sid": _message_sid_marker(canonical.message_sid),
-                "comercio_id": event.comercio_id,
-                "status": result.status,
-            },
-        )
+    if result.status == observability.OUTCOME_ACCEPTED:
+        _emit_outcome(outcome=observability.OUTCOME_ACCEPTED)
+        return _xml_response(empty_twiml_response(), 200)
+
+    if result.status == observability.OUTCOME_DUPLICATE:
+        _emit_outcome(outcome=observability.OUTCOME_DUPLICATE)
         return _xml_response(empty_twiml_response(), 200)
 
     if result.status == "rejected":
-        logger.info(
-            "commerce_adapter_inbound_outcome",
-            extra={
-                "instalacion_id": config.installation_id,
-                "message_sid": _message_sid_marker(canonical.message_sid),
-                "comercio_id": event.comercio_id,
-                "status": "rejected",
-                "reason": result.reason or "unknown",
-            },
+        adapter_reason = _coerce_rejected_reason(result.reason)
+        _emit_outcome(
+            outcome=observability.OUTCOME_REJECTED,
+            reason=adapter_reason,
         )
         return _xml_response(empty_twiml_response(), 200)
 
-    logger.info(
-        "commerce_adapter_inbound_outcome",
-        extra={
-            "instalacion_id": config.installation_id,
-            "message_sid": _message_sid_marker(canonical.message_sid),
-            "comercio_id": event.comercio_id,
-            "status": "unreachable",
-            "http_status": result.http_status,
-        },
+    if result.http_status and result.http_status != 200:
+        _emit_outcome(
+            outcome=observability.OUTCOME_UNREACHABLE,
+            reason=observability.REASON_CORE_HTTP_FAILURE,
+            http_status=result.http_status,
+        )
+        return _xml_response("", 502)
+
+    _emit_outcome(
+        outcome=observability.OUTCOME_UNREACHABLE,
+        reason=observability.REASON_CORE_INVALID_RESPONSE,
+        http_status=result.http_status,
     )
     return _xml_response("", 502)
+
+
+def _coerce_rejected_reason(raw_reason: str | None) -> str:
+    """Map a NovaOrders rejected reason to a closed adapter token.
+
+    NovaOrders uses the same reason allowlist for business rejections
+    but the adapter defends against unknown tokens so a free-form
+    value can never reach the event line.
+    """
+    if isinstance(raw_reason, str) and raw_reason in observability.REASONS:
+        return raw_reason
+    return observability.REASON_INVALID_CONTEXT
 
 
 __all__ = [
