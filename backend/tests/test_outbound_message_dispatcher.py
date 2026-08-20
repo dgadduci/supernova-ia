@@ -2340,5 +2340,181 @@ class OutboundCommandDispatcherResponseContractTest(HelperTestCase):
         self.assertIsNone(claim.message_sid)
 
 
+class CentralDispatcherEmulatorModeTest(unittest.TestCase):
+    """The central dispatcher must route through the emulator HTTP
+    seam when ``twilio_provider_mode == 'emulator'`` and never
+    invoke the real Twilio SDK."""
+
+    def setUp(self) -> None:
+        self.suffix = _suffix()
+        self.comercio_id = _seed_comercio(self.suffix)
+        self.recepcion_id, _canal, _cliente = _seed_recepcion(self.comercio_id)
+        self.outbox_id = _seed_outbox(self.recepcion_id)
+
+    def tearDown(self) -> None:
+        _cleanup(self.comercio_id)
+
+    def _claim_row(self) -> MensajeProveedorSaliente:
+        return MensajeProveedorSaliente(
+            id=self.outbox_id,
+            proveedor="twilio",
+            recepcion_mensaje_proveedor_id=self.recepcion_id,
+            destinatario_e164="+5491155556666",
+            cuerpo="hola",
+            sequence=0,
+            estado=OutboundProviderMessageState.LEASED.value,
+            identificador_proveedor=None,
+            intentos=1,
+            proximo_intento_en=None,
+            token_lease="lease-token-1",
+            lease_expira_en=None,
+            categoria_ultimo_fallo=None,
+            codigo_ultimo_fallo=None,
+            estado_proveedor=None,
+            estado_proveedor_en=None,
+            fecha_creacion=datetime.now(tz=timezone.utc),
+        )
+
+    def _emulator_settings(self) -> Settings:
+        base = _settings(isolated_enabled=True)
+        return Settings(
+            **{**base.__dict__, **{
+                "twilio_provider_mode": "emulator",
+                "twilio_emulator_base_url": "https://emulator.example.test",
+                "twilio_emulator_account_sid": "AC" + "1" * 32,
+                "twilio_emulator_auth_token": "emulator-auth-token",
+                "twilio_emulator_http_timeout_seconds": 5,
+                "twilio_emulator_control_token": "control-token",
+            }}
+        )
+
+    def test_emulator_mode_does_not_invoke_real_twilio_client(self) -> None:
+        from backend.services.outbound_dispatch_types import (
+            OutboundDispatchOutcome,
+        )
+        from backend.services.outbound_message_dispatcher import (
+            OutboundDispatchConfig,
+            OutboundMessageDispatcher,
+        )
+
+        outbox_repo = MagicMock(name="OutboundProviderMessageRepository")
+        outbox_repo.claim_due.return_value = self._claim_row()
+        outbox_repo.finalize_accepted.return_value = True
+
+        messages_client = MagicMock(name="TwilioMessagesClient")
+        messages_client.create.return_value = type(
+            "Message", (), {"sid": "SM-REAL"}
+        )()
+
+        dispatcher = OutboundMessageDispatcher(
+            session_factory=TestingSessionLocal,
+            messages_client=messages_client,
+            config=OutboundDispatchConfig(
+                sender_e164="+5491100000000",
+                status_callback_url=None,
+                lease_seconds=30,
+                initial_backoff_seconds=30,
+                max_backoff_seconds=300,
+                max_attempts=5,
+            ),
+            outbox_repo_factory=lambda _session: outbox_repo,
+            settings=self._emulator_settings(),
+        )
+
+        result = dispatcher.dispatch()
+        self.assertEqual(result.outcome, OutboundDispatchOutcome.RETRY_SCHEDULED)
+        self.assertEqual(messages_client.create.call_count, 0)
+        # The transport failure for the unreachable emulator URL
+        # should be reflected in the durable retryable state.
+        self.assertEqual(result.codigo, "emulator_transport")
+
+    def test_emulator_mode_with_incomplete_config_fails_closed(self) -> None:
+        from backend.services.outbound_message_dispatcher import (
+            OutboundDispatchConfig,
+            OutboundMessageDispatcher,
+        )
+
+        outbox_repo = MagicMock(name="OutboundProviderMessageRepository")
+        outbox_repo.claim_due.return_value = self._claim_row()
+
+        messages_client = MagicMock(name="TwilioMessagesClient")
+        messages_client.create.return_value = type(
+            "Message", (), {"sid": "SM-REAL"}
+        )()
+
+        bad_settings = self._emulator_settings()
+        # Drop the auth token so the configuration is incomplete.
+        bad_settings = Settings(
+            **{**bad_settings.__dict__, "twilio_emulator_auth_token": None}
+        )
+
+        dispatcher = OutboundMessageDispatcher(
+            session_factory=TestingSessionLocal,
+            messages_client=messages_client,
+            config=OutboundDispatchConfig(
+                sender_e164="+5491100000000",
+                status_callback_url=None,
+                lease_seconds=30,
+                initial_backoff_seconds=30,
+                max_backoff_seconds=300,
+                max_attempts=5,
+            ),
+            outbox_repo_factory=lambda _session: outbox_repo,
+            settings=bad_settings,
+        )
+
+        with self.assertRaises(RuntimeError):
+            dispatcher.dispatch()
+        # The real Twilio SDK must never have been called.
+        self.assertEqual(messages_client.create.call_count, 0)
+
+    def test_emulator_mode_requires_isolated_outbound_enabled(self) -> None:
+        """The central dispatcher fails closed when emulator mode
+        is selected but ``commerce_isolated_outbound_enabled`` is off
+        so the documented isolated T-C pipeline stays the only
+        outbound path and no real Twilio call is attempted."""
+
+        from backend.services.outbound_message_dispatcher import (
+            OutboundDispatchConfig,
+            OutboundMessageDispatcher,
+        )
+
+        outbox_repo = MagicMock(name="OutboundProviderMessageRepository")
+        outbox_repo.claim_due.return_value = self._claim_row()
+
+        messages_client = MagicMock(name="TwilioMessagesClient")
+        messages_client.create.return_value = type(
+            "Message", (), {"sid": "SM-REAL"}
+        )()
+
+        bad_settings = self._emulator_settings()
+        # Disable the isolated outbound pipeline so the dispatcher
+        # fails closed even though the emulator credentials are
+        # configured.
+        bad_settings = Settings(
+            **{**bad_settings.__dict__, "commerce_isolated_outbound_enabled": False}
+        )
+
+        dispatcher = OutboundMessageDispatcher(
+            session_factory=TestingSessionLocal,
+            messages_client=messages_client,
+            config=OutboundDispatchConfig(
+                sender_e164="+5491100000000",
+                status_callback_url=None,
+                lease_seconds=30,
+                initial_backoff_seconds=30,
+                max_backoff_seconds=300,
+                max_attempts=5,
+            ),
+            outbox_repo_factory=lambda _session: outbox_repo,
+            settings=bad_settings,
+        )
+
+        with self.assertRaises(RuntimeError):
+            dispatcher.dispatch()
+        # The real Twilio SDK must never have been called.
+        self.assertEqual(messages_client.create.call_count, 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

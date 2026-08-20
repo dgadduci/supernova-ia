@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from fastapi import FastAPI
@@ -43,6 +44,7 @@ from backend.intents.schemas.processed_intent import ProcessedIntent
 from backend.models import EstadoPedido, EstadoSession
 from backend.services.commerce_availability_service import (
     CommerceAvailabilityService,
+    CommerceAvailabilityStatus,
 )
 from backend.services.pilot_order_operations_view_service import (
     ClientSummary,
@@ -84,6 +86,27 @@ def _settings(token: str | None = CONFIGURED_TOKEN) -> Settings:
     base = settings_module.load_settings()
     return Settings(
         **{**base.__dict__, "order_management_admin_token": token}
+    )
+
+
+def _settings_with_emulator_enabled(
+    token: str | None = CONFIGURED_TOKEN,
+) -> Settings:
+    """Build a Settings instance that enables the admin emulator
+    action: explicit ``TWILIO_PROVIDER_MODE=emulator``, isolated
+    outbound on, and the bounded emulator configuration.
+    """
+    base = _settings(token=token)
+    return Settings(
+        **{**base.__dict__, **{
+            "twilio_provider_mode": "emulator",
+            "commerce_isolated_outbound_enabled": True,
+            "twilio_emulator_base_url": "https://emulator.example.test",
+            "twilio_emulator_account_sid": "AC" + "1" * 32,
+            "twilio_emulator_auth_token": "emulator-auth-token-abc",
+            "twilio_emulator_control_token": "control-token-xyz",
+            "twilio_emulator_http_timeout_seconds": 5,
+        }}
     )
 
 
@@ -869,17 +892,28 @@ class PanelNoMutationTest(unittest.TestCase):
         self.session.close.assert_not_called()
 
     def test_only_get_routes_are_registered_outside_local_test(self) -> None:
-        """The panel now owns one POST route — the panel-local test
-        channel for the exact selected Pedido. Every other route
-        must remain GET-only."""
+        """The panel owns the panel-local test channel for the exact
+        selected Pedido and the explicit Twilio emulator-test
+        action. Every other route must remain GET-only."""
         for route in router_module.router.routes:
             methods = getattr(route, "methods", set())
-            if getattr(route, "path", "").endswith("/local-test"):
+            path = getattr(route, "path", "")
+            if path.endswith("/local-test"):
                 self.assertEqual(
                     methods,
                     {"POST"},
                     msg=(
                         f"local-test route must be POST only, got {methods}"
+                    ),
+                )
+                continue
+            if path.endswith(("/emulator-test", "/emulator-test/status")):
+                self.assertEqual(
+                    methods,
+                    {"POST"},
+                    msg=(
+                        "emulator-test route must be POST only, "
+                        f"got {methods}"
                     ),
                 )
                 continue
@@ -6619,6 +6653,777 @@ class PanelLocalTestRouteAvailabilityGuardTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(call_order, ["loader", "guard"])
         self.assertNotIn("process", call_order)
+
+
+class PanelEmulatorTestAuthTest(unittest.TestCase):
+    """The emulator-test POST route mounts behind the same panel
+    Basic authentication as the rest of the route family. Missing
+    or wrong credentials return 401 with no business work."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def test_missing_credential_returns_401(self) -> None:
+        response = self.client.post(
+            "/admin/pilot/orders/42/emulator-test",
+            json={"message": "hola"},
+            headers={"X-Emulator-Test-Origin": "same-origin"},
+        )
+        self.assertEqual(response.status_code, 401)
+        self.session_override.assert_not_called()
+
+
+class PanelEmulatorTestHeaderTest(unittest.TestCase):
+    """The emulator-test POST route requires the same-origin custom
+    header."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def _post(self, *, origin_value):
+        headers = _basic_auth_header("ignored", CONFIGURED_TOKEN)
+        if origin_value is not None:
+            headers["X-Emulator-Test-Origin"] = origin_value
+        return self.client.post(
+            "/admin/pilot/orders/42/emulator-test",
+            json={"message": "hola"},
+            headers=headers,
+        )
+
+    def test_missing_origin_header_returns_generic_rejection(self) -> None:
+        with patch.object(
+            router_module,
+            "load_active_emulator_target",
+        ) as target_mock:
+            response = self._post(origin_value=None)
+        self.assertEqual(response.status_code, 400)
+        target_mock.assert_not_called()
+
+    def test_wrong_origin_header_returns_generic_rejection(self) -> None:
+        with patch.object(
+            router_module,
+            "load_active_emulator_target",
+        ) as target_mock:
+            response = self._post(origin_value="attacker.example")
+        self.assertEqual(response.status_code, 400)
+        target_mock.assert_not_called()
+
+
+class PanelEmulatorTestBodyValidationTest(unittest.TestCase):
+    """Body validation rejects empty, malformed and oversized
+    payloads before the pipeline is invoked."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def _post(self, *, body, **kwargs):
+        headers = _basic_auth_header("ignored", CONFIGURED_TOKEN)
+        headers["X-Emulator-Test-Origin"] = "same-origin"
+        return self.client.post(
+            "/admin/pilot/orders/42/emulator-test",
+            headers=headers,
+            **kwargs,
+        )
+
+    def test_empty_body_returns_422(self) -> None:
+        response = self._post(body=None, json={})
+        self.assertEqual(response.status_code, 422)
+
+    def test_oversized_message_returns_422(self) -> None:
+        response = self._post(
+            body=None, json={"message": "x" * 501}
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_empty_string_message_returns_422(self) -> None:
+        response = self._post(body=None, json={"message": ""})
+        self.assertEqual(response.status_code, 422)
+
+    def test_extra_field_returns_422(self) -> None:
+        response = self._post(
+            body=None,
+            json={"message": "hola", "extra": "x"},
+        )
+        self.assertEqual(response.status_code, 422)
+
+
+class PanelEmulatorTestRevalidationTest(unittest.TestCase):
+    """The emulator-test re-validates the exact selected pedido
+    identity. Mismatches return the generic rejection without
+    invoking the emulator or any business pipeline."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def _post(self, pedido_id: str = "42"):
+        headers = _basic_auth_header("ignored", CONFIGURED_TOKEN)
+        headers["X-Emulator-Test-Origin"] = "same-origin"
+        return self.client.post(
+            f"/admin/pilot/orders/{pedido_id}/emulator-test",
+            json={"message": "hola"},
+            headers=headers,
+        )
+
+    def test_invalid_pedido_id_returns_generic_rejection(self) -> None:
+        with patch.object(
+            router_module,
+            "load_active_emulator_target",
+        ) as target_mock:
+            response = self._post(pedido_id="abc")
+        self.assertEqual(response.status_code, 400)
+        target_mock.assert_not_called()
+
+    def test_missing_target_returns_generic_rejection(self) -> None:
+        with patch.object(
+            router_module,
+            "load_active_emulator_target",
+            return_value=None,
+        ) as target_mock:
+            response = self._post()
+        self.assertEqual(response.status_code, 400)
+        target_mock.assert_called_once()
+
+    def test_borrador_pedido_returns_generic_rejection(self) -> None:
+        from backend.services.admin_pilot_emulator_service import (
+            EmulatorTestTarget,
+        )
+
+        target = EmulatorTestTarget(
+            pedido_id=42,
+            session_id=21,
+            cliente_id=31,
+            comercio_id=1,
+            canal_id=5,
+            canal_destination_e164="+5491100000000",
+        )
+        with patch.object(
+            router_module,
+            "load_active_emulator_target",
+            return_value=target,
+        ), patch.object(
+            router_module,
+            "commerce_availability_status",
+            return_value=CommerceAvailabilityStatus.UNAVAILABLE,
+        ):
+            response = self._post()
+        self.assertEqual(response.status_code, 400)
+
+
+class PanelEmulatorTestHappyPathTest(unittest.TestCase):
+    """A valid emulator-test turn invokes the emulator inbound
+    control surface exactly once with the exact selected session
+    identity. No coordinator, no worker, no dispatcher, no T-C,
+    no real Twilio SDK."""
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module,
+            "load_settings",
+            return_value=_settings_with_emulator_enabled(),
+        )
+        self._settings_patcher.start()
+        self._router_settings_patcher = patch.object(
+            router_module,
+            "load_settings",
+            return_value=_settings_with_emulator_enabled(),
+        )
+        self._router_settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self._router_settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def _post(self, pedido_id: str = "42"):
+        headers = _basic_auth_header("ignored", CONFIGURED_TOKEN)
+        headers["X-Emulator-Test-Origin"] = "same-origin"
+        return self.client.post(
+            f"/admin/pilot/orders/{pedido_id}/emulator-test",
+            json={"message": "hola"},
+            headers=headers,
+        )
+
+    def _build_target(self):
+        from backend.services.admin_pilot_emulator_service import (
+            EmulatorTestTarget,
+        )
+
+        return EmulatorTestTarget(
+            pedido_id=42,
+            session_id=21,
+            cliente_id=31,
+            comercio_id=1,
+            canal_id=5,
+            canal_destination_e164="+5491100000000",
+        )
+
+    def test_happy_path_returns_synthetic_inbound_id(self) -> None:
+        target = self._build_target()
+        installation = MagicMock(name="Installation")
+        client = MagicMock(name="EmulatorClient")
+        client.submit_inbound.return_value = MagicMock(
+            status="accepted",
+            message_sid="SM-FAKE",
+            synthetic_inbound_id="SM-FAKE",
+        )
+        with patch.object(
+            router_module,
+            "load_active_emulator_target",
+            return_value=target,
+        ), patch.object(
+            router_module,
+            "commerce_availability_status",
+            return_value=CommerceAvailabilityStatus.AVAILABLE,
+        ), patch.object(
+            router_module,
+            "load_active_installation",
+            return_value=installation,
+        ), patch.object(
+            router_module,
+            "build_emulator_control_client",
+            return_value=client,
+        ), patch.object(
+            router_module,
+            "resolve_cliente_e164",
+            return_value="+5491155556666",
+        ):
+            response = self._post()
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["synthetic_inbound_id"], "SM-FAKE")
+
+    def test_disabled_emulator_returns_generic_rejection(self) -> None:
+        target = self._build_target()
+        installation = MagicMock(name="Installation")
+        with patch.object(
+            router_module,
+            "load_active_emulator_target",
+            return_value=target,
+        ), patch.object(
+            router_module,
+            "commerce_availability_status",
+            return_value=CommerceAvailabilityStatus.AVAILABLE,
+        ), patch.object(
+            router_module,
+            "load_active_installation",
+            return_value=installation,
+        ), patch.object(
+            router_module,
+            "build_emulator_control_client",
+            return_value=None,
+        ):
+            response = self._post()
+        self.assertEqual(response.status_code, 400)
+
+    def test_unavailable_commerce_returns_generic_rejection(self) -> None:
+        target = self._build_target()
+        with patch.object(
+            router_module,
+            "load_active_emulator_target",
+            return_value=target,
+        ), patch.object(
+            router_module,
+            "commerce_availability_status",
+            return_value=CommerceAvailabilityStatus.UNAVAILABLE,
+        ):
+            response = self._post()
+        self.assertEqual(response.status_code, 400)
+
+    def test_inactive_installation_returns_generic_rejection(self) -> None:
+        target = self._build_target()
+        with patch.object(
+            router_module,
+            "load_active_emulator_target",
+            return_value=target,
+        ), patch.object(
+            router_module,
+            "commerce_availability_status",
+            return_value=CommerceAvailabilityStatus.AVAILABLE,
+        ), patch.object(
+            router_module,
+            "load_active_installation",
+            return_value=None,
+        ):
+            response = self._post()
+        self.assertEqual(response.status_code, 400)
+
+    def test_emulator_transport_failure_returns_generic_rejection(self) -> None:
+        target = self._build_target()
+        installation = MagicMock(name="Installation")
+        client = MagicMock(name="EmulatorClient")
+        client.submit_inbound.side_effect = RuntimeError("boom")
+        with patch.object(
+            router_module,
+            "load_active_emulator_target",
+            return_value=target,
+        ), patch.object(
+            router_module,
+            "commerce_availability_status",
+            return_value=CommerceAvailabilityStatus.AVAILABLE,
+        ), patch.object(
+            router_module,
+            "load_active_installation",
+            return_value=installation,
+        ), patch.object(
+            router_module,
+            "build_emulator_control_client",
+            return_value=client,
+        ), patch.object(
+            router_module,
+            "resolve_cliente_e164",
+            return_value="+5491155556666",
+        ):
+            response = self._post()
+        self.assertEqual(response.status_code, 400)
+
+    def test_local_test_route_still_works(self) -> None:
+        """The existing local-test route keeps its meaning."""
+        from contextlib import ExitStack
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch.object(
+                    router_module,
+                    "_load_local_test_session",
+                    return_value=None,
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    router_module,
+                    "_load_confirmed_local_test_session",
+                    return_value=None,
+                )
+            )
+            response = self.client.post(
+                "/admin/pilot/orders/42/local-test",
+                json={"message": "hola"},
+                headers={
+                    **_basic_auth_header("ignored", CONFIGURED_TOKEN),
+                    "X-Local-Test-Origin": "same-origin",
+                },
+            )
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertEqual(body["responses"], [])
+
+
+class PanelEmulatorTestStatusTest(unittest.TestCase):
+    """The bounded status projection is scoped to the exact
+    selected pedido/session and synthetic inbound identifier.
+
+    The route also fails closed at the configuration boundary: when
+    the explicit emulator action contract is not satisfied, the
+    status endpoint rejects with the documented generic payload and
+    never opens a database connection or invokes the worker,
+    dispatcher, T-C or Twilio.
+    """
+
+    def setUp(self) -> None:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=_settings()
+        )
+        self._settings_patcher.start()
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def _post(self, payload):
+        return self.client.post(
+            "/admin/pilot/orders/42/emulator-test/status",
+            json=payload,
+            headers={
+                **_basic_auth_header("ignored", CONFIGURED_TOKEN),
+                "X-Emulator-Test-Origin": "same-origin",
+            },
+        )
+
+    def test_disabled_emulator_returns_generic_rejection(self) -> None:
+        """When the explicit emulator action contract is not
+        satisfied the status endpoint returns the documented generic
+        rejection. The early guard runs before any database work so
+        the route never queries Pedido/Session/receipt/outbox
+        state."""
+        with patch.object(
+            router_module,
+            "_is_emulator_action_enabled",
+            return_value=False,
+        ), patch.object(
+            router_module,
+            "load_active_emulator_target",
+        ) as target_mock, patch.object(
+            router_module,
+            "_emulator_outbox_summary",
+        ) as summary_mock:
+            response = self._post({"synthetic_inbound_id": "SM-FAKE"})
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertEqual(body.get("responses"), [])
+        self.assertIn("message", body)
+        self.assertNotIn("status", body)
+        self.assertNotIn("outbound_body", body)
+        target_mock.assert_not_called()
+        summary_mock.assert_not_called()
+
+    def test_disabled_emulator_does_not_open_database_session(self) -> None:
+        """The disabled-emulator guard runs BEFORE any database
+        read. The early return short-circuits the SQLAlchemy helpers
+        so no ``db.execute``/``commit``/``rollback``/``flush``/
+        ``refresh``/``begin``/``close`` call is reached, the
+        session is never mutated, and the loader/summary helpers
+        are never invoked."""
+        with patch.object(
+            router_module,
+            "_is_emulator_action_enabled",
+            return_value=False,
+        ), patch.object(
+            router_module,
+            "load_active_emulator_target",
+        ) as target_mock, patch.object(
+            router_module,
+            "_emulator_outbox_summary",
+        ) as summary_mock:
+            response = self._post({"synthetic_inbound_id": "SM-FAKE"})
+        self.assertEqual(response.status_code, 400)
+        target_mock.assert_not_called()
+        summary_mock.assert_not_called()
+        self.session.execute.assert_not_called()
+        self.session.commit.assert_not_called()
+        self.session.rollback.assert_not_called()
+        self.session.flush.assert_not_called()
+        self.session.refresh.assert_not_called()
+        self.session.begin.assert_not_called()
+        self.session.close.assert_not_called()
+
+    def test_missing_target_returns_generic_rejection(self) -> None:
+        with patch.object(
+            router_module,
+            "_is_emulator_action_enabled",
+            return_value=True,
+        ), patch.object(
+            router_module,
+            "load_active_emulator_target",
+            return_value=None,
+        ) as target_mock:
+            response = self._post({"synthetic_inbound_id": "SM-FAKE"})
+        self.assertEqual(response.status_code, 400)
+        target_mock.assert_called_once()
+
+    def test_happy_path_returns_pending_state(self) -> None:
+        from backend.services.admin_pilot_emulator_service import (
+            EmulatorTestTarget,
+        )
+
+        target = EmulatorTestTarget(
+            pedido_id=42,
+            session_id=21,
+            cliente_id=31,
+            comercio_id=1,
+            canal_id=5,
+            canal_destination_e164="+5491100000000",
+        )
+        summary = router_module.EmulatorStatusResponse(
+            status="pending",
+            outbound_body=None,
+            provider_message_sid=None,
+        )
+        with patch.object(
+            router_module,
+            "_is_emulator_action_enabled",
+            return_value=True,
+        ), patch.object(
+            router_module,
+            "load_active_emulator_target",
+            return_value=target,
+        ), patch.object(
+            router_module,
+            "_emulator_outbox_summary",
+            return_value=summary,
+        ):
+            response = self._post({"synthetic_inbound_id": "SM-FAKE"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "pending")
+
+
+class PanelEmulatorActionExplicitModeTest(unittest.TestCase):
+    """The emulator-test action requires the explicit configuration
+    contract: ``TWILIO_PROVIDER_MODE=emulator``,
+    ``COMMERCE_ISOLATED_OUTBOUND_ENABLED=1`` and explicit emulator
+    credentials. When any of those is missing the action returns
+    the documented generic rejection and never invokes the emulator
+    or any real provider."""
+
+    def _post(self, pedido_id: str = "42") -> Any:
+        headers = _basic_auth_header("ignored", CONFIGURED_TOKEN)
+        headers["X-Emulator-Test-Origin"] = "same-origin"
+        return self.client.post(
+            f"/admin/pilot/orders/{pedido_id}/emulator-test",
+            json={"message": "hola"},
+            headers=headers,
+        )
+
+    def _build_app_with(self, settings: Settings) -> TestClient:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=settings
+        )
+        self._settings_patcher.start()
+        self._router_settings_patcher = patch.object(
+            router_module, "load_settings", return_value=settings
+        )
+        self._router_settings_patcher.start()
+        return self.client
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self._router_settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def test_real_mode_returns_generic_rejection(self) -> None:
+        """When ``twilio_provider_mode == 'real'`` the action is
+        disabled even if the emulator credentials happen to be
+        configured; the route never invokes a real provider."""
+        from backend.services.admin_pilot_emulator_service import (
+            EmulatorTestTarget,
+        )
+
+        target = EmulatorTestTarget(
+            pedido_id=42,
+            session_id=21,
+            cliente_id=31,
+            comercio_id=1,
+            canal_id=5,
+            canal_destination_e164="+5491100000000",
+        )
+        installation = MagicMock(name="Installation")
+        client = MagicMock(name="EmulatorClient")
+        client.submit_inbound.return_value = MagicMock(
+            status="accepted",
+            message_sid="SM-FAKE",
+            synthetic_inbound_id="SM-FAKE",
+        )
+        settings = _settings_with_emulator_enabled()
+        settings = Settings(
+            **{**settings.__dict__, "twilio_provider_mode": "real"}
+        )
+        self._build_app_with(settings)
+        with patch.object(
+            router_module, "load_active_emulator_target", return_value=target
+        ), patch.object(
+            router_module, "load_active_installation", return_value=installation
+        ), patch.object(
+            router_module, "build_emulator_control_client", return_value=client
+        ):
+            response = self._post()
+        self.assertEqual(response.status_code, 400)
+        client.submit_inbound.assert_not_called()
+
+    def test_isolated_disabled_returns_generic_rejection(self) -> None:
+        """When ``commerce_isolated_outbound_enabled`` is off the
+        action is disabled even if the emulator credentials happen
+        to be configured; the route never invokes the emulator."""
+        from backend.services.admin_pilot_emulator_service import (
+            EmulatorTestTarget,
+        )
+
+        target = EmulatorTestTarget(
+            pedido_id=42,
+            session_id=21,
+            cliente_id=31,
+            comercio_id=1,
+            canal_id=5,
+            canal_destination_e164="+5491100000000",
+        )
+        installation = MagicMock(name="Installation")
+        client = MagicMock(name="EmulatorClient")
+        client.submit_inbound.return_value = MagicMock(
+            status="accepted",
+            message_sid="SM-FAKE",
+            synthetic_inbound_id="SM-FAKE",
+        )
+        settings = _settings_with_emulator_enabled()
+        settings = Settings(
+            **{**settings.__dict__, "commerce_isolated_outbound_enabled": False}
+        )
+        self._build_app_with(settings)
+        with patch.object(
+            router_module, "load_active_emulator_target", return_value=target
+        ), patch.object(
+            router_module, "load_active_installation", return_value=installation
+        ), patch.object(
+            router_module, "build_emulator_control_client", return_value=client
+        ):
+            response = self._post()
+        self.assertEqual(response.status_code, 400)
+        client.submit_inbound.assert_not_called()
+
+    def test_missing_emulator_credentials_returns_generic_rejection(self) -> None:
+        """When emulator mode is enabled but the operator did not
+        pin the credentials the action is disabled; the route never
+        invokes the emulator or the central dispatcher."""
+        from backend.services.admin_pilot_emulator_service import (
+            EmulatorTestTarget,
+        )
+
+        target = EmulatorTestTarget(
+            pedido_id=42,
+            session_id=21,
+            cliente_id=31,
+            comercio_id=1,
+            canal_id=5,
+            canal_destination_e164="+5491100000000",
+        )
+        installation = MagicMock(name="Installation")
+        client = MagicMock(name="EmulatorClient")
+        settings = _settings_with_emulator_enabled()
+        settings = Settings(
+            **{**settings.__dict__, "twilio_emulator_account_sid": None}
+        )
+        self._build_app_with(settings)
+        with patch.object(
+            router_module, "load_active_emulator_target", return_value=target
+        ), patch.object(
+            router_module, "load_active_installation", return_value=installation
+        ), patch.object(
+            router_module, "build_emulator_control_client", return_value=client
+        ):
+            response = self._post()
+        self.assertEqual(response.status_code, 400)
+        client.submit_inbound.assert_not_called()
+
+
+class PanelEmulatorDetailTemplateTest(unittest.TestCase):
+    """The detail page hides the emulator-test form when the
+    explicit configuration contract is not satisfied. The test
+    patches the ``_is_emulator_action_enabled`` helper to drive the
+    branch without rebuilding the full detail view model."""
+
+    def _build_app_with(self, settings: Settings) -> TestClient:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=settings
+        )
+        self._settings_patcher.start()
+        self._router_settings_patcher = patch.object(
+            router_module, "load_settings", return_value=settings
+        )
+        self._router_settings_patcher.start()
+        return self.client
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self._router_settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def _get_detail_response(self, *, enabled: bool) -> str:
+        self._build_app_with(_settings())
+
+        with patch.object(
+            router_module, "load_active_emulator_target", return_value=None
+        ), patch.object(
+            router_module, "_is_emulator_action_enabled", return_value=enabled
+        ), patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail(),
+                history=_build_history(),
+                order_lines_snapshot=[],
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 200)
+        return response.text
+
+    def test_emulator_form_hidden_when_mode_is_real(self) -> None:
+        body = self._get_detail_response(enabled=False)
+        self.assertIn("Twilio Emulator (deshabilitado)", body)
+        self.assertNotIn("data-debug-emulator-form", body)
+
+    def test_emulator_form_hidden_when_isolated_disabled(self) -> None:
+        body = self._get_detail_response(enabled=False)
+        self.assertIn("Twilio Emulator (deshabilitado)", body)
+        self.assertNotIn("data-debug-emulator-form", body)
+
+    def test_emulator_form_hidden_when_credentials_missing(self) -> None:
+        body = self._get_detail_response(enabled=False)
+        self.assertIn("Twilio Emulator (deshabilitado)", body)
+        self.assertNotIn("data-debug-emulator-form", body)
+
+    def test_emulator_form_visible_when_fully_enabled(self) -> None:
+        body = self._get_detail_response(enabled=True)
+        self.assertIn("Enviar por Twilio Emulator", body)
+        self.assertIn("data-debug-emulator-form", body)
 
 
 if __name__ == "__main__":

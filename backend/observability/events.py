@@ -47,6 +47,8 @@ COMPONENT_PRODUCT_ADD_EXECUTION = "product_add_execution"
 COMPONENT_OUTBOUND_STYLE = "outbound_styler"
 COMPONENT_COMMERCE_INSTALLATION_INGRESS = "commerce_installation_ingress"
 COMPONENT_COMMERCE_INSTALLATION_ADAPTER = "commerce_installation_adapter"
+COMPONENT_TWILIO_EMULATOR = "twilio_emulator"
+COMPONENT_ADMIN_PILOT_EMULATOR = "admin_pilot_emulator"
 
 
 EVENT_OUTBOUND_OUTCOME = "outbound_attempt_outcome"
@@ -67,6 +69,8 @@ EVENT_OUTBOUND_STYLE = "outbound_style_attempt"
 EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME = (
     "commerce_installation_inbound_outcome"
 )
+EVENT_TWILIO_EMULATOR_OUTBOUND_OUTCOME = "twilio_emulator_outbound_outcome"
+EVENT_ADMIN_PILOT_EMULATOR_OUTCOME = "admin_pilot_emulator_outcome"
 
 
 # ``EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME`` is emitted by BOTH
@@ -97,6 +101,8 @@ _EVENT_CATALOGUE: dict[str, str | frozenset[str]] = {
             COMPONENT_COMMERCE_INSTALLATION_ADAPTER,
         }
     ),
+    EVENT_TWILIO_EMULATOR_OUTBOUND_OUTCOME: COMPONENT_TWILIO_EMULATOR,
+    EVENT_ADMIN_PILOT_EMULATOR_OUTCOME: COMPONENT_ADMIN_PILOT_EMULATOR,
 }
 
 
@@ -215,6 +221,12 @@ _OUTCOMES_BY_EVENT: dict[str, frozenset[str]] = {
     ),
     EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME: frozenset(
         {"accepted", "duplicate", "rejected", "unreachable"}
+    ),
+    EVENT_TWILIO_EMULATOR_OUTBOUND_OUTCOME: frozenset(
+        {"accepted", "rejected"}
+    ),
+    EVENT_ADMIN_PILOT_EMULATOR_OUTCOME: frozenset(
+        {"submitted", "rejected", "unavailable"}
     ),
 }
 
@@ -363,7 +375,22 @@ _OPTIONAL_FIELDS_BY_EVENT: dict[str, frozenset[str]] = {
     EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME: frozenset(
         {"reason", "http_status"}
     ),
+    EVENT_TWILIO_EMULATOR_OUTBOUND_OUTCOME: frozenset({"reason"}),
+    EVENT_ADMIN_PILOT_EMULATOR_OUTCOME: frozenset({"reason"}),
 }
+
+
+_EMULATOR_REASONS: frozenset[str] = frozenset(
+    {
+        "auth",
+        "invalid",
+        "transport",
+        "unavailable_commerce",
+        "inactive_installation",
+        "cross_commerce_mismatch",
+        "emulator_disabled",
+    }
+)
 
 
 _ALLOWED_PAYLOAD_KEYS: frozenset[str] = frozenset(
@@ -541,7 +568,9 @@ def _is_safe_optional_field(name: str, value: Any) -> bool:
             return False
         if len(value) == 0 or len(value) > _MAX_STR:
             return False
-        return value in _COMMERCE_INSTALLATION_REASONS
+        if value in _COMMERCE_INSTALLATION_REASONS:
+            return True
+        return value in _EMULATOR_REASONS
     return False
 
 
@@ -1663,6 +1692,7 @@ def emit_event(
 
 
 __all__ = [
+    "COMPONENT_ADMIN_PILOT_EMULATOR",
     "COMPONENT_CALLBACK",
     "COMPONENT_COMMERCE_INSTALLATION_ADAPTER",
     "COMPONENT_COMMERCE_INSTALLATION_INGRESS",
@@ -1675,7 +1705,9 @@ __all__ = [
     "COMPONENT_PENDING_CONTEXT",
     "COMPONENT_PRODUCT_ADD_EXECUTION",
     "COMPONENT_PRODUCT_RECOGNITION",
+    "COMPONENT_TWILIO_EMULATOR",
     "COMPONENT_WORKER",
+    "EVENT_ADMIN_PILOT_EMULATOR_OUTCOME",
     "EVENT_CALLBACK_OUTCOME",
     "EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME",
     "EVENT_DATABASE_TECHNICAL_FAILURE",
@@ -1687,6 +1719,7 @@ __all__ = [
     "EVENT_PENDING_CONTEXT_TRANSITION",
     "EVENT_PRODUCT_ADD_EXECUTION",
     "EVENT_SHADOW_PRODUCT_RECOGNITION",
+    "EVENT_TWILIO_EMULATOR_OUTBOUND_OUTCOME",
     "EVENT_WORKER_CYCLE",
     "EVENT_WORKER_DISABLED",
     "EVENT_WORKER_LIVENESS",

@@ -10,6 +10,15 @@ The adapter does not import the NovaOrders backend module. The Twilio
 account SID and auth token are merchant-owned secrets that never leave
 the adapter process; the shared installation secret is rotated by the
 NovaOrders provisioning seam and is held in memory only.
+
+The adapter supports an explicit ``provider_mode`` that switches the
+outbound transport between the real Twilio SDK (``real`` — default)
+and the standalone ``twilio_emulator`` package (``emulator``).
+The mode is fail-closed: when ``emulator`` is selected the adapter
+requires the operator-pinned emulator URL, account SID and auth token;
+when ``real`` is selected the existing Twilio configuration remains
+the only source of truth. The emulator transport never falls through
+to the real provider and never instantiates ``twilio.rest.Client``.
 """
 from __future__ import annotations
 
@@ -29,6 +38,20 @@ class CommerceAdapterConfigError(ValueError):
     """
 
 
+_PROVIDER_MODE_REAL: str = "real"
+_PROVIDER_MODE_EMULATOR: str = "emulator"
+_PROVIDER_MODES: frozenset[str] = frozenset(
+    {_PROVIDER_MODE_REAL, _PROVIDER_MODE_EMULATOR}
+)
+
+PROVIDER_MODE_REAL: str = _PROVIDER_MODE_REAL
+PROVIDER_MODE_EMULATOR: str = _PROVIDER_MODE_EMULATOR
+
+
+def _is_provider_mode(value: object) -> bool:
+    return isinstance(value, str) and value in _PROVIDER_MODES
+
+
 _REQUIRED_ENVS: tuple[str, ...] = (
     "TC_TWILIO_AUTH_TOKEN",
     "TC_TWILIO_ACCOUNT_SID",
@@ -38,6 +61,13 @@ _REQUIRED_ENVS: tuple[str, ...] = (
     "TC_INSTALLATION_SECRET",
     "TC_COMERCIO_ID",
     "TC_TWILIO_SENDER_E164",
+)
+
+
+_EMULATOR_REQUIRED_ENVS: tuple[str, ...] = (
+    "TC_TWILIO_EMULATOR_BASE_URL",
+    "TC_TWILIO_EMULATOR_ACCOUNT_SID",
+    "TC_TWILIO_EMULATOR_AUTH_TOKEN",
 )
 
 
@@ -123,6 +153,61 @@ def _require_e164(name: str, raw: str | None) -> str:
     return cleaned
 
 
+def _require_emulator_https_url(name: str, raw: str | None) -> str:
+    if raw is None or not str(raw).strip():
+        raise CommerceAdapterConfigError(f"{name} is required for emulator mode")
+    cleaned = str(raw).strip()
+    parsed = urlparse(cleaned)
+    if parsed.scheme.lower() != "https" or not parsed.netloc:
+        raise CommerceAdapterConfigError(
+            f"{name} must be an absolute https URL"
+        )
+    if parsed.query or parsed.fragment:
+        raise CommerceAdapterConfigError(
+            f"{name} must not contain query string or fragment"
+        )
+    return cleaned
+
+
+def _require_emulator_account_sid(name: str, raw: str | None) -> str:
+    if raw is None or not str(raw).strip():
+        raise CommerceAdapterConfigError(f"{name} is required for emulator mode")
+    cleaned = str(raw).strip()
+    if not cleaned.startswith("AC") or len(cleaned) != 34:
+        raise CommerceAdapterConfigError(
+            f"{name} must be a canonical Twilio account SID"
+        )
+    tail = cleaned[2:]
+    if not all(ch in "0123456789abcdefABCDEF" for ch in tail):
+        raise CommerceAdapterConfigError(
+            f"{name} must be a canonical Twilio account SID"
+        )
+    return cleaned
+
+
+def _require_emulator_auth_token(name: str, raw: str | None) -> str:
+    if raw is None or not str(raw).strip():
+        raise CommerceAdapterConfigError(f"{name} is required for emulator mode")
+    cleaned = str(raw).strip()
+    if not cleaned:
+        raise CommerceAdapterConfigError(f"{name} must be a non-empty string")
+    return cleaned
+
+
+def _resolve_provider_mode(env: dict[str, str]) -> str:
+    raw = (
+        env.get("TC_TWILIO_PROVIDER_MODE")
+        or os.environ.get("TC_TWILIO_PROVIDER_MODE")
+        or _PROVIDER_MODE_REAL
+    )
+    cleaned = str(raw).strip().lower()
+    if not _is_provider_mode(cleaned):
+        raise CommerceAdapterConfigError(
+            "TC_TWILIO_PROVIDER_MODE must be 'real' or 'emulator'"
+        )
+    return cleaned
+
+
 @dataclass(frozen=True)
 class CommerceAdapterConfig:
     """Immutable adapter configuration snapshot."""
@@ -136,6 +221,14 @@ class CommerceAdapterConfig:
     comercio_id: int
     twilio_sender_e164: str
     http_timeout_seconds: int = 5
+    provider_mode: str = _PROVIDER_MODE_REAL
+    twilio_emulator_base_url: str | None = None
+    twilio_emulator_account_sid: str | None = None
+    twilio_emulator_auth_token: str | None = None
+
+    @property
+    def is_emulator_mode(self) -> bool:
+        return self.provider_mode == _PROVIDER_MODE_EMULATOR
 
 
 def load_config_from_env(env: dict[str, str] | None = None) -> CommerceAdapterConfig:
@@ -147,8 +240,23 @@ def load_config_from_env(env: dict[str, str] | None = None) -> CommerceAdapterCo
     """
     if env is None:
         env = {name: _require_env(name) for name in _REQUIRED_ENVS}
+        for name in _EMULATOR_REQUIRED_ENVS:
+            raw = os.environ.get(name)
+            if raw is not None:
+                env[name] = raw
+        raw_mode = os.environ.get("TC_TWILIO_PROVIDER_MODE")
+        if raw_mode is not None:
+            env["TC_TWILIO_PROVIDER_MODE"] = raw_mode
     else:
-        env = {name: str(env.get(name, "")).strip() for name in _REQUIRED_ENVS}
+        filtered: dict[str, str] = {}
+        for name in _REQUIRED_ENVS:
+            filtered[name] = str(env.get(name, "")).strip()
+        for name in _EMULATOR_REQUIRED_ENVS:
+            filtered[name] = str(env.get(name, "")).strip()
+        filtered["TC_TWILIO_PROVIDER_MODE"] = str(
+            env.get("TC_TWILIO_PROVIDER_MODE", "")
+        ).strip()
+        env = filtered
         missing = [
             name
             for name in _REQUIRED_ENVS
@@ -201,6 +309,29 @@ def load_config_from_env(env: dict[str, str] | None = None) -> CommerceAdapterCo
                 "TC_HTTP_TIMEOUT_SECONDS must be greater than zero"
             )
 
+    provider_mode = _resolve_provider_mode(env)
+    emulator_base_url: str | None = None
+    emulator_account_sid: str | None = None
+    emulator_auth_token: str | None = None
+    if provider_mode == _PROVIDER_MODE_EMULATOR:
+        emulator_base_url = _require_emulator_https_url(
+            "TC_TWILIO_EMULATOR_BASE_URL",
+            env.get("TC_TWILIO_EMULATOR_BASE_URL"),
+        )
+        emulator_account_sid = _require_emulator_account_sid(
+            "TC_TWILIO_EMULATOR_ACCOUNT_SID",
+            env.get("TC_TWILIO_EMULATOR_ACCOUNT_SID"),
+        )
+        emulator_auth_token = _require_emulator_auth_token(
+            "TC_TWILIO_EMULATOR_AUTH_TOKEN",
+            env.get("TC_TWILIO_EMULATOR_AUTH_TOKEN"),
+        )
+        if emulator_account_sid == account_sid:
+            raise CommerceAdapterConfigError(
+                "TC_TWILIO_EMULATOR_ACCOUNT_SID must differ from the "
+                "real Twilio account SID"
+            )
+
     return CommerceAdapterConfig(
         twilio_auth_token=str(env["TC_TWILIO_AUTH_TOKEN"]),
         twilio_account_sid=account_sid,
@@ -211,10 +342,16 @@ def load_config_from_env(env: dict[str, str] | None = None) -> CommerceAdapterCo
         comercio_id=int(comercio_id),
         twilio_sender_e164=str(sender_e164),
         http_timeout_seconds=int(timeout),
+        provider_mode=provider_mode,
+        twilio_emulator_base_url=emulator_base_url,
+        twilio_emulator_account_sid=emulator_account_sid,
+        twilio_emulator_auth_token=emulator_auth_token,
     )
 
 
 __all__ = [
+    "PROVIDER_MODE_EMULATOR",
+    "PROVIDER_MODE_REAL",
     "CommerceAdapterConfig",
     "CommerceAdapterConfigError",
     "load_config_from_env",

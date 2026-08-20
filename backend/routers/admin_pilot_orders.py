@@ -70,6 +70,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
+from backend.config.settings import load_settings
 from backend.dependencies import get_session, require_admin_pilot_basic
 from backend.intents.orchestration.incoming_message_response_orchestrator import (
     process_incoming_message_with_style_diagnostic,
@@ -91,9 +92,21 @@ from backend.models import (
 from backend.models import (
     Session as SessionModel,
 )
+from backend.services.admin_pilot_emulator_service import (
+    EmulatorTestTarget,
+    commerce_availability_status,
+    emit_admin_emulator_event,
+    load_active_emulator_target,
+    load_active_installation,
+    normalize_destination_e164,
+    resolve_cliente_e164,
+)
 from backend.services.commerce_availability_service import (
     CommerceAvailabilityService,
     CommerceAvailabilityStatus,
+)
+from backend.services.emulator_control_client import (
+    build_emulator_control_client,
 )
 from backend.services.outbound_response_mapper import (
     build_customer_responses_with_diagnostic,
@@ -122,6 +135,14 @@ _templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
 _templates.env.autoescape = True
 
 _ESTADO_VALUES: tuple[str, ...] = tuple(member.value for member in EstadoPedido)
+
+EMULATOR_MAX_MESSAGE_CHARS: int = 500
+EMULATOR_ORIGIN_HEADER: str = "X-Emulator-Test-Origin"
+EMULATOR_ORIGIN_VALUE: str = "same-origin"
+EMULATOR_REJECTED_MESSAGE: str = (
+    "El canal de Twilio Emulator rechazó el mensaje. "
+    "Revisá la consola y el panel principal para más detalles."
+)
 
 LOCAL_TEST_MAX_MESSAGE_CHARS = 500
 LOCAL_TEST_ORIGIN_HEADER = "X-Local-Test-Origin"
@@ -310,6 +331,39 @@ def _commerce_availability_outcome(
         return CommerceAvailabilityStatus.UNAVAILABLE
     availability = CommerceAvailabilityService(db).evaluate(comercio_id)
     return availability.status
+
+
+def _is_emulator_action_enabled() -> bool:
+    """Return ``True`` only when the admin emulator action is
+    fully enabled.
+
+    The action requires three conditions to be true simultaneously:
+
+    1. ``TWILIO_PROVIDER_MODE`` is explicitly set to ``emulator``;
+    2. ``COMMERCE_ISOLATED_OUTBOUND_ENABLED`` is on so the canonical
+       isolated T-C pipeline is the only outbound path;
+    3. The emulator configuration is explicit and complete so the
+       emulator, T-C adapter and central dispatcher share the same
+       Twilio-shaped credentials.
+
+    When any condition is missing the action is hidden in the UI and
+    rejected server-side; no real Twilio fallback is invoked.
+    """
+    try:
+        settings = load_settings()
+    except Exception:  # noqa: BLE001 - the explicit-mode gate fails closed on every settings load failure
+        return False
+    if settings.twilio_provider_mode != "emulator":
+        return False
+    if not bool(settings.commerce_isolated_outbound_enabled):
+        return False
+    from backend.config.settings import validate_emulator_settings
+
+    try:
+        validate_emulator_settings(settings)
+    except ValueError:
+        return False
+    return True
 
 
 def _is_confirmed_clean_context(
@@ -700,6 +754,14 @@ def detail_order(
             "detail": detail,
             "history": history,
             "local_test_max_chars": LOCAL_TEST_MAX_MESSAGE_CHARS,
+            "emulator_test_max_chars": EMULATOR_MAX_MESSAGE_CHARS,
+            "emulator_status_url": (
+                f"/admin/pilot/orders/{detail.pedido.id}/emulator-test/status"
+            ),
+            "emulator_action_url": (
+                f"/admin/pilot/orders/{detail.pedido.id}/emulator-test"
+            ),
+            "emulator_action_enabled": _is_emulator_action_enabled(),
         },
     )
 
@@ -932,21 +994,393 @@ def commerce_catalog(
     )
 
 
+EMULATOR_MAX_MESSAGE_CHARS: int = 500
+EMULATOR_ORIGIN_HEADER: str = "X-Emulator-Test-Origin"
+EMULATOR_ORIGIN_VALUE: str = "same-origin"
+EMULATOR_REJECTED_MESSAGE: str = (
+    "El canal de Twilio Emulator rechazó el mensaje. "
+    "Revisá la consola y el panel principal para más detalles."
+)
+
+
+def _emulator_rejection() -> JSONResponse:
+    """Return the documented generic rejection for the emulator path.
+
+    The route never emits a precise diagnostic so the response
+    cannot be used to enumerate the operator error class. It is the
+    only JSON body the route emits for invalid submissions.
+    """
+    return JSONResponse(
+        status_code=400,
+        content={
+            "responses": [],
+            "message": EMULATOR_REJECTED_MESSAGE,
+        },
+    )
+
+
+class EmulatorTestRequest(BaseModel):
+    """Bounded request schema for the emulator-test panel action.
+
+    The schema mirrors the local-test schema so the operator's
+    mental model stays consistent: the only field is the typed
+    message. ``extra='forbid'`` keeps the request surface minimal.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=EMULATOR_MAX_MESSAGE_CHARS)
+
+
+class EmulatorTestResponse(BaseModel):
+    """Successful emulator-test response payload.
+
+    ``synthetic_inbound_id`` is the bounded identifier the browser
+    polls against. The schema deliberately omits message bodies,
+    signatures, credentials, URLs, exception text or arbitrary
+    operator input so the wire payload cannot leak sensitive data.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    synthetic_inbound_id: str
+
+
+class EmulatorStatusRequest(BaseModel):
+    """Bounded request schema for the emulator status projection.
+
+    The schema carries the synthetic inbound identifier the browser
+    received from the test action. ``extra='forbid'`` keeps the
+    surface minimal.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    synthetic_inbound_id: str = Field(min_length=1, max_length=128)
+
+
+class EmulatorStatusResponse(BaseModel):
+    """Bounded projection of the existing receipt/outbox state.
+
+    The schema exposes only the bounded status needed by the
+    operator console and the simulated outbound text for the
+    authenticated test channel. Body, signature, credentials, URLs,
+    exception text and arbitrary operator input are intentionally
+    absent.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal[
+        "accepted",
+        "processed",
+        "pending",
+        "sent",
+        "retryable",
+        "terminal",
+    ]
+    outbound_body: str | None = None
+    provider_message_sid: str | None = None
+
+
+def _emulator_outbox_summary(
+    db: Session,
+    *,
+    pedido_id: int,
+    target: EmulatorTestTarget,
+    synthetic_inbound_id: str,
+) -> EmulatorStatusResponse:
+    """Project the existing receipt/outbox state for the operator.
+
+    The helper reads only the existing provider receipt/outbox rows
+    tied to the exact selected pedido/session/comercio. It never
+    queries the synthetic inbound identifier directly: the bounded
+    state is the projection of the canonical pipeline.
+    """
+    from sqlalchemy import select
+
+    from backend.models import (
+        MensajeProveedorSaliente,
+        OutboundProviderMessageState,
+        RecepcionMensajeProveedor,
+    )
+
+    receipt_stmt = (
+        select(RecepcionMensajeProveedor)
+        .where(RecepcionMensajeProveedor.comercio_id == target.comercio_id)
+        .where(
+            RecepcionMensajeProveedor.identificador_recepcion
+            == synthetic_inbound_id
+        )
+    )
+    receipt = db.execute(receipt_stmt).unique().scalar_one_or_none()
+    if receipt is None:
+        return EmulatorStatusResponse(
+            status="accepted",
+            outbound_body=None,
+            provider_message_sid=None,
+        )
+
+    outbound_stmt = (
+        select(MensajeProveedorSaliente)
+        .where(
+            MensajeProveedorSaliente.recepcion_mensaje_proveedor_id
+            == int(receipt.id)
+        )
+        .order_by(MensajeProveedorSaliente.id.desc())
+    )
+    outbound_rows = list(
+        db.execute(outbound_stmt).unique().scalars()
+    )
+    if not outbound_rows:
+        return EmulatorStatusResponse(
+            status="processed",
+            outbound_body=None,
+            provider_message_sid=None,
+        )
+    first = outbound_rows[0]
+    estado = str(getattr(first, "estado", "") or "")
+    sid = getattr(first, "identificador_proveedor", None)
+    cuerpo = getattr(first, "cuerpo", None)
+    if estado == OutboundProviderMessageState.ACCEPTED.value:
+        status = "sent"
+    elif estado == OutboundProviderMessageState.PENDING.value or estado == OutboundProviderMessageState.LEASED.value:
+        status = "pending"
+    elif estado == OutboundProviderMessageState.RETRYABLE.value:
+        status = "retryable"
+    elif estado == OutboundProviderMessageState.FAILED_TERMINAL.value:
+        status = "terminal"
+    elif estado == OutboundProviderMessageState.DELIVERED.value:
+        status = "sent"
+    else:
+        status = "processed"
+    return EmulatorStatusResponse(
+        status=status,
+        outbound_body=str(cuerpo) if isinstance(cuerpo, str) else None,
+        provider_message_sid=str(sid) if sid is not None else None,
+    )
+
+
+@router.post("/{pedido_id}/emulator-test", response_class=JSONResponse)
+def emulator_test_message(
+    pedido_id: Annotated[str, Path()],
+    payload: EmulatorTestRequest,
+    db: Annotated[Session, Depends(get_session)],
+    origin_header: Annotated[
+        str | None, Header(alias=EMULATOR_ORIGIN_HEADER)
+    ] = None,
+) -> JSONResponse:
+    """Panel-controlled Twilio emulator test action.
+
+    The route is the only admin/pilot surface that drives the
+    twilio emulator. It validates the exact selected active
+    Session/Pedido/Cliente/Comercio identity, the dedicated
+    channel, the active T-C installation and the operator-pinned
+    emulator configuration before asking the emulator to deliver
+    the inbound through the configured T-C webhook.
+
+    The route never calls the coordinator, worker, dispatcher,
+    central Twilio or T-C directly. It only invokes the
+    authenticated emulator inbound control surface and returns the
+    synthetic inbound identifier the browser uses to poll the
+    existing receipt/outbox state through
+    :func:`emulator_test_status`.
+
+    Every failure branch returns the documented generic rejection
+    so the operator cannot probe which invariant failed.
+    """
+    if origin_header != EMULATOR_ORIGIN_VALUE:
+        emit_admin_emulator_event(
+            outcome="rejected", reason="invalid_origin"
+        )
+        return _emulator_rejection()
+
+    try:
+        parsed_id = parse_pedido_id(pedido_id)
+    except InvalidPedidoId:
+        emit_admin_emulator_event(
+            outcome="rejected", reason="invalid_pedido_id"
+        )
+        return _emulator_rejection()
+
+    target = load_active_emulator_target(db, parsed_id)
+    if target is None:
+        emit_admin_emulator_event(
+            outcome="rejected", reason="invalid_target"
+        )
+        return _emulator_rejection()
+
+    settings = load_settings()
+    if (
+        settings.twilio_provider_mode != "emulator"
+        or not bool(settings.commerce_isolated_outbound_enabled)
+    ):
+        emit_admin_emulator_event(
+            outcome="unavailable", reason="emulator_disabled"
+        )
+        return _emulator_rejection()
+    from backend.config.settings import validate_emulator_settings
+
+    try:
+        validate_emulator_settings(settings)
+    except ValueError:
+        emit_admin_emulator_event(
+            outcome="unavailable", reason="emulator_disabled"
+        )
+        return _emulator_rejection()
+
+    if (
+        commerce_availability_status(db, comercio_id=target.comercio_id)
+        is not CommerceAvailabilityStatus.AVAILABLE
+    ):
+        emit_admin_emulator_event(
+            outcome="rejected", reason="unavailable_commerce"
+        )
+        return _emulator_rejection()
+
+    if load_active_installation(
+        db, comercio_id=target.comercio_id
+    ) is None:
+        emit_admin_emulator_event(
+            outcome="rejected", reason="inactive_installation"
+        )
+        return _emulator_rejection()
+
+    emulator_client = build_emulator_control_client(
+        base_url=settings.twilio_emulator_base_url,
+        control_token=settings.twilio_emulator_control_token,
+        timeout_seconds=float(
+            settings.twilio_emulator_http_timeout_seconds
+        ),
+    )
+    if emulator_client is None:
+        emit_admin_emulator_event(
+            outcome="unavailable", reason="emulator_disabled"
+        )
+        return _emulator_rejection()
+
+    source_e164 = resolve_cliente_e164(
+        db, cliente_id=target.cliente_id
+    )
+    destination_e164 = normalize_destination_e164(
+        target.canal_destination_e164
+    )
+    if source_e164 is None or destination_e164 is None:
+        emit_admin_emulator_event(
+            outcome="rejected", reason="invalid"
+        )
+        return _emulator_rejection()
+
+    try:
+        response = emulator_client.submit_inbound(
+            source_e164=source_e164,
+            destination_e164=destination_e164,
+            body=payload.message,
+        )
+    except Exception:  # noqa: BLE001 - the emulator path fails closed on every transport failure
+        emit_admin_emulator_event(
+            outcome="unavailable", reason="transport"
+        )
+        return _emulator_rejection()
+
+    emit_admin_emulator_event(outcome="submitted")
+
+    body = EmulatorTestResponse(
+        synthetic_inbound_id=response.synthetic_inbound_id,
+    ).model_dump()
+    return JSONResponse(status_code=200, content=body)
+
+
+@router.post(
+    "/{pedido_id}/emulator-test/status",
+    response_class=JSONResponse,
+)
+def emulator_test_status(
+    pedido_id: Annotated[str, Path()],
+    payload: EmulatorStatusRequest,
+    db: Annotated[Session, Depends(get_session)],
+    origin_header: Annotated[
+        str | None, Header(alias=EMULATOR_ORIGIN_HEADER)
+    ] = None,
+) -> JSONResponse:
+    """Read-only projection of the existing receipt/outbox state.
+
+    The status projection is scoped to the exact selected
+    pedido/session/comercio and the exact synthetic inbound
+    identifier emitted by the test action. It never returns data
+    for another pedido, session, commerce or synthetic inbound
+    identifier.
+
+    The disabled-emulator guard runs BEFORE any Pedido, Session,
+    receipt or outbox read so the route fails closed at the
+    configuration boundary and never opens a database connection
+    or invokes the worker, dispatcher, T-C or Twilio when the
+    emulator action is unavailable. The helper reads the existing
+    provider receipt/outbox rows through the canonical repository
+    so the worker remains the single owner of the durable state.
+    The helper never invokes the worker or dispatcher
+    synchronously.
+    """
+    if origin_header != EMULATOR_ORIGIN_VALUE:
+        emit_admin_emulator_event(
+            outcome="rejected", reason="invalid_origin"
+        )
+        return _emulator_rejection()
+
+    try:
+        parsed_id = parse_pedido_id(pedido_id)
+    except InvalidPedidoId:
+        emit_admin_emulator_event(
+            outcome="rejected", reason="invalid_pedido_id"
+        )
+        return _emulator_rejection()
+
+    if not _is_emulator_action_enabled():
+        emit_admin_emulator_event(
+            outcome="unavailable", reason="emulator_disabled"
+        )
+        return _emulator_rejection()
+
+    target = load_active_emulator_target(db, parsed_id)
+    if target is None:
+        emit_admin_emulator_event(
+            outcome="rejected", reason="invalid_target"
+        )
+        return _emulator_rejection()
+
+    summary = _emulator_outbox_summary(
+        db,
+        pedido_id=parsed_id,
+        target=target,
+        synthetic_inbound_id=payload.synthetic_inbound_id,
+    )
+    body = summary.model_dump()
+    return JSONResponse(status_code=200, content=body)
+
+
 __all__ = [
     "LOCAL_TEST_EXECUTION_STATE_EMPTY_SCHEMA_VERSION",
     "LOCAL_TEST_MAX_MESSAGE_CHARS",
     "LOCAL_TEST_ORIGIN_HEADER",
     "LOCAL_TEST_ORIGIN_VALUE",
     "_ESTADO_VALUES",
+    "EmulatorStatusRequest",
+    "EmulatorStatusResponse",
+    "EmulatorTestRequest",
+    "EmulatorTestResponse",
     "LocalTestExecutionState",
     "LocalTestOrderLine",
     "LocalTestRequest",
     "LocalTestResponse",
     "_build_list_url",
+    "_emulator_outbox_summary",
+    "_emulator_rejection",
     "_is_confirmed_clean_context",
     "_is_single_status_intent",
     "_load_confirmed_local_test_session",
     "_reload_exact_session_for_snapshot",
     "_serialize_execution_state",
+    "emulator_test_message",
+    "emulator_test_status",
     "router",
 ]
