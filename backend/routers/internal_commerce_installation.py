@@ -21,22 +21,30 @@ outbox. It only forwards the canonical event and reports the durable
 outcome of the bounded coordinator.
 
 The router never logs the body, phone, token, signature or credential.
-It only emits a single safe ``core_inbound_acceptance`` event carrying
-``instalacion_id_tail``, ``comercio_id``, ``canal_id``,
-``cliente_id``, ``receipt_id`` and the typed status.
+It only emits the bounded ``commerce_installation_inbound_outcome``
+event carrying the closed ``outcome`` token and, for ``rejected``
+results, the closed ``reason`` token. Pre-decision HTTP failures
+(unknown or inactive installation, missing or undecryptable key
+material, signature failure, canonical payload mismatch/validation)
+do not emit a business-outcome event; they keep their existing
+non-200 responses untouched.
 """
 from __future__ import annotations
 
 import hashlib
 import hmac
 import json
-import logging
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from sqlalchemy.orm import Session as DatabaseSession
 
 from backend.dependencies import get_session
 from backend.models.canal_whatsapp import CanalWhatsappMode
+from backend.observability import (
+    COMPONENT_COMMERCE_INSTALLATION_INGRESS,
+    EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME,
+    emit_event,
+)
 from backend.repositories.canal_whatsapp_repository import CanalWhatsappRepository
 from backend.repositories.cliente_repository import ClienteRepository
 from backend.repositories.instalacion_twilio_comercio_repository import (
@@ -63,37 +71,12 @@ from backend.services.provider_inbound_message_coordinator import (
     ProviderInboundMessageStatus,
 )
 
-logger = logging.getLogger(__name__)
-
-
 INSTALLATION_SIGNATURE_HEADER: str = "X-Installation-Signature"
 _ROUTE_PREFIX: str = "/internal/commerce-installation"
 _ACCEPT_PATH: str = "/accept-event"
 
 
 router = APIRouter(prefix=_ROUTE_PREFIX, tags=["internal-commerce-installation"])
-
-
-def _address_marker(value: str) -> str:
-    """Stable non-reversible log marker.
-
-    Returns the trailing 4 digits of the canonical E.164 value (or the
-    literal ``"unknown"`` / ``"short"`` sentinels) so the bounded log
-    records can correlate the same customer across events without
-    exposing the raw phone number.
-    """
-    if not isinstance(value, str) or not value:
-        return "unknown"
-    digits = "".join(ch for ch in value if ch.isdigit())
-    if len(digits) < 4:
-        return "short"
-    return f"tail-{digits[-4:]}"
-
-
-def _instalacion_marker(instalacion_id: str) -> str:
-    if not isinstance(instalacion_id, str) or len(instalacion_id) < 6:
-        return "short"
-    return f"tail-{instalacion_id[-6:]}"
 
 
 def _expected_signature(*, body: bytes, secret: str) -> str:
@@ -237,14 +220,11 @@ async def accept_event(
         destination_e164=str(payload.to_e164),
     )
     if canal is None:
-        logger.info(
-            "core_inbound_acceptance",
-            extra={
-                "instalacion_id": _instalacion_marker(instalacion_id),
-                "comercio_id": int(row.id_comercio),
-                "status": "rejected",
-                "reason": "unknown_destination",
-            },
+        emit_event(
+            event=EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME,
+            component=COMPONENT_COMMERCE_INSTALLATION_INGRESS,
+            outcome="rejected",
+            reason="unknown_destination",
         )
         return _json_response(
             CanonicalInboundAcceptResponse(
@@ -252,15 +232,11 @@ async def accept_event(
             ).model_dump()
         )
     if canal.mode is not CanalWhatsappMode.DEDICATED:
-        logger.info(
-            "core_inbound_acceptance",
-            extra={
-                "instalacion_id": _instalacion_marker(instalacion_id),
-                "comercio_id": int(row.id_comercio),
-                "canal_id": int(canal.id),
-                "status": "rejected",
-                "reason": "shared_channel_not_supported",
-            },
+        emit_event(
+            event=EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME,
+            component=COMPONENT_COMMERCE_INSTALLATION_INGRESS,
+            outcome="rejected",
+            reason="shared_channel_not_supported",
         )
         return _json_response(
             CanonicalInboundAcceptResponse(
@@ -271,15 +247,11 @@ async def accept_event(
         canal.id_comercio_exclusivo is None
         or int(canal.id_comercio_exclusivo) != int(row.id_comercio)
     ):
-        logger.info(
-            "core_inbound_acceptance",
-            extra={
-                "instalacion_id": _instalacion_marker(instalacion_id),
-                "comercio_id": int(row.id_comercio),
-                "canal_id": int(canal.id),
-                "status": "rejected",
-                "reason": "channel_commerce_mismatch",
-            },
+        emit_event(
+            event=EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME,
+            component=COMPONENT_COMMERCE_INSTALLATION_INGRESS,
+            outcome="rejected",
+            reason="channel_commerce_mismatch",
         )
         return _json_response(
             CanonicalInboundAcceptResponse(
@@ -290,16 +262,11 @@ async def accept_event(
     cliente_repo = ClienteRepository(session)
     cliente = cliente_repo.get_by_whatsapp(str(payload.from_e164))
     if cliente is None or not bool(cliente.activo):
-        logger.info(
-            "core_inbound_acceptance",
-            extra={
-                "instalacion_id": _instalacion_marker(instalacion_id),
-                "comercio_id": int(row.id_comercio),
-                "canal_id": int(canal.id),
-                "from_e164_hash": _address_marker(payload.from_e164),
-                "status": "rejected",
-                "reason": "unknown_client",
-            },
+        emit_event(
+            event=EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME,
+            component=COMPONENT_COMMERCE_INSTALLATION_INGRESS,
+            outcome="rejected",
+            reason="unknown_client",
         )
         return _json_response(
             CanonicalInboundAcceptResponse(
@@ -309,16 +276,11 @@ async def accept_event(
 
     availability = CommerceAvailabilityService(session).evaluate(int(row.id_comercio))
     if availability.status is not CommerceAvailabilityStatus.AVAILABLE:
-        logger.info(
-            "core_inbound_acceptance",
-            extra={
-                "instalacion_id": _instalacion_marker(instalacion_id),
-                "comercio_id": int(row.id_comercio),
-                "canal_id": int(canal.id),
-                "cliente_id": int(cliente.id),
-                "status": "rejected",
-                "reason": "unavailable_commerce",
-            },
+        emit_event(
+            event=EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME,
+            component=COMPONENT_COMMERCE_INSTALLATION_INGRESS,
+            outcome="rejected",
+            reason="unavailable_commerce",
         )
         return _json_response(
             CanonicalInboundAcceptResponse(
@@ -339,16 +301,10 @@ async def accept_event(
     )
 
     if outcome.status is ProviderInboundMessageStatus.ACCEPTED:
-        logger.info(
-            "core_inbound_acceptance",
-            extra={
-                "instalacion_id": _instalacion_marker(instalacion_id),
-                "comercio_id": int(row.id_comercio),
-                "canal_id": int(canal.id),
-                "cliente_id": int(cliente.id),
-                "receipt_id": outcome.receipt_id,
-                "status": "accepted",
-            },
+        emit_event(
+            event=EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME,
+            component=COMPONENT_COMMERCE_INSTALLATION_INGRESS,
+            outcome="accepted",
         )
         return _json_response(
             CanonicalInboundAcceptResponse(
@@ -357,30 +313,20 @@ async def accept_event(
             ).model_dump()
         )
     if outcome.status is ProviderInboundMessageStatus.ALREADY_PROCESSED:
-        logger.info(
-            "core_inbound_acceptance",
-            extra={
-                "instalacion_id": _instalacion_marker(instalacion_id),
-                "comercio_id": int(row.id_comercio),
-                "canal_id": int(canal.id),
-                "cliente_id": int(cliente.id),
-                "status": "duplicate",
-            },
+        emit_event(
+            event=EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME,
+            component=COMPONENT_COMMERCE_INSTALLATION_INGRESS,
+            outcome="duplicate",
         )
         return _json_response(
             CanonicalInboundAcceptResponse(status="duplicate").model_dump()
         )
 
-    logger.info(
-        "core_inbound_acceptance",
-        extra={
-            "instalacion_id": _instalacion_marker(instalacion_id),
-            "comercio_id": int(row.id_comercio),
-            "canal_id": int(canal.id),
-            "cliente_id": int(cliente.id),
-            "status": "rejected",
-            "reason": str(outcome.resolution_source or "invalid_context"),
-        },
+    emit_event(
+        event=EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME,
+        component=COMPONENT_COMMERCE_INSTALLATION_INGRESS,
+        outcome="rejected",
+        reason="invalid_context",
     )
     return _json_response(
         CanonicalInboundAcceptResponse(

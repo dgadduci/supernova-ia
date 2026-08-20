@@ -45,6 +45,8 @@ COMPONENT_OBSERVABILITY = "observability_helper"
 COMPONENT_PENDING_CONTEXT = "pending_context"
 COMPONENT_PRODUCT_ADD_EXECUTION = "product_add_execution"
 COMPONENT_OUTBOUND_STYLE = "outbound_styler"
+COMPONENT_COMMERCE_INSTALLATION_INGRESS = "commerce_installation_ingress"
+COMPONENT_COMMERCE_INSTALLATION_ADAPTER = "commerce_installation_adapter"
 
 
 EVENT_OUTBOUND_OUTCOME = "outbound_attempt_outcome"
@@ -61,9 +63,18 @@ EVENT_OBSERVABILITY_EMIT_FAILED = "observability_emit_failed"
 EVENT_PENDING_CONTEXT_TRANSITION = "pending_context_transition"
 EVENT_PRODUCT_ADD_EXECUTION = "product_add_execution"
 EVENT_OUTBOUND_STYLE = "outbound_style_attempt"
+EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME = (
+    "commerce_installation_inbound_outcome"
+)
 
 
-_EVENT_CATALOGUE: dict[str, str] = {
+# ``EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME`` is emitted by BOTH
+# the core isolated ingress router and the T-C adapter so Railway
+# operators can grep both services with the same event name. The
+# adapter does NOT import ``backend.*``; it builds its JSON line
+# locally and only the catalogue rule accepts the bounded adapter
+# component alongside the core component.
+_EVENT_CATALOGUE: dict[str, str | frozenset[str]] = {
     EVENT_OUTBOUND_OUTCOME: COMPONENT_OUTBOUND,
     EVENT_CALLBACK_OUTCOME: COMPONENT_CALLBACK,
     EVENT_WORKER_CYCLE: COMPONENT_WORKER,
@@ -78,7 +89,36 @@ _EVENT_CATALOGUE: dict[str, str] = {
     EVENT_PENDING_CONTEXT_TRANSITION: COMPONENT_PENDING_CONTEXT,
     EVENT_PRODUCT_ADD_EXECUTION: COMPONENT_PRODUCT_ADD_EXECUTION,
     EVENT_OUTBOUND_STYLE: COMPONENT_OUTBOUND_STYLE,
+    EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME: frozenset(
+        {
+            COMPONENT_COMMERCE_INSTALLATION_INGRESS,
+            COMPONENT_COMMERCE_INSTALLATION_ADAPTER,
+        }
+    ),
 }
+
+
+# Closed reason allowlist for the
+# ``commerce_installation_inbound_outcome`` event. The vocabulary is
+# the same on both edges so Railway operators can group failures
+# without parsing free-form text. The contract forbids arbitrary
+# reason tokens, identifiers, body fragments, exception types or
+# provider codes.
+_COMMERCE_INSTALLATION_REASONS: frozenset[str] = frozenset(
+    {
+        "signature_rejected",
+        "invalid_form",
+        "missing_comercio_id",
+        "core_http_failure",
+        "core_invalid_response",
+        "unknown_destination",
+        "shared_channel_not_supported",
+        "channel_commerce_mismatch",
+        "unknown_client",
+        "unavailable_commerce",
+        "invalid_context",
+    }
+)
 
 
 # Pending-context observation allowlists (closed, sanitized). Every
@@ -161,6 +201,9 @@ _OUTCOMES_BY_EVENT: dict[str, frozenset[str]] = {
     ),
     EVENT_OUTBOUND_STYLE: frozenset(
         {"not_attempted", "applied", "fallback"}
+    ),
+    EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME: frozenset(
+        {"accepted", "duplicate", "rejected", "unreachable"}
     ),
 }
 
@@ -247,6 +290,9 @@ _EVENTS_WITH_PENDING_CONTEXT_FIELDS: frozenset[str] = frozenset(
 _EVENTS_WITH_PRODUCT_ADD_FIELDS: frozenset[str] = frozenset(
     {EVENT_PRODUCT_ADD_EXECUTION}
 )
+_EVENTS_WITH_COMMERCE_INSTALLATION_FIELDS: frozenset[str] = frozenset(
+    {EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME}
+)
 
 
 _OPTIONAL_FIELDS_BY_EVENT: dict[str, frozenset[str]] = {
@@ -276,6 +322,9 @@ _OPTIONAL_FIELDS_BY_EVENT: dict[str, frozenset[str]] = {
             "outbound_style_prompt_template_version",
             "outbound_style_prompt_template_hash",
         }
+    ),
+    EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME: frozenset(
+        {"reason", "http_status"}
     ),
 }
 
@@ -316,6 +365,7 @@ _ALLOWED_PAYLOAD_KEYS: frozenset[str] = frozenset(
         "applied_count",
         "outbound_style_prompt_template_version",
         "outbound_style_prompt_template_hash",
+        "reason",
     }
 )
 
@@ -438,6 +488,12 @@ def _is_safe_optional_field(name: str, value: Any) -> bool:
         if len(value) != _MAX_SHA256_HEX:
             return False
         return all(c in "0123456789abcdef" for c in value)
+    if name == "reason":
+        if not isinstance(value, str):
+            return False
+        if len(value) == 0 or len(value) > _MAX_STR:
+            return False
+        return value in _COMMERCE_INSTALLATION_REASONS
     return False
 
 
@@ -727,6 +783,83 @@ def _validate_pending_context_event_fields(
     return fields
 
 
+def _validate_commerce_installation_event_fields(
+    *,
+    outcome: Any,
+    reason: Any,
+    http_status: Any,
+    component: Any,
+) -> dict[str, Any]:
+    """Validate the closed ``commerce_installation_inbound_outcome``
+    payload.
+
+    The contract enforces:
+
+    * ``reason`` is REQUIRED for ``rejected`` and ``unreachable`` and
+      MUST come from the closed ``_COMMERCE_INSTALLATION_REASONS``
+      allowlist. ``reason`` MUST be ABSENT for ``accepted`` and
+      ``duplicate``;
+    * ``http_status`` is only allowed on the T-C adapter
+      (``commerce_installation_adapter``) ``unreachable`` outcome so
+      transport failures can be correlated without leaking PII from
+      the core. The core MUST NOT include ``http_status``; it MUST be
+      a bounded integer ``[100, 599]`` when present.
+
+    Free-form reason text, sensitive values, identifiers or
+    exception types fail this validator.
+    """
+    fields: dict[str, Any] = {}
+
+    if outcome in {"rejected", "unreachable"}:
+        if not isinstance(reason, str):
+            raise EventValidationError(
+                "reason is required for commerce_installation_inbound_outcome "
+                f"with outcome {outcome!r} and must be a string "
+                f"(got {type(reason).__name__}: {reason!r})"
+            )
+        if reason not in _COMMERCE_INSTALLATION_REASONS:
+            raise EventValidationError(
+                f"reason {reason!r} is not in the catalogued "
+                "commerce_installation_inbound_outcome allowlist"
+            )
+        fields["reason"] = reason
+    else:
+        if reason is not None:
+            raise EventValidationError(
+                "reason must be absent for "
+                f"commerce_installation_inbound_outcome with outcome "
+                f"{outcome!r} (got {reason!r})"
+            )
+
+    if http_status is None:
+        return fields
+
+    if component != COMPONENT_COMMERCE_INSTALLATION_ADAPTER:
+        raise EventValidationError(
+            "http_status is only allowed for the T-C adapter component "
+            f"({COMPONENT_COMMERCE_INSTALLATION_ADAPTER!r}); got "
+            f"component {component!r}"
+        )
+    if outcome != "unreachable":
+        raise EventValidationError(
+            "http_status is only allowed for outcome 'unreachable' on "
+            f"commerce_installation_inbound_outcome (got {outcome!r})"
+        )
+    if isinstance(http_status, bool) or not isinstance(http_status, int):
+        raise EventValidationError(
+            "http_status must be a bounded integer "
+            f"(got {type(http_status).__name__}: {http_status!r})"
+        )
+    if not 100 <= http_status <= _MAX_HTTP_STATUS:
+        raise EventValidationError(
+            f"http_status must be in [100, {_MAX_HTTP_STATUS}] "
+            f"(got {http_status!r})"
+        )
+    fields["http_status"] = http_status
+
+    return fields
+
+
 def build_event(
     *,
     event: str,
@@ -762,6 +895,7 @@ def build_event(
     applied_count: int | None = None,
     outbound_style_prompt_template_version: str | None = None,
     outbound_style_prompt_template_hash: str | None = None,
+    reason: str | None = None,
 ) -> dict[str, Any]:
     """Validate the input and return the JSON-ready payload.
 
@@ -778,7 +912,14 @@ def build_event(
         )
     if not _is_safe_component(component):
         raise EventValidationError(f"invalid component: {component!r}")
-    if component != catalogued_component:
+    if isinstance(catalogued_component, frozenset):
+        if component not in catalogued_component:
+            raise EventValidationError(
+                f"event {event!r} requires one of "
+                f"{sorted(catalogued_component)} components, "
+                f"got {component!r}"
+            )
+    elif component != catalogued_component:
         raise EventValidationError(
             f"event {event!r} requires component {catalogued_component!r}, "
             f"got {component!r}"
@@ -918,6 +1059,58 @@ def build_event(
                 f"event {event!r} does not accept optional fields; only the "
                 "closed product-add outcome is allowed"
             )
+        return payload
+
+    is_commerce_installation_event = (
+        event in _EVENTS_WITH_COMMERCE_INSTALLATION_FIELDS
+    )
+
+    if is_commerce_installation_event:
+        if any(
+            value is not None
+            for value in (
+                outbox_id,
+                correlation_id,
+                attempt,
+                durable_state,
+                provider_code,
+                exception_type,
+                elapsed_ms,
+                configured_mode,
+                effective_mode,
+                authoritative_strategy,
+                hybrid_decision,
+                fallback,
+                fallback_category,
+                fuzzy_latency_ms,
+                embedding_latency_ms,
+                vector_latency_ms,
+                context_kind,
+                status_before,
+                status_after,
+                candidate_count_before,
+                candidate_count_after,
+                context_cleared,
+                flavor_code,
+                eligible_count,
+                applied_count,
+                outbound_style_prompt_template_version,
+                outbound_style_prompt_template_hash,
+            )
+        ):
+            raise EventValidationError(
+                f"event {event!r} does not accept extra fields; only "
+                "the closed reason/http_status pair is allowed"
+            )
+        commerce_installation_fields = (
+            _validate_commerce_installation_event_fields(
+                outcome=outcome,
+                reason=reason,
+                http_status=http_status,
+                component=component,
+            )
+        )
+        payload.update(commerce_installation_fields)
         return payload
 
     if any(
@@ -1061,6 +1254,7 @@ def parse_event(line: str) -> dict[str, Any]:
         outbound_style_prompt_template_hash=decoded.get(
             "outbound_style_prompt_template_hash"
         ),
+        reason=decoded.get("reason"),
     )
 
 
@@ -1128,6 +1322,7 @@ def emit_event(
     applied_count: int | None = None,
     outbound_style_prompt_template_version: str | None = None,
     outbound_style_prompt_template_hash: str | None = None,
+    reason: str | None = None,
     stream: Any = None,
 ) -> bool:
     """Build and emit a single JSON event line to the supplied stream.
@@ -1179,6 +1374,7 @@ def emit_event(
             applied_count=applied_count,
             outbound_style_prompt_template_version=outbound_style_prompt_template_version,
             outbound_style_prompt_template_hash=outbound_style_prompt_template_hash,
+            reason=reason,
         )
     except EventValidationError as exc:
         try:
@@ -1214,6 +1410,8 @@ def emit_event(
 
 __all__ = [
     "COMPONENT_CALLBACK",
+    "COMPONENT_COMMERCE_INSTALLATION_ADAPTER",
+    "COMPONENT_COMMERCE_INSTALLATION_INGRESS",
     "COMPONENT_DATABASE",
     "COMPONENT_EMBEDDING",
     "COMPONENT_LLM",
@@ -1225,6 +1423,7 @@ __all__ = [
     "COMPONENT_PRODUCT_RECOGNITION",
     "COMPONENT_WORKER",
     "EVENT_CALLBACK_OUTCOME",
+    "EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME",
     "EVENT_DATABASE_TECHNICAL_FAILURE",
     "EVENT_EMBEDDING_REQUEST",
     "EVENT_LLM_REQUEST",

@@ -24,9 +24,26 @@ from commerce_adapter.app.security import hmac_sign
 class NovaOrdersUnreachable(Exception):
     """Raised when the bounded NovaOrders HTTP forward cannot complete.
 
-    The webhook route translates this exception into a ``502`` so
-    Twilio retries. The bounded CLI never translates this exception
-    into a business outcome.
+    Covers transport-level failures: connection refused, DNS error,
+    timeout or any other ``httpx.HTTPError``. The webhook route
+    translates this exception into a ``502`` and emits
+    ``unreachable/core_http_failure`` so Twilio retries. The bounded
+    CLI never translates this exception into a business outcome.
+
+    A NovaOrders HTTP 200 that cannot be parsed as JSON is **not**
+    reported through this exception: it raises
+    :class:`NovaOrdersInvalidResponse` so the route can emit
+    ``unreachable/core_invalid_response`` instead.
+    """
+
+
+class NovaOrdersInvalidResponse(Exception):
+    """Raised when NovaOrders returned HTTP 200 with an unparseable body.
+
+    The exception carries no message and does not chain the original
+    parsing error so no internal exception text leaks into the bounded
+    event line. The webhook route translates this exception into a
+    ``502`` and emits ``unreachable/core_invalid_response``.
     """
 
 
@@ -45,8 +62,11 @@ def forward_event(
 
     The function never logs body, phone, token or signature; it only
     surfaces the typed outcome so the webhook route can branch on the
-    status. A non-200 response or a network error raises
-    :class:`NovaOrdersUnreachable` so the route returns a ``502``.
+    status. A network error raises :class:`NovaOrdersUnreachable` and a
+    non-200 response is surfaced as an unreachable typed result so the
+    route returns a ``502``. A NovaOrders HTTP 200 whose body cannot be
+    parsed as JSON raises :class:`NovaOrdersInvalidResponse` so the
+    route emits ``unreachable/core_invalid_response`` instead.
     """
     payload = _build_payload_bytes(event)
     signature = hmac_sign(
@@ -86,8 +106,8 @@ def forward_event(
 
     try:
         body: Any = response.json()
-    except ValueError as exc:
-        raise NovaOrdersUnreachable("invalid_response") from exc
+    except ValueError:
+        raise NovaOrdersInvalidResponse() from None
 
     if not isinstance(body, dict):
         return NovaOrdersIngressResult(
@@ -107,6 +127,7 @@ def forward_event(
 
 
 __all__ = [
+    "NovaOrdersInvalidResponse",
     "NovaOrdersUnreachable",
     "forward_event",
 ]

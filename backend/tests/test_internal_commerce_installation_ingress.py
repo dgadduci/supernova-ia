@@ -16,7 +16,12 @@ ingress endpoint:
 * valid signature + valid authority → ``200 {"status": "accepted"}``
   and exactly one coordinator call;
 * duplicate message identifier → ``200 {"status": "duplicate"}`` and
-  no second work item.
+  no second work item;
+* each validated business branch emits exactly one bounded
+  ``commerce_installation_inbound_outcome`` event with the documented
+  outcome and closed reason;
+* every pre-decision HTTP failure preserves its existing response
+  and does NOT emit a core business-outcome event.
 """
 from __future__ import annotations
 
@@ -44,6 +49,10 @@ from backend.models import (
     Comercio,
     EstadoComercio,
     InstalacionTwilioComercio,
+)
+from backend.observability import (
+    COMPONENT_COMMERCE_INSTALLATION_INGRESS,
+    EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME,
 )
 from backend.services.instalacion_secret_envelope import (
     decrypt_secret,
@@ -284,10 +293,24 @@ class _IngressTestCase(unittest.TestCase):
         )
         self._saved_env = os.environ.copy()
         os.environ["COMMERCE_INSTALLATION_MASTER_KEY"] = MASTER_KEY
+        self.emitted_events: list[dict[str, Any]] = []
+
+        def _capture_emit_event(*, event: str, **kwargs: Any) -> bool:
+            self.emitted_events.append({"event": event, **kwargs})
+            return True
+
+        self._emit_patcher = patch.object(
+            router_module,
+            "emit_event",
+            side_effect=_capture_emit_event,
+        )
+        self._emit_patcher.start()
 
     def tearDown(self) -> None:
         if hasattr(self, "_coord_patcher"):
             self._stop_patches()
+        if hasattr(self, "_emit_patcher"):
+            self._emit_patcher.stop()
         _delete_instalacion(self.instalacion_id)
         _delete_canal(self.canal_id)
         _delete_cliente(self.cliente_id)
@@ -345,6 +368,40 @@ class _IngressTestCase(unittest.TestCase):
         self._availability_patcher.stop()
         self._coord_patcher.stop()
 
+    def _assert_emitted_event(
+        self,
+        *,
+        outcome: str,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        matching = [
+            event for event in self.emitted_events
+            if event.get("event") == EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME
+            and event.get("component")
+            == COMPONENT_COMMERCE_INSTALLATION_INGRESS
+            and event.get("outcome") == outcome
+            and event.get("reason") == reason
+        ]
+        self.assertEqual(
+            len(matching),
+            1,
+            f"expected exactly one core event with outcome={outcome!r} "
+            f"reason={reason!r}; got {self.emitted_events!r}",
+        )
+        return matching[0]
+
+    def _assert_no_emitted_event(self) -> None:
+        matching = [
+            event for event in self.emitted_events
+            if event.get("event") == EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME
+        ]
+        self.assertEqual(
+            matching,
+            [],
+            f"pre-decision branches must not emit a core business "
+            f"event; got {matching!r}",
+        )
+
 
 class InternalIngressHappyPathTest(_IngressTestCase):
     def test_valid_signature_and_authority_returns_accepted(self) -> None:
@@ -368,6 +425,7 @@ class InternalIngressHappyPathTest(_IngressTestCase):
         self.assertEqual(data["status"], "accepted")
         self.assertEqual(data["receipt_id"], 42)
         self.assertEqual(len(coordinator.accept_calls), 1)
+        self._assert_emitted_event(outcome="accepted", reason=None)
 
 
 class InternalIngressSignatureFailureTest(_IngressTestCase):
@@ -384,6 +442,7 @@ class InternalIngressSignatureFailureTest(_IngressTestCase):
         )
         self.assertEqual(response.status_code, 401)
         self.assertEqual(coordinator.accept_calls, [])
+        self._assert_no_emitted_event()
 
     def test_tampered_signature_returns_401(self) -> None:
         client, coordinator = self._build_app()
@@ -401,6 +460,7 @@ class InternalIngressSignatureFailureTest(_IngressTestCase):
         )
         self.assertEqual(response.status_code, 401)
         self.assertEqual(coordinator.accept_calls, [])
+        self._assert_no_emitted_event()
 
 
 class InternalIngressInactiveInstallationTest(_IngressTestCase):
@@ -429,6 +489,7 @@ class InternalIngressInactiveInstallationTest(_IngressTestCase):
         )
         self.assertEqual(response.status_code, 401)
         self.assertEqual(coordinator.accept_calls, [])
+        self._assert_no_emitted_event()
 
 
 class InternalIngressUnknownDestinationTest(_IngressTestCase):
@@ -451,6 +512,9 @@ class InternalIngressUnknownDestinationTest(_IngressTestCase):
         self.assertEqual(response.json()["status"], "rejected")
         self.assertEqual(response.json()["reason"], "unknown_destination")
         self.assertEqual(coordinator.accept_calls, [])
+        self._assert_emitted_event(
+            outcome="rejected", reason="unknown_destination"
+        )
 
 
 class InternalIngressUnknownClientTest(_IngressTestCase):
@@ -474,6 +538,9 @@ class InternalIngressUnknownClientTest(_IngressTestCase):
         self.assertEqual(response.json()["status"], "rejected")
         self.assertEqual(response.json()["reason"], "unknown_client")
         self.assertEqual(coordinator.accept_calls, [])
+        self._assert_emitted_event(
+            outcome="rejected", reason="unknown_client"
+        )
 
 
 class InternalIngressUnavailableCommerceTest(_IngressTestCase):
@@ -503,6 +570,9 @@ class InternalIngressUnavailableCommerceTest(_IngressTestCase):
         self.assertEqual(response.json()["status"], "rejected")
         self.assertEqual(response.json()["reason"], "unavailable_commerce")
         self.assertEqual(coordinator.accept_calls, [])
+        self._assert_emitted_event(
+            outcome="rejected", reason="unavailable_commerce"
+        )
 
 
 class InternalIngressDuplicateTest(_IngressTestCase):
@@ -529,6 +599,7 @@ class InternalIngressDuplicateTest(_IngressTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "duplicate")
         self.assertEqual(len(coordinator.accept_calls), 1)
+        self._assert_emitted_event(outcome="duplicate", reason=None)
 
 
 class InternalIngressMissingMasterKeyTest(_IngressTestCase):
@@ -551,6 +622,7 @@ class InternalIngressMissingMasterKeyTest(_IngressTestCase):
         )
         self.assertEqual(response.status_code, 503)
         self.assertEqual(coordinator.accept_calls, [])
+        self._assert_no_emitted_event()
 
 
 class InternalIngressUnknownInstallationTest(_IngressTestCase):
@@ -571,6 +643,7 @@ class InternalIngressUnknownInstallationTest(_IngressTestCase):
         )
         self.assertEqual(response.status_code, 401)
         self.assertEqual(coordinator.accept_calls, [])
+        self._assert_no_emitted_event()
 
 
 class InternalIngressPayloadMismatchTest(_IngressTestCase):
@@ -590,6 +663,7 @@ class InternalIngressPayloadMismatchTest(_IngressTestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertEqual(coordinator.accept_calls, [])
+        self._assert_no_emitted_event()
 
 
 class DecryptEnvelopeRoundTripTest(unittest.TestCase):
