@@ -42,15 +42,22 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from commerce_adapter.app.config import CommerceAdapterConfig
+from commerce_adapter.app.config import (
+    PROVIDER_MODE_EMULATOR,
+    CommerceAdapterConfig,
+)
 from commerce_adapter.app.dependencies import get_config
 from commerce_adapter.app.schemas import CanonicalOutboundCommand
 from commerce_adapter.app.security import hmac_verify
 from commerce_adapter.app.twilio_client import (
+    TwilioEmulatorMessagesClient,
     TwilioOutboundResult,
 )
 from commerce_adapter.app.twilio_client import (
     send as twilio_send,
+)
+from commerce_adapter.app.twilio_client import (
+    send_emulator as twilio_send_emulator,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,11 +90,38 @@ def _build_twilio_client(config: CommerceAdapterConfig):
 
     Production code returns ``Client(config.twilio_account_sid,
     config.twilio_auth_token).messages``. Tests inject a fake through
-    :func:`set_twilio_client`.
+    :func:`set_twilio_client`. The function is only invoked in
+    ``real`` provider mode; ``emulator`` mode never instantiates the
+    real SDK.
     """
     from twilio.rest import Client
 
     return Client(config.twilio_account_sid, config.twilio_auth_token).messages
+
+
+def _build_emulator_client(config: CommerceAdapterConfig):
+    """Build the bounded Twilio emulator HTTP client.
+
+    The function is only invoked in ``emulator`` provider mode and
+    fails closed at construction time when the operator did not
+    configure the emulator URL or the generated credentials. The
+    client never contacts ``api.twilio.com``.
+    """
+    if (
+        not config.twilio_emulator_base_url
+        or not config.twilio_emulator_account_sid
+        or not config.twilio_emulator_auth_token
+    ):
+        raise RuntimeError(
+            "emulator provider mode is enabled but the emulator "
+            "configuration is incomplete"
+        )
+    return TwilioEmulatorMessagesClient(
+        base_url=config.twilio_emulator_base_url,
+        account_sid=config.twilio_emulator_account_sid,
+        auth_token=config.twilio_emulator_auth_token,
+        timeout_seconds=float(config.http_timeout_seconds),
+    )
 
 
 _TWILIO_CLIENT_OVERRIDE: dict[str, Any] = {}
@@ -100,6 +134,8 @@ def set_twilio_client(client) -> None:
 def _get_twilio_client(config: CommerceAdapterConfig):
     if "client" in _TWILIO_CLIENT_OVERRIDE:
         return _TWILIO_CLIENT_OVERRIDE["client"]
+    if config.provider_mode == PROVIDER_MODE_EMULATOR:
+        return _build_emulator_client(config)
     return _build_twilio_client(config)
 
 
@@ -217,15 +253,26 @@ async def send_message(
     sender_e164 = str(config.twilio_sender_e164)
     client = _get_twilio_client(config)
     callback_url = command.status_callback_url
-    result: TwilioOutboundResult = twilio_send(
-        client,  # type: ignore[arg-type]
-        destinatario_e164=str(command.destinatario_e164),
-        sender_e164=sender_e164,
-        cuerpo=str(command.cuerpo),
-        status_callback_url=(
-            str(callback_url) if callback_url else None
-        ),
-    )
+    if config.provider_mode == PROVIDER_MODE_EMULATOR:
+        result: TwilioOutboundResult = twilio_send_emulator(
+            client,  # type: ignore[arg-type]
+            destinatario_e164=str(command.destinatario_e164),
+            sender_e164=sender_e164,
+            cuerpo=str(command.cuerpo),
+            status_callback_url=(
+                str(callback_url) if callback_url else None
+            ),
+        )
+    else:
+        result = twilio_send(
+            client,  # type: ignore[arg-type]
+            destinatario_e164=str(command.destinatario_e164),
+            sender_e164=sender_e164,
+            cuerpo=str(command.cuerpo),
+            status_callback_url=(
+                str(callback_url) if callback_url else None
+            ),
+        )
 
     logger.info(
         "commerce_adapter_outbound_attempt",

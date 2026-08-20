@@ -52,7 +52,11 @@ from typing import Any
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session as SqlSession
 
-from backend.config.settings import Settings, load_settings
+from backend.config.settings import (
+    Settings,
+    load_settings,
+    validate_emulator_settings,
+)
 from backend.models.mensaje_proveedor_saliente import (
     MensajeProveedorSaliente,
     OutboundFailureCategory,
@@ -83,6 +87,8 @@ from backend.services.outbound_dispatch_types import (
 )
 from backend.services.twilio_outbound_adapter import (
     OutboundDispatchPayload,
+    TwilioEmulatorMessagesClient,
+    TwilioEmulatorTransportConfig,
     TwilioMessagesClient,
     TwilioSendResult,
     TwilioSendStatus,
@@ -93,6 +99,9 @@ from backend.services.twilio_outbound_adapter import (
 )
 from backend.services.twilio_outbound_adapter import (
     send as twilio_send,
+)
+from backend.services.twilio_outbound_adapter import (
+    send_emulator as twilio_send_emulator,
 )
 
 
@@ -291,6 +300,50 @@ class OutboundMessageDispatcher:
         if self._now is not None:
             return self._now
         return datetime.now(tz=_utc())
+
+    def _build_emulator_client(self) -> TwilioEmulatorMessagesClient | None:
+        """Return the emulator client when the operator enabled it.
+
+        The helper builds the emulator HTTP client only when:
+
+        * ``twilio_provider_mode == 'emulator'`` is explicitly set;
+        * ``commerce_isolated_outbound_enabled`` is on so the
+          isolated T-C pipeline is the only outbound path;
+        * the operator supplied the bounded emulator URL, account SID
+          and auth token shared verbatim with the T-C adapter.
+
+        Any missing or malformed value fails closed at construction
+        time so the dispatcher never falls through to the real Twilio
+        SDK in emulator mode. ``real`` mode always returns ``None``
+        so the existing Twilio path stays the default.
+        """
+        if self._settings.twilio_provider_mode != "emulator":
+            return None
+        if not bool(self._settings.commerce_isolated_outbound_enabled):
+            raise RuntimeError(
+                "twilio provider mode 'emulator' requires the "
+                "isolated T-C outbound pipeline to be enabled"
+            )
+        try:
+            validate_emulator_settings(self._settings)
+        except ValueError as exc:
+            raise RuntimeError(
+                "twilio provider mode 'emulator' is enabled but the "
+                "emulator configuration is incomplete"
+            ) from exc
+        base_url = self._settings.twilio_emulator_base_url or ""
+        account_sid = self._settings.twilio_emulator_account_sid or ""
+        auth_token = self._settings.twilio_emulator_auth_token or ""
+        return TwilioEmulatorMessagesClient(
+            config=TwilioEmulatorTransportConfig(
+                base_url=base_url,
+                account_sid=account_sid,
+                auth_token=auth_token,
+                timeout_seconds=float(
+                    self._settings.twilio_emulator_http_timeout_seconds
+                ),
+            ),
+        )
 
     def _dispatch_via_isolated_helper(
         self,
@@ -632,7 +685,11 @@ class OutboundMessageDispatcher:
                 sender_e164=self._config.sender_e164,
                 status_callback_url=self._config.status_callback_url,
             )
-            send_result = twilio_send(self._messages, request)
+            emulator_client = self._build_emulator_client()
+            if emulator_client is not None:
+                send_result = twilio_send_emulator(emulator_client, request)
+            else:
+                send_result = twilio_send(self._messages, request)
             result = self._finalize(
                 claimed=claimed, send_result=send_result, now=now
             )

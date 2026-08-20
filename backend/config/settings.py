@@ -490,6 +490,12 @@ DEFAULT_SUPABASE_REQUEST_TIMEOUT_SECONDS = 10
 DEFAULT_COMMERCE_ISOLATED_OUTBOUND_ENABLED = False
 DEFAULT_COMMERCE_ISOLATED_TC_BASE_URL: str | None = None
 DEFAULT_COMMERCE_ISOLATED_HTTP_TIMEOUT_SECONDS = 5
+DEFAULT_TWILIO_PROVIDER_MODE: Literal["real", "emulator"] = "real"
+DEFAULT_TWILIO_EMULATOR_BASE_URL: str | None = None
+DEFAULT_TWILIO_EMULATOR_ACCOUNT_SID: str | None = None
+DEFAULT_TWILIO_EMULATOR_AUTH_TOKEN: str | None = None
+DEFAULT_TWILIO_EMULATOR_HTTP_TIMEOUT_SECONDS = 5
+DEFAULT_TWILIO_EMULATOR_CONTROL_TOKEN: str | None = None
 
 
 def _provider_processing_worker_positive_int_env(
@@ -571,6 +577,70 @@ def _supabase_request_timeout_env(name: str, default: int) -> int:
             f"{name} must be greater than zero (got {value})"
         )
     return value
+
+
+def _twilio_provider_mode_env(
+    name: str, default: Literal["real", "emulator"]
+) -> Literal["real", "emulator"]:
+    raw = os.environ.get(name)
+    cleaned = (
+        raw.strip().lower()
+        if isinstance(raw, str)
+        else default
+    )
+    if cleaned not in {"real", "emulator"}:
+        raise ValueError(
+            f"{name} must be 'real' or 'emulator' (got {raw!r})"
+        )
+    return cast(Literal["real", "emulator"], cleaned)
+
+
+def _twilio_emulator_https_url_env(name: str) -> str | None:
+    raw = _optional_str_env(name, None)
+    if raw is None:
+        return None
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+    parsed = urlparse(cleaned)
+    if parsed.scheme.lower() != "https" or not parsed.netloc:
+        raise ValueError(
+            f"{name} must be an absolute https URL (got {cleaned!r})"
+        )
+    if parsed.query or parsed.fragment:
+        raise ValueError(
+            f"{name} must not contain a query string or fragment"
+        )
+    return cleaned
+
+
+def _twilio_emulator_account_sid_env(name: str) -> str | None:
+    raw = _optional_str_env(name, None)
+    if raw is None:
+        return None
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+    if not cleaned.startswith("AC") or len(cleaned) != 34:
+        raise ValueError(
+            f"{name} must be a canonical Twilio account SID"
+        )
+    tail = cleaned[2:]
+    if not all(ch in "0123456789abcdefABCDEF" for ch in tail):
+        raise ValueError(
+            f"{name} must be a canonical Twilio account SID"
+        )
+    return cleaned
+
+
+def _twilio_emulator_auth_token_env(name: str) -> str | None:
+    raw = _optional_str_env(name, None)
+    if raw is None:
+        return None
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+    return cleaned
 
 
 def _supabase_pkce_cookie_max_age_env(name: str, default: int) -> int:
@@ -682,6 +752,22 @@ class Settings:
     )
     commerce_isolated_http_timeout_seconds: int = (
         DEFAULT_COMMERCE_ISOLATED_HTTP_TIMEOUT_SECONDS
+    )
+    twilio_provider_mode: Literal["real", "emulator"] = (
+        DEFAULT_TWILIO_PROVIDER_MODE
+    )
+    twilio_emulator_base_url: str | None = DEFAULT_TWILIO_EMULATOR_BASE_URL
+    twilio_emulator_account_sid: str | None = (
+        DEFAULT_TWILIO_EMULATOR_ACCOUNT_SID
+    )
+    twilio_emulator_auth_token: str | None = (
+        DEFAULT_TWILIO_EMULATOR_AUTH_TOKEN
+    )
+    twilio_emulator_http_timeout_seconds: int = (
+        DEFAULT_TWILIO_EMULATOR_HTTP_TIMEOUT_SECONDS
+    )
+    twilio_emulator_control_token: str | None = (
+        DEFAULT_TWILIO_EMULATOR_CONTROL_TOKEN
     )
 
 
@@ -854,10 +940,89 @@ def load_settings() -> Settings:
             "COMMERCE_ISOLATED_HTTP_TIMEOUT_SECONDS",
             DEFAULT_COMMERCE_ISOLATED_HTTP_TIMEOUT_SECONDS,
         ),
+        twilio_provider_mode=_twilio_provider_mode_env(
+            "TWILIO_PROVIDER_MODE", DEFAULT_TWILIO_PROVIDER_MODE
+        ),
+        twilio_emulator_base_url=_twilio_emulator_https_url_env(
+            "TWILIO_EMULATOR_BASE_URL"
+        ),
+        twilio_emulator_account_sid=_twilio_emulator_account_sid_env(
+            "TWILIO_EMULATOR_ACCOUNT_SID"
+        ),
+        twilio_emulator_auth_token=_twilio_emulator_auth_token_env(
+            "TWILIO_EMULATOR_AUTH_TOKEN"
+        ),
+        twilio_emulator_http_timeout_seconds=_supabase_request_timeout_env(
+            "TWILIO_EMULATOR_HTTP_TIMEOUT_SECONDS",
+            DEFAULT_TWILIO_EMULATOR_HTTP_TIMEOUT_SECONDS,
+        ),
+        twilio_emulator_control_token=_optional_str_env(
+            "TWILIO_EMULATOR_CONTROL_TOKEN",
+            DEFAULT_TWILIO_EMULATOR_CONTROL_TOKEN,
+        ),
     )
 
 
+def validate_emulator_settings(settings: Settings) -> None:
+    """Fail closed when emulator mode is selected without explicit,
+    shared credentials.
+
+    The helper enforces the shared-credentials contract: the
+    emulator, the T-C adapter and the central dispatcher must agree
+    on the same ``TWILIO_EMULATOR_ACCOUNT_SID`` /
+    ``TWILIO_EMULATOR_AUTH_TOKEN`` pair. The helper is invoked by
+    every entry point that may drive an emulator send (the
+    ``OutboundMessageDispatcher``, the admin/pilot emulator action)
+    so a misconfigured operator deployment never falls through to a
+    real Twilio call or to an arbitrary fallback.
+
+    The helper raises :class:`ValueError` with an operator-facing
+    message that intentionally does not echo the credential values.
+    The function never logs the credentials.
+    """
+    if settings.twilio_provider_mode != "emulator":
+        return
+    missing: list[str] = []
+    if not (
+        isinstance(settings.twilio_emulator_account_sid, str)
+        and settings.twilio_emulator_account_sid
+    ):
+        missing.append("TWILIO_EMULATOR_ACCOUNT_SID")
+    if not (
+        isinstance(settings.twilio_emulator_auth_token, str)
+        and settings.twilio_emulator_auth_token
+    ):
+        missing.append("TWILIO_EMULATOR_AUTH_TOKEN")
+    if not (
+        isinstance(settings.twilio_emulator_base_url, str)
+        and settings.twilio_emulator_base_url
+    ):
+        missing.append("TWILIO_EMULATOR_BASE_URL")
+    if not (
+        isinstance(settings.twilio_emulator_control_token, str)
+        and settings.twilio_emulator_control_token
+    ):
+        missing.append("TWILIO_EMULATOR_CONTROL_TOKEN")
+    if missing:
+        raise ValueError(
+            "twilio provider mode 'emulator' is enabled but the "
+            "following required emulator values are missing or empty: "
+            + ", ".join(missing)
+        )
+    if settings.twilio_account_sid and (
+        settings.twilio_emulator_account_sid == settings.twilio_account_sid
+    ):
+        raise ValueError(
+            "TWILIO_EMULATOR_ACCOUNT_SID must differ from the real "
+            "Twilio account SID so emulator mode never reuses a "
+            "real provider credential"
+        )
+
+
 __all__ = [
+    "DEFAULT_COMMERCE_ISOLATED_HTTP_TIMEOUT_SECONDS",
+    "DEFAULT_COMMERCE_ISOLATED_OUTBOUND_ENABLED",
+    "DEFAULT_COMMERCE_ISOLATED_TC_BASE_URL",
     "DEFAULT_EMBEDDING_BATCH_SIZE",
     "DEFAULT_EMBEDDING_DIMENSION",
     "DEFAULT_EMBEDDING_MODEL",
@@ -886,11 +1051,17 @@ __all__ = [
     "DEFAULT_SUPABASE_SESSION_MAX_AGE_SECONDS",
     "DEFAULT_SUPABASE_SESSION_SECRET",
     "DEFAULT_TWILIO_CALLBACK_STATUS_URL",
+    "DEFAULT_TWILIO_EMULATOR_ACCOUNT_SID",
+    "DEFAULT_TWILIO_EMULATOR_AUTH_TOKEN",
+    "DEFAULT_TWILIO_EMULATOR_BASE_URL",
+    "DEFAULT_TWILIO_EMULATOR_CONTROL_TOKEN",
+    "DEFAULT_TWILIO_EMULATOR_HTTP_TIMEOUT_SECONDS",
     "DEFAULT_TWILIO_OUTBOUND_INITIAL_BACKOFF_SECONDS",
     "DEFAULT_TWILIO_OUTBOUND_LEASE_SECONDS",
     "DEFAULT_TWILIO_OUTBOUND_MAX_ATTEMPTS",
     "DEFAULT_TWILIO_OUTBOUND_MAX_BACKOFF_SECONDS",
     "DEFAULT_TWILIO_OUTBOUND_SENDER_E164",
+    "DEFAULT_TWILIO_PROVIDER_MODE",
     "Settings",
     "load_settings",
 ]

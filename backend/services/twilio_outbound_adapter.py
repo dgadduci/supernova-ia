@@ -25,11 +25,17 @@ transaction-control method.
 
 The adapter accepts a ``TwilioMessagesClient`` seam so focused tests
 can substitute a stand-in; production code passes
-``twilio.rest.Client(account_sid, auth_token).messages``.
+``twilio.rest.Client(account_sid, auth_token).messages``. The
+adapter additionally exposes the ``emulator`` transport seam used by
+controlled provider tests so the central dispatcher never needs to
+fall through to the real Twilio SDK when the operator enables the
+test-only emulator mode.
 """
 from __future__ import annotations
 
+import base64
 import enum
+import json
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -369,7 +375,184 @@ class _TwilioTransportError(Exception):
     """Marker raised by the seam for transport-level errors."""
 
 
+class _EmulatorTransportError(Exception):
+    """Bounded transport error raised by the central emulator seam."""
+
+
+@dataclass(frozen=True)
+class TwilioEmulatorTransportConfig:
+    """Bounded configuration for the central emulator transport.
+
+    The config is the only source of truth for the central
+    dispatcher's emulator transport. The values are operator-pinned
+    and validated at adapter construction time so the central
+    dispatcher fails closed when the test-only configuration is
+    incomplete.
+    """
+
+    base_url: str
+    account_sid: str
+    auth_token: str
+    timeout_seconds: float
+
+
+class TwilioEmulatorMessagesClient:
+    """Standalone HTTP-based Twilio Messages API client for emulator mode.
+
+    The class honours the same ``create(**kwargs)`` contract as the
+    pinned Twilio SDK ``Client.messages`` instance so the central
+    dispatcher can keep using the documented seam. The client POSTs
+    the bounded payload to ``<base_url>/2010-04-01/Accounts/<account_sid>/Messages.json``
+    with HTTP Basic authentication using the generated emulator
+    credentials. The class NEVER contacts ``api.twilio.com``.
+    """
+
+    def __init__(
+        self,
+        *,
+        config: TwilioEmulatorTransportConfig,
+    ) -> None:
+        from urllib.parse import urlparse
+
+        if not isinstance(config, TwilioEmulatorTransportConfig):
+            raise TypeError("config is required")
+        parsed = urlparse(config.base_url)
+        if parsed.scheme.lower() != "https" or not parsed.netloc:
+            raise ValueError("emulator base_url must be an absolute https URL")
+        if not config.account_sid.startswith("AC"):
+            raise ValueError("emulator account_sid must be a canonical Twilio SID")
+        if not config.auth_token:
+            raise ValueError("emulator auth_token is required")
+        if config.timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be greater than zero")
+        self._config = config
+        self._last_http_status: int = 0
+
+    @property
+    def config(self) -> TwilioEmulatorTransportConfig:
+        return self._config
+
+    def create(self, **kwargs: Any) -> Any:
+        """POST the bounded message create payload to the emulator.
+
+        The Twilio Messages API expects Twilio-shaped JSON field
+        names (``To``, ``From``, ``Body``) — the bounded SDK seam
+        receives Python-shaped kwargs (``to``, ``from_``, ``body``).
+        The helper translates the Python kwargs to Twilio-shaped
+        field names before POSTing the payload so the emulator
+        validator accepts the call. Only the documented keys are
+        forwarded: unknown kwargs are dropped to keep the surface
+        bounded.
+        """
+        url = (
+            f"{self._config.base_url.rstrip('/')}/2010-04-01/Accounts/"
+            f"{self._config.account_sid}/Messages.json"
+        )
+        twilio_payload: dict[str, str] = {}
+        if "to" in kwargs and kwargs["to"] is not None:
+            twilio_payload["To"] = str(kwargs["to"])
+        if "from_" in kwargs and kwargs["from_"] is not None:
+            twilio_payload["From"] = str(kwargs["from_"])
+        if "body" in kwargs and kwargs["body"] is not None:
+            twilio_payload["Body"] = str(kwargs["body"])
+        if kwargs.get("status_callback"):
+            twilio_payload["StatusCallback"] = str(kwargs["status_callback"])
+        body = json.dumps(twilio_payload, sort_keys=True, separators=(",", ":"))
+        basic = base64.b64encode(
+            f"{self._config.account_sid}:{self._config.auth_token}".encode()
+        ).decode("ascii")
+        headers = {
+            "Authorization": f"Basic {basic}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        try:
+            import httpx
+
+            with httpx.Client(timeout=self._config.timeout_seconds) as client:
+                response = client.post(url, content=body, headers=headers)
+        except Exception as exc:
+            raise _EmulatorTransportError(type(exc).__name__) from exc
+        self._last_http_status = int(response.status_code)
+        if response.status_code != 201:
+            raise _EmulatorTransportError(
+                f"emulator_http_status_{int(response.status_code)}"
+            )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise _EmulatorTransportError("invalid_payload") from exc
+        if not isinstance(payload, dict):
+            raise _EmulatorTransportError("invalid_payload_shape")
+        sid = payload.get("sid")
+        return _EmulatorMessageResource(
+            sid=str(sid) if sid is not None else None, payload=payload
+        )
+
+
+class _EmulatorMessageResource:
+    """Lightweight stand-in for the SDK ``MessageInstance`` object.
+
+    The adapter only reads ``.sid``; the helper exposes the raw
+    payload through ``__getattr__`` so any future field the
+    dispatcher needs to read can be projected verbatim without
+    rewriting the seam.
+    """
+
+    def __init__(self, *, sid: str | None, payload: dict[str, Any]) -> None:
+        self.sid = sid
+        self._payload = payload
+
+    def __getattr__(self, name: str) -> Any:
+        if name in {"sid", "_payload"}:
+            raise AttributeError(name)
+        return self._payload.get(name)
+
+
+def send_emulator(
+    client: TwilioEmulatorMessagesClient,
+    request: TwilioSendRequest,
+) -> TwilioSendResult:
+    """Send one message through the central emulator seam.
+
+    The function mirrors :func:`send` so the dispatcher can branch
+    on a typed status. A ``_EmulatorTransportError`` is translated
+    into a bounded retryable result so the existing outbox state
+    machine is preserved.
+    """
+    try:
+        create_kwargs: dict[str, Any] = {
+            "to": _as_whatsapp_address(request.destinatario_e164),
+            "from_": _as_whatsapp_address(request.sender_e164),
+            "body": request.cuerpo,
+        }
+        if request.status_callback_url:
+            create_kwargs["status_callback"] = str(
+                request.status_callback_url
+            )
+        message = client.create(**create_kwargs)
+    except _EmulatorTransportError as exc:
+        return _retryable(
+            exc,
+            OutboundFailureCategory.RETRYABLE_TIMEOUT,
+            "emulator_transport",
+            http_status=int(getattr(client, "_last_http_status", 0)) or None,
+        )
+
+    sid = getattr(message, "sid", None)
+    return TwilioSendResult(
+        status=TwilioSendStatus.SENT,
+        message_sid=str(sid) if sid is not None else None,
+        categoria=None,
+        codigo=None,
+        http_status=None,
+        detalle=None,
+    )
+
+
 __all__ = [
+    "TwilioEmulatorMessagesClient",
+    "TwilioEmulatorTransportConfig",
     "TwilioMessagesClient",
     "TwilioSendRequest",
     "TwilioSendResult",
@@ -377,4 +560,5 @@ __all__ = [
     "build_send_request",
     "classify_failure",
     "send",
+    "send_emulator",
 ]

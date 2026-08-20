@@ -671,5 +671,27 @@ class ConfigLoaderTest(unittest.TestCase):
             load_config_from_env(env)
 
 
+class WebhookEmulatorModeConfigTest(unittest.TestCase):
+    """The webhook route honours the emulator mode flag at config time
+    but never instantiates the real Twilio SDK. The tests cover the
+    configuration seam so production deployment of the emulator
+    cannot accidentally bypass the contract."""
+
+    def test_default_provider_mode_is_real(self) -> None:
+        env = {
+            "TC_TWILIO_AUTH_TOKEN": TOKEN,
+            "TC_TWILIO_ACCOUNT_SID": "AC" + "0" * 32,
+            "TC_TWILIO_WEBHOOK_BASE_URL": BASE_URL,
+            "TC_NOVAORDERS_INGRESS_URL": NOVAORDERS_URL,
+            "TC_INSTALLATION_ID": INSTALLATION_ID,
+            "TC_INSTALLATION_SECRET": INSTALLATION_SECRET,
+            "TC_COMERCIO_ID": str(COMERCIO_ID),
+            "TC_TWILIO_SENDER_E164": "+15555555555",
+        }
+        config = load_config_from_env(env)
+        self.assertEqual(config.provider_mode, "real")
+        self.assertFalse(config.is_emulator_mode)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

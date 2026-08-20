@@ -32,6 +32,44 @@
     </div>
     <p class="muted" data-debug-status>Listo.</p>
     <p class="muted debug-channel-note">Canal local; no envía a WhatsApp/Twilio.</p>
+
+    {% if emulator_action_enabled %}
+    <h2>Enviar por Twilio Emulator</h2>
+    <form
+      class="debug-form"
+      method="post"
+      action="{{ emulator_action_url }}"
+      data-debug-emulator-form
+    >
+      <label class="muted" for="emulator-test-message">Mensaje del operador (texto plano)</label>
+      <textarea
+        id="emulator-test-message"
+        name="message"
+        maxlength="{{ emulator_test_max_chars }}"
+        data-debug-emulator-textarea
+        required
+      ></textarea>
+      <button type="submit" data-debug-emulator-submit>Enviar por Twilio Emulator</button>
+    </form>
+    <h3>Resultado del Twilio Emulator (solo esta página)</h3>
+    <div class="debug-emulator-result" data-debug-emulator-result aria-live="polite">
+      <p class="muted">El resultado vive solo en esta pestaña del navegador.
+      No se guarda, ni usa cookies del navegador, ni el almacén persistente
+      del navegador, ni parámetros de URL.</p>
+    </div>
+    <p class="muted" data-debug-emulator-status>Listo.</p>
+    <p class="muted debug-emulator-note">Canal Twilio Emulator; no contacta Twilio real.</p>
+    {% else %}
+    <h2>Twilio Emulator (deshabilitado)</h2>
+    <p class="muted debug-emulator-note" data-debug-emulator-disabled>
+      La acción de Twilio Emulator está deshabilitada: requiere
+      <code>TWILIO_PROVIDER_MODE=emulator</code>,
+      <code>COMMERCE_ISOLATED_OUTBOUND_ENABLED=1</code> y las
+      credenciales explícitas y compartidas con el adapter T-C y el
+      dispatcher central. Sin esa configuración el canal no está
+      disponible; no se invoca ningún provider real.
+    </p>
+    {% endif %}
   </section>
 
   <section class="debug-column debug-detail" aria-label="Detalle del pedido">
