@@ -52,6 +52,7 @@ COMPONENT_COMMERCE_INSTALLATION_ADAPTER = "commerce_installation_adapter"
 EVENT_OUTBOUND_OUTCOME = "outbound_attempt_outcome"
 EVENT_CALLBACK_OUTCOME = "twilio_callback_outcome"
 EVENT_WORKER_CYCLE = "provider_worker_cycle"
+EVENT_WORKER_LIVENESS = "provider_worker_liveness"
 EVENT_WORKER_UNEXPECTED_FAILURE = "provider_worker_unexpected_failure"
 EVENT_WORKER_READINESS_TRANSITION = "provider_worker_readiness_transition"
 EVENT_WORKER_DISABLED = "provider_worker_disabled"
@@ -78,6 +79,7 @@ _EVENT_CATALOGUE: dict[str, str | frozenset[str]] = {
     EVENT_OUTBOUND_OUTCOME: COMPONENT_OUTBOUND,
     EVENT_CALLBACK_OUTCOME: COMPONENT_CALLBACK,
     EVENT_WORKER_CYCLE: COMPONENT_WORKER,
+    EVENT_WORKER_LIVENESS: COMPONENT_WORKER,
     EVENT_WORKER_UNEXPECTED_FAILURE: COMPONENT_WORKER,
     EVENT_WORKER_READINESS_TRANSITION: COMPONENT_WORKER,
     EVENT_WORKER_DISABLED: COMPONENT_WORKER,
@@ -183,6 +185,15 @@ _OUTCOMES_BY_EVENT: dict[str, frozenset[str]] = {
     EVENT_WORKER_CYCLE: frozenset(
         {"completed", "skipped_inbound_not_ready"}
     ),
+    EVENT_WORKER_LIVENESS: frozenset(
+        {
+            "cycle_started",
+            "phase_started",
+            "phase_completed",
+            "phase_failed",
+            "cycle_completed",
+        }
+    ),
     EVENT_WORKER_READINESS_TRANSITION: frozenset({"ready", "not_ready"}),
     EVENT_WORKER_DISABLED: frozenset({"disabled"}),
     EVENT_LLM_REQUEST: frozenset({"started", "completed"}),
@@ -218,6 +229,7 @@ _FAILURE_CATEGORIES_BY_EVENT: dict[str, frozenset[str]] = {
             "budget_exhausted",
         }
     ),
+    EVENT_WORKER_LIVENESS: frozenset({"worker_exception"}),
     EVENT_WORKER_UNEXPECTED_FAILURE: frozenset(
         {"worker_exception", "readiness_probe_exception"}
     ),
@@ -295,12 +307,37 @@ _EVENTS_WITH_COMMERCE_INSTALLATION_FIELDS: frozenset[str] = frozenset(
 )
 
 
+# Closed phase allowlist for the ``provider_worker_liveness`` event.
+# The vocabulary is shared between the worker orchestration seam and the
+# bounded production-log parser so Railway operators can group cycles by
+# the last phase that began. The contract forbids arbitrary phase tokens,
+# provider/customers identifiers, runner names or caller-supplied
+# labels.
+_LIVENESS_PHASES: frozenset[str] = frozenset(
+    {"readiness", "inbound", "outbound", "sleep"}
+)
+_LIVENESS_PHASE_OUTCOMES: frozenset[str] = frozenset(
+    {"phase_started", "phase_completed", "phase_failed"}
+)
+_LIVENESS_CYCLE_OUTCOMES: frozenset[str] = frozenset(
+    {"cycle_started", "cycle_completed"}
+)
+
+
+_EVENTS_WITH_LIVENESS_FIELDS: frozenset[str] = frozenset(
+    {EVENT_WORKER_LIVENESS}
+)
+
+
 _OPTIONAL_FIELDS_BY_EVENT: dict[str, frozenset[str]] = {
     EVENT_OUTBOUND_OUTCOME: frozenset(
         {"outbox_id", "attempt", "durable_state", "provider_code", "exception_type"}
     ),
     EVENT_CALLBACK_OUTCOME: frozenset({"outbox_id", "durable_state"}),
     EVENT_WORKER_CYCLE: frozenset({"elapsed_ms"}),
+    EVENT_WORKER_LIVENESS: frozenset(
+        {"phase", "cycle_index", "elapsed_ms", "exception_type"}
+    ),
     EVENT_WORKER_UNEXPECTED_FAILURE: frozenset({"exception_type"}),
     EVENT_WORKER_READINESS_TRANSITION: frozenset({"elapsed_ms"}),
     EVENT_WORKER_DISABLED: frozenset(),
@@ -345,6 +382,8 @@ _ALLOWED_PAYLOAD_KEYS: frozenset[str] = frozenset(
         "http_status",
         "exception_type",
         "elapsed_ms",
+        "phase",
+        "cycle_index",
         "configured_mode",
         "effective_mode",
         "authoritative_strategy",
@@ -385,6 +424,7 @@ _MAX_PENDING_CONTEXT_STATUS = 32
 _MAX_PENDING_CONTEXT_CANDIDATE_COUNT = 200
 _MAX_TEMPLATE_VERSION = 64
 _MAX_SHA256_HEX = 64
+_MAX_CYCLE_INDEX = 2**31 - 1
 
 
 class EventValidationError(ValueError):
@@ -443,6 +483,14 @@ def _is_safe_optional_field(name: str, value: Any) -> bool:
         if isinstance(value, bool) or not isinstance(value, int):
             return False
         return 0 <= value <= _MAX_ELAPSED_MS
+    if name == "phase":
+        return _is_safe_short_string(value, max_length=_MAX_OUTCOME) and (
+            value in _LIVENESS_PHASES
+        )
+    if name == "cycle_index":
+        if isinstance(value, bool) or not isinstance(value, int):
+            return False
+        return 1 <= value <= _MAX_CYCLE_INDEX
     if name == "http_status":
         if isinstance(value, bool) or not isinstance(value, int):
             return False
@@ -860,6 +908,81 @@ def _validate_commerce_installation_event_fields(
     return fields
 
 
+def _validate_liveness_event_fields(
+    *,
+    outcome: Any,
+    phase: Any,
+    cycle_index: Any,
+) -> dict[str, Any]:
+    """Validate the closed ``provider_worker_liveness`` payload.
+
+    The contract enforces:
+
+    * ``cycle_index`` is REQUIRED for every liveness event, must be a
+      strictly positive integer bounded by :data:`_MAX_CYCLE_INDEX`,
+      and MUST be a process-local counter (never a correlation or
+      customer identifier).
+    * ``phase`` is REQUIRED for the phase outcomes
+      (``phase_started``, ``phase_completed``, ``phase_failed``) and
+      MUST come from :data:`_LIVENESS_PHASES`.
+    * ``phase`` MUST be ABSENT for the cycle outcomes
+      (``cycle_started``, ``cycle_completed``).
+
+    Free-form phase tokens, runner names, customer or provider
+    identifiers fail this validator.
+    """
+    fields: dict[str, Any] = {}
+
+    if cycle_index is None:
+        raise EventValidationError(
+            "cycle_index is required for provider_worker_liveness "
+            "and must be a positive integer"
+        )
+    if isinstance(cycle_index, bool) or not isinstance(cycle_index, int):
+        raise EventValidationError(
+            "cycle_index must be an integer in "
+            f"[1, {_MAX_CYCLE_INDEX}] "
+            f"(got {type(cycle_index).__name__}: {cycle_index!r})"
+        )
+    if not 1 <= cycle_index <= _MAX_CYCLE_INDEX:
+        raise EventValidationError(
+            f"cycle_index must be in [1, {_MAX_CYCLE_INDEX}] "
+            f"(got {cycle_index!r})"
+        )
+    fields["cycle_index"] = cycle_index
+
+    if outcome in _LIVENESS_PHASE_OUTCOMES:
+        if phase is None:
+            raise EventValidationError(
+                "phase is required for provider_worker_liveness with "
+                f"outcome {outcome!r} and must be one of "
+                f"{sorted(_LIVENESS_PHASES)}"
+            )
+        if not _is_safe_short_string(phase, max_length=_MAX_OUTCOME):
+            raise EventValidationError(
+                "phase must be a short alnum token (got "
+                f"{type(phase).__name__}: {phase!r})"
+            )
+        if phase not in _LIVENESS_PHASES:
+            raise EventValidationError(
+                f"phase {phase!r} not in liveness allowlist "
+                f"{sorted(_LIVENESS_PHASES)}"
+            )
+        fields["phase"] = phase
+    elif outcome in _LIVENESS_CYCLE_OUTCOMES:
+        if phase is not None:
+            raise EventValidationError(
+                "phase must be absent for provider_worker_liveness "
+                f"with outcome {outcome!r} (got {phase!r})"
+            )
+    else:
+        raise EventValidationError(
+            f"unknown liveness outcome {outcome!r}"
+        )
+
+    return fields
+
+
 def build_event(
     *,
     event: str,
@@ -896,6 +1019,8 @@ def build_event(
     outbound_style_prompt_template_version: str | None = None,
     outbound_style_prompt_template_hash: str | None = None,
     reason: str | None = None,
+    phase: str | None = None,
+    cycle_index: int | None = None,
 ) -> dict[str, Any]:
     """Validate the input and return the JSON-ready payload.
 
@@ -905,6 +1030,21 @@ def build_event(
     """
     if not _is_safe_event_name(event):
         raise EventValidationError(f"invalid event name: {event!r}")
+
+    if event != EVENT_WORKER_LIVENESS:
+        if phase is not None:
+            raise EventValidationError(
+                f"event {event!r} does not accept 'phase'; "
+                "'phase' is reserved for "
+                f"{EVENT_WORKER_LIVENESS!r}"
+            )
+        if cycle_index is not None:
+            raise EventValidationError(
+                f"event {event!r} does not accept 'cycle_index'; "
+                "'cycle_index' is reserved for "
+                f"{EVENT_WORKER_LIVENESS!r}"
+            )
+
     catalogued_component = _EVENT_CATALOGUE.get(event)
     if catalogued_component is None:
         raise EventValidationError(
@@ -926,6 +1066,7 @@ def build_event(
         )
 
     is_recognition_event = event in _EVENTS_WITH_RECOGNITION_FIELDS
+    is_liveness_event = event in _EVENTS_WITH_LIVENESS_FIELDS
     allows_no_outcome_or_failure = (
         event in _EVENTS_WITHOUT_OUTCOME_OR_FAILURE
     )
@@ -939,6 +1080,50 @@ def build_event(
             raise EventValidationError(
                 f"event {event!r} does not accept failure_category"
             )
+    elif is_liveness_event:
+        if outcome is None:
+            raise EventValidationError(
+                f"event {event!r} requires an outcome"
+            )
+        _validate_outcome(event, outcome)
+        if failure_category is not None:
+            _validate_failure_category(event, failure_category)
+        if (
+            exception_type is not None
+            and not _is_safe_optional_field(
+                "exception_type", exception_type
+            )
+        ):
+            raise EventValidationError(
+                f"invalid value for field 'exception_type': "
+                f"{exception_type!r}"
+            )
+        if outcome == "phase_failed":
+            if failure_category is None:
+                raise EventValidationError(
+                    f"event {event!r} with outcome 'phase_failed' "
+                    "requires 'failure_category'"
+                )
+            if exception_type is None:
+                raise EventValidationError(
+                    f"event {event!r} with outcome 'phase_failed' "
+                    "requires 'exception_type'"
+                )
+        else:
+            if failure_category is not None:
+                raise EventValidationError(
+                    f"event {event!r} does not accept "
+                    f"'failure_category' with outcome {outcome!r}; "
+                    "'failure_category' is reserved for outcome "
+                    "'phase_failed'"
+                )
+            if exception_type is not None:
+                raise EventValidationError(
+                    f"event {event!r} does not accept "
+                    f"'exception_type' with outcome {outcome!r}; "
+                    "'exception_type' is reserved for outcome "
+                    "'phase_failed'"
+                )
     else:
         if outcome is None and failure_category is None:
             raise EventValidationError(
@@ -964,7 +1149,11 @@ def build_event(
         ),
     }
     if not is_recognition_event and not allows_no_outcome_or_failure:
-        if outcome is not None:
+        if is_liveness_event:
+            payload["outcome"] = outcome
+            if failure_category is not None:
+                payload["failure_category"] = failure_category
+        elif outcome is not None:
             payload["outcome"] = outcome
         else:
             payload["failure_category"] = failure_category
@@ -1113,6 +1302,65 @@ def build_event(
         payload.update(commerce_installation_fields)
         return payload
 
+    if is_liveness_event:
+        if any(
+            value is not None
+            for value in (
+                outbox_id,
+                correlation_id,
+                attempt,
+                durable_state,
+                provider_code,
+                http_status,
+                configured_mode,
+                effective_mode,
+                authoritative_strategy,
+                hybrid_decision,
+                fallback,
+                fallback_category,
+                fuzzy_latency_ms,
+                embedding_latency_ms,
+                vector_latency_ms,
+                context_kind,
+                status_before,
+                status_after,
+                candidate_count_before,
+                candidate_count_after,
+                context_cleared,
+                flavor_code,
+                eligible_count,
+                applied_count,
+                outbound_style_prompt_template_version,
+                outbound_style_prompt_template_hash,
+                reason,
+            )
+        ):
+            raise EventValidationError(
+                f"event {event!r} does not accept extra fields; only the "
+                "closed phase/cycle_index/elapsed_ms/exception_type "
+                "payload is allowed"
+            )
+        liveness_fields = _validate_liveness_event_fields(
+            outcome=outcome,
+            phase=phase,
+            cycle_index=cycle_index,
+        )
+        payload.update(liveness_fields)
+        if elapsed_ms is not None:
+            if (
+                isinstance(elapsed_ms, bool)
+                or not isinstance(elapsed_ms, int)
+                or not 0 <= elapsed_ms <= _MAX_ELAPSED_MS
+            ):
+                raise EventValidationError(
+                    f"elapsed_ms must be in [0, {_MAX_ELAPSED_MS}] "
+                    f"(got {elapsed_ms!r})"
+                )
+            payload["elapsed_ms"] = elapsed_ms
+        if exception_type is not None:
+            payload["exception_type"] = exception_type
+        return payload
+
     if any(
         value is not None
         for value in (
@@ -1255,6 +1503,8 @@ def parse_event(line: str) -> dict[str, Any]:
             "outbound_style_prompt_template_hash"
         ),
         reason=decoded.get("reason"),
+        phase=decoded.get("phase"),
+        cycle_index=decoded.get("cycle_index"),
     )
 
 
@@ -1323,6 +1573,8 @@ def emit_event(
     outbound_style_prompt_template_version: str | None = None,
     outbound_style_prompt_template_hash: str | None = None,
     reason: str | None = None,
+    phase: str | None = None,
+    cycle_index: int | None = None,
     stream: Any = None,
 ) -> bool:
     """Build and emit a single JSON event line to the supplied stream.
@@ -1375,6 +1627,8 @@ def emit_event(
             outbound_style_prompt_template_version=outbound_style_prompt_template_version,
             outbound_style_prompt_template_hash=outbound_style_prompt_template_hash,
             reason=reason,
+            phase=phase,
+            cycle_index=cycle_index,
         )
     except EventValidationError as exc:
         try:
@@ -1435,6 +1689,7 @@ __all__ = [
     "EVENT_SHADOW_PRODUCT_RECOGNITION",
     "EVENT_WORKER_CYCLE",
     "EVENT_WORKER_DISABLED",
+    "EVENT_WORKER_LIVENESS",
     "EVENT_WORKER_READINESS_TRANSITION",
     "EVENT_WORKER_UNEXPECTED_FAILURE",
     "SCHEMA_VERSION",
