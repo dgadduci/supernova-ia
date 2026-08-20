@@ -107,6 +107,7 @@ from backend.observability import (
     COMPONENT_WORKER,
     EVENT_WORKER_CYCLE,
     EVENT_WORKER_DISABLED,
+    EVENT_WORKER_LIVENESS,
     EVENT_WORKER_READINESS_TRANSITION,
     EVENT_WORKER_UNEXPECTED_FAILURE,
     emit_event,
@@ -389,6 +390,40 @@ def _default_unexpected_exception_log(
     )
 
 
+def _emit_liveness_event(
+    *,
+    outcome: str,
+    cycle_index: int,
+    phase: str | None = None,
+    elapsed_ms: int | None = None,
+    exception_type: str | None = None,
+) -> bool:
+    """Emit one ``provider_worker_liveness`` event.
+
+    Centralizes the worker liveness emission so the catalogue
+    contract stays in one place. The helper is best-effort and
+    privacy-safe: a validation failure degrades to the existing
+    ``observability_emit_failed`` path and never interrupts the
+    surrounding business flow.
+
+    When ``exception_type`` is provided the helper also pins
+    ``failure_category`` to the closed ``worker_exception``
+    token, which is the only safe category the catalogue admits
+    for this event.
+    """
+    failure_category = "worker_exception" if exception_type else None
+    return emit_event(
+        event=EVENT_WORKER_LIVENESS,
+        component=COMPONENT_WORKER,
+        outcome=outcome,
+        cycle_index=int(cycle_index),
+        phase=phase,
+        elapsed_ms=elapsed_ms,
+        failure_category=failure_category,
+        exception_type=exception_type,
+    )
+
+
 def _emit_worker_cycle_event(summary: dict[str, Any]) -> None:
     """Emit a structured ``provider_worker_cycle`` event alongside
     the existing key=value line.
@@ -533,22 +568,86 @@ def run_cycle(
     the service.
     """
     if ollama_ready:
-        inbound_exit_code: int | None = int(
-            inbound_runner(
-                int(
-                    settings.provider_processing_worker_inbound_max_items_per_pass
+        _emit_liveness_event(
+            outcome="phase_started",
+            cycle_index=cycle_index,
+            phase="inbound",
+        )
+        inbound_started = time.monotonic()
+        try:
+            inbound_exit_code: int | None = int(
+                inbound_runner(
+                    int(
+                        settings.provider_processing_worker_inbound_max_items_per_pass
+                    )
                 )
             )
+        except BaseException:
+            inbound_elapsed_ms = int(
+                (time.monotonic() - inbound_started) * 1000
+            )
+            try:
+                inbound_exception_type = sys.exc_info()[1].__class__.__name__  # type: ignore[union-attr]
+            except Exception:  # noqa: BLE001 - defensive only
+                inbound_exception_type = "Exception"
+            _emit_liveness_event(
+                outcome="phase_failed",
+                cycle_index=cycle_index,
+                phase="inbound",
+                elapsed_ms=inbound_elapsed_ms,
+                exception_type=inbound_exception_type,
+            )
+            raise
+        inbound_elapsed_ms = int(
+            (time.monotonic() - inbound_started) * 1000
+        )
+        _emit_liveness_event(
+            outcome="phase_completed",
+            cycle_index=cycle_index,
+            phase="inbound",
+            elapsed_ms=inbound_elapsed_ms,
         )
     else:
         inbound_exit_code = None
 
-    outbound_exit_code = int(
-        outbound_runner(
-            int(
-                settings.provider_processing_worker_outbound_max_attempts_per_pass
+    _emit_liveness_event(
+        outcome="phase_started",
+        cycle_index=cycle_index,
+        phase="outbound",
+    )
+    outbound_started = time.monotonic()
+    try:
+        outbound_exit_code = int(
+            outbound_runner(
+                int(
+                    settings.provider_processing_worker_outbound_max_attempts_per_pass
+                )
             )
         )
+    except BaseException:
+        outbound_elapsed_ms = int(
+            (time.monotonic() - outbound_started) * 1000
+        )
+        try:
+            outbound_exception_type = sys.exc_info()[1].__class__.__name__  # type: ignore[union-attr]
+        except Exception:  # noqa: BLE001 - defensive only
+            outbound_exception_type = "Exception"
+        _emit_liveness_event(
+            outcome="phase_failed",
+            cycle_index=cycle_index,
+            phase="outbound",
+            elapsed_ms=outbound_elapsed_ms,
+            exception_type=outbound_exception_type,
+        )
+        raise
+    outbound_elapsed_ms = int(
+        (time.monotonic() - outbound_started) * 1000
+    )
+    _emit_liveness_event(
+        outcome="phase_completed",
+        cycle_index=cycle_index,
+        phase="outbound",
+        elapsed_ms=outbound_elapsed_ms,
     )
     sleep_after = bool(sleep_decision(settings, int(cycle_index)))
     outbound_cycle_aggregate: OutboundCycleAggregate | None = None
@@ -639,24 +738,56 @@ def run_forever(
     cycle_index = 0
     while not stop_predicate_fn():
         cycle_index += 1
+        _emit_liveness_event(
+            outcome="cycle_started",
+            cycle_index=cycle_index,
+        )
         readiness_category: str | None = None
         probe_duration_seconds: float | None = None
         if not ollama_ready:
             assert readiness_probe_fn is not None
+            _emit_liveness_event(
+                outcome="phase_started",
+                cycle_index=cycle_index,
+                phase="readiness",
+            )
+            readiness_started = time.monotonic()
+            probe_succeeded = False
             try:
                 readiness_result = readiness_probe_fn()
+                probe_succeeded = True
             except Exception as exc:  # noqa: BLE001 - probe must never crash the worker
                 # Defensive guard: the readiness seam is required to
                 # swallow every exception internally. If a buggy
                 # probe ever escapes, log safely and treat the cycle
                 # as not-ready so the worker loop and the web service
                 # never crash on probe failures.
+                readiness_elapsed_ms = int(
+                    (time.monotonic() - readiness_started) * 1000
+                )
+                _emit_liveness_event(
+                    outcome="phase_failed",
+                    cycle_index=cycle_index,
+                    phase="readiness",
+                    elapsed_ms=readiness_elapsed_ms,
+                    exception_type=type(exc).__name__,
+                )
                 unexpected_log(
                     cycle_index=cycle_index,
                     reason=type(exc).__name__,
                     exc=exc,
                 )
                 readiness_result = _NOT_READY_FALLBACK_RESULT
+            if probe_succeeded:
+                readiness_elapsed_ms = int(
+                    (time.monotonic() - readiness_started) * 1000
+                )
+                _emit_liveness_event(
+                    outcome="phase_completed",
+                    cycle_index=cycle_index,
+                    phase="readiness",
+                    elapsed_ms=readiness_elapsed_ms,
+                )
             if readiness_result.ready:
                 ollama_ready = True
                 logger.info(
@@ -716,9 +847,48 @@ def run_forever(
             )
             raise
 
+        _emit_liveness_event(
+            outcome="cycle_completed",
+            cycle_index=cycle_index,
+        )
+
         if summary["sleep_after"]:
-            sleeper(
-                float(settings.provider_processing_worker_poll_interval_seconds)
+            _emit_liveness_event(
+                outcome="phase_started",
+                cycle_index=cycle_index,
+                phase="sleep",
+            )
+            sleep_started = time.monotonic()
+            try:
+                sleeper(
+                    float(
+                        settings.provider_processing_worker_poll_interval_seconds
+                    )
+                )
+            except BaseException:
+                sleep_elapsed_ms = int(
+                    (time.monotonic() - sleep_started) * 1000
+                )
+                try:
+                    sleep_exception_type = sys.exc_info()[1].__class__.__name__  # type: ignore[union-attr]
+                except Exception:  # noqa: BLE001 - defensive only
+                    sleep_exception_type = "Exception"
+                _emit_liveness_event(
+                    outcome="phase_failed",
+                    cycle_index=cycle_index,
+                    phase="sleep",
+                    elapsed_ms=sleep_elapsed_ms,
+                    exception_type=sleep_exception_type,
+                )
+                raise
+            sleep_elapsed_ms = int(
+                (time.monotonic() - sleep_started) * 1000
+            )
+            _emit_liveness_event(
+                outcome="phase_completed",
+                cycle_index=cycle_index,
+                phase="sleep",
+                elapsed_ms=sleep_elapsed_ms,
             )
     return cycle_index
 

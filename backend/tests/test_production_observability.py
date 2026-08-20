@@ -32,7 +32,9 @@ from backend.observability import (
     COMPONENT_DATABASE,
     COMPONENT_EMBEDDING,
     COMPONENT_LLM,
+    COMPONENT_OBSERVABILITY,
     COMPONENT_OUTBOUND,
+    COMPONENT_OUTBOUND_STYLE,
     COMPONENT_PENDING_CONTEXT,
     COMPONENT_PRODUCT_ADD_EXECUTION,
     COMPONENT_PRODUCT_RECOGNITION,
@@ -49,6 +51,7 @@ from backend.observability import (
     EVENT_SHADOW_PRODUCT_RECOGNITION,
     EVENT_WORKER_CYCLE,
     EVENT_WORKER_DISABLED,
+    EVENT_WORKER_LIVENESS,
     EVENT_WORKER_READINESS_TRANSITION,
     EVENT_WORKER_UNEXPECTED_FAILURE,
     SCHEMA_VERSION,
@@ -2010,6 +2013,960 @@ class ProductAddExecutionEventTest(unittest.TestCase):
         self.assertEqual(
             parsed["event"], EVENT_OBSERVABILITY_EMIT_FAILED
         )
+
+
+class ProviderWorkerLivenessEventTest(unittest.TestCase):
+    """The ``provider_worker_liveness`` event is a privacy-safe
+    lifecycle observation with a closed outcome/phase allowlist.
+    The contract rejects unknown fields, free-form phase/outcome
+    tokens, unbounded numeric values and sensitive payloads so a
+    Railway operator can correlate the last worker phase that
+    began without ever receiving a message, phone number, SID,
+    prompt, response, URL, credential, token, exception message
+    or traceback.
+    """
+
+    _ACCEPTED_OUTCOMES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "cycle_started",
+            "phase_started",
+            "phase_completed",
+            "phase_failed",
+            "cycle_completed",
+        }
+    )
+
+    _ACCEPTED_PHASES: ClassVar[frozenset[str]] = frozenset(
+        {"readiness", "inbound", "outbound", "sleep"}
+    )
+
+    _PHASE_OUTCOMES: ClassVar[frozenset[str]] = frozenset(
+        {"phase_started", "phase_completed", "phase_failed"}
+    )
+
+    _CYCLE_OUTCOMES: ClassVar[frozenset[str]] = frozenset(
+        {"cycle_started", "cycle_completed"}
+    )
+
+    _BASE_CYCLE_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {"event", "schema_version", "component", "timestamp", "outcome"}
+    )
+
+    def test_event_is_catalogue_mapped_to_provider_worker_component(self) -> None:
+        from backend.observability.events import _EVENT_CATALOGUE
+
+        self.assertEqual(
+            _EVENT_CATALOGUE[EVENT_WORKER_LIVENESS],
+            COMPONENT_WORKER,
+        )
+
+    def test_cycle_started_round_trips(self) -> None:
+        payload = build_event(
+            event=EVENT_WORKER_LIVENESS,
+            component=COMPONENT_WORKER,
+            outcome="cycle_started",
+            cycle_index=3,
+        )
+        self.assertEqual(payload["event"], EVENT_WORKER_LIVENESS)
+        self.assertEqual(payload["component"], COMPONENT_WORKER)
+        self.assertEqual(payload["outcome"], "cycle_started")
+        self.assertEqual(payload["cycle_index"], 3)
+        self.assertNotIn("phase", payload)
+        self.assertNotIn("failure_category", payload)
+        self.assertEqual(set(payload.keys()), self._BASE_CYCLE_KEYS | {"cycle_index"})
+
+    def test_cycle_completed_with_elapsed_round_trips(self) -> None:
+        payload = build_event(
+            event=EVENT_WORKER_LIVENESS,
+            component=COMPONENT_WORKER,
+            outcome="cycle_completed",
+            cycle_index=9,
+            elapsed_ms=1500,
+        )
+        self.assertEqual(payload["outcome"], "cycle_completed")
+        self.assertEqual(payload["cycle_index"], 9)
+        self.assertEqual(payload["elapsed_ms"], 1500)
+
+    def test_phase_started_requires_phase(self) -> None:
+        for phase in self._ACCEPTED_PHASES:
+            with self.subTest(phase=phase):
+                payload = build_event(
+                    event=EVENT_WORKER_LIVENESS,
+                    component=COMPONENT_WORKER,
+                    outcome="phase_started",
+                    phase=phase,
+                    cycle_index=1,
+                )
+                self.assertEqual(payload["outcome"], "phase_started")
+                self.assertEqual(payload["phase"], phase)
+                self.assertEqual(payload["cycle_index"], 1)
+
+    def test_phase_completed_carries_bounded_elapsed(self) -> None:
+        payload = build_event(
+            event=EVENT_WORKER_LIVENESS,
+            component=COMPONENT_WORKER,
+            outcome="phase_completed",
+            phase="outbound",
+            cycle_index=5,
+            elapsed_ms=250,
+        )
+        self.assertEqual(payload["elapsed_ms"], 250)
+
+    def test_phase_failed_carries_safe_exception_metadata(self) -> None:
+        payload = build_event(
+            event=EVENT_WORKER_LIVENESS,
+            component=COMPONENT_WORKER,
+            outcome="phase_failed",
+            phase="inbound",
+            cycle_index=2,
+            elapsed_ms=120,
+            failure_category="worker_exception",
+            exception_type="RuntimeError",
+        )
+        self.assertEqual(payload["outcome"], "phase_failed")
+        self.assertEqual(payload["phase"], "inbound")
+        self.assertEqual(payload["failure_category"], "worker_exception")
+        self.assertEqual(payload["exception_type"], "RuntimeError")
+        self.assertEqual(payload["elapsed_ms"], 120)
+
+    def test_each_outcome_round_trips_through_parse_event(self) -> None:
+        for outcome in self._ACCEPTED_OUTCOMES:
+            with self.subTest(outcome=outcome):
+                if outcome in self._PHASE_OUTCOMES:
+                    kwargs = {
+                        "phase": "inbound",
+                        "cycle_index": 4,
+                        "elapsed_ms": 10,
+                    }
+                else:
+                    kwargs = {"cycle_index": 7, "elapsed_ms": 100}
+                if outcome == "phase_failed":
+                    kwargs["failure_category"] = "worker_exception"
+                    kwargs["exception_type"] = "RuntimeError"
+                payload = build_event(
+                    event=EVENT_WORKER_LIVENESS,
+                    component=COMPONENT_WORKER,
+                    outcome=outcome,
+                    **kwargs,
+                )
+                serialized = json.dumps(
+                    payload, sort_keys=True, separators=(",", ":")
+                )
+                parsed = parse_event(serialized)
+                self.assertEqual(parsed, payload)
+
+    def test_outcome_required(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_WORKER_LIVENESS,
+                component=COMPONENT_WORKER,
+                cycle_index=1,
+            )
+
+    def test_component_mismatch_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_WORKER_LIVENESS,
+                component=COMPONENT_OUTBOUND,
+                outcome="cycle_started",
+                cycle_index=1,
+            )
+
+    def test_unknown_outcome_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_WORKER_LIVENESS,
+                component=COMPONENT_WORKER,
+                outcome="started",
+                cycle_index=1,
+            )
+
+    def test_cycle_index_required(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_WORKER_LIVENESS,
+                component=COMPONENT_WORKER,
+                outcome="cycle_started",
+            )
+
+    def test_cycle_index_zero_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_WORKER_LIVENESS,
+                component=COMPONENT_WORKER,
+                outcome="cycle_started",
+                cycle_index=0,
+            )
+
+    def test_cycle_index_negative_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_WORKER_LIVENESS,
+                component=COMPONENT_WORKER,
+                outcome="cycle_started",
+                cycle_index=-1,
+            )
+
+    def test_cycle_index_non_integer_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_WORKER_LIVENESS,
+                component=COMPONENT_WORKER,
+                outcome="cycle_started",
+                cycle_index="1",  # type: ignore[arg-type]
+            )
+
+    def test_cycle_index_above_bound_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_WORKER_LIVENESS,
+                component=COMPONENT_WORKER,
+                outcome="cycle_started",
+                cycle_index=2**31,
+            )
+
+    def test_phase_required_for_phase_outcomes(self) -> None:
+        for outcome in self._PHASE_OUTCOMES:
+            with self.subTest(outcome=outcome):
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=EVENT_WORKER_LIVENESS,
+                        component=COMPONENT_WORKER,
+                        outcome=outcome,
+                        cycle_index=1,
+                    )
+
+    def test_phase_unknown_value_rejected(self) -> None:
+        for forbidden_phase in (
+            "inbound_phase",
+            "custom_runner",
+            "Outbound",
+            "sleeps",
+            "",
+            "+5491100000000",
+            "provider_sid",
+            "traceback",
+        ):
+            with self.subTest(phase=forbidden_phase):
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=EVENT_WORKER_LIVENESS,
+                        component=COMPONENT_WORKER,
+                        outcome="phase_started",
+                        phase=forbidden_phase,
+                        cycle_index=1,
+                    )
+
+    def test_phase_forbidden_for_cycle_outcomes(self) -> None:
+        for outcome in self._CYCLE_OUTCOMES:
+            with self.subTest(outcome=outcome):
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=EVENT_WORKER_LIVENESS,
+                        component=COMPONENT_WORKER,
+                        outcome=outcome,
+                        cycle_index=1,
+                        phase="inbound",
+                    )
+
+    def test_elapsed_ms_negative_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_WORKER_LIVENESS,
+                component=COMPONENT_WORKER,
+                outcome="phase_completed",
+                phase="inbound",
+                cycle_index=1,
+                elapsed_ms=-1,
+            )
+
+    def test_elapsed_ms_non_integer_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_WORKER_LIVENESS,
+                component=COMPONENT_WORKER,
+                outcome="phase_completed",
+                phase="inbound",
+                cycle_index=1,
+                elapsed_ms=12.5,  # type: ignore[arg-type]
+            )
+
+    def test_failure_category_must_be_in_liveness_allowlist(self) -> None:
+        for forbidden_category in (
+            "retryable_timeout",
+            "terminal_4xx",
+            "embedding_failure",
+            "leak",
+            "worker_exception_extra",
+        ):
+            with self.subTest(category=forbidden_category):
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=EVENT_WORKER_LIVENESS,
+                        component=COMPONENT_WORKER,
+                        outcome="phase_failed",
+                        phase="inbound",
+                        cycle_index=1,
+                        failure_category=forbidden_category,
+                    )
+
+    def test_exception_type_with_dot_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_WORKER_LIVENESS,
+                component=COMPONENT_WORKER,
+                outcome="phase_failed",
+                phase="outbound",
+                cycle_index=1,
+                failure_category="worker_exception",
+                exception_type="backend.errors.RuntimeError",
+            )
+
+    def test_exception_type_with_message_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_WORKER_LIVENESS,
+                component=COMPONENT_WORKER,
+                outcome="phase_failed",
+                phase="outbound",
+                cycle_index=1,
+                failure_category="worker_exception",
+                exception_type="RuntimeError: connection refused",
+            )
+
+    def test_forbidden_sensitive_fields_rejected(self) -> None:
+        """Every documented sensitive payload MUST be rejected by
+        the catalogue so the bounded production-log CLI never
+        surfaces a message body, phone number, SID, prompt,
+        response, URL, credential, token, exception message or
+        traceback in a liveness event."""
+        forbidden_payloads: list[tuple[str, object]] = [
+            ("outbox_id", 1),
+            ("correlation_id", "corr-abc"),
+            ("attempt", 1),
+            ("durable_state", "accepted"),
+            ("provider_code", "SM-ABC"),
+            ("http_status", 500),
+            ("configured_mode", "fuzzy"),
+            ("effective_mode", "fuzzy"),
+            ("authoritative_strategy", "fuzzy"),
+            ("hybrid_decision", "unique"),
+            ("fallback", False),
+            ("fallback_category", "embedding_failure"),
+            ("fuzzy_latency_ms", 15),
+            ("embedding_latency_ms", 200),
+            ("vector_latency_ms", 0),
+            ("context_kind", "product_selection"),
+            ("status_before", "pending_resolution"),
+            ("status_after", "ready"),
+            ("candidate_count_before", 1),
+            ("candidate_count_after", 0),
+            ("context_cleared", False),
+            ("flavor_code", "spicy"),
+            ("eligible_count", 1),
+            ("applied_count", 1),
+            (
+                "outbound_style_prompt_template_version",
+                "v1",
+            ),
+            (
+                "outbound_style_prompt_template_hash",
+                "0" * 64,
+            ),
+            ("reason", "accepted"),
+        ]
+        for field_name, value in forbidden_payloads:
+            with self.subTest(field=field_name):
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=EVENT_WORKER_LIVENESS,
+                        component=COMPONENT_WORKER,
+                        outcome="cycle_started",
+                        cycle_index=1,
+                        **{field_name: value},
+                    )
+
+    def test_non_liveness_event_rejects_phase(self) -> None:
+        """``phase`` belongs to ``provider_worker_liveness`` only.
+        Every other catalogued event MUST reject ``phase``
+        explicitly so the catalogue round-trip cannot silently
+        accept and drop the field."""
+        non_liveness_events = (
+            (EVENT_OUTBOUND_OUTCOME, COMPONENT_OUTBOUND, "accepted"),
+            (
+                EVENT_CALLBACK_OUTCOME,
+                COMPONENT_CALLBACK,
+                "applied",
+            ),
+            (EVENT_WORKER_CYCLE, COMPONENT_WORKER, "completed"),
+            (
+                EVENT_WORKER_READINESS_TRANSITION,
+                COMPONENT_WORKER,
+                "ready",
+            ),
+            (
+                EVENT_WORKER_DISABLED,
+                COMPONENT_WORKER,
+                "disabled",
+            ),
+            (EVENT_LLM_REQUEST, COMPONENT_LLM, "completed"),
+            (
+                EVENT_EMBEDDING_REQUEST,
+                COMPONENT_EMBEDDING,
+                "completed",
+            ),
+            (
+                EVENT_DATABASE_TECHNICAL_FAILURE,
+                COMPONENT_DATABASE,
+                None,
+            ),
+            (
+                EVENT_OBSERVABILITY_EMIT_FAILED,
+                COMPONENT_OBSERVABILITY,
+                None,
+            ),
+            (
+                EVENT_PENDING_CONTEXT_TRANSITION,
+                COMPONENT_PENDING_CONTEXT,
+                "pending_preserved",
+            ),
+            (
+                EVENT_PRODUCT_ADD_EXECUTION,
+                COMPONENT_PRODUCT_ADD_EXECUTION,
+                "created",
+            ),
+            (
+                EVENT_OUTBOUND_STYLE,
+                COMPONENT_OUTBOUND_STYLE,
+                "applied",
+            ),
+        )
+        for event, component, outcome in non_liveness_events:
+            with self.subTest(event=event):
+                kwargs = {"phase": "inbound"}
+                if outcome is None:
+                    kwargs["failure_category"] = "connection"
+                else:
+                    kwargs["outcome"] = outcome
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=event,
+                        component=component,
+                        **kwargs,
+                    )
+
+    def test_non_liveness_event_rejects_cycle_index(self) -> None:
+        """``cycle_index`` belongs to ``provider_worker_liveness``
+        only. Every other catalogued event MUST reject it
+        explicitly so the catalogue round-trip cannot silently
+        accept and drop the field."""
+        non_liveness_events = (
+            (EVENT_OUTBOUND_OUTCOME, COMPONENT_OUTBOUND, "accepted"),
+            (
+                EVENT_CALLBACK_OUTCOME,
+                COMPONENT_CALLBACK,
+                "applied",
+            ),
+            (EVENT_WORKER_CYCLE, COMPONENT_WORKER, "completed"),
+            (
+                EVENT_WORKER_READINESS_TRANSITION,
+                COMPONENT_WORKER,
+                "ready",
+            ),
+            (
+                EVENT_WORKER_DISABLED,
+                COMPONENT_WORKER,
+                "disabled",
+            ),
+            (EVENT_LLM_REQUEST, COMPONENT_LLM, "completed"),
+            (
+                EVENT_EMBEDDING_REQUEST,
+                COMPONENT_EMBEDDING,
+                "completed",
+            ),
+            (
+                EVENT_DATABASE_TECHNICAL_FAILURE,
+                COMPONENT_DATABASE,
+                None,
+            ),
+            (
+                EVENT_OBSERVABILITY_EMIT_FAILED,
+                COMPONENT_OBSERVABILITY,
+                None,
+            ),
+            (
+                EVENT_PENDING_CONTEXT_TRANSITION,
+                COMPONENT_PENDING_CONTEXT,
+                "pending_preserved",
+            ),
+            (
+                EVENT_PRODUCT_ADD_EXECUTION,
+                COMPONENT_PRODUCT_ADD_EXECUTION,
+                "created",
+            ),
+            (
+                EVENT_OUTBOUND_STYLE,
+                COMPONENT_OUTBOUND_STYLE,
+                "applied",
+            ),
+        )
+        for event, component, outcome in non_liveness_events:
+            with self.subTest(event=event):
+                kwargs = {"cycle_index": 1}
+                if outcome is None:
+                    kwargs["failure_category"] = "connection"
+                else:
+                    kwargs["outcome"] = outcome
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=event,
+                        component=component,
+                        **kwargs,
+                    )
+
+    def test_parse_event_rejects_phase_on_non_liveness_event(self) -> None:
+        """``parse_event`` MUST reject a line that carries ``phase``
+        on any non-liveness event so the production-log query CLI
+        cannot silently round-trip the field."""
+        with self.assertRaises(EventValidationError):
+            parse_event(
+                '{"event":"outbound_attempt_outcome","schema_version":1,'
+                '"component":"outbound_dispatch","outcome":"accepted",'
+                '"timestamp":"2026-08-20T00:00:00+00:00",'
+                '"phase":"inbound"}'
+            )
+
+    def test_parse_event_rejects_cycle_index_on_non_liveness_event(
+        self,
+    ) -> None:
+        """``parse_event`` MUST reject a line that carries
+        ``cycle_index`` on any non-liveness event so the
+        production-log query CLI cannot silently round-trip the
+        field."""
+        with self.assertRaises(EventValidationError):
+            parse_event(
+                '{"event":"outbound_attempt_outcome","schema_version":1,'
+                '"component":"outbound_dispatch","outcome":"accepted",'
+                '"timestamp":"2026-08-20T00:00:00+00:00",'
+                '"cycle_index":1}'
+            )
+
+    def test_parse_event_rejects_phase_on_database_failure_event(
+        self,
+    ) -> None:
+        """``parse_event`` MUST reject ``phase`` on the database
+        technical failure event so the production-log query CLI
+        cannot silently round-trip the field through the failure
+        surface."""
+        with self.assertRaises(EventValidationError):
+            parse_event(
+                '{"event":"database_technical_failure","schema_version":1,'
+                '"component":"database_technical_boundary",'
+                '"timestamp":"2026-08-20T00:00:00+00:00",'
+                '"failure_category":"connection",'
+                '"exception_type":"OperationalError",'
+                '"phase":"inbound"}'
+            )
+
+    def test_parse_event_rejects_cycle_index_on_database_failure_event(
+        self,
+    ) -> None:
+        """``parse_event`` MUST reject ``cycle_index`` on the
+        database technical failure event."""
+        with self.assertRaises(EventValidationError):
+            parse_event(
+                '{"event":"database_technical_failure","schema_version":1,'
+                '"component":"database_technical_boundary",'
+                '"timestamp":"2026-08-20T00:00:00+00:00",'
+                '"failure_category":"connection",'
+                '"exception_type":"OperationalError",'
+                '"cycle_index":1}'
+            )
+
+    def test_failure_category_forbidden_on_non_phase_failed_outcomes(
+        self,
+    ) -> None:
+        """``failure_category`` is reserved for ``phase_failed`` only.
+        Any other liveness outcome (``cycle_started``,
+        ``cycle_completed``, ``phase_started``,
+        ``phase_completed``) MUST be rejected when the caller tries
+        to attach ``failure_category`` so a Railway operator can
+        never read raw exception data on a non-failure surface."""
+        for outcome in (
+            "cycle_started",
+            "cycle_completed",
+            "phase_started",
+            "phase_completed",
+        ):
+            with self.subTest(outcome=outcome):
+                kwargs = {
+                    "cycle_index": 1,
+                    "failure_category": "worker_exception",
+                }
+                if outcome in self._PHASE_OUTCOMES:
+                    kwargs["phase"] = "inbound"
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=EVENT_WORKER_LIVENESS,
+                        component=COMPONENT_WORKER,
+                        outcome=outcome,
+                        **kwargs,
+                    )
+
+    def test_exception_type_forbidden_on_non_phase_failed_outcomes(
+        self,
+    ) -> None:
+        """``exception_type`` is reserved for ``phase_failed`` only.
+        Any other liveness outcome MUST be rejected when the caller
+        tries to attach ``exception_type``."""
+        for outcome in (
+            "cycle_started",
+            "cycle_completed",
+            "phase_started",
+            "phase_completed",
+        ):
+            with self.subTest(outcome=outcome):
+                kwargs = {
+                    "cycle_index": 1,
+                    "exception_type": "RuntimeError",
+                }
+                if outcome in self._PHASE_OUTCOMES:
+                    kwargs["phase"] = "inbound"
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=EVENT_WORKER_LIVENESS,
+                        component=COMPONENT_WORKER,
+                        outcome=outcome,
+                        **kwargs,
+                    )
+
+    def test_phase_failed_requires_failure_category(self) -> None:
+        """A ``phase_failed`` event without ``failure_category`` is
+        rejected: the catalogue MUST surface the safe technical
+        category alongside every failure so an operator can correlate
+        the closed phase with its category without parsing free-form
+        text."""
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_WORKER_LIVENESS,
+                component=COMPONENT_WORKER,
+                outcome="phase_failed",
+                phase="inbound",
+                cycle_index=1,
+                exception_type="RuntimeError",
+            )
+
+    def test_phase_failed_requires_exception_type(self) -> None:
+        """A ``phase_failed`` event without ``exception_type`` is
+        rejected: the catalogue MUST surface the safe exception class
+        alongside every failure so an operator can correlate the
+        closed phase with the class name without parsing free-form
+        text."""
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_WORKER_LIVENESS,
+                component=COMPONENT_WORKER,
+                outcome="phase_failed",
+                phase="inbound",
+                cycle_index=1,
+                failure_category="worker_exception",
+            )
+
+    def test_phase_failed_requires_both_metadata_fields(self) -> None:
+        """``phase_failed`` MUST carry BOTH ``failure_category`` and
+        ``exception_type``: a half-populated failure event is
+        rejected."""
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_WORKER_LIVENESS,
+                component=COMPONENT_WORKER,
+                outcome="phase_failed",
+                phase="inbound",
+                cycle_index=1,
+            )
+
+    def test_phase_failed_accepts_valid_metadata(self) -> None:
+        """The happy path: ``phase_failed`` with a closed safe
+        ``failure_category`` and a safe ``exception_type`` MUST
+        round-trip through the catalogue."""
+        payload = build_event(
+            event=EVENT_WORKER_LIVENESS,
+            component=COMPONENT_WORKER,
+            outcome="phase_failed",
+            phase="inbound",
+            cycle_index=4,
+            elapsed_ms=120,
+            failure_category="worker_exception",
+            exception_type="RuntimeError",
+        )
+        self.assertEqual(payload["outcome"], "phase_failed")
+        self.assertEqual(payload["phase"], "inbound")
+        self.assertEqual(payload["failure_category"], "worker_exception")
+        self.assertEqual(payload["exception_type"], "RuntimeError")
+        serialized = json.dumps(
+            payload, sort_keys=True, separators=(",", ":")
+        )
+        self.assertEqual(parse_event(serialized), payload)
+
+    def test_phase_failed_rejects_invalid_failure_category(self) -> None:
+        """``phase_failed`` with a category outside the closed
+        allowlist is rejected so the bounded surface cannot be
+        widened by a caller."""
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_WORKER_LIVENESS,
+                component=COMPONENT_WORKER,
+                outcome="phase_failed",
+                phase="inbound",
+                cycle_index=1,
+                failure_category="leak",
+                exception_type="RuntimeError",
+            )
+
+    def test_phase_failed_rejects_sensitive_exception_type(self) -> None:
+        """``phase_failed`` with an ``exception_type`` carrying a
+        traceback, dotted module path, URL, phone number, bearer
+        token, secret with control characters or message MUST be
+        rejected by the existing safe exception-class validator
+        so a Railway operator never sees raw exception data on
+        the bounded surface.
+
+        Note: the existing contract enforces the
+        ``exception_type`` shape (``short alnum token without
+        dots, spaces, or leading punctuation``) rather than a
+        deny-list of secret keywords. Class names that happen to
+        look like a secret (no dots / no spaces / starts with
+        alpha) are technically accepted, but the bounded CLI
+        surface never carries the caller-supplied exception
+        message, traceback or arguments, so a Railway operator
+        never observes raw exception content.
+        """
+        sensitive_values = (
+            "backend.errors.RuntimeError",
+            "RuntimeError: connection refused",
+            "+5491100000000",
+            "https://provider.example",
+            "Bearer abc",
+            "abc\nBody",
+        )
+        for value in sensitive_values:
+            with self.subTest(exception_type=value):
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=EVENT_WORKER_LIVENESS,
+                        component=COMPONENT_WORKER,
+                        outcome="phase_failed",
+                        phase="inbound",
+                        cycle_index=1,
+                        failure_category="worker_exception",
+                        exception_type=value,
+                    )
+
+    def test_parse_event_rejects_unknown_keys(self) -> None:
+        with self.assertRaises(EventValidationError):
+            parse_event(
+                '{"event":"provider_worker_liveness","schema_version":1,'
+                '"component":"provider_worker","timestamp":'
+                '"2026-08-20T00:00:00+00:00","outcome":"cycle_started",'
+                '"cycle_index":1,"customer_message":"leak"}'
+            )
+
+    def test_parse_event_rejects_cycle_index_out_of_bounds(self) -> None:
+        with self.assertRaises(EventValidationError):
+            parse_event(
+                '{"event":"provider_worker_liveness","schema_version":1,'
+                '"component":"provider_worker","timestamp":'
+                '"2026-08-20T00:00:00+00:00","outcome":"cycle_started",'
+                '"cycle_index":0}'
+            )
+
+    def test_parse_event_rejects_unknown_phase(self) -> None:
+        with self.assertRaises(EventValidationError):
+            parse_event(
+                '{"event":"provider_worker_liveness","schema_version":1,'
+                '"component":"provider_worker","timestamp":'
+                '"2026-08-20T00:00:00+00:00","outcome":"phase_started",'
+                '"cycle_index":1,"phase":"custom_runner"}'
+            )
+
+    def test_parse_event_rejects_phase_in_cycle_outcome(self) -> None:
+        with self.assertRaises(EventValidationError):
+            parse_event(
+                '{"event":"provider_worker_liveness","schema_version":1,'
+                '"component":"provider_worker","timestamp":'
+                '"2026-08-20T00:00:00+00:00","outcome":"cycle_started",'
+                '"cycle_index":1,"phase":"inbound"}'
+            )
+
+    def test_emit_event_emits_only_allowed_keys(self) -> None:
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_WORKER_LIVENESS,
+            component=COMPONENT_WORKER,
+            outcome="phase_failed",
+            phase="inbound",
+            cycle_index=3,
+            elapsed_ms=42,
+            failure_category="worker_exception",
+            exception_type="RuntimeError",
+            stream=sink,
+        )
+        self.assertTrue(ok)
+        parsed = json.loads(sink.getvalue().strip())
+        self.assertEqual(
+            set(parsed.keys()),
+            {
+                "event",
+                "schema_version",
+                "component",
+                "timestamp",
+                "outcome",
+                "phase",
+                "cycle_index",
+                "elapsed_ms",
+                "failure_category",
+                "exception_type",
+            },
+        )
+
+    def test_no_sensitive_content_in_emitted_payload(self) -> None:
+        sink = io.StringIO()
+        emit_event(
+            event=EVENT_WORKER_LIVENESS,
+            component=COMPONENT_WORKER,
+            outcome="phase_failed",
+            phase="inbound",
+            cycle_index=1,
+            elapsed_ms=1,
+            failure_category="worker_exception",
+            exception_type="RuntimeError",
+            stream=sink,
+        )
+        line = sink.getvalue()
+        for token in SENTINELS:
+            if token in (
+                EVENT_WORKER_LIVENESS,
+                COMPONENT_WORKER,
+                "cycle_started",
+                "phase_started",
+                "phase_completed",
+                "phase_failed",
+                "cycle_completed",
+                "readiness",
+                "inbound",
+                "outbound",
+                "sleep",
+                "worker_exception",
+                "RuntimeError",
+            ):
+                continue
+            self.assertNotIn(token, line)
+
+    def test_emit_event_phase_failed_without_failure_category_is_rejected(
+        self,
+    ) -> None:
+        """``phase_failed`` without ``failure_category`` is rejected:
+        ``emit_event`` MUST degrade to ``observability_emit_failed``
+        so the bounded CLI never surfaces a half-populated failure
+        event on the Railway surface."""
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_WORKER_LIVENESS,
+            component=COMPONENT_WORKER,
+            outcome="phase_failed",
+            phase="inbound",
+            cycle_index=1,
+            stream=sink,
+        )
+        self.assertFalse(ok)
+        parsed = json.loads(sink.getvalue().strip())
+        self.assertEqual(parsed["event"], "observability_emit_failed")
+        self.assertEqual(parsed["failure_category"], "validation")
+        self.assertEqual(parsed["component"], COMPONENT_OBSERVABILITY)
+
+    def test_emit_event_phase_failed_without_exception_type_is_rejected(
+        self,
+    ) -> None:
+        """``phase_failed`` without ``exception_type`` is rejected:
+        ``emit_event`` MUST degrade to ``observability_emit_failed``."""
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_WORKER_LIVENESS,
+            component=COMPONENT_WORKER,
+            outcome="phase_failed",
+            phase="inbound",
+            cycle_index=1,
+            failure_category="worker_exception",
+            stream=sink,
+        )
+        self.assertFalse(ok)
+        parsed = json.loads(sink.getvalue().strip())
+        self.assertEqual(parsed["event"], "observability_emit_failed")
+
+    def test_emit_event_phase_started_with_failure_category_is_rejected(
+        self,
+    ) -> None:
+        """``phase_started`` (or any non-``phase_failed`` liveness
+        outcome) MUST reject ``failure_category``: ``emit_event``
+        degrades to ``observability_emit_failed``."""
+        for outcome in (
+            "cycle_started",
+            "cycle_completed",
+            "phase_started",
+            "phase_completed",
+        ):
+            with self.subTest(outcome=outcome):
+                sink = io.StringIO()
+                kwargs = {
+                    "cycle_index": 1,
+                    "failure_category": "worker_exception",
+                }
+                if outcome in self._PHASE_OUTCOMES:
+                    kwargs["phase"] = "inbound"
+                ok = emit_event(
+                    event=EVENT_WORKER_LIVENESS,
+                    component=COMPONENT_WORKER,
+                    outcome=outcome,
+                    stream=sink,
+                    **kwargs,
+                )
+                self.assertFalse(ok)
+                parsed = json.loads(sink.getvalue().strip())
+                self.assertEqual(
+                    parsed["event"], "observability_emit_failed"
+                )
+
+    def test_emit_event_non_liveness_event_rejects_phase(self) -> None:
+        """``emit_event`` MUST reject ``phase`` on any non-liveness
+        event so the field cannot be silently accepted and dropped
+        by the catalogue round-trip."""
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_OUTBOUND_OUTCOME,
+            component=COMPONENT_OUTBOUND,
+            outcome="accepted",
+            phase="inbound",
+            stream=sink,
+        )
+        self.assertFalse(ok)
+        parsed = json.loads(sink.getvalue().strip())
+        self.assertEqual(parsed["event"], "observability_emit_failed")
+
+    def test_emit_event_non_liveness_event_rejects_cycle_index(self) -> None:
+        """``emit_event`` MUST reject ``cycle_index`` on any non-liveness
+        event so the field cannot be silently accepted and dropped
+        by the catalogue round-trip."""
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_OUTBOUND_OUTCOME,
+            component=COMPONENT_OUTBOUND,
+            outcome="accepted",
+            cycle_index=1,
+            stream=sink,
+        )
+        self.assertFalse(ok)
+        parsed = json.loads(sink.getvalue().strip())
+        self.assertEqual(parsed["event"], "observability_emit_failed")
 
 
 if __name__ == "__main__":

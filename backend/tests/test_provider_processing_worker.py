@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import logging
 import os
 import subprocess
@@ -63,12 +64,38 @@ from backend.config.settings import (
     Settings,
     load_settings,
 )
+from backend.observability import EVENT_WORKER_LIVENESS
 from backend.services.exceptions import (
     InvalidProviderProcessingWorkerConfig,
     InvalidTwilioOutboundDispatchConfig,
 )
 
 _ROOT = Path(__file__).resolve().parents[2]
+
+
+def _liveness_events(stdout_text: str) -> list[dict[str, Any]]:
+    """Parse captured stdout and return only the liveness events.
+
+    The helper preserves the order of emitted events so tests can
+    assert the closed lifecycle sequence
+    (``cycle_started`` → ``phase_started`` → ``phase_completed``
+    → ``cycle_completed`` → ``phase_started`` → ``phase_completed``)
+    without depending on internal counters.
+    """
+    events: list[dict[str, Any]] = []
+    for line in stdout_text.splitlines():
+        stripped = line.strip()
+        if not stripped or not stripped.startswith("{"):
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("event") == EVENT_WORKER_LIVENESS:
+            events.append(payload)
+    return events
 
 
 def _settings(
@@ -2483,6 +2510,734 @@ class DefaultOutboundRunnerCellResetTest(unittest.TestCase):
         dispatcher_mock.run_pass_with_evidence.assert_called_once()
 
         worker_cli._WORKER_OUTBOUND_CELL.aggregate = None
+
+
+class WorkerLivenessReadyCycleTest(unittest.TestCase):
+    """A normal ready cycle MUST emit the closed lifecycle
+    sequence:
+
+    ``cycle_started`` → ``phase_started(inbound)`` →
+    ``phase_completed(inbound)`` → ``phase_started(outbound)`` →
+    ``phase_completed(outbound)`` → ``cycle_completed`` →
+    ``phase_started(sleep)`` → ``phase_completed(sleep)``.
+
+    No provider / database / Twilio call is invoked because the
+    loop is driven entirely through injectable runner, sleeper,
+    readiness probe and cycle summary seams.
+    """
+
+    def test_ready_cycle_emits_full_lifecycle_in_order(self) -> None:
+        events: list[dict[str, Any]] = []
+
+        def _inbound(_bound: int) -> int:
+            events.append({"kind": "inbound_runner"})
+            return 0
+
+        def _outbound(_bound: int) -> int:
+            events.append({"kind": "outbound_runner"})
+            return 0
+
+        with _capture_stdout() as stdout:
+            run_cycle(
+                settings=_settings(inbound_bound=1, outbound_bound=16),
+                cycle_index=1,
+                inbound_runner=_inbound,
+                outbound_runner=_outbound,
+                sleep_decision=lambda _settings, _cycle: False,
+                cycle_summary_writer=lambda _summary: None,
+            )
+
+        liveness = _liveness_events(stdout.getvalue())
+        outcomes = [
+            (event.get("phase"), event.get("outcome"))
+            for event in liveness
+        ]
+        self.assertEqual(
+            outcomes,
+            [
+                ("inbound", "phase_started"),
+                ("inbound", "phase_completed"),
+                ("outbound", "phase_started"),
+                ("outbound", "phase_completed"),
+            ],
+            f"unexpected liveness sequence: {outcomes}",
+        )
+
+    def test_ready_cycle_lifecycle_with_sleep(self) -> None:
+        """The full ``run_forever`` loop MUST emit the cycle
+        envelope and sleep phase alongside the inbound/outbound
+        instrumentation."""
+        inbound_calls: list[int] = []
+        outbound_calls: list[int] = []
+        sleep_calls: list[float] = []
+
+        def _inbound(bound: int) -> int:
+            inbound_calls.append(bound)
+            return 0
+
+        def _outbound(bound: int) -> int:
+            outbound_calls.append(bound)
+            return 0
+
+        with _capture_stdout() as stdout:
+            run_forever(
+                settings=_settings(inbound_bound=2, outbound_bound=8),
+                inbound_runner=_inbound,
+                outbound_runner=_outbound,
+                sleeper=lambda seconds: sleep_calls.append(float(seconds)),
+                sleep_decision=lambda _settings, _cycle: True,
+                cycle_summary_writer=lambda _summary: None,
+                stop_predicate=lambda: len(inbound_calls) >= 1,
+                readiness_probe=worker_cli._always_ready_probe,
+            )
+
+        liveness = _liveness_events(stdout.getvalue())
+        outcomes = [
+            (event.get("phase"), event.get("outcome"))
+            for event in liveness
+        ]
+        self.assertEqual(
+            outcomes,
+            [
+                (None, "cycle_started"),
+                ("readiness", "phase_started"),
+                ("readiness", "phase_completed"),
+                ("inbound", "phase_started"),
+                ("inbound", "phase_completed"),
+                ("outbound", "phase_started"),
+                ("outbound", "phase_completed"),
+                (None, "cycle_completed"),
+                ("sleep", "phase_started"),
+                ("sleep", "phase_completed"),
+            ],
+            f"unexpected liveness sequence: {outcomes}",
+        )
+        self.assertEqual(inbound_calls, [2])
+        self.assertEqual(outbound_calls, [8])
+        self.assertEqual(sleep_calls, [5.0])
+
+    def test_lifecycle_cycle_index_increments_per_cycle(self) -> None:
+        inbound_calls: list[int] = []
+        outbound_calls: list[int] = []
+
+        def _inbound(bound: int) -> int:
+            inbound_calls.append(bound)
+            return 0
+
+        def _outbound(bound: int) -> int:
+            outbound_calls.append(bound)
+            return 0
+
+        with _capture_stdout() as stdout:
+            run_forever(
+                settings=_settings(inbound_bound=1, outbound_bound=16),
+                inbound_runner=_inbound,
+                outbound_runner=_outbound,
+                sleeper=lambda _seconds: None,
+                sleep_decision=lambda _settings, _cycle: False,
+                cycle_summary_writer=lambda _summary: None,
+                stop_predicate=lambda: len(inbound_calls) >= 3,
+                readiness_probe=worker_cli._always_ready_probe,
+            )
+
+        liveness = _liveness_events(stdout.getvalue())
+        cycle_indices: list[int] = sorted(
+            {
+                int(event["cycle_index"])
+                for event in liveness
+                if event.get("cycle_index") is not None
+            }
+        )
+        self.assertEqual(cycle_indices, [1, 2, 3])
+        started = [
+            event
+            for event in liveness
+            if event.get("outcome") == "cycle_started"
+        ]
+        self.assertEqual(
+            [event.get("cycle_index") for event in started],
+            [1, 2, 3],
+        )
+
+    def test_inbound_phase_starts_before_outbound_phase(self) -> None:
+        order: list[str] = []
+
+        def _inbound(_bound: int) -> int:
+            order.append("inbound")
+            return 0
+
+        def _outbound(_bound: int) -> int:
+            order.append("outbound")
+            return 0
+
+        with _capture_stdout():
+            run_cycle(
+                settings=_settings(inbound_bound=1, outbound_bound=16),
+                cycle_index=1,
+                inbound_runner=_inbound,
+                outbound_runner=_outbound,
+                sleep_decision=lambda _settings, _cycle: False,
+                cycle_summary_writer=lambda _summary: None,
+            )
+
+        self.assertEqual(order, ["inbound", "outbound"])
+
+
+class WorkerLivenessNotReadyCycleTest(unittest.TestCase):
+    """A not-ready cycle MUST keep the readiness phase, skip the
+    inbound phase instrumentation, and still instrument the
+    outbound pass exactly once per cycle."""
+
+    def test_not_ready_cycle_skips_inbound_and_runs_outbound(self) -> None:
+        inbound_calls: list[int] = []
+        outbound_calls: list[int] = []
+
+        def _inbound(bound: int) -> int:
+            inbound_calls.append(bound)
+            return 0
+
+        def _outbound(bound: int) -> int:
+            outbound_calls.append(bound)
+            return 0
+
+        with _capture_stdout() as stdout:
+            run_forever(
+                settings=_settings(inbound_bound=1, outbound_bound=16),
+                inbound_runner=_inbound,
+                outbound_runner=_outbound,
+                sleeper=lambda _seconds: None,
+                sleep_decision=lambda _settings, _cycle: False,
+                cycle_summary_writer=lambda _summary: None,
+                stop_predicate=lambda: len(outbound_calls) >= 1,
+                readiness_probe=lambda: _not_ready_result(),
+            )
+
+        liveness = _liveness_events(stdout.getvalue())
+        outcomes = [
+            (event.get("phase"), event.get("outcome"))
+            for event in liveness
+        ]
+        self.assertEqual(
+            outcomes,
+            [
+                (None, "cycle_started"),
+                ("readiness", "phase_started"),
+                ("readiness", "phase_completed"),
+                ("outbound", "phase_started"),
+                ("outbound", "phase_completed"),
+                (None, "cycle_completed"),
+            ],
+            f"unexpected liveness sequence: {outcomes}",
+        )
+        self.assertEqual(inbound_calls, [])
+        self.assertEqual(outbound_calls, [16])
+
+    def test_consecutive_not_ready_cycles_never_invoke_inbound(self) -> None:
+        inbound_calls: list[int] = []
+        outbound_calls: list[int] = []
+
+        def _inbound(bound: int) -> int:
+            inbound_calls.append(bound)
+            return 0
+
+        def _outbound(bound: int) -> int:
+            outbound_calls.append(bound)
+            return 0
+
+        with _capture_stdout():
+            run_forever(
+                settings=_settings(inbound_bound=2, outbound_bound=8),
+                inbound_runner=_inbound,
+                outbound_runner=_outbound,
+                sleeper=lambda _seconds: None,
+                sleep_decision=lambda _settings, _cycle: False,
+                cycle_summary_writer=lambda _summary: None,
+                stop_predicate=lambda: len(outbound_calls) >= 3,
+                readiness_probe=lambda: _not_ready_result(),
+            )
+
+        self.assertEqual(inbound_calls, [])
+        self.assertEqual(outbound_calls, [8, 8, 8])
+
+
+class WorkerLivenessPhaseFailureTest(unittest.TestCase):
+    """A phase that raises MUST emit ``phase_failed`` with safe
+    metadata and preserve the existing re-raise so the supervisor
+    path can restart the service. No ``phase_completed`` may be
+    fabricated after a failure."""
+
+    def test_inbound_runner_exception_emits_phase_failed(self) -> None:
+        logged: list[dict[str, Any]] = []
+
+        def _log(*args: Any, **kwargs: Any) -> None:
+            logged.append({"args": args, "kwargs": kwargs})
+
+        def _inbound(_bound: int) -> int:
+            raise RuntimeError("forced inbound failure")
+
+        def _outbound(_bound: int) -> int:
+            return 0
+
+        with _capture_stdout() as stdout:
+            with self.assertRaises(RuntimeError):
+                run_forever(
+                    settings=_settings(),
+                    inbound_runner=_inbound,
+                    outbound_runner=_outbound,
+                    sleeper=lambda _seconds: None,
+                    sleep_decision=lambda _settings, _cycle: False,
+                    cycle_summary_writer=lambda _summary: None,
+                    stop_predicate=lambda: False,
+                    unexpected_exception_log=_log,
+                    readiness_probe=worker_cli._always_ready_probe,
+                )
+
+        liveness = _liveness_events(stdout.getvalue())
+        failed = [
+            event
+            for event in liveness
+            if event.get("outcome") == "phase_failed"
+        ]
+        self.assertEqual(len(failed), 1)
+        event = failed[0]
+        self.assertEqual(event["phase"], "inbound")
+        self.assertEqual(event["failure_category"], "worker_exception")
+        self.assertEqual(event["exception_type"], "RuntimeError")
+        self.assertEqual(event["cycle_index"], 1)
+        self.assertIsInstance(event["elapsed_ms"], int)
+        self.assertGreaterEqual(event["elapsed_ms"], 0)
+
+        completed = [
+            event
+            for event in liveness
+            if event.get("outcome") == "phase_completed"
+        ]
+        self.assertEqual(
+            [event.get("phase") for event in completed],
+            ["readiness"],
+            "phase_completed must only appear for phases that returned",
+        )
+
+        cycle_completed = [
+            event
+            for event in liveness
+            if event.get("outcome") == "cycle_completed"
+        ]
+        self.assertEqual(
+            cycle_completed,
+            [],
+            "cycle_completed must NOT be emitted when a phase fails",
+        )
+
+    def test_outbound_runner_exception_emits_phase_failed(self) -> None:
+        logged: list[dict[str, Any]] = []
+
+        def _log(*args: Any, **kwargs: Any) -> None:
+            logged.append({"args": args, "kwargs": kwargs})
+
+        def _inbound(_bound: int) -> int:
+            return 0
+
+        def _outbound(_bound: int) -> int:
+            raise ValueError("forced outbound failure")
+
+        with _capture_stdout() as stdout:
+            with self.assertRaises(ValueError):
+                run_cycle(
+                    settings=_settings(),
+                    cycle_index=4,
+                    inbound_runner=_inbound,
+                    outbound_runner=_outbound,
+                    sleep_decision=lambda _settings, _cycle: False,
+                    cycle_summary_writer=lambda _summary: None,
+                )
+
+        liveness = _liveness_events(stdout.getvalue())
+        failed = [
+            event
+            for event in liveness
+            if event.get("outcome") == "phase_failed"
+        ]
+        self.assertEqual(len(failed), 1)
+        event = failed[0]
+        self.assertEqual(event["phase"], "outbound")
+        self.assertEqual(event["failure_category"], "worker_exception")
+        self.assertEqual(event["exception_type"], "ValueError")
+        self.assertEqual(event["cycle_index"], 4)
+
+        completed = [
+            event
+            for event in liveness
+            if event.get("outcome") == "phase_completed"
+        ]
+        self.assertEqual(
+            [event.get("phase") for event in completed],
+            ["inbound"],
+            "inbound phase_completed is allowed, outbound must NOT",
+        )
+
+    def test_no_phase_completed_after_failure(self) -> None:
+        """A runner that never returns (raises an exception) MUST
+        not produce a fabricated ``phase_completed``. The
+        ``phase_started`` record is the intentional evidence
+        boundary for the operator."""
+
+        def _inbound(_bound: int) -> int:
+            raise OSError("forced hang-like failure")
+
+        def _outbound(_bound: int) -> int:
+            return 0
+
+        with _capture_stdout() as stdout:
+            with self.assertRaises(OSError):
+                run_cycle(
+                    settings=_settings(),
+                    cycle_index=3,
+                    inbound_runner=_inbound,
+                    outbound_runner=_outbound,
+                    sleep_decision=lambda _settings, _cycle: False,
+                    cycle_summary_writer=lambda _summary: None,
+                )
+
+        liveness = _liveness_events(stdout.getvalue())
+        inbound_started = [
+            event
+            for event in liveness
+            if event.get("phase") == "inbound"
+            and event.get("outcome") == "phase_started"
+        ]
+        inbound_completed = [
+            event
+            for event in liveness
+            if event.get("phase") == "inbound"
+            and event.get("outcome") == "phase_completed"
+        ]
+        inbound_failed = [
+            event
+            for event in liveness
+            if event.get("phase") == "inbound"
+            and event.get("outcome") == "phase_failed"
+        ]
+        self.assertEqual(len(inbound_started), 1)
+        self.assertEqual(inbound_completed, [])
+        self.assertEqual(len(inbound_failed), 1)
+
+    def test_readiness_probe_failure_emits_phase_failed(self) -> None:
+        """A buggy readiness probe that escapes MUST surface as a
+        ``phase_failed`` for ``readiness`` with safe metadata. The
+        existing defensive guard converts the exception into a
+        not-ready cycle so the loop continues."""
+
+        def _probe() -> Any:
+            raise RuntimeError("forced probe failure")
+
+        def _inbound(_bound: int) -> int:
+            return 0
+
+        def _outbound(_bound: int) -> int:
+            return 0
+
+        outbound_calls: list[int] = []
+
+        def _outbound_record(bound: int) -> int:
+            outbound_calls.append(bound)
+            return 0
+
+        with _capture_stdout() as stdout:
+            run_forever(
+                settings=_settings(),
+                inbound_runner=_inbound,
+                outbound_runner=_outbound_record,
+                sleeper=lambda _seconds: None,
+                sleep_decision=lambda _settings, _cycle: False,
+                cycle_summary_writer=lambda _summary: None,
+                stop_predicate=lambda: len(outbound_calls) >= 1,
+                readiness_probe=_probe,
+            )
+
+        liveness = _liveness_events(stdout.getvalue())
+        readiness_failed = [
+            event
+            for event in liveness
+            if event.get("phase") == "readiness"
+            and event.get("outcome") == "phase_failed"
+        ]
+        self.assertEqual(len(readiness_failed), 1)
+        event = readiness_failed[0]
+        self.assertEqual(event["failure_category"], "worker_exception")
+        self.assertEqual(event["exception_type"], "RuntimeError")
+        readiness_completed = [
+            event
+            for event in liveness
+            if event.get("phase") == "readiness"
+            and event.get("outcome") == "phase_completed"
+        ]
+        self.assertEqual(readiness_completed, [])
+
+
+class WorkerLivenessNoProviderNoDbTest(unittest.TestCase):
+    """Focused tests MUST NOT touch any provider, Twilio or DB
+    seam. The worker runs entirely on injectable runners, a stub
+    sleeper, an in-memory readiness probe and a no-op summary
+    writer."""
+
+    def test_ready_loop_does_not_import_twilio_or_db_modules(self) -> None:
+        """The instrumentation MUST keep the worker process free
+        of direct Twilio / database / coordinator / dispatcher /
+        repository / session imports. Any regression that imports
+        those layers directly would mean the new code is reaching
+        across the closed architecture boundary the change is
+        required to preserve.
+
+        The check inspects the worker's own source via
+        :mod:`ast` so a regression on a transitive import (i.e.
+        a deeper module imported by the bounded inbound /
+        outbound CLIs that the worker orchestrates through their
+        :func:`main` seams) is NOT reported here; the worker
+        only orchestrates the existing CLIs.
+        """
+
+        import ast
+        import inspect
+
+        import backend.cli.run_provider_processing_worker as worker_mod
+
+        source = inspect.getsource(worker_mod)
+        tree = ast.parse(source)
+
+        direct_imports: list[tuple[str | None, str]] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    direct_imports.append((None, alias.name))
+            elif isinstance(node, ast.ImportFrom):
+                if node.module is None:
+                    continue
+                for alias in node.names:
+                    direct_imports.append((node.module, alias.name))
+
+        # The AST walk is only meaningful when the worker declares
+        # at least one import. Without this guard the test would
+        # silently pass on an empty module that imports nothing
+        # at all.
+        self.assertGreater(
+            len(direct_imports),
+            0,
+            "test setup: worker module must declare at least one "
+            "import for the AST walk to be meaningful",
+        )
+
+        forbidden_module_substrings = (
+            "twilio",
+            "sqlalchemy",
+            "requests",
+            "httpx",
+            "socks5h",
+            "backend.models",
+            "backend.repositories",
+            "backend.coordinators",
+            "backend.dispatchers",
+            "SessionLocal",
+            "CanalWhatsapp",
+        )
+
+        forbidden_imported_names = {
+            "ProviderInboundMessageCoordinator",
+            "OutboundMessageDispatcher",
+            "OutboundMessageRepository",
+            "ProviderInboundMessageRepository",
+            "ProviderInboundMessageRepositoryFacade",
+            "SessionLocal",
+            "_SessionLocal",
+            "CanalWhatsappService",
+            "create_session",
+            "session_factory",
+        }
+
+        for module, name in direct_imports:
+            if module is not None:
+                module_lower = module.lower()
+                for forbidden in forbidden_module_substrings:
+                    self.assertNotIn(
+                        forbidden,
+                        module_lower,
+                        (
+                            f"worker MUST NOT directly import modules "
+                            f"containing {forbidden!r}; "
+                            f"found import of {module!r}"
+                        ),
+                    )
+            self.assertNotIn(
+                name,
+                forbidden_imported_names,
+                (
+                    f"worker MUST NOT directly import {name!r} "
+                    f"(module={module!r})"
+                ),
+            )
+
+    def test_ready_loop_does_not_reference_twilio_db_or_dispatcher_strings(
+        self,
+    ) -> None:
+        """Defence-in-depth: the worker source MUST NOT reference
+        any of the documented deep-layer call patterns
+        (``twilio``, ``Session(``, ``begin()``, ``commit()``,
+        ``rollback()``, ``ProviderInboundMessageCoordinator``,
+        ``OutboundMessageDispatcher``). These tokens remain
+        present in the bounded CLI / dispatcher modules, but a
+        regression on the worker MUST fail this test so the
+        closed architecture boundary stays enforced."""
+
+        import inspect
+
+        import backend.cli.run_provider_processing_worker as worker_mod
+
+        source = inspect.getsource(worker_mod)
+
+        forbidden_substrings = (
+            "twilio",
+            "requests.post",
+            "requests.get",
+            "_SessionLocal",
+            "Session(",
+            "begin()",
+            "commit()",
+            "rollback()",
+            "ProviderInboundMessageCoordinator",
+            "CanalWhatsappService",
+            "OutboundMessageDispatcher",
+        )
+        for token in forbidden_substrings:
+            self.assertNotIn(
+                token,
+                source,
+                f"worker source referenced forbidden {token!r} token",
+            )
+
+    def test_lifecycle_does_not_reseed_default_outbound_runner(self) -> None:
+        """The new code MUST NOT swap the default outbound runner
+        or invoke the dispatcher a second time per cycle."""
+
+        def _inbound(_bound: int) -> int:
+            return 0
+
+        outbound_calls: list[int] = []
+
+        def _outbound(bound: int) -> int:
+            outbound_calls.append(bound)
+            return 0
+
+        with _capture_stdout() as stdout:
+            run_forever(
+                settings=_settings(),
+                inbound_runner=_inbound,
+                outbound_runner=_outbound,
+                sleeper=lambda _seconds: None,
+                sleep_decision=lambda _settings, _cycle: False,
+                cycle_summary_writer=lambda _summary: None,
+                stop_predicate=lambda: len(outbound_calls) >= 1,
+                readiness_probe=worker_cli._always_ready_probe,
+            )
+
+        liveness = _liveness_events(stdout.getvalue())
+        # Each cycle produces exactly one outbound phase_started +
+        # one phase_completed pair. Re-running the dispatcher would
+        # double these counters.
+        outbound_starts = [
+            event
+            for event in liveness
+            if event.get("phase") == "outbound"
+            and event.get("outcome") == "phase_started"
+        ]
+        outbound_completes = [
+            event
+            for event in liveness
+            if event.get("phase") == "outbound"
+            and event.get("outcome") == "phase_completed"
+        ]
+        self.assertEqual(len(outbound_starts), 1)
+        self.assertEqual(len(outbound_completes), 1)
+
+
+class WorkerLivenessSafeMetadataTest(unittest.TestCase):
+    """Liveness events MUST NEVER carry sensitive payload."""
+
+    _FORBIDDEN_SUBSTRINGS = (
+        "secret-auth-token-value",
+        "AC000000000000000000000000000000",
+        "+5491100000000",
+        "+5491155556666",
+        "openid",
+        "X-Twilio-Signature",
+        "Bearer ",
+        "inbound body",
+        "outbound body",
+        "prompt",
+        "PROVIDER_PROCESSING_WORKER_ENABLED=true",
+        "PROVIDER_PROCESSING_WORKER_POLL_INTERVAL_SECONDS",
+        "exception message",
+        "leak:",
+    )
+
+    def test_lifecycle_does_not_leak_secrets_or_payloads(self) -> None:
+        secret_message = (
+            "leak: secret-auth-token-value / "
+            "AC000000000000000000000000000000 / +5491100000000 / "
+            "inbound body / outbound body / prompt / exception message"
+        )
+
+        def _inbound(_bound: int) -> int:
+            return 0
+
+        outbound_calls_a: list[int] = []
+        outbound_calls_b: list[int] = []
+
+        def _outbound_a(bound: int) -> int:
+            outbound_calls_a.append(bound)
+            return 0
+
+        def _outbound_b(bound: int) -> int:
+            outbound_calls_b.append(bound)
+            return 0
+
+        with _capture_stdout() as stdout:
+            run_forever(
+                settings=_settings(),
+                inbound_runner=_inbound,
+                outbound_runner=_outbound_a,
+                sleeper=lambda _seconds: None,
+                sleep_decision=lambda _settings, _cycle: False,
+                cycle_summary_writer=lambda _summary: None,
+                stop_predicate=lambda: len(outbound_calls_a) >= 1,
+                readiness_probe=worker_cli._always_ready_probe,
+                unexpected_exception_log=lambda **_kwargs: None,
+            )
+
+        # Re-run with a probe exception carrying the secret and
+        # verify the failure event surfaces only the class name.
+        def _probe() -> Any:
+            raise RuntimeError(secret_message)
+
+        with _capture_stdout() as stdout:
+            run_forever(
+                settings=_settings(),
+                inbound_runner=_inbound,
+                outbound_runner=_outbound_b,
+                sleeper=lambda _seconds: None,
+                sleep_decision=lambda _settings, _cycle: False,
+                cycle_summary_writer=lambda _summary: None,
+                stop_predicate=lambda: len(outbound_calls_b) >= 1,
+                readiness_probe=_probe,
+                unexpected_exception_log=lambda **_kwargs: None,
+            )
+
+        rendered = stdout.getvalue()
+        for token in self._FORBIDDEN_SUBSTRINGS:
+            self.assertNotIn(
+                token,
+                rendered,
+                f"sentinel {token!r} leaked in liveness output",
+            )
 
 
 if __name__ == "__main__":
