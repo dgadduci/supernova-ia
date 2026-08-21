@@ -637,6 +637,203 @@
     });
   });
 
+  var ALLOWED_EMULATOR_STATUSES = {
+    accepted: true,
+    processed: true,
+    pending: true,
+    sent: true,
+    retryable: true,
+    terminal: true
+  };
+
+  var TERMINAL_EMULATOR_STATUSES = {
+    sent: true,
+    retryable: true,
+    terminal: true
+  };
+
+  var EMULATOR_MAX_POLL_ATTEMPTS = 20;
+  var EMULATOR_POLL_INTERVAL_MS = 1500;
+
+  function isValidEmulatorSubmitResponse(data) {
+    return (
+      data &&
+      typeof data === "object" &&
+      typeof data.synthetic_inbound_id === "string" &&
+      data.synthetic_inbound_id.length > 0
+    );
+  }
+
+  function isValidEmulatorStatusResponse(data) {
+    return (
+      data &&
+      typeof data === "object" &&
+      typeof data.status === "string" &&
+      ALLOWED_EMULATOR_STATUSES[data.status] === true
+    );
+  }
+
+  function isBoundedDisplayString(value) {
+    return typeof value === "string" && value.length > 0 && value.length <= 4096;
+  }
+
+  function renderEmulatorResult(result) {
+    var container = document.querySelector("[data-debug-emulator-result]");
+    if (!container) {
+      return;
+    }
+    container.replaceChildren();
+    if (!result || typeof result !== "object") {
+      return;
+    }
+    if (isBoundedDisplayString(result.status)) {
+      var statusP = document.createElement("p");
+      statusP.textContent = "Estado: " + result.status;
+      container.appendChild(statusP);
+    }
+    if (isBoundedDisplayString(result.outbound_body)) {
+      var bodyP = document.createElement("p");
+      bodyP.textContent = "Mensaje enviado: " + result.outbound_body;
+      container.appendChild(bodyP);
+    }
+    if (isBoundedDisplayString(result.provider_message_sid)) {
+      var sidP = document.createElement("p");
+      sidP.textContent = "SID: " + result.provider_message_sid;
+      container.appendChild(sidP);
+    }
+  }
+
+  function clearEmulatorResult() {
+    var container = document.querySelector("[data-debug-emulator-result]");
+    if (container) {
+      container.replaceChildren();
+    }
+  }
+
+  var emulatorForms = document.querySelectorAll("[data-debug-emulator-form]");
+  emulatorForms.forEach(function (form) {
+    var statusNode = document.querySelector("[data-debug-emulator-status]");
+    var submit = form.querySelector("[data-debug-emulator-submit]");
+    var textarea = form.querySelector("[data-debug-emulator-textarea]");
+    var statusUrl = form.getAttribute("data-debug-emulator-status-url") || "";
+
+    function setStatus(text) {
+      if (statusNode) {
+        statusNode.textContent = text;
+      }
+    }
+
+    function setBusy(busy) {
+      if (submit) {
+        submit.disabled = busy;
+      }
+      if (textarea) {
+        textarea.disabled = busy;
+      }
+    }
+
+    function failGeneric() {
+      clearEmulatorResult();
+      setStatus("El Twilio Emulator rechazó el mensaje.");
+      setBusy(false);
+    }
+
+    var pendingPollHandle = null;
+    var currentInboundId = null;
+
+    function pollEmulatorStatus(attemptsLeft) {
+      if (attemptsLeft <= 0 || !currentInboundId || !statusUrl) {
+        failGeneric();
+        return;
+      }
+      pendingPollHandle = setTimeout(function () {
+        pendingPollHandle = null;
+        fetch(statusUrl, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Emulator-Test-Origin": "same-origin"
+          },
+          body: JSON.stringify({ synthetic_inbound_id: currentInboundId })
+        })
+          .then(function (response) {
+            return response.json().catch(function () {
+              return {};
+            }).then(function (data) {
+              return { ok: response.ok, data: data };
+            });
+          })
+          .then(function (result) {
+            if (!result.ok || !isValidEmulatorStatusResponse(result.data)) {
+              failGeneric();
+              return;
+            }
+            renderEmulatorResult(result.data);
+            if (TERMINAL_EMULATOR_STATUSES[result.data.status] === true) {
+              setStatus("Listo.");
+              setBusy(false);
+              currentInboundId = null;
+              return;
+            }
+            setStatus("Esperando estado final…");
+            pollEmulatorStatus(attemptsLeft - 1);
+          })
+          .catch(function () {
+            failGeneric();
+          });
+      }, EMULATOR_POLL_INTERVAL_MS);
+    }
+
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      if (!textarea || !statusUrl) {
+        return;
+      }
+      if (pendingPollHandle !== null) {
+        clearTimeout(pendingPollHandle);
+        pendingPollHandle = null;
+      }
+      currentInboundId = null;
+      var raw = textarea.value || "";
+      var trimmed = raw.trim();
+      if (!trimmed) {
+        setStatus("Mensaje vacío: no se envió nada.");
+        return;
+      }
+      clearEmulatorResult();
+      setBusy(true);
+      setStatus("Enviando al Twilio Emulator…");
+      fetch(form.action, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Emulator-Test-Origin": "same-origin"
+        },
+        body: JSON.stringify({ message: trimmed })
+      })
+        .then(function (response) {
+          return response.json().catch(function () {
+            return {};
+          }).then(function (data) {
+            return { ok: response.ok, data: data };
+          });
+        })
+        .then(function (result) {
+          if (!result.ok || !isValidEmulatorSubmitResponse(result.data)) {
+            failGeneric();
+            return;
+          }
+          currentInboundId = result.data.synthetic_inbound_id;
+          pollEmulatorStatus(EMULATOR_MAX_POLL_ATTEMPTS);
+        })
+        .catch(function () {
+          failGeneric();
+        });
+    });
+  });
+
   if (typeof window !== "undefined") {
     window.__panelDebugLines = {
       isValidLineEntry: isValidLineEntry,
