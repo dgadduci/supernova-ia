@@ -28,6 +28,7 @@ import io
 import json
 import logging
 import unittest
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -43,12 +44,15 @@ from commerce_adapter.app.routes import webhook as webhook_route
 from commerce_adapter.app.security import compute_twilio_signature
 
 TOKEN: str = "test-auth-token"
+EMULATOR_TOKEN: str = "emulator-auth-token-must-not-leak"
 BASE_URL: str = "https://example.test"
 WEBHOOK_PATH: str = webhook_route.ROUTE_PATH
 INSTALLATION_ID: str = "a" * 24
 COMERCIO_ID: int = 7
 INSTALLATION_SECRET: str = "shared-secret-1234"
 NOVAORDERS_URL: str = "https://core.example.test"
+EMULATOR_BASE_URL: str = "https://emulator.example.test"
+EMULATOR_ACCOUNT_SID: str = "AC" + "1" * 32
 
 EVENT_NAME: str = "commerce_installation_inbound_outcome"
 
@@ -63,6 +67,24 @@ def _config() -> CommerceAdapterConfig:
         "TC_INSTALLATION_SECRET": INSTALLATION_SECRET,
         "TC_COMERCIO_ID": str(COMERCIO_ID),
         "TC_TWILIO_SENDER_E164": "+15555555555",
+    }
+    return load_config_from_env(env)
+
+
+def _emulator_config() -> CommerceAdapterConfig:
+    env = {
+        "TC_TWILIO_AUTH_TOKEN": TOKEN,
+        "TC_TWILIO_ACCOUNT_SID": "AC" + "0" * 32,
+        "TC_TWILIO_WEBHOOK_BASE_URL": BASE_URL,
+        "TC_NOVAORDERS_INGRESS_URL": NOVAORDERS_URL,
+        "TC_INSTALLATION_ID": INSTALLATION_ID,
+        "TC_INSTALLATION_SECRET": INSTALLATION_SECRET,
+        "TC_COMERCIO_ID": str(COMERCIO_ID),
+        "TC_TWILIO_SENDER_E164": "+15555555555",
+        "TC_TWILIO_PROVIDER_MODE": "emulator",
+        "TC_TWILIO_EMULATOR_BASE_URL": EMULATOR_BASE_URL,
+        "TC_TWILIO_EMULATOR_ACCOUNT_SID": EMULATOR_ACCOUNT_SID,
+        "TC_TWILIO_EMULATOR_AUTH_TOKEN": EMULATOR_TOKEN,
     }
     return load_config_from_env(env)
 
@@ -96,13 +118,14 @@ class _FakeHttpClient:
 def _build_client(
     *,
     responses: list[_FakeResponse] | None = None,
+    config_factory: Callable[[], CommerceAdapterConfig] | None = None,
 ) -> tuple[TestClient, _FakeHttpClient]:
     fake = _FakeHttpClient(responses or [_FakeResponse(status_code=200, body={"status": "accepted", "receipt_id": 42})])
     app = FastAPI()
     app.include_router(webhook_route.router)
 
     from commerce_adapter.app.dependencies import build_config_dependency
-    app.dependency_overrides[build_config_dependency] = _config
+    app.dependency_overrides[build_config_dependency] = config_factory or _config
 
     def _fake_forward_event(*, config: CommerceAdapterConfig, event: Any, http_client: httpx.Client | None = None):
         from commerce_adapter.app.novaorders_client import forward_event as real_forward
@@ -691,6 +714,105 @@ class WebhookEmulatorModeConfigTest(unittest.TestCase):
         config = load_config_from_env(env)
         self.assertEqual(config.provider_mode, "real")
         self.assertFalse(config.is_emulator_mode)
+
+
+def _sign_with(token: str, form: dict[str, str]) -> str:
+    return compute_twilio_signature(
+        auth_token=token,
+        url=f"{BASE_URL}{WEBHOOK_PATH}",
+        params=form,
+    )
+
+
+class WebhookEmulatorModeInboundSignatureTest(unittest.TestCase):
+    """Inbound signature validation honours the explicit provider mode.
+
+    Real mode validates only with ``TC_TWILIO_AUTH_TOKEN``; emulator
+    mode validates only with ``TC_TWILIO_EMULATOR_AUTH_TOKEN``. The
+    adapter never falls back or retries with the other credential.
+    """
+
+    def setUp(self) -> None:
+        self.form = {
+            "MessageSid": "SM-EMU",
+            "From": "whatsapp:+5491155556666",
+            "To": "whatsapp:+5491100000000",
+            "Body": "hola",
+            "NumMedia": "0",
+            "ProfileName": "Ana",
+        }
+        self.real_signature = _sign_with(TOKEN, self.form)
+        self.emulator_signature = _sign_with(EMULATOR_TOKEN, self.form)
+
+    def test_emulator_mode_accepts_emulator_signature(self) -> None:
+        client, fake = _build_client(config_factory=_emulator_config)
+        response, event = _post_capturing_event(
+            client,
+            data=self.form,
+            headers={"X-Twilio-Signature": self.emulator_signature},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("<Response></Response>", response.text)
+        self.assertEqual(len(fake.calls), 1)
+        self.assertIsNotNone(event)
+        self.assertEqual(event["outcome"], "accepted")
+        self.assertNotEqual(TOKEN, EMULATOR_TOKEN)
+
+    def test_emulator_mode_rejects_real_token_signature(self) -> None:
+        client, fake = _build_client(config_factory=_emulator_config)
+        response, event = _post_capturing_event(
+            client,
+            data=self.form,
+            headers={"X-Twilio-Signature": self.real_signature},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.text, "")
+        self.assertEqual(fake.calls, [])
+        self.assertIsNotNone(event)
+        self.assertEqual(event["outcome"], "rejected")
+        self.assertEqual(event["reason"], "signature_rejected")
+
+    def test_real_mode_rejects_emulator_only_signature(self) -> None:
+        client, fake = _build_client()
+        response, event = _post_capturing_event(
+            client,
+            data=self.form,
+            headers={"X-Twilio-Signature": self.emulator_signature},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.text, "")
+        self.assertEqual(fake.calls, [])
+        self.assertIsNotNone(event)
+        self.assertEqual(event["outcome"], "rejected")
+        self.assertEqual(event["reason"], "signature_rejected")
+
+    def test_real_mode_preserves_real_token_acceptance(self) -> None:
+        client, fake = _build_client()
+        response, event = _post_capturing_event(
+            client,
+            data=self.form,
+            headers={"X-Twilio-Signature": self.real_signature},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("<Response></Response>", response.text)
+        self.assertEqual(len(fake.calls), 1)
+        self.assertIsNotNone(event)
+        self.assertEqual(event["outcome"], "accepted")
+
+    def test_emulator_mode_rejection_does_not_invoke_routing_or_forward(
+        self,
+    ) -> None:
+        client, fake = _build_client(config_factory=_emulator_config)
+        response, event = _post_capturing_event(
+            client,
+            data=self.form,
+            headers={"X-Twilio-Signature": self.real_signature},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(fake.calls, [])
+        self.assertIsNotNone(event)
+        self.assertEqual(event["outcome"], "rejected")
+        self.assertEqual(event["reason"], "signature_rejected")
 
 
 if __name__ == "__main__":
