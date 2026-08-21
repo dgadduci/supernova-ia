@@ -1435,6 +1435,17 @@ def _strip_css(html: str) -> str:
     return html[:start] + html[end + len("</style>"):]
 
 
+def _strip_script(html: str) -> str:
+    """Remove the inline ``<script>`` block so the tests can inspect
+    the rendered DOM without the browser-side handlers polluting the
+    selector search."""
+    start = html.find("<script>")
+    end = html.find("</script>")
+    if start == -1 or end == -1:
+        return html
+    return html[:start] + html[end + len("</script>"):]
+
+
 class PanelDebugConsoleRenderingTest(unittest.TestCase):
     """The detail view renders the 30/30/40 three-column console
     with the local-test chat, the existing detail/history and the
@@ -7593,6 +7604,855 @@ class PanelEmulatorBrowserContractTest(unittest.TestCase):
             },
         )
         self.assertIn(response.status_code, (400, 422))
+
+
+class PanelEmulatorConversationHistoryTemplateTest(unittest.TestCase):
+    """The detail page exposes a bounded scrollable Emulator
+    conversation list alongside the existing single-result container.
+    The list is the primary handoff surface and uses accessible list
+    semantics, a fixed viewport, safe DOM rendering and no browser
+    storage or URL state."""
+
+    def _build_app_with(self, settings: Settings) -> TestClient:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=settings
+        )
+        self._settings_patcher.start()
+        self._router_settings_patcher = patch.object(
+            router_module, "load_settings", return_value=settings
+        )
+        self._router_settings_patcher.start()
+        return self.client
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self._router_settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def _render_detail(self, *, enabled: bool) -> str:
+        self._build_app_with(_settings())
+        with patch.object(
+            router_module, "load_active_emulator_target", return_value=None
+        ), patch.object(
+            router_module, "_is_emulator_action_enabled", return_value=enabled
+        ), patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail(),
+                history=_build_history(),
+                order_lines_snapshot=[],
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 200)
+        return response.text
+
+    def test_conversation_container_is_present_when_emulator_enabled(self) -> None:
+        body = self._render_detail(enabled=True)
+        self.assertIn("data-debug-emulator-conversation", body)
+
+    def test_conversation_container_is_absent_when_emulator_disabled(self) -> None:
+        body = self._render_detail(enabled=False)
+        # The CSS class lives in the global stylesheet and the
+        # browser script always references the selector, so the
+        # body-level assertion must look at the no-CSS, no-script
+        # payload to verify the actual DOM is absent.
+        body_no_css = _strip_css(body)
+        body_dom_only = _strip_script(body_no_css)
+        self.assertNotIn("data-debug-emulator-conversation", body_dom_only)
+
+    def test_conversation_container_uses_role_list_and_aria_live(self) -> None:
+        body = self._render_detail(enabled=True)
+        self.assertRegex(
+            body,
+            r'<div[^>]*data-debug-emulator-conversation[^>]*role="list"[^>]*aria-live="polite"',
+        )
+
+    def test_conversation_css_is_fixed_height_with_overflow_y_auto(self) -> None:
+        body = self._render_detail(enabled=True)
+        self.assertIn("debug-emulator-conversation", body)
+        self.assertIn("overflow-y: auto", body)
+        # The list must use a fixed pixel/rem height token so the
+        # column cannot grow with additional turns.
+        self.assertIn("height: 12rem", body)
+
+    def test_conversation_css_wraps_long_text(self) -> None:
+        body = self._render_detail(enabled=True)
+        self.assertIn("white-space: pre-wrap", body)
+        self.assertIn("word-break: break-word", body)
+
+    def test_conversation_css_supports_text_selection(self) -> None:
+        body = self._render_detail(enabled=True)
+        # The list must remain selectable so the operator can copy
+        # the bounded history manually.
+        self.assertIn("user-select: text", body)
+
+    def test_conversation_turns_use_role_listitem(self) -> None:
+        body = self._render_detail(enabled=True)
+        body_no_css = _strip_css(body)
+        self.assertIn('"listitem"', body_no_css)
+        self.assertIn('setAttribute("role"', body_no_css)
+
+    def test_conversation_turns_have_distinct_kind_classes(self) -> None:
+        body = self._render_detail(enabled=True)
+        for kind in ("sent", "received", "status", "error"):
+            with self.subTest(kind=kind):
+                self.assertIn("debug-emulator-turn-" + kind, body)
+
+    def test_browser_script_defines_sent_received_status_error_labels(self) -> None:
+        body = self._render_detail(enabled=True)
+        body_no_css = _strip_css(body)
+        for label in ("Enviado", "Respuesta recibida", "Estado", "Error"):
+            with self.subTest(label=label):
+                self.assertIn(label, body_no_css)
+
+    def test_browser_script_uses_textContent_for_turn_creation(self) -> None:
+        body = self._render_detail(enabled=True)
+        body_no_css = _strip_css(body)
+        self.assertIn("textContent", body_no_css)
+        self.assertIn("createEmulatorTurnElement", body_no_css)
+        self.assertIn("appendOrUpdateEmulatorTurn", body_no_css)
+
+    def test_browser_script_never_uses_innerHTML_or_outerHTML(self) -> None:
+        body = self._render_detail(enabled=True)
+        body_no_css = _strip_css(body)
+        self.assertNotIn("innerHTML", body_no_css)
+        self.assertNotIn("outerHTML", body_no_css)
+
+    def test_browser_script_never_uses_storage_or_url_state(self) -> None:
+        body = self._render_detail(enabled=True)
+        body_no_css = _strip_css(body)
+        for forbidden in (
+            "localStorage",
+            "sessionStorage",
+            "document.cookie",
+            "history.pushState",
+            "history.replaceState",
+            "URLSearchParams",
+            "window.location.search",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, body_no_css)
+
+    def test_browser_script_exposes_helpers_for_testing(self) -> None:
+        body = self._render_detail(enabled=True)
+        body_no_css = _strip_css(body)
+        self.assertIn("__panelDebugEmulator", body_no_css)
+        for helper in (
+            "EMULATOR_CONVERSATION_MAX_TURNS",
+            "EMULATOR_CONVERSATION_TEXT_LIMIT",
+            "createEmulatorConversationState",
+            "createEmulatorTurnElement",
+            "appendOrUpdateEmulatorTurn",
+            "rekeyEmulatorTurn",
+        ):
+            with self.subTest(helper=helper):
+                self.assertIn(helper, body_no_css)
+
+    def test_browser_script_enforces_max_turns(self) -> None:
+        body = self._render_detail(enabled=True)
+        body_no_css = _strip_css(body)
+        self.assertIn("EMULATOR_CONVERSATION_MAX_TURNS", body_no_css)
+        self.assertIn("100", body_no_css)
+        self.assertIn("trimEmulatorConversation", body_no_css)
+        self.assertIn("removeChild", body_no_css)
+
+    def test_browser_script_scrolls_to_newest_entry(self) -> None:
+        body = self._render_detail(enabled=True)
+        body_no_css = _strip_css(body)
+        self.assertIn("scrollTop = state.container.scrollHeight", body_no_css)
+
+    def test_browser_script_associates_turn_with_synthetic_inbound_id(self) -> None:
+        body = self._render_detail(enabled=True)
+        body_no_css = _strip_css(body)
+        self.assertIn("rekeyEmulatorTurn", body_no_css)
+        self.assertIn("conversationState", body_no_css)
+        self.assertIn("currentInboundId", body_no_css)
+        self.assertIn("pendingKey", body_no_css)
+
+    def test_browser_script_appends_received_only_once_per_turn(self) -> None:
+        body = self._render_detail(enabled=True)
+        body_no_css = _strip_css(body)
+        self.assertIn("conversationAppendReceived", body_no_css)
+        self.assertIn("conversationMarkError", body_no_css)
+        self.assertIn("conversationAppendStatus", body_no_css)
+        self.assertIn("conversationAppendSent", body_no_css)
+
+    def test_browser_script_preserves_existing_emulator_selectors(self) -> None:
+        body = self._render_detail(enabled=True)
+        for selector in (
+            "data-debug-emulator-form",
+            "data-debug-emulator-status",
+            "data-debug-emulator-result",
+            "data-debug-emulator-submit",
+            "data-debug-emulator-textarea",
+            "data-debug-emulator-status-url",
+        ):
+            with self.subTest(selector=selector):
+                self.assertIn(selector, body)
+
+    def test_browser_script_preserves_existing_form_and_polling(self) -> None:
+        body = self._render_detail(enabled=True)
+        body_no_css = _strip_css(body)
+        for marker in (
+            "pollEmulatorStatus",
+            "EMULATOR_MAX_POLL_ATTEMPTS",
+            "EMULATOR_POLL_INTERVAL_MS",
+            "TERMINAL_EMULATOR_STATUSES",
+            "ALLOWED_EMULATOR_STATUSES",
+            "isValidEmulatorSubmitResponse",
+            "isValidEmulatorStatusResponse",
+            "X-Emulator-Test-Origin",
+            "JSON.stringify({ message: trimmed })",
+            "JSON.stringify({ synthetic_inbound_id:",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, body_no_css)
+
+    def test_browser_script_preserves_local_transcript_handler(self) -> None:
+        body = self._render_detail(enabled=True)
+        body_no_css = _strip_css(body)
+        # JS-side markers (the local transcript handler uses the
+        # prefix ``"turn-" + kind`` and the local form handler).
+        for marker in (
+            "data-debug-transcript",
+            "appendLine",
+            '"turn-"',
+            "X-Local-Test-Origin",
+            "El canal local rechazó el mensaje.",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, body_no_css)
+        # CSS-side markers (the local transcript styling classes
+        # live in the global stylesheet so the full body must
+        # still reference them).
+        for marker in ("turn-operator", "turn-customer", "turn-error"):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, body)
+
+    def test_conversation_copy_clarifies_volatile_history(self) -> None:
+        body = self._render_detail(enabled=True)
+        # The list header must make it clear that the history is
+        # bounded to the current page and cannot be persisted.
+        self.assertIn("solo en esta pestaña", body)
+        # The list must clarify that the operator can copy the
+        # visible bounded history manually.
+        self.assertIn("Puede seleccionarse y copiarse", body)
+        # The list must NOT contact Twilio real.
+        self.assertIn("no contacta Twilio real", body)
+        # The list must NOT use cookies, persistent storage or
+        # URL parameters for the conversation history.
+        self.assertIn("No se guarda", body)
+        self.assertIn("cookies del navegador", body)
+        self.assertIn("parámetros de URL", body)
+
+
+def _build_emulator_conversation_js(
+    *,
+    jsdom_path: str,
+    initial_html: str,
+    operations_js: str,
+) -> str:
+    template = _BASE_TEMPLATE_HTML_PATH.read_text(encoding="utf-8")
+    script = _extract_inline_script(template)
+    jsdom_literal = json.dumps(jsdom_path)
+    return (
+        "const {JSDOM} = require(" + jsdom_literal + ");\n"
+        "const baseScript = " + json.dumps(script) + ";\n"
+        "function escapeScript(scriptBody) {\n"
+        "  return scriptBody.replace(/<\\/script/gi, '<\\\\/script');\n"
+        "}\n"
+        "const safeBaseScript = escapeScript(baseScript);\n"
+        "const html = [\n"
+        "  '<!DOCTYPE html><html><body>',\n"
+        + initial_html.replace("`", "\\`")
+        + ",\n"
+        "  '<script>',\n"
+        "  safeBaseScript,\n"
+        "  '</script>',\n"
+        "  '</body></html>'\n"
+        "].join('');\n"
+        "const dom = new JSDOM(html, {runScripts: 'dangerously'});\n"
+        "const w = dom.window;\n"
+        + operations_js
+    )
+
+
+def _run_emulator_conversation_in_jsdom(
+    *,
+    initial_html: str,
+    operations_js: str,
+) -> dict:
+    jsdom_path = _resolve_jsdom_require_path()
+    if jsdom_path is None:
+        raise unittest.SkipTest(
+            "jsdom not available; install via `npm install jsdom` "
+            "and set PANEL_JSDOM_PATH (or use /tmp/jsdom-test) to "
+            "enable the runtime emulator-conversation validation tests."
+        )
+    js_source = _build_emulator_conversation_js(
+        jsdom_path=jsdom_path,
+        initial_html=initial_html,
+        operations_js=operations_js,
+    )
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".js", delete=False, encoding="utf-8"
+    ) as handle:
+        handle.write(js_source)
+        script_path = handle.name
+    try:
+        completed = subprocess.run(
+            ["node", script_path],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    finally:
+        Path(script_path).unlink(missing_ok=True)
+    output = completed.stdout.decode("utf-8").strip()
+    if not output:
+        raise AssertionError(
+            "node produced no stdout; stderr was: "
+            + completed.stderr.decode("utf-8")
+        )
+    return json.loads(output.splitlines()[-1])
+
+
+class PanelEmulatorConversationJSDOMTest(unittest.TestCase):
+    """Runtime validation of the conversation-history helpers using
+    JSDOM. Exercises the bounded turn tracking, deduplication,
+    scroll behaviour and textContent-only rendering without adding
+    a real browser or hitting Twilio/T-C/worker."""
+
+    _CONTAINER_HTML = (
+        "'<div class=\"debug-emulator-conversation\" "
+        "data-debug-emulator-conversation role=\"list\" "
+        "aria-live=\"polite\"></div>'"
+    )
+
+    def _ops(self, body: str) -> str:
+        return (
+            "const container = w.document.querySelector("
+            "'[data-debug-emulator-conversation]');\n"
+            "const helpers = w.__panelDebugEmulator;\n"
+            "const state = helpers.createEmulatorConversationState(container);\n"
+            + body
+            + "const result = {\n"
+            "  children: container.children.length,\n"
+            "  kinds: Array.from(container.children).map("
+            "function (n) { return n.getAttribute('role') + ':' "
+            "+ n.className; }),\n"
+            "  labels: Array.from(container.children).map("
+            "function (n) { return n.firstChild.textContent; }),\n"
+            "  bodies: Array.from(container.children).map("
+            "function (n) { return n.lastChild.textContent; }),\n"
+            "  mapKeys: Object.keys(state.turnMap),\n"
+            "  orderKeys: state.turnOrder.slice(),\n"
+            "  scrollTop: container.scrollTop,\n"
+            "  scrollHeight: container.scrollHeight,\n"
+            "  html: container.innerHTML\n"
+            "};\n"
+            "console.log(JSON.stringify(result));\n"
+        )
+
+    def test_append_or_update_creates_turn_with_textContent(self) -> None:
+        ops = self._ops(
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'sent', 'Enviado', 'hola <b>mundo</b>');\n"
+        )
+        result = _run_emulator_conversation_in_jsdom(
+            initial_html=self._CONTAINER_HTML,
+            operations_js=ops,
+        )
+        self.assertEqual(result["children"], 1)
+        self.assertEqual(result["kinds"][0], "listitem:debug-emulator-turn debug-emulator-turn-sent")
+        self.assertEqual(result["labels"][0], "Enviado")
+        # HTML-like text is rendered as literal text, not markup.
+        self.assertEqual(result["bodies"][0], "hola <b>mundo</b>")
+        self.assertNotIn("<b>", result["html"])
+        self.assertEqual(result["mapKeys"], ["sm-1"])
+        self.assertEqual(result["orderKeys"], ["sm-1"])
+
+    def test_repeated_kind_updates_existing_element_without_duplication(
+        self,
+    ) -> None:
+        """Each kind for one synthetic_inbound_id occupies its own
+        listitem. Repeating the same kind updates the element in
+        place and never creates a duplicate row. The full turn
+        also keeps the previously rendered Enviado row visible
+        alongside the received row."""
+        ops = self._ops(
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'sent', 'Enviado', 'hola');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'received', 'Respuesta recibida', 'ok');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'received', 'Respuesta recibida', 'ok otra vez');\n"
+        )
+        result = _run_emulator_conversation_in_jsdom(
+            initial_html=self._CONTAINER_HTML,
+            operations_js=ops,
+        )
+        # The sent and received children coexist under the same key.
+        self.assertEqual(result["children"], 2)
+        self.assertEqual(result["mapKeys"], ["sm-1"])
+        self.assertEqual(result["orderKeys"], ["sm-1"])
+        self.assertEqual(result["labels"], ["Enviado", "Respuesta recibida"])
+        # The repeated kind only updates the body in place.
+        self.assertEqual(result["bodies"][0], "hola")
+        self.assertEqual(result["bodies"][1], "ok otra vez")
+        self.assertIn("debug-emulator-turn-sent", result["kinds"][0])
+        self.assertIn("debug-emulator-turn-received", result["kinds"][1])
+
+    def test_history_is_bounded_by_max_turns(self) -> None:
+        ops = self._ops(
+            "for (let i = 0; i < 150; i++) {\n"
+            "  helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-' + i, 'sent', 'Enviado', 'm-' + i);\n"
+            "}\n"
+        )
+        result = _run_emulator_conversation_in_jsdom(
+            initial_html=self._CONTAINER_HTML,
+            operations_js=ops,
+        )
+        # Only the last 100 turns remain (FIFO trim).
+        self.assertEqual(result["children"], 100)
+        # The remaining turns are the last 100 (m-50 through m-149).
+        self.assertEqual(result["bodies"][0], "m-50")
+        self.assertEqual(result["bodies"][-1], "m-149")
+
+    def test_scrollTop_is_set_to_scrollHeight_after_append(self) -> None:
+        ops = self._ops(
+            "for (let i = 0; i < 30; i++) {\n"
+            "  const turn = w.document.createElement('div');\n"
+            "  turn.style.height = '20px';\n"
+            "  const label = w.document.createElement('span');\n"
+            "  label.textContent = '';\n"
+            "  turn.appendChild(label);\n"
+            "  const body = w.document.createElement('span');\n"
+            "  body.textContent = '';\n"
+            "  turn.appendChild(body);\n"
+            "  container.appendChild(turn);\n"
+            "}\n"
+            "container.scrollTop = 0;\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'sent', 'Enviado', 'hola');\n"
+        )
+        result = _run_emulator_conversation_in_jsdom(
+            initial_html=self._CONTAINER_HTML,
+            operations_js=ops,
+        )
+        # JSDOM does not simulate layout so ``scrollTop`` and
+        # ``scrollHeight`` are both 0; the assertion still verifies
+        # the equality contract. The meaningful coverage of the
+        # scroll-to-bottom branch lives in the strict
+        # textContent-only tests above.
+        self.assertEqual(result["scrollTop"], result["scrollHeight"])
+
+    def test_rekey_renames_pending_turn_to_synthetic_inbound_id(self) -> None:
+        ops = self._ops(
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'pending-1', 'sent', 'Enviado', 'hola');\n"
+            "helpers.rekeyEmulatorTurn(state, 'pending-1', 'sm-42');\n"
+        )
+        result = _run_emulator_conversation_in_jsdom(
+            initial_html=self._CONTAINER_HTML,
+            operations_js=ops,
+        )
+        self.assertEqual(result["children"], 1)
+        self.assertEqual(result["mapKeys"], ["sm-42"])
+        self.assertEqual(result["orderKeys"], ["sm-42"])
+        # The visible label and body are preserved across the
+        # rename.
+        self.assertEqual(result["labels"][0], "Enviado")
+        self.assertEqual(result["bodies"][0], "hola")
+
+    def test_multiple_submissions_preserve_submission_order(self) -> None:
+        ops = self._ops(
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'pending-1', 'sent', 'Enviado', 'primero');\n"
+            "helpers.rekeyEmulatorTurn(state, 'pending-1', 'sm-1');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'pending-2', 'sent', 'Enviado', 'segundo');\n"
+            "helpers.rekeyEmulatorTurn(state, 'pending-2', 'sm-2');\n"
+        )
+        result = _run_emulator_conversation_in_jsdom(
+            initial_html=self._CONTAINER_HTML,
+            operations_js=ops,
+        )
+        self.assertEqual(result["children"], 2)
+        self.assertEqual(result["bodies"], ["primero", "segundo"])
+        self.assertEqual(result["orderKeys"], ["sm-1", "sm-2"])
+
+    def test_text_is_truncated_at_4096_chars(self) -> None:
+        long_text = "x" * 5000
+        ops = self._ops(
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'sent', 'Enviado', "
+            + json.dumps(long_text)
+            + ");\n"
+        )
+        result = _run_emulator_conversation_in_jsdom(
+            initial_html=self._CONTAINER_HTML,
+            operations_js=ops,
+        )
+        self.assertEqual(len(result["bodies"][0]), 4096)
+
+    def test_status_row_keeps_sent_visible(self) -> None:
+        """``accepted``/``pending`` polling creates or updates the
+        Estado row without removing the Enviado row. Repeated
+        polling for the same status updates it in place."""
+        ops = self._ops(
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'sent', 'Enviado', 'hola');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'status', 'Estado', 'accepted');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'status', 'Estado', 'pending');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'status', 'Estado', 'pending');\n"
+        )
+        result = _run_emulator_conversation_in_jsdom(
+            initial_html=self._CONTAINER_HTML,
+            operations_js=ops,
+        )
+        # Enviado + Estado remain visible; the duplicate status
+        # polls do not create a second Estado row.
+        self.assertEqual(result["children"], 2)
+        self.assertEqual(result["mapKeys"], ["sm-1"])
+        self.assertEqual(result["orderKeys"], ["sm-1"])
+        self.assertEqual(result["labels"], ["Enviado", "Estado"])
+        self.assertEqual(result["bodies"], ["hola", "pending"])
+
+    def test_received_row_keeps_sent_and_status_visible(self) -> None:
+        """A ``processed``/``sent`` polling outcome with a bounded
+        outbound body creates a Respuesta recibida row without
+        removing the Enviado row or the Estado row."""
+        ops = self._ops(
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'sent', 'Enviado', 'hola');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'status', 'Estado', 'pending');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'received', 'Respuesta recibida', 'ok');\n"
+        )
+        result = _run_emulator_conversation_in_jsdom(
+            initial_html=self._CONTAINER_HTML,
+            operations_js=ops,
+        )
+        self.assertEqual(result["children"], 3)
+        self.assertEqual(
+            result["labels"],
+            ["Enviado", "Estado", "Respuesta recibida"],
+        )
+        self.assertEqual(
+            result["bodies"],
+            ["hola", "pending", "ok"],
+        )
+        self.assertEqual(result["mapKeys"], ["sm-1"])
+        self.assertEqual(result["orderKeys"], ["sm-1"])
+
+    def test_error_row_keeps_sent_visible(self) -> None:
+        """``retryable``/``terminal`` polling outcome adds an Error
+        row alongside the existing Enviado row."""
+        ops = self._ops(
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'sent', 'Enviado', 'hola');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'error', 'Error', 'Estado: terminal');\n"
+        )
+        result = _run_emulator_conversation_in_jsdom(
+            initial_html=self._CONTAINER_HTML,
+            operations_js=ops,
+        )
+        self.assertEqual(result["children"], 2)
+        self.assertEqual(result["labels"], ["Enviado", "Error"])
+        self.assertEqual(result["bodies"], ["hola", "Estado: terminal"])
+        self.assertEqual(result["mapKeys"], ["sm-1"])
+        self.assertEqual(result["orderKeys"], ["sm-1"])
+
+    def test_initial_post_failure_keeps_sent_and_adds_error(self) -> None:
+        """A failed initial POST keeps the Enviado row visible and
+        adds a separate bounded Error row for the same turn."""
+        ops = self._ops(
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'pending-1', 'sent', 'Enviado', 'hola');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'pending-1', 'error', 'Error',"
+            " 'El Twilio Emulator rechazó el mensaje.');\n"
+        )
+        result = _run_emulator_conversation_in_jsdom(
+            initial_html=self._CONTAINER_HTML,
+            operations_js=ops,
+        )
+        self.assertEqual(result["children"], 2)
+        self.assertEqual(result["mapKeys"], ["pending-1"])
+        self.assertEqual(result["orderKeys"], ["pending-1"])
+        self.assertEqual(result["labels"], ["Enviado", "Error"])
+        self.assertEqual(
+            result["bodies"][0], "hola"
+        )
+        self.assertEqual(
+            result["bodies"][1],
+            "El Twilio Emulator rechazó el mensaje.",
+        )
+
+    def test_late_polling_for_evicted_turn_is_noop(self) -> None:
+        """After the bounded trim evicts a turn, a late polling
+        update referencing the evicted ``synthetic_inbound_id``
+        must not mutate the DOM, the turnMap or the turnOrder
+        and must not resurrect the evicted turn."""
+        ops = self._ops(
+            "for (let i = 0; i < 150; i++) {\n"
+            "  helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-' + i, 'sent', 'Enviado', 'm-' + i);\n"
+            "}\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-0', 'status', 'Estado', 'late');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-0', 'received', 'Respuesta recibida', 'late');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-0', 'error', 'Error', 'late');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-0', 'status', 'Estado', 'late-again');\n"
+            "helpers.rekeyEmulatorTurn(state, 'sm-0', 'sm-0-late');\n"
+        )
+        result = _run_emulator_conversation_in_jsdom(
+            initial_html=self._CONTAINER_HTML,
+            operations_js=ops,
+        )
+        # Trim already dropped the first 50 turns; the rest stay.
+        self.assertEqual(result["children"], 100)
+        self.assertEqual(len(result["mapKeys"]), 100)
+        self.assertEqual(len(result["orderKeys"]), 100)
+        self.assertNotIn("sm-0", result["mapKeys"])
+        self.assertNotIn("sm-0", result["orderKeys"])
+        # The rekeyEmulatorTurn for an evicted key was a no-op;
+        # the new identifier was never inserted.
+        self.assertNotIn("sm-0-late", result["mapKeys"])
+        self.assertNotIn("sm-0-late", result["orderKeys"])
+        # The surviving turns are the last 100 sent-only rows.
+        self.assertNotIn("late", result["bodies"])
+        self.assertNotIn("late-again", result["bodies"])
+        self.assertEqual(result["bodies"][0], "m-50")
+        self.assertEqual(result["bodies"][-1], "m-149")
+        self.assertEqual(result["labels"][0], "Enviado")
+        self.assertEqual(result["labels"][-1], "Enviado")
+
+    def test_trim_removes_entire_oldest_turn_not_partial(self) -> None:
+        """The bounded trim removes EVERY row of the oldest turn
+        (sent + status + received + error) and purges the turn
+        from both ``turnMap`` and ``turnOrder``. The surviving
+        turns keep their own rows untouched."""
+        ops = self._ops(
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-old', 'sent', 'Enviado', 'old-sent');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-old', 'status', 'Estado', 'old-accepted');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-old', 'received', 'Respuesta recibida', 'old-ok');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-old', 'error', 'Error', 'old-error');\n"
+            "for (let i = 0; i < 99; i++) {\n"
+            "  helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-new-' + i, 'sent', 'Enviado', 'new-' + i);\n"
+            "}\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-trigger', 'sent', 'Enviado', 'trigger');\n"
+        )
+        result = _run_emulator_conversation_in_jsdom(
+            initial_html=self._CONTAINER_HTML,
+            operations_js=ops,
+        )
+        # 100 turns survived the trim: 'sm-new-0'..'sm-new-98' and
+        # 'sm-trigger'. The oldest 'sm-old' has been removed
+        # entirely: map and order no longer carry it and NO row
+        # for any of its four kinds survives in the DOM.
+        self.assertEqual(len(result["mapKeys"]), 100)
+        self.assertEqual(len(result["orderKeys"]), 100)
+        self.assertNotIn("sm-old", result["mapKeys"])
+        self.assertNotIn("sm-old", result["orderKeys"])
+        # No 'old-*' body text survives in the DOM.
+        self.assertNotIn("old-sent", result["bodies"])
+        self.assertNotIn("old-accepted", result["bodies"])
+        self.assertNotIn("old-ok", result["bodies"])
+        self.assertNotIn("old-error", result["bodies"])
+        # The latest sent body still anchors the end of the list.
+        self.assertEqual(result["bodies"][-1], "trigger")
+        self.assertEqual(result["labels"][-1], "Enviado")
+        self.assertEqual(result["orderKeys"][0], "sm-new-0")
+        self.assertEqual(result["orderKeys"][-1], "sm-trigger")
+
+    def test_two_submissions_with_full_lifecycle_keep_order(self) -> None:
+        """Two submissions, each carrying its own Enviado,
+        Estado and Respuesta recibida rows, keep all six rows in
+        chronological order under their own turn key."""
+        ops = self._ops(
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'pending-1', 'sent', 'Enviado', 'primero');\n"
+            "helpers.rekeyEmulatorTurn(state, 'pending-1', 'sm-1');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'status', 'Estado', 'accepted');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'received', 'Respuesta recibida', 'a');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'pending-2', 'sent', 'Enviado', 'segundo');\n"
+            "helpers.rekeyEmulatorTurn(state, 'pending-2', 'sm-2');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-2', 'status', 'Estado', 'accepted');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-2', 'received', 'Respuesta recibida', 'b');\n"
+        )
+        result = _run_emulator_conversation_in_jsdom(
+            initial_html=self._CONTAINER_HTML,
+            operations_js=ops,
+        )
+        # Six rows in submission order: 3 per turn (sent, status,
+        # received), each keeping its own updated body.
+        self.assertEqual(result["children"], 6)
+        self.assertEqual(
+            result["labels"],
+            [
+                "Enviado",
+                "Estado",
+                "Respuesta recibida",
+                "Enviado",
+                "Estado",
+                "Respuesta recibida",
+            ],
+        )
+        self.assertEqual(
+            result["bodies"],
+            ["primero", "accepted", "a", "segundo", "accepted", "b"],
+        )
+        self.assertEqual(result["orderKeys"], ["sm-1", "sm-2"])
+        self.assertEqual(
+            sorted(result["mapKeys"]), sorted(["sm-1", "sm-2"])
+        )
+
+    def test_pending_key_for_unknown_turn_creates_no_phantom(self) -> None:
+        """Adding a kind that the API never creates for a brand-new
+        key never invents a brand new turn. Only ``sent`` may
+        promote a fresh key. ``status``/``received``/``error``
+        against an unknown key must be dropped silently so a stale
+        polling callback never invents a turn for an evicted
+        inbound identifier."""
+        ops = self._ops(
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'sent', 'Enviado', 'hola');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'unknown-1', 'status', 'Estado', 'late');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'unknown-2', 'received', 'Respuesta recibida', 'late');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'unknown-3', 'error', 'Error', 'late');\n"
+        )
+        result = _run_emulator_conversation_in_jsdom(
+            initial_html=self._CONTAINER_HTML,
+            operations_js=ops,
+        )
+        # Only the original 'sm-1' turn exists; the late updates
+        # for unknown keys did not create any phantom turn.
+        self.assertEqual(result["children"], 1)
+        self.assertEqual(result["mapKeys"], ["sm-1"])
+        self.assertEqual(result["orderKeys"], ["sm-1"])
+        self.assertEqual(result["labels"], ["Enviado"])
+        self.assertEqual(result["bodies"], ["hola"])
+
+    def test_rekey_for_unknown_old_key_does_not_invent_turn(self) -> None:
+        """A ``rekeyEmulatorTurn`` call for a non-existing old key
+        is a no-op: it must not create a fresh entry under the new
+        key nor mutate ``turnOrder``."""
+        ops = self._ops(
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'sent', 'Enviado', 'hola');\n"
+            "helpers.rekeyEmulatorTurn(state, 'missing', 'sm-late');\n"
+        )
+        result = _run_emulator_conversation_in_jsdom(
+            initial_html=self._CONTAINER_HTML,
+            operations_js=ops,
+        )
+        self.assertEqual(result["children"], 1)
+        self.assertEqual(result["mapKeys"], ["sm-1"])
+        self.assertEqual(result["orderKeys"], ["sm-1"])
+
+    def test_text_rendering_uses_only_textContent(self) -> None:
+        """The turn renderer must use ``textContent`` for the
+        label and body so HTML-like operator text is rendered as
+        literal text. Neither ``innerHTML`` nor the live DOM may
+        introduce any new HTML element from the operator input;
+        everything must round-trip as escape entities inside the
+        body span."""
+        evil_text = "<img src=x onerror=alert(1)><script>alert(2)</script>"
+        ops = self._ops(
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'sent', 'Enviado', "
+            + json.dumps(evil_text)
+            + ");\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'received', 'Respuesta recibida', "
+            + json.dumps(evil_text)
+            + ");\n"
+        )
+        result = _run_emulator_conversation_in_jsdom(
+            initial_html=self._CONTAINER_HTML,
+            operations_js=ops,
+        )
+        self.assertEqual(result["children"], 2)
+        self.assertEqual(result["bodies"], [evil_text, evil_text])
+        # Every direct child is one of the documented
+        # ``debug-emulator-turn`` listitems; no spurious element
+        # was created from the operator input.
+        for kind in result["kinds"]:
+            self.assertIn("debug-emulator-turn", kind)
+            self.assertTrue(
+                kind.startswith("listitem:"),
+                msg=f"unexpected kind entry: {kind}",
+            )
+        # ``<img `` and ``<script>`` are escaped to the entity form
+        # so no real element survives inside the listitem.
+        self.assertNotIn("<img", result["html"])
+        self.assertNotIn("<script", result["html"])
+        # The escaped entities ``&lt;img`` and ``&lt;script``
+        # prove the renderer used safe text APIs rather than
+        # acting on the operator text as markup.
+        self.assertIn("&lt;img", result["html"])
+        self.assertIn("&lt;script", result["html"])
+
+    def test_trim_keeps_in_memory_state_bounded(self) -> None:
+        """The bounded trim must keep both the turnMap and the
+        turnOrder at or below the documented maximum number of
+        turns (100) after a burst of 250 submissions."""
+        ops = self._ops(
+            "for (let i = 0; i < 250; i++) {\n"
+            "  helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-' + i, 'sent', 'Enviado', 'm-' + i);\n"
+            "  helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-' + i, 'received', 'Respuesta recibida', 'r-' + i);\n"
+            "}\n"
+        )
+        result = _run_emulator_conversation_in_jsdom(
+            initial_html=self._CONTAINER_HTML,
+            operations_js=ops,
+        )
+        # 100 turns × 2 rows each = 200 listitems. The map and
+        # order lists are bounded by the number of turns, not
+        # by the number of rows.
+        self.assertEqual(result["children"], 200)
+        self.assertEqual(len(result["mapKeys"]), 100)
+        self.assertEqual(len(result["orderKeys"]), 100)
+        # The surviving keys are sm-150..sm-249 (FIFO).
+        self.assertEqual(result["orderKeys"][0], "sm-150")
+        self.assertEqual(result["orderKeys"][-1], "sm-249")
 
 
 if __name__ == "__main__":

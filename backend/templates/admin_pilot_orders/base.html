@@ -179,6 +179,61 @@
   .debug-transcript .turn-operator { color: var(--accent); }
   .debug-transcript .turn-customer { color: var(--fg); }
   .debug-transcript .turn-error { color: var(--error); }
+  .debug-emulator-conversation {
+    height: 12rem;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    background: #fafafa;
+    padding: 8px;
+    margin: 6px 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 0.9rem;
+    box-sizing: border-box;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+  .debug-emulator-turn {
+    display: block;
+    margin: 0 0 6px 0;
+    padding: 4px 6px;
+    border-left: 3px solid var(--border);
+    background: var(--panel);
+    white-space: pre-wrap;
+    word-break: break-word;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+  .debug-emulator-turn:last-child { margin-bottom: 0; }
+  .debug-emulator-turn-label {
+    display: inline-block;
+    font-weight: 600;
+    margin-right: 6px;
+    font-size: 0.85em;
+  }
+  .debug-emulator-turn-body {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+  .debug-emulator-turn-sent {
+    border-left-color: var(--accent);
+    background: #f4f6fb;
+  }
+  .debug-emulator-turn-sent .debug-emulator-turn-label { color: var(--accent); }
+  .debug-emulator-turn-received {
+    border-left-color: var(--fg);
+    background: var(--panel);
+  }
+  .debug-emulator-turn-received .debug-emulator-turn-label { color: var(--fg); }
+  .debug-emulator-turn-status {
+    border-left-color: var(--muted);
+    background: #f1f1f4;
+  }
+  .debug-emulator-turn-status .debug-emulator-turn-label { color: var(--muted); }
+  .debug-emulator-turn-error {
+    border-left-color: var(--error);
+    background: #fde8e8;
+  }
+  .debug-emulator-turn-error .debug-emulator-turn-label { color: var(--error); }
   .debug-form textarea {
     width: 100%;
     min-height: 3rem;
@@ -728,6 +783,168 @@
     return typeof value === "string" && value.length > 0 && value.length <= 4096;
   }
 
+  var EMULATOR_CONVERSATION_MAX_TURNS = 100;
+  var EMULATOR_CONVERSATION_TEXT_LIMIT = 4096;
+
+  var EMULATOR_CONVERSATION_KIND_KEYS = [
+    "sent",
+    "status",
+    "received",
+    "error"
+  ];
+
+  var EMULATOR_CONVERSATION_KIND_SET = {
+    sent: true,
+    status: true,
+    received: true,
+    error: true
+  };
+
+  function truncateEmulatorConversationText(value) {
+    if (typeof value !== "string") {
+      return "";
+    }
+    if (value.length <= EMULATOR_CONVERSATION_TEXT_LIMIT) {
+      return value;
+    }
+    return value.slice(0, EMULATOR_CONVERSATION_TEXT_LIMIT);
+  }
+
+  function createEmulatorConversationState(container) {
+    return {
+      container: container || null,
+      turnMap: {},
+      turnOrder: []
+    };
+  }
+
+  function createEmulatorTurnElement(kind, label, body) {
+    var item = document.createElement("div");
+    item.setAttribute("role", "listitem");
+    item.className =
+      "debug-emulator-turn debug-emulator-turn-" + kind;
+    var labelSpan = document.createElement("span");
+    labelSpan.className = "debug-emulator-turn-label";
+    labelSpan.textContent = label;
+    var bodySpan = document.createElement("span");
+    bodySpan.className = "debug-emulator-turn-body";
+    bodySpan.textContent = body;
+    item.appendChild(labelSpan);
+    item.appendChild(bodySpan);
+    return item;
+  }
+
+  function createEmulatorTurnEntry() {
+    var entry = {};
+    for (var i = 0; i < EMULATOR_CONVERSATION_KIND_KEYS.length; i++) {
+      entry[EMULATOR_CONVERSATION_KIND_KEYS[i]] = null;
+    }
+    return entry;
+  }
+
+  function getEmulatorTurnEntryKindElement(entry, kind) {
+    if (!entry || !kind) {
+      return null;
+    }
+    return entry[kind] || null;
+  }
+
+  function setEmulatorTurnEntryKindElement(entry, kind, element) {
+    if (!entry || !kind) {
+      return;
+    }
+    entry[kind] = element || null;
+  }
+
+  function trimEmulatorConversation(state) {
+    if (!state || !state.container || !state.turnOrder) {
+      return;
+    }
+    while (state.turnOrder.length > EMULATOR_CONVERSATION_MAX_TURNS) {
+      var oldestKey = state.turnOrder.shift();
+      var entry = state.turnMap[oldestKey];
+      if (entry) {
+        for (var i = 0; i < EMULATOR_CONVERSATION_KIND_KEYS.length; i++) {
+          var kind = EMULATOR_CONVERSATION_KIND_KEYS[i];
+          var element = getEmulatorTurnEntryKindElement(entry, kind);
+          if (
+            element &&
+            element.parentNode &&
+            element.parentNode === state.container
+          ) {
+            state.container.removeChild(element);
+          }
+          setEmulatorTurnEntryKindElement(entry, kind, null);
+        }
+        delete state.turnMap[oldestKey];
+      }
+    }
+  }
+
+  function scrollEmulatorConversationToBottom(state) {
+    if (!state || !state.container) {
+      return;
+    }
+    state.container.scrollTop = state.container.scrollHeight;
+  }
+
+  function appendOrUpdateEmulatorTurn(state, key, kind, label, body) {
+    if (!state || !state.container || !key) {
+      return null;
+    }
+    if (!EMULATOR_CONVERSATION_KIND_SET[kind]) {
+      return null;
+    }
+    var safeLabel = truncateEmulatorConversationText(label);
+    var safeBody = truncateEmulatorConversationText(body);
+    var entry = state.turnMap[key];
+    if (!entry) {
+      if (kind !== "sent") {
+        return null;
+      }
+      entry = createEmulatorTurnEntry();
+      state.turnMap[key] = entry;
+      state.turnOrder.push(key);
+    }
+    var existingElement = getEmulatorTurnEntryKindElement(entry, kind);
+    if (existingElement) {
+      existingElement.className =
+        "debug-emulator-turn debug-emulator-turn-" + kind;
+      if (existingElement.firstChild) {
+        existingElement.firstChild.textContent = safeLabel;
+      }
+      if (existingElement.lastChild) {
+        existingElement.lastChild.textContent = safeBody;
+      }
+      scrollEmulatorConversationToBottom(state);
+      return entry;
+    }
+    var element = createEmulatorTurnElement(kind, safeLabel, safeBody);
+    state.container.appendChild(element);
+    setEmulatorTurnEntryKindElement(entry, kind, element);
+    trimEmulatorConversation(state);
+    scrollEmulatorConversationToBottom(state);
+    return entry;
+  }
+
+  function rekeyEmulatorTurn(state, oldKey, newKey) {
+    if (!state || oldKey === newKey || !oldKey || !newKey) {
+      return;
+    }
+    var entry = state.turnMap[oldKey];
+    if (!entry) {
+      return;
+    }
+    delete state.turnMap[oldKey];
+    state.turnMap[newKey] = entry;
+    for (var i = 0; i < state.turnOrder.length; i++) {
+      if (state.turnOrder[i] === oldKey) {
+        state.turnOrder[i] = newKey;
+        return;
+      }
+    }
+  }
+
   function renderEmulatorResult(result) {
     var container = document.querySelector("[data-debug-emulator-result]");
     if (!container) {
@@ -767,6 +984,59 @@
     var submit = form.querySelector("[data-debug-emulator-submit]");
     var textarea = form.querySelector("[data-debug-emulator-textarea]");
     var statusUrl = form.getAttribute("data-debug-emulator-status-url") || "";
+    var conversationContainer = document.querySelector(
+      "[data-debug-emulator-conversation]"
+    );
+    var conversationState = createEmulatorConversationState(
+      conversationContainer
+    );
+
+    var EMULATOR_CONVERSATION_LABELS = {
+      sent: "Enviado",
+      received: "Respuesta recibida",
+      status: "Estado",
+      error: "Error"
+    };
+
+    function conversationAppendSent(pendingKey, text) {
+      appendOrUpdateEmulatorTurn(
+        conversationState,
+        pendingKey,
+        "sent",
+        EMULATOR_CONVERSATION_LABELS.sent,
+        text
+      );
+    }
+
+    function conversationMarkError(key, message) {
+      appendOrUpdateEmulatorTurn(
+        conversationState,
+        key,
+        "error",
+        EMULATOR_CONVERSATION_LABELS.error,
+        message
+      );
+    }
+
+    function conversationAppendStatus(key, statusText) {
+      appendOrUpdateEmulatorTurn(
+        conversationState,
+        key,
+        "status",
+        EMULATOR_CONVERSATION_LABELS.status,
+        statusText
+      );
+    }
+
+    function conversationAppendReceived(key, bodyText) {
+      appendOrUpdateEmulatorTurn(
+        conversationState,
+        key,
+        "received",
+        EMULATOR_CONVERSATION_LABELS.received,
+        bodyText
+      );
+    }
 
     function setStatus(text) {
       if (statusNode) {
@@ -783,18 +1053,22 @@
       }
     }
 
-    function failGeneric() {
+    function failGeneric(errorKey) {
       clearEmulatorResult();
+      if (errorKey) {
+        conversationMarkError(errorKey, "El Twilio Emulator rechazó el mensaje.");
+      }
       setStatus("El Twilio Emulator rechazó el mensaje.");
       setBusy(false);
     }
 
     var pendingPollHandle = null;
     var currentInboundId = null;
+    var submissionCounter = 0;
 
     function pollEmulatorStatus(attemptsLeft) {
       if (attemptsLeft <= 0 || !currentInboundId || !statusUrl) {
-        failGeneric();
+        failGeneric(currentInboundId);
         return;
       }
       pendingPollHandle = setTimeout(function () {
@@ -817,10 +1091,27 @@
           })
           .then(function (result) {
             if (!result.ok || !isValidEmulatorStatusResponse(result.data)) {
-              failGeneric();
+              failGeneric(currentInboundId);
               return;
             }
             renderEmulatorResult(result.data);
+            if (result.data.status === "processed" && isBoundedDisplayString(result.data.outbound_body)) {
+              conversationAppendReceived(currentInboundId, result.data.outbound_body);
+            } else if (
+              result.data.status === "sent" &&
+              isBoundedDisplayString(result.data.outbound_body)
+            ) {
+              conversationAppendReceived(currentInboundId, result.data.outbound_body);
+            } else if (result.data.status === "retryable" || result.data.status === "terminal") {
+              conversationMarkError(currentInboundId, "Estado: " + result.data.status);
+            } else if (
+              result.data.status === "accepted" ||
+              result.data.status === "pending"
+            ) {
+              conversationAppendStatus(currentInboundId, result.data.status);
+            } else {
+              conversationAppendStatus(currentInboundId, result.data.status);
+            }
             if (TERMINAL_EMULATOR_STATUSES[result.data.status] === true) {
               setStatus("Listo.");
               setBusy(false);
@@ -831,7 +1122,7 @@
             pollEmulatorStatus(attemptsLeft - 1);
           })
           .catch(function () {
-            failGeneric();
+            failGeneric(currentInboundId);
           });
       }, EMULATOR_POLL_INTERVAL_MS);
     }
@@ -855,6 +1146,9 @@
       clearEmulatorResult();
       setBusy(true);
       setStatus("Enviando al Twilio Emulator…");
+      submissionCounter += 1;
+      var pendingKey = "pending-" + String(submissionCounter);
+      conversationAppendSent(pendingKey, trimmed);
       fetch(form.action, {
         method: "POST",
         credentials: "same-origin",
@@ -873,14 +1167,16 @@
         })
         .then(function (result) {
           if (!result.ok || !isValidEmulatorSubmitResponse(result.data)) {
-            failGeneric();
+            failGeneric(pendingKey);
             return;
           }
           currentInboundId = result.data.synthetic_inbound_id;
+          rekeyEmulatorTurn(conversationState, pendingKey, currentInboundId);
+          conversationAppendStatus(currentInboundId, result.data.status || "accepted");
           pollEmulatorStatus(EMULATOR_MAX_POLL_ATTEMPTS);
         })
         .catch(function () {
-          failGeneric();
+          failGeneric(pendingKey);
         });
     });
   });
@@ -1016,6 +1312,16 @@
       isValidLineEntry: isValidLineEntry,
       validateOrderLines: validateOrderLines,
       updateOrderLines: updateOrderLines
+    };
+    window.__panelDebugEmulator = {
+      EMULATOR_CONVERSATION_MAX_TURNS: EMULATOR_CONVERSATION_MAX_TURNS,
+      EMULATOR_CONVERSATION_TEXT_LIMIT: EMULATOR_CONVERSATION_TEXT_LIMIT,
+      truncateEmulatorConversationText: truncateEmulatorConversationText,
+      createEmulatorConversationState: createEmulatorConversationState,
+      createEmulatorTurnElement: createEmulatorTurnElement,
+      appendOrUpdateEmulatorTurn: appendOrUpdateEmulatorTurn,
+      rekeyEmulatorTurn: rekeyEmulatorTurn,
+      trimEmulatorConversation: trimEmulatorConversation
     };
   }
 })();

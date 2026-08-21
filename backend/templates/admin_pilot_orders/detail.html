@@ -58,11 +58,20 @@
       ></textarea>
       <button type="submit" data-debug-emulator-submit>Enviar por Twilio Emulator</button>
     </form>
-    <h3>Resultado del Twilio Emulator (solo esta página)</h3>
+    <h3>Conversación del Twilio Emulator (solo esta página)</h3>
+    <p class="muted">El historial vive solo en esta pestaña del navegador.
+    No se guarda, ni usa cookies del navegador, ni el almacén persistente
+    del navegador, ni parámetros de URL. Puede seleccionarse y copiarse
+    manualmente; el Emulator no contacta Twilio real.</p>
+    <div
+      class="debug-emulator-conversation"
+      data-debug-emulator-conversation
+      role="list"
+      aria-live="polite"
+    ></div>
+    <p class="muted">Resultado del último turno (solo esta página):</p>
     <div class="debug-emulator-result" data-debug-emulator-result aria-live="polite">
-      <p class="muted">El resultado vive solo en esta pestaña del navegador.
-      No se guarda, ni usa cookies del navegador, ni el almacén persistente
-      del navegador, ni parámetros de URL.</p>
+      <p class="muted">Sin resultado del último turno todavía.</p>
     </div>
     <p class="muted" data-debug-emulator-status>Listo.</p>
     <p class="muted debug-emulator-note">Canal Twilio Emulator; no contacta Twilio real.</p>
