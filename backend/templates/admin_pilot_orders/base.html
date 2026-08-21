@@ -251,6 +251,57 @@
       grid-template-columns: 1fr;
     }
   }
+  .bootstrap-section {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    padding: 12px 16px;
+    margin: 12px 0;
+  }
+  .bootstrap-form input[type="number"] {
+    padding: 4px 6px;
+    font-size: 0.9rem;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    margin: 4px 0 8px 0;
+    display: block;
+  }
+  .bootstrap-form textarea {
+    width: 100%;
+    min-height: 3rem;
+    padding: 6px 8px;
+    font-family: inherit;
+    font-size: 0.92rem;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    box-sizing: border-box;
+    resize: vertical;
+    margin: 4px 0 8px 0;
+  }
+  .bootstrap-form button {
+    padding: 6px 12px;
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: #fff;
+    border-radius: 3px;
+    cursor: pointer;
+  }
+  .bootstrap-form button[disabled] {
+    background: var(--muted);
+    border-color: var(--muted);
+    cursor: not-allowed;
+  }
+  .bootstrap-form input[disabled],
+  .bootstrap-form textarea[disabled] {
+    background: #f1f1f4;
+    color: var(--muted);
+  }
+  .bootstrap-result {
+    margin: 6px 0;
+  }
+  .bootstrap-note {
+    font-size: 0.85rem;
+    margin: 6px 0 0 0;
+  }
 </style>
 </head>
 <body>
@@ -830,6 +881,132 @@
         })
         .catch(function () {
           failGeneric();
+        });
+    });
+  });
+
+  var BOOTSTRAP_GENERIC_REJECTION_MESSAGE = "El Twilio Emulator rechazó el mensaje.";
+
+  var bootstrapForms = document.querySelectorAll("[data-debug-bootstrap-form]");
+  bootstrapForms.forEach(function (form) {
+    var statusNode = document.querySelector("[data-debug-bootstrap-status]");
+    var resultNode = document.querySelector("[data-debug-bootstrap-result]");
+    var submit = form.querySelector("[data-debug-bootstrap-submit]");
+    var clienteInput = form.querySelector("[data-debug-bootstrap-cliente]");
+    var comercioInput = form.querySelector("[data-debug-bootstrap-comercio]");
+    var textarea = form.querySelector("[data-debug-bootstrap-textarea]");
+
+    function setStatus(text) {
+      if (statusNode) {
+        statusNode.textContent = text;
+      }
+    }
+
+    function clearResult() {
+      if (resultNode) {
+        resultNode.textContent = "";
+      }
+    }
+
+    function setBusy(busy) {
+      if (submit) {
+        submit.disabled = busy;
+      }
+      if (textarea) {
+        textarea.disabled = busy;
+      }
+      if (clienteInput) {
+        clienteInput.disabled = busy;
+      }
+      if (comercioInput) {
+        comercioInput.disabled = busy;
+      }
+    }
+
+    function isPositiveInt(value) {
+      return typeof value === "string" && /^[1-9][0-9]*$/.test(value);
+    }
+
+    function isValidBootstrapResponse(data) {
+      return (
+        data &&
+        typeof data === "object" &&
+        typeof data.synthetic_inbound_id === "string" &&
+        data.synthetic_inbound_id.length > 0
+      );
+    }
+
+    function failGeneric() {
+      clearResult();
+      setStatus(BOOTSTRAP_GENERIC_REJECTION_MESSAGE);
+      setBusy(false);
+    }
+
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      if (!textarea || !clienteInput || !comercioInput) {
+        return;
+      }
+      var clienteId = clienteInput.value || "";
+      var comercioId = comercioInput.value || "";
+      var raw = textarea.value || "";
+      var trimmed = raw.trim();
+      if (!isPositiveInt(clienteId) || !isPositiveInt(comercioId)) {
+        setStatus("IDs inválidos: cliente_id y comercio_id deben ser enteros positivos.");
+        return;
+      }
+      if (!trimmed) {
+        setStatus("Mensaje vacío: no se envió nada.");
+        return;
+      }
+      clearResult();
+      setBusy(true);
+      setStatus("Enviando al Twilio Emulator…");
+      fetch(form.action, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Emulator-Test-Origin": "same-origin"
+        },
+        body: JSON.stringify({
+          cliente_id: parseInt(clienteId, 10),
+          comercio_id: parseInt(comercioId, 10),
+          message: trimmed
+        })
+      })
+        .then(function (response) {
+          return response.json().catch(function () {
+            return {};
+          }).then(function (data) {
+            return { ok: response.ok, data: data };
+          });
+        })
+        .then(function (result) {
+          if (!result.ok || !isValidBootstrapResponse(result.data)) {
+            failGeneric();
+            return;
+          }
+          if (resultNode) {
+            var syntheticId =
+              typeof result.data.synthetic_inbound_id === "string"
+                ? result.data.synthetic_inbound_id
+                : "";
+            if (syntheticId.length > 128) {
+              syntheticId = syntheticId.slice(0, 128);
+            }
+            resultNode.textContent =
+              "Aceptado. El pedido aparecerá cuando el worker procese el inbound. Recargá el listado para verlo. ID sintético: " +
+              syntheticId;
+          }
+          setStatus("Ingreso aceptado, procesamiento en curso.");
+          textarea.value = "";
+        })
+        .catch(function () {
+          failGeneric();
+        })
+        .then(function () {
+          setBusy(false);
         });
     });
   });
