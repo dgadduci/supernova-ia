@@ -38,6 +38,50 @@
   <p class="muted">Rango por defecto: últimos 7 días. Rango máximo permitido: 31 días. Filtros <code>from</code>/<code>to</code> interpretados en <strong>UTC</strong>.</p>
 </form>
 
+<section class="panel-section bootstrap-section" aria-label="Bootstrap de inbound por Twilio Emulator">
+  <h2>Iniciar inbound de cliente por Twilio Emulator</h2>
+  <p class="muted">Inicia un inbound de prueba sin pedido previo. La sesión y el pedido <code>borrador</code> los crea el worker cuando procesa el mensaje. El cliente y el comercio deben estar activos; el canal dedicado de Twilio, la instalación T-C y la disponibilidad del comercio deben estar configurados. Si ya existe una sesión activa para ese par, el pedido no se crea.</p>
+  <form
+    class="debug-form bootstrap-form"
+    method="post"
+    action="/admin/pilot/orders/emulator-bootstrap"
+    data-debug-bootstrap-form
+  >
+    <label class="muted" for="bootstrap-cliente-id">ID de cliente (positivo)</label>
+    <input
+      id="bootstrap-cliente-id"
+      type="number"
+      name="cliente_id"
+      min="1"
+      step="1"
+      required
+      data-debug-bootstrap-cliente
+    >
+    <label class="muted" for="bootstrap-comercio-id">ID de comercio (positivo)</label>
+    <input
+      id="bootstrap-comercio-id"
+      type="number"
+      name="comercio_id"
+      min="1"
+      step="1"
+      required
+      data-debug-bootstrap-comercio
+    >
+    <label class="muted" for="bootstrap-message">Mensaje entrante (texto plano)</label>
+    <textarea
+      id="bootstrap-message"
+      name="message"
+      maxlength="{{ bootstrap_max_chars }}"
+      data-debug-bootstrap-textarea
+      required
+    ></textarea>
+    <button type="submit" data-debug-bootstrap-submit>Iniciar inbound de cliente por Twilio Emulator</button>
+  </form>
+  <p class="muted bootstrap-status" data-debug-bootstrap-status>Listo.</p>
+  <p class="muted bootstrap-result" data-debug-bootstrap-result aria-live="polite"></p>
+  <p class="muted bootstrap-note">Canal Twilio Emulator; no contacta Twilio real. Si el pedido no aparece, recargá el listado.</p>
+</section>
+
 {% if list_view.rows %}
 <table>
   <thead>

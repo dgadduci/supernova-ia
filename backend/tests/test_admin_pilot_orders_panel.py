@@ -893,8 +893,9 @@ class PanelNoMutationTest(unittest.TestCase):
 
     def test_only_get_routes_are_registered_outside_local_test(self) -> None:
         """The panel owns the panel-local test channel for the exact
-        selected Pedido and the explicit Twilio emulator-test
-        action. Every other route must remain GET-only."""
+        selected Pedido, the explicit Twilio emulator-test action
+        and the bounded emulator-bootstrap action. Every other
+        route must remain GET-only."""
         for route in router_module.router.routes:
             methods = getattr(route, "methods", set())
             path = getattr(route, "path", "")
@@ -917,16 +918,27 @@ class PanelNoMutationTest(unittest.TestCase):
                     ),
                 )
                 continue
+            if path.endswith("/emulator-bootstrap"):
+                self.assertEqual(
+                    methods,
+                    {"POST"},
+                    msg=(
+                        "emulator-bootstrap route must be POST only, "
+                        f"got {methods}"
+                    ),
+                )
+                continue
             self.assertTrue(
                 methods.issubset({"GET", "HEAD"}),
                 msg=f"non-GET methods registered: {methods}",
             )
 
     def test_templates_contain_no_mutating_form_outside_local_test(self) -> None:
-        """The list view carries only the documented GET filter
-        form; the detail view carries exactly the documented
-        local-test form pointing at the panel-local POST route,
-        never at any external action."""
+        """The list view carries the documented GET filter form
+        and the documented emulator-bootstrap POST form; the
+        detail view carries exactly the documented local-test
+        form pointing at the panel-local POST route, never at any
+        external action."""
         with patch.object(
             router_module,
             "PilotOrderOperationsViewService",
@@ -943,11 +955,17 @@ class PanelNoMutationTest(unittest.TestCase):
                 "/admin/pilot/orders",
                 headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
             )
-        self.assertNotIn('method="post"', list_response.text)
-        self.assertNotIn('method="POST"', list_response.text)
         self.assertNotIn('method="put"', list_response.text)
         self.assertNotIn('method="delete"', list_response.text)
         self.assertIn('method="get"', list_response.text)
+        # The list view carries the documented bootstrap form
+        # pointing at the panel-controlled emulator-bootstrap
+        # route, never at any external action.
+        self.assertIn(
+            'action="/admin/pilot/orders/emulator-bootstrap"',
+            list_response.text,
+        )
+        self.assertIn("X-Emulator-Test-Origin", list_response.text)
         with patch.object(
             router_module,
             "PilotOrderOperationsViewService",

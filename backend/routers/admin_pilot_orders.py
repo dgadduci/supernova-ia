@@ -66,7 +66,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, Header, Path, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
@@ -98,7 +98,9 @@ from backend.services.admin_pilot_emulator_service import (
     emit_admin_emulator_event,
     load_active_emulator_target,
     load_active_installation,
+    load_active_session_for_comercio_cliente,
     normalize_destination_e164,
+    resolve_bootstrap_target,
     resolve_cliente_e164,
 )
 from backend.services.commerce_availability_service import (
@@ -712,6 +714,7 @@ def list_orders(
             "estado_choices": _ESTADO_VALUES,
             "page_size_choices": ALLOWED_PAGE_SIZES,
             "paginator_url": paginator_url,
+            "bootstrap_max_chars": EMULATOR_BOOTSTRAP_MAX_MESSAGE_CHARS,
         },
     )
 
@@ -1358,12 +1361,212 @@ def emulator_test_status(
     return JSONResponse(status_code=200, content=body)
 
 
+EMULATOR_BOOTSTRAP_MAX_MESSAGE_CHARS: int = 500
+EMULATOR_BOOTSTRAP_ORIGIN_HEADER: str = "X-Emulator-Test-Origin"
+EMULATOR_BOOTSTRAP_ORIGIN_VALUE: str = "same-origin"
+EMULATOR_BOOTSTRAP_REJECTED_MESSAGE: str = (
+    "El canal de Twilio Emulator rechazó el mensaje. "
+    "Revisá la consola y el panel principal para más detalles."
+)
+
+
+def _emulator_bootstrap_rejection() -> JSONResponse:
+    """Return the documented generic rejection for the bootstrap path.
+
+    The route never emits a precise diagnostic so the response
+    cannot be used to enumerate the operator error class. It is the
+    only JSON body the route emits for invalid submissions.
+    """
+    return JSONResponse(
+        status_code=400,
+        content={
+            "responses": [],
+            "message": EMULATOR_BOOTSTRAP_REJECTED_MESSAGE,
+        },
+    )
+
+
+class EmulatorBootstrapRequest(BaseModel):
+    """Bounded request schema for the bootstrap panel action.
+
+    The schema accepts exactly the three documented fields. The
+    ``extra='forbid'`` config keeps the surface minimal so the
+    browser cannot smuggle in E.164 addresses, URLs, credentials
+    or arbitrary provider payloads. ``cliente_id`` and ``comercio_id``
+    are the operator-selected test identity; the server resolves the
+    canonical provider addresses from the database.
+
+    ``message`` enforces a positive character budget via
+    ``max_length`` and a server-side non-blank validator that
+    rejects ``""``, ASCII spaces, tabs and newlines. ``min_length=1``
+    alone accepts whitespace-only payloads (e.g. ``"   "``,
+    ``"\\t\\n"``), so the explicit ``field_validator`` is the
+    authoritative guard against contacting the Twilio Emulator with
+    an empty operator body. The original message is preserved
+    untouched when it carries at least one non-whitespace character;
+    the validator never normalises a valid submission.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    cliente_id: int = Field(gt=0)
+    comercio_id: int = Field(gt=0)
+    message: str = Field(max_length=EMULATOR_BOOTSTRAP_MAX_MESSAGE_CHARS)
+
+    @field_validator("message")
+    @classmethod
+    def _require_non_blank_message(cls, value: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("message must not be blank")
+        return value
+
+
+class EmulatorBootstrapResponse(BaseModel):
+    """Bounded bootstrap response payload.
+
+    ``synthetic_inbound_id`` is the bounded identifier the browser
+    used to poll the receipt/outbox state. The schema deliberately
+    omits message bodies, signatures, credentials, URLs, exception
+    text, client/commerce identifiers or arbitrary operator input
+    so the wire payload cannot leak sensitive data.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    synthetic_inbound_id: str
+
+
+@router.post("/emulator-bootstrap", response_class=JSONResponse)
+def emulator_bootstrap_inbound(
+    payload: EmulatorBootstrapRequest,
+    db: Annotated[Session, Depends(get_session)],
+    origin_header: Annotated[
+        str | None, Header(alias=EMULATOR_BOOTSTRAP_ORIGIN_HEADER)
+    ] = None,
+) -> JSONResponse:
+    """Bootstrap a clean emulator inbound from the Admin/Pilot list.
+
+    The route is the only entry point that drives the emulator
+    inbound from an operator-selected cliente/comercio pair. It
+    validates the exact active Cliente, the canonical dedicated
+    Twilio channel for the comercio, the active T-C installation
+    and the commerce availability BEFORE invoking the emulator.
+
+    The route rejects the submission when the cliente/comercio
+    pair already has an active Session so the bootstrap action
+    cannot race with an existing context. It never closes,
+    replaces or mutates that session or pedido.
+
+    The route never calls the coordinator, worker, dispatcher,
+    central Twilio or T-C directly. It only invokes the
+    authenticated emulator inbound control surface and returns the
+    synthetic inbound identifier the browser uses to refresh the
+    existing order list. The provider worker remains responsible
+    for creating the active Session and the draft Pedido.
+
+    The route never commits, rolls back, flushes, refreshes,
+    begins or closes the database session. The request-level
+    dependency remains the transaction owner. The route never
+    creates a Session, Pedido, Cliente, channel, installation,
+    receipt, processing row or outbox row directly.
+
+    Every failure branch returns the documented generic rejection
+    so the operator cannot probe which invariant failed.
+    """
+    if origin_header != EMULATOR_BOOTSTRAP_ORIGIN_VALUE:
+        emit_admin_emulator_event(
+            outcome="rejected", reason="invalid_origin"
+        )
+        return _emulator_bootstrap_rejection()
+
+    settings = load_settings()
+    if (
+        settings.twilio_provider_mode != "emulator"
+        or not bool(settings.commerce_isolated_outbound_enabled)
+    ):
+        emit_admin_emulator_event(
+            outcome="unavailable", reason="emulator_disabled"
+        )
+        return _emulator_bootstrap_rejection()
+    from backend.config.settings import validate_emulator_settings
+
+    try:
+        validate_emulator_settings(settings)
+    except ValueError:
+        emit_admin_emulator_event(
+            outcome="unavailable", reason="emulator_disabled"
+        )
+        return _emulator_bootstrap_rejection()
+
+    target = resolve_bootstrap_target(
+        db,
+        cliente_id=payload.cliente_id,
+        comercio_id=payload.comercio_id,
+    )
+    if target is None:
+        emit_admin_emulator_event(
+            outcome="rejected", reason="invalid_target"
+        )
+        return _emulator_bootstrap_rejection()
+
+    if (
+        load_active_session_for_comercio_cliente(
+            db,
+            cliente_id=payload.cliente_id,
+            comercio_id=payload.comercio_id,
+        )
+        is not None
+    ):
+        emit_admin_emulator_event(
+            outcome="rejected", reason="active_context"
+        )
+        return _emulator_bootstrap_rejection()
+
+    emulator_client = build_emulator_control_client(
+        base_url=settings.twilio_emulator_base_url,
+        control_token=settings.twilio_emulator_control_token,
+        timeout_seconds=float(
+            settings.twilio_emulator_http_timeout_seconds
+        ),
+    )
+    if emulator_client is None:
+        emit_admin_emulator_event(
+            outcome="unavailable", reason="emulator_disabled"
+        )
+        return _emulator_bootstrap_rejection()
+
+    try:
+        response = emulator_client.submit_inbound(
+            source_e164=target.cliente_e164,
+            destination_e164=target.canal_destination_e164,
+            body=payload.message,
+        )
+    except Exception:  # noqa: BLE001 - the emulator path fails closed on every transport failure
+        emit_admin_emulator_event(
+            outcome="unavailable", reason="transport"
+        )
+        return _emulator_bootstrap_rejection()
+
+    emit_admin_emulator_event(outcome="submitted")
+
+    body = EmulatorBootstrapResponse(
+        synthetic_inbound_id=response.synthetic_inbound_id,
+    ).model_dump()
+    return JSONResponse(status_code=200, content=body)
+
+
 __all__ = [
+    "EMULATOR_BOOTSTRAP_MAX_MESSAGE_CHARS",
+    "EMULATOR_BOOTSTRAP_ORIGIN_HEADER",
+    "EMULATOR_BOOTSTRAP_ORIGIN_VALUE",
+    "EMULATOR_BOOTSTRAP_REJECTED_MESSAGE",
     "LOCAL_TEST_EXECUTION_STATE_EMPTY_SCHEMA_VERSION",
     "LOCAL_TEST_MAX_MESSAGE_CHARS",
     "LOCAL_TEST_ORIGIN_HEADER",
     "LOCAL_TEST_ORIGIN_VALUE",
     "_ESTADO_VALUES",
+    "EmulatorBootstrapRequest",
+    "EmulatorBootstrapResponse",
     "EmulatorStatusRequest",
     "EmulatorStatusResponse",
     "EmulatorTestRequest",
@@ -1373,6 +1576,7 @@ __all__ = [
     "LocalTestRequest",
     "LocalTestResponse",
     "_build_list_url",
+    "_emulator_bootstrap_rejection",
     "_emulator_outbox_summary",
     "_emulator_rejection",
     "_is_confirmed_clean_context",
@@ -1380,6 +1584,7 @@ __all__ = [
     "_load_confirmed_local_test_session",
     "_reload_exact_session_for_snapshot",
     "_serialize_execution_state",
+    "emulator_bootstrap_inbound",
     "emulator_test_message",
     "emulator_test_status",
     "router",

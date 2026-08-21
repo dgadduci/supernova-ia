@@ -83,6 +83,24 @@ class EmulatorTestResult:
     target: EmulatorTestTarget
 
 
+@dataclass(frozen=True)
+class EmulatorBootstrapTarget:
+    """Bounded selection for the bootstrap emulator inbound.
+
+    The dataclass mirrors the resolution contract: the operator
+    supplies ``cliente_id`` and ``comercio_id``; the route resolves
+    the canonical E.164 of the cliente and the dedicated Twilio
+    channel for the comercio server-side. The browser never picks
+    the address or the channel.
+    """
+
+    cliente_id: int
+    comercio_id: int
+    cliente_e164: str
+    canal_id: int
+    canal_destination_e164: str
+
+
 def load_active_emulator_target(
     db: SqlSession, pedido_id: int
 ) -> EmulatorTestTarget | None:
@@ -252,8 +270,119 @@ def emit_emulator_outbound_event(
     )
 
 
+def resolve_bootstrap_target(
+    db: SqlSession,
+    *,
+    cliente_id: int,
+    comercio_id: int,
+) -> EmulatorBootstrapTarget | None:
+    """Resolve the bootstrap target for the synthetic emulator inbound.
+
+    The helper performs six read-only lookups against the database:
+
+    1. The active :class:`Cliente` row keyed by ``cliente_id``.
+    2. The canonical E.164 of the cliente from ``cliente.whatsapp``.
+    3. The active dedicated Twilio channel for the commerce.
+    4. The canonical E.164 of that channel destination.
+    5. The active T-C installation for the commerce.
+    6. The bounded commerce availability outcome.
+
+    The helper returns ``None`` when any of those invariants fails so
+    the route can emit the documented generic rejection without
+    leaking which guard failed. The helper NEVER creates a Session,
+    Pedido, receipt, processing row or outbox row; it NEVER commits,
+    rolls back, flushes, refreshes, begins or closes the session
+    and NEVER calls the emulator, T-C, coordinator, worker or
+    dispatcher. The request-level dependency remains the
+    transaction owner.
+    """
+    from sqlalchemy import select
+
+    if not isinstance(cliente_id, int) or cliente_id <= 0:
+        return None
+    if not isinstance(comercio_id, int) or comercio_id <= 0:
+        return None
+
+    cliente = db.execute(
+        select(Cliente).where(Cliente.id == cliente_id)
+    ).unique().scalar_one_or_none()
+    if cliente is None:
+        return None
+    if not bool(getattr(cliente, "activo", False)):
+        return None
+
+    cliente_e164 = resolve_cliente_e164(db, cliente_id=cliente_id)
+    if cliente_e164 is None:
+        return None
+
+    canal = _load_dedicated_canal(db=db, comercio_id=comercio_id)
+    if canal is None:
+        return None
+
+    destination_e164 = normalize_destination_e164(
+        str(getattr(canal, "destination_e164", "") or "")
+    )
+    if destination_e164 is None:
+        return None
+
+    if load_active_installation(db, comercio_id=comercio_id) is None:
+        return None
+
+    if (
+        commerce_availability_status(db, comercio_id=comercio_id)
+        is not CommerceAvailabilityStatus.AVAILABLE
+    ):
+        return None
+
+    return EmulatorBootstrapTarget(
+        cliente_id=int(cliente_id),
+        comercio_id=int(comercio_id),
+        cliente_e164=cliente_e164,
+        canal_id=int(canal.id),
+        canal_destination_e164=destination_e164,
+    )
+
+
+def load_active_session_for_comercio_cliente(
+    db: SqlSession,
+    *,
+    cliente_id: int,
+    comercio_id: int,
+) -> SessionModel | None:
+    """Return the active Session for the exact cliente/comercio pair.
+
+    The loader is the single read-only check used by the bootstrap
+    route to fail closed when the operator already has an active
+    order context open. It returns ``None`` for every other shape —
+    no cliente/comercio pair, missing row, or inactive Session — so
+    the caller can emit the documented generic rejection without
+    leaking which invariant failed.
+
+    The loader NEVER searches for a different session, a successor
+    session, or an alternative active session for the same
+    cliente/comercio pair. It NEVER modifies, closes or replaces
+    the returned session. It NEVER commits, rolls back, flushes,
+    refreshes, begins or closes the database session.
+    """
+    from sqlalchemy import select
+
+    if not isinstance(cliente_id, int) or cliente_id <= 0:
+        return None
+    if not isinstance(comercio_id, int) or comercio_id <= 0:
+        return None
+
+    stmt = (
+        select(SessionModel)
+        .where(SessionModel.id_comercio == comercio_id)
+        .where(SessionModel.id_cliente == cliente_id)
+        .where(SessionModel.estado_session == EstadoSession.ACTIVA)
+    )
+    return db.execute(stmt).unique().scalar_one_or_none()
+
+
 __all__ = [
     "AdminPilotEmulatorError",
+    "EmulatorBootstrapTarget",
     "EmulatorTestResult",
     "EmulatorTestTarget",
     "commerce_availability_status",
@@ -261,6 +390,8 @@ __all__ = [
     "emit_emulator_outbound_event",
     "load_active_emulator_target",
     "load_active_installation",
+    "load_active_session_for_comercio_cliente",
     "normalize_destination_e164",
+    "resolve_bootstrap_target",
     "resolve_cliente_e164",
 ]
