@@ -31,7 +31,6 @@ from backend.models import (
     CanalWhatsapp,
     CanalWhatsappMode,
     Cliente,
-    EstadoPedido,
     EstadoSession,
     InstalacionTwilioComercio,
     Pedido,
@@ -106,12 +105,23 @@ def load_active_emulator_target(
 ) -> EmulatorTestTarget | None:
     """Return the exact active pedido/session for the emulator path.
 
-    The loader mirrors the same identity contract as
-    :func:`admin_pilot_orders._load_local_test_session` but accepts
-    pedidos in any non-``BORRADOR`` state so the panel can drive a
-    test message through the documented pipeline after the operator
-    confirmed the order. It returns ``None`` for every shape the
-    admin must reject without leaking which invariant failed.
+    The loader accepts the exact Pedido in ``BORRADOR`` state when it
+    has an associated active Session, and any non-``BORRADOR`` Pedido
+    with its associated active Session — mirroring the same identity
+    contract as :func:`admin_pilot_orders._load_local_test_session`.
+    Every other shape — detached pedido, missing or inactive Session,
+    inconsistent ``session.id_pedido`` link, cliente/comercio FK
+    mismatch, or missing/inactive dedicated Twilio channel — returns
+    ``None`` so the caller can emit the documented generic rejection
+    without leaking which invariant failed.
+
+    The draft-state extension is the only newly eligible Pedido
+    state; every other guard (Session existence, exact
+    ``session.id_pedido == pedido.id`` link, ``ACTIVA`` Session,
+    cliente/comercio identity, active dedicated Twilio channel) is
+    preserved verbatim. The loader never creates or mutates a
+    Session/Pedido and never commits, rolls back, flushes, refreshes,
+    begins or closes the database session.
     """
     from sqlalchemy import select
     from sqlalchemy.orm import joinedload
@@ -126,8 +136,6 @@ def load_active_emulator_target(
     )
     pedido = db.execute(stmt).unique().scalar_one_or_none()
     if pedido is None:
-        return None
-    if pedido.estado_pedido == EstadoPedido.BORRADOR:
         return None
     session = getattr(pedido, "session", None)
     if session is None:
