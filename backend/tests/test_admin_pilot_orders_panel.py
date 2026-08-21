@@ -7408,22 +7408,173 @@ class PanelEmulatorDetailTemplateTest(unittest.TestCase):
     def test_emulator_form_hidden_when_mode_is_real(self) -> None:
         body = self._get_detail_response(enabled=False)
         self.assertIn("Twilio Emulator (deshabilitado)", body)
-        self.assertNotIn("data-debug-emulator-form", body)
+        self.assertNotIn(
+            'action="/admin/pilot/orders/42/emulator-test"', body
+        )
 
     def test_emulator_form_hidden_when_isolated_disabled(self) -> None:
         body = self._get_detail_response(enabled=False)
         self.assertIn("Twilio Emulator (deshabilitado)", body)
-        self.assertNotIn("data-debug-emulator-form", body)
+        self.assertNotIn(
+            'action="/admin/pilot/orders/42/emulator-test"', body
+        )
 
     def test_emulator_form_hidden_when_credentials_missing(self) -> None:
         body = self._get_detail_response(enabled=False)
         self.assertIn("Twilio Emulator (deshabilitado)", body)
-        self.assertNotIn("data-debug-emulator-form", body)
+        self.assertNotIn(
+            'action="/admin/pilot/orders/42/emulator-test"', body
+        )
 
     def test_emulator_form_visible_when_fully_enabled(self) -> None:
         body = self._get_detail_response(enabled=True)
         self.assertIn("Enviar por Twilio Emulator", body)
+        self.assertIn(
+            'action="/admin/pilot/orders/42/emulator-test"', body
+        )
+
+
+class PanelEmulatorBrowserContractTest(unittest.TestCase):
+    """Focused regression coverage for the browser-side contract that
+    the dedicated emulator form uses to call the existing JSON
+    routes. These assertions validate the rendered HTML/JS payload
+    only; they never exercise the real routes so the same-origin
+    header, JSON content type and polling shape stay pinned without
+    touching Twilio, T-C or the dispatcher."""
+
+    def _build_app_with(self, settings: Settings) -> TestClient:
+        self.session = MagicMock(name="DatabaseSession")
+        self.session_override = _SessionOverride(self.session)
+        self.app = _build_app()
+        self.app.dependency_overrides[get_session] = self.session_override
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self._settings_patcher = patch.object(
+            dependencies_module, "load_settings", return_value=settings
+        )
+        self._settings_patcher.start()
+        self._router_settings_patcher = patch.object(
+            router_module, "load_settings", return_value=settings
+        )
+        self._router_settings_patcher.start()
+        return self.client
+
+    def tearDown(self) -> None:
+        self._settings_patcher.stop()
+        self._router_settings_patcher.stop()
+        self.app.dependency_overrides.clear()
+
+    def _render_detail(self, *, enabled: bool) -> str:
+        self._build_app_with(_settings())
+        with patch.object(
+            router_module, "load_active_emulator_target", return_value=None
+        ), patch.object(
+            router_module, "_is_emulator_action_enabled", return_value=enabled
+        ), patch.object(
+            router_module,
+            "PilotOrderOperationsViewService",
+        ) as service_cls:
+            service_cls.return_value = _stub_service(
+                detail=_build_detail(),
+                history=_build_history(),
+                order_lines_snapshot=[],
+            )
+            response = self.client.get(
+                "/admin/pilot/orders/42",
+                headers=_basic_auth_header("ignored", CONFIGURED_TOKEN),
+            )
+        self.assertEqual(response.status_code, 200)
+        return response.text
+
+    def test_emulator_form_exposes_status_url_when_enabled(self) -> None:
+        body = self._render_detail(enabled=True)
         self.assertIn("data-debug-emulator-form", body)
+        self.assertIn(
+            'data-debug-emulator-status-url="/admin/pilot/orders/42/emulator-test/status"',
+            body,
+        )
+
+    def test_emulator_form_does_not_expose_status_url_when_disabled(self) -> None:
+        body = self._render_detail(enabled=False)
+        self.assertNotIn(
+            'action="/admin/pilot/orders/42/emulator-test"', body
+        )
+        self.assertNotIn(
+            'data-debug-emulator-status-url=', body
+        )
+
+    def test_emulator_handler_uses_json_content_type_and_origin_header(self) -> None:
+        body = self._render_detail(enabled=True)
+        self.assertIn("data-debug-emulator-form", body)
+        self.assertIn("X-Emulator-Test-Origin", body)
+        self.assertIn("application/json", body)
+        self.assertIn('credentials: "same-origin"', body)
+
+    def test_emulator_handler_serializes_submit_payload_as_message(self) -> None:
+        body = self._render_detail(enabled=True)
+        self.assertIn("JSON.stringify({ message: trimmed })", body)
+        self.assertIn("JSON.stringify({ synthetic_inbound_id:", body)
+
+    def test_emulator_handler_uses_only_dedicated_selectors(self) -> None:
+        body = self._render_detail(enabled=True)
+        self.assertIn("[data-debug-emulator-form]", body)
+        self.assertIn("[data-debug-emulator-status]", body)
+        self.assertIn("[data-debug-emulator-result]", body)
+        self.assertIn("[data-debug-emulator-submit]", body)
+        self.assertIn("[data-debug-emulator-textarea]", body)
+
+    def test_emulator_handler_validates_bounded_statuses(self) -> None:
+        body = self._render_detail(enabled=True)
+        for status in (
+            "accepted",
+            "processed",
+            "pending",
+            "sent",
+            "retryable",
+            "terminal",
+        ):
+            with self.subTest(status=status):
+                self.assertIn(f"{status}: true", body)
+
+    def test_emulator_handler_stops_polling_on_terminal_statuses(self) -> None:
+        body = self._render_detail(enabled=True)
+        self.assertIn("TERMINAL_EMULATOR_STATUSES", body)
+        self.assertIn("EMULATOR_MAX_POLL_ATTEMPTS", body)
+
+    def test_emulator_handler_renders_only_bounded_fields(self) -> None:
+        body = self._render_detail(enabled=True)
+        self.assertIn("outbound_body", body)
+        self.assertIn("provider_message_sid", body)
+
+    def test_emulator_handler_uses_generic_failure_message(self) -> None:
+        body = self._render_detail(enabled=True)
+        self.assertIn("El Twilio Emulator rechazó el mensaje.", body)
+        self.assertNotIn("fetch failed", body)
+        self.assertNotIn("TypeError", body)
+        self.assertNotIn("Error:", body)
+
+    def test_local_form_keeps_independent_handler(self) -> None:
+        body = self._render_detail(enabled=True)
+        self.assertIn("data-debug-form", body)
+        self.assertIn("X-Local-Test-Origin", body)
+        self.assertIn("[data-debug-transcript]", body)
+        self.assertIn("El canal local rechazó el mensaje.", body)
+
+    def test_routes_still_reject_form_urlencoded_submission(self) -> None:
+        """The JSON contract of both emulator routes is preserved:
+        a form-urlencoded body does NOT match the documented JSON
+        contract so the route must reject the request and the
+        emulator action stays invisible to non-JSON callers."""
+        self._build_app_with(_settings())
+        response = self.client.post(
+            "/admin/pilot/orders/42/emulator-test",
+            content="message=hola",
+            headers={
+                **_basic_auth_header("ignored", CONFIGURED_TOKEN),
+                "X-Emulator-Test-Origin": "same-origin",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
+        self.assertIn(response.status_code, (400, 422))
 
 
 if __name__ == "__main__":
