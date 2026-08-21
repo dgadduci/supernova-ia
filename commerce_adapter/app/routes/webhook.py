@@ -47,7 +47,10 @@ from commerce_adapter.app.canonical_event import (
     empty_twiml_response,
     normalize_twilio_form,
 )
-from commerce_adapter.app.config import CommerceAdapterConfig
+from commerce_adapter.app.config import (
+    PROVIDER_MODE_EMULATOR,
+    CommerceAdapterConfig,
+)
 from commerce_adapter.app.dependencies import (
     build_config_dependency,
 )
@@ -128,7 +131,10 @@ def post_twilio_whatsapp_inbound(
     """Handle one Twilio WhatsApp inbound form request."""
     assert_validation_path_safe(ROUTE_PATH)
     base_url = config.twilio_webhook_base_url
-    auth_token = config.twilio_auth_token
+    if config.provider_mode == PROVIDER_MODE_EMULATOR:
+        auth_token = config.twilio_emulator_auth_token
+    else:
+        auth_token = config.twilio_auth_token
 
     url = build_twilio_validation_url(
         base_url=base_url,
