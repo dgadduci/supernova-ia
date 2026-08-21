@@ -35,6 +35,12 @@
 
     {% if emulator_action_enabled %}
     <h2>Enviar por Twilio Emulator</h2>
+    <p class="muted debug-emulator-eligibility">
+      Disponible para pedidos <code>borrador</code> con sesión activa
+      y para otros pedidos elegibles según sus validaciones operativas.
+      No contacta WhatsApp ni Twilio real; el botón local del canal de
+      prueba continúa separado.
+    </p>
     <form
       class="debug-form"
       method="post"
