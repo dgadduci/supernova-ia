@@ -1015,6 +1015,12 @@ class EmulatorDraftRouteStatusTest(unittest.TestCase):
             outbound_body=None,
             provider_message_sid=None,
             timeline=router_module.EmulatorTimeline(),
+            diagnostic=router_module.EmulatorDiagnostic(
+                processing_state="pending",
+                response_count=None,
+                outbox_row_count=0,
+                failure_category=None,
+            ),
         )
         with patch.object(
             router_module,

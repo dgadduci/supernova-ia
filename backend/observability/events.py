@@ -71,6 +71,7 @@ EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME = (
 )
 EVENT_TWILIO_EMULATOR_OUTBOUND_OUTCOME = "twilio_emulator_outbound_outcome"
 EVENT_ADMIN_PILOT_EMULATOR_OUTCOME = "admin_pilot_emulator_outcome"
+EVENT_PROCESSING_OUTCOME = "provider_inbound_processing_outcome"
 
 
 # ``EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME`` is emitted by BOTH
@@ -103,6 +104,7 @@ _EVENT_CATALOGUE: dict[str, str | frozenset[str]] = {
     ),
     EVENT_TWILIO_EMULATOR_OUTBOUND_OUTCOME: COMPONENT_TWILIO_EMULATOR,
     EVENT_ADMIN_PILOT_EMULATOR_OUTCOME: COMPONENT_ADMIN_PILOT_EMULATOR,
+    EVENT_PROCESSING_OUTCOME: COMPONENT_WORKER,
 }
 
 
@@ -228,6 +230,16 @@ _OUTCOMES_BY_EVENT: dict[str, frozenset[str]] = {
     EVENT_ADMIN_PILOT_EMULATOR_OUTCOME: frozenset(
         {"submitted", "rejected", "unavailable"}
     ),
+    EVENT_PROCESSING_OUTCOME: frozenset(
+        {
+            "processed_with_response",
+            "processed_without_response",
+            "retry_scheduled",
+            "failed_terminal",
+            "lease_lost",
+            "unavailable",
+        }
+    ),
 }
 
 
@@ -269,6 +281,15 @@ _FAILURE_CATEGORIES_BY_EVENT: dict[str, frozenset[str]] = {
             "wrapper_shape_invalid",
             "empty_wrapper",
             "unexpected",
+        }
+    ),
+    EVENT_PROCESSING_OUTCOME: frozenset(
+        {
+            "pipeline_error",
+            "database_error",
+            "budget_exhausted",
+            "terminal_processor_error",
+            "unavailable_commerce",
         }
     ),
 }
@@ -339,6 +360,15 @@ _LIVENESS_CYCLE_OUTCOMES: frozenset[str] = frozenset(
 _EVENTS_WITH_LIVENESS_FIELDS: frozenset[str] = frozenset(
     {EVENT_WORKER_LIVENESS}
 )
+_EVENTS_WITH_PROCESSING_OUTCOME_FIELDS: frozenset[str] = frozenset(
+    {EVENT_PROCESSING_OUTCOME}
+)
+_PROCESSING_OUTCOME_PROCESSED_VALUES: frozenset[str] = frozenset(
+    {"processed_with_response", "processed_without_response"}
+)
+_PROCESSING_OUTCOME_FAILURE_VALUES: frozenset[str] = frozenset(
+    {"retry_scheduled", "failed_terminal", "lease_lost", "unavailable"}
+)
 
 
 _OPTIONAL_FIELDS_BY_EVENT: dict[str, frozenset[str]] = {
@@ -379,6 +409,9 @@ _OPTIONAL_FIELDS_BY_EVENT: dict[str, frozenset[str]] = {
     ),
     EVENT_TWILIO_EMULATOR_OUTBOUND_OUTCOME: frozenset({"reason"}),
     EVENT_ADMIN_PILOT_EMULATOR_OUTCOME: frozenset({"reason"}),
+    EVENT_PROCESSING_OUTCOME: frozenset(
+        {"response_count", "outbox_row_count", "correlation_id"}
+    ),
 }
 
 
@@ -434,6 +467,8 @@ _ALLOWED_PAYLOAD_KEYS: frozenset[str] = frozenset(
         "outbound_style_prompt_template_version",
         "outbound_style_prompt_template_hash",
         "reason",
+        "response_count",
+        "outbox_row_count",
     }
 )
 
@@ -573,6 +608,14 @@ def _is_safe_optional_field(name: str, value: Any) -> bool:
         if value in _COMMERCE_INSTALLATION_REASONS:
             return True
         return value in _EMULATOR_REASONS
+    if name == "response_count":
+        if isinstance(value, bool) or not isinstance(value, int):
+            return False
+        return 0 <= value <= _MAX_PENDING_CONTEXT_CANDIDATE_COUNT
+    if name == "outbox_row_count":
+        if isinstance(value, bool) or not isinstance(value, int):
+            return False
+        return 0 <= value <= _MAX_PENDING_CONTEXT_CANDIDATE_COUNT
     return False
 
 
@@ -1052,6 +1095,8 @@ def build_event(
     reason: str | None = None,
     phase: str | None = None,
     cycle_index: int | None = None,
+    response_count: int | None = None,
+    outbox_row_count: int | None = None,
 ) -> dict[str, Any]:
     """Validate the input and return the JSON-ready payload.
 
@@ -1098,6 +1143,9 @@ def build_event(
 
     is_recognition_event = event in _EVENTS_WITH_RECOGNITION_FIELDS
     is_liveness_event = event in _EVENTS_WITH_LIVENESS_FIELDS
+    is_processing_outcome_event = (
+        event in _EVENTS_WITH_PROCESSING_OUTCOME_FIELDS
+    )
     allows_no_outcome_or_failure = (
         event in _EVENTS_WITHOUT_OUTCOME_OR_FAILURE
     )
@@ -1155,6 +1203,51 @@ def build_event(
                     "'exception_type' is reserved for outcome "
                     "'phase_failed'"
                 )
+    elif is_processing_outcome_event:
+        if outcome is None:
+            raise EventValidationError(
+                f"event {event!r} requires an outcome"
+            )
+        _validate_outcome(event, outcome)
+        if outcome in _PROCESSING_OUTCOME_PROCESSED_VALUES:
+            if failure_category is not None:
+                raise EventValidationError(
+                    f"event {event!r} with outcome {outcome!r} "
+                    "does not accept 'failure_category'; "
+                    "'failure_category' is reserved for "
+                    "retry/terminal/lease-loss/unavailable outcomes"
+                )
+            if response_count is None:
+                raise EventValidationError(
+                    f"event {event!r} with outcome {outcome!r} "
+                    "requires 'response_count'"
+                )
+            if outbox_row_count is None:
+                raise EventValidationError(
+                    f"event {event!r} with outcome {outcome!r} "
+                    "requires 'outbox_row_count'"
+                )
+        elif outcome in _PROCESSING_OUTCOME_FAILURE_VALUES:
+            if response_count is not None:
+                raise EventValidationError(
+                    f"event {event!r} with outcome {outcome!r} "
+                    "does not accept 'response_count'; "
+                    "'response_count' is reserved for "
+                    "processed outcomes"
+                )
+            if outbox_row_count is not None:
+                raise EventValidationError(
+                    f"event {event!r} with outcome {outcome!r} "
+                    "does not accept 'outbox_row_count'; "
+                    "'outbox_row_count' is reserved for "
+                    "processed outcomes"
+                )
+            if failure_category is not None:
+                _validate_failure_category(event, failure_category)
+        else:
+            raise EventValidationError(
+                f"unknown processing outcome {outcome!r}"
+            )
     else:
         if outcome is None and failure_category is None:
             raise EventValidationError(
@@ -1180,7 +1273,7 @@ def build_event(
         ),
     }
     if not is_recognition_event and not allows_no_outcome_or_failure:
-        if is_liveness_event:
+        if is_liveness_event or is_processing_outcome_event:
             payload["outcome"] = outcome
             if failure_category is not None:
                 payload["failure_category"] = failure_category
@@ -1422,6 +1515,8 @@ def build_event(
         "applied_count": applied_count,
         "outbound_style_prompt_template_version": outbound_style_prompt_template_version,
         "outbound_style_prompt_template_hash": outbound_style_prompt_template_hash,
+        "response_count": response_count,
+        "outbox_row_count": outbox_row_count,
     }
     for field_name, value in optional_values.items():
         if value is None:
@@ -1536,6 +1631,8 @@ def parse_event(line: str) -> dict[str, Any]:
         reason=decoded.get("reason"),
         phase=decoded.get("phase"),
         cycle_index=decoded.get("cycle_index"),
+        response_count=decoded.get("response_count"),
+        outbox_row_count=decoded.get("outbox_row_count"),
     )
 
 
@@ -1606,6 +1703,8 @@ def emit_event(
     reason: str | None = None,
     phase: str | None = None,
     cycle_index: int | None = None,
+    response_count: int | None = None,
+    outbox_row_count: int | None = None,
     stream: Any = None,
 ) -> bool:
     """Build and emit a single JSON event line to the supplied stream.
@@ -1660,6 +1759,8 @@ def emit_event(
             reason=reason,
             phase=phase,
             cycle_index=cycle_index,
+            response_count=response_count,
+            outbox_row_count=outbox_row_count,
         )
     except EventValidationError as exc:
         try:

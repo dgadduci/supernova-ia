@@ -47,6 +47,7 @@ from backend.observability import (
     EVENT_OUTBOUND_OUTCOME,
     EVENT_OUTBOUND_STYLE,
     EVENT_PENDING_CONTEXT_TRANSITION,
+    EVENT_PROCESSING_OUTCOME,
     EVENT_PRODUCT_ADD_EXECUTION,
     EVENT_SHADOW_PRODUCT_RECOGNITION,
     EVENT_WORKER_CYCLE,
@@ -2967,6 +2968,350 @@ class ProviderWorkerLivenessEventTest(unittest.TestCase):
         self.assertFalse(ok)
         parsed = json.loads(sink.getvalue().strip())
         self.assertEqual(parsed["event"], "observability_emit_failed")
+
+
+class ProviderInboundProcessingOutcomeEventTest(unittest.TestCase):
+    """The ``provider_inbound_processing_outcome`` event is a
+    privacy-safe observation emitted by the provider coordinator
+    AFTER the existing authoritative durable processing result is
+    known. The contract is closed: the only allowed outcomes are
+    ``processed_with_response``, ``processed_without_response``,
+    ``retry_scheduled``, ``failed_terminal``, ``lease_lost`` and
+    ``unavailable``; the only allowed optional fields are bounded
+    ``response_count`` and ``outbox_row_count`` plus the existing
+    safe ``correlation_id``. The contract forbids bodies, phone
+    numbers, provider SIDs, prompts, model responses, exception
+    text or tracebacks."""
+
+    _ACCEPTED_OUTCOMES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "processed_with_response",
+            "processed_without_response",
+            "retry_scheduled",
+            "failed_terminal",
+            "lease_lost",
+            "unavailable",
+        }
+    )
+
+    _ACCEPTED_FAILURE_CATEGORIES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "pipeline_error",
+            "database_error",
+            "budget_exhausted",
+            "terminal_processor_error",
+            "unavailable_commerce",
+        }
+    )
+
+    def test_event_is_catalogue_mapped_to_provider_worker_component(self) -> None:
+        from backend.observability.events import _EVENT_CATALOGUE
+
+        self.assertEqual(
+            _EVENT_CATALOGUE[EVENT_PROCESSING_OUTCOME],
+            COMPONENT_WORKER,
+        )
+
+    def test_each_outcome_round_trips(self) -> None:
+        for outcome in self._ACCEPTED_OUTCOMES:
+            with self.subTest(outcome=outcome):
+                if outcome in (
+                    "retry_scheduled",
+                    "failed_terminal",
+                    "lease_lost",
+                ):
+                    kwargs: dict[str, object] = {
+                        "failure_category": "pipeline_error"
+                    }
+                elif outcome == "unavailable":
+                    kwargs = {"failure_category": "unavailable_commerce"}
+                else:
+                    kwargs = {
+                        "response_count": 0,
+                        "outbox_row_count": 0,
+                    }
+                payload = build_event(
+                    event=EVENT_PROCESSING_OUTCOME,
+                    component=COMPONENT_WORKER,
+                    outcome=outcome,
+                    **kwargs,
+                )
+                self.assertEqual(payload["event"], EVENT_PROCESSING_OUTCOME)
+                self.assertEqual(payload["outcome"], outcome)
+                self.assertEqual(payload["component"], COMPONENT_WORKER)
+
+    def test_processed_with_response_carries_matching_counts(self) -> None:
+        payload = build_event(
+            event=EVENT_PROCESSING_OUTCOME,
+            component=COMPONENT_WORKER,
+            outcome="processed_with_response",
+            response_count=2,
+            outbox_row_count=2,
+            correlation_id="SM-FAKE",
+        )
+        self.assertEqual(payload["response_count"], 2)
+        self.assertEqual(payload["outbox_row_count"], 2)
+        self.assertEqual(payload["correlation_id"], "SM-FAKE")
+
+    def test_processed_without_response_carries_zero_counts(self) -> None:
+        payload = build_event(
+            event=EVENT_PROCESSING_OUTCOME,
+            component=COMPONENT_WORKER,
+            outcome="processed_without_response",
+            response_count=0,
+            outbox_row_count=0,
+        )
+        self.assertEqual(payload["response_count"], 0)
+        self.assertEqual(payload["outbox_row_count"], 0)
+        self.assertNotIn("failure_category", payload)
+
+    def test_unavailable_carries_bounded_failure_category(self) -> None:
+        payload = build_event(
+            event=EVENT_PROCESSING_OUTCOME,
+            component=COMPONENT_WORKER,
+            outcome="unavailable",
+            failure_category="unavailable_commerce",
+        )
+        self.assertEqual(
+            payload["failure_category"], "unavailable_commerce"
+        )
+        self.assertEqual(payload["outcome"], "unavailable")
+
+    def test_retry_scheduled_carries_failure_category(self) -> None:
+        payload = build_event(
+            event=EVENT_PROCESSING_OUTCOME,
+            component=COMPONENT_WORKER,
+            outcome="retry_scheduled",
+            failure_category="pipeline_error",
+        )
+        self.assertEqual(payload["outcome"], "retry_scheduled")
+        self.assertEqual(payload["failure_category"], "pipeline_error")
+
+    def test_failed_terminal_carries_failure_category(self) -> None:
+        payload = build_event(
+            event=EVENT_PROCESSING_OUTCOME,
+            component=COMPONENT_WORKER,
+            outcome="failed_terminal",
+            failure_category="budget_exhausted",
+        )
+        self.assertEqual(payload["outcome"], "failed_terminal")
+        self.assertEqual(payload["failure_category"], "budget_exhausted")
+
+    def test_outcome_required(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROCESSING_OUTCOME,
+                component=COMPONENT_WORKER,
+                response_count=0,
+                outbox_row_count=0,
+            )
+
+    def test_component_mismatch_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROCESSING_OUTCOME,
+                component=COMPONENT_OUTBOUND,
+                outcome="processed_without_response",
+                response_count=0,
+                outbox_row_count=0,
+            )
+
+    def test_unknown_outcome_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROCESSING_OUTCOME,
+                component=COMPONENT_WORKER,
+                outcome="rejected",
+            )
+
+    def test_processed_outcome_with_failure_category_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROCESSING_OUTCOME,
+                component=COMPONENT_WORKER,
+                outcome="processed_without_response",
+                failure_category="pipeline_error",
+                response_count=0,
+                outbox_row_count=0,
+            )
+
+    def test_retry_outcome_with_response_count_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROCESSING_OUTCOME,
+                component=COMPONENT_WORKER,
+                outcome="retry_scheduled",
+                response_count=0,
+                failure_category="pipeline_error",
+            )
+
+    def test_retry_outcome_with_outbox_row_count_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROCESSING_OUTCOME,
+                component=COMPONENT_WORKER,
+                outcome="retry_scheduled",
+                outbox_row_count=0,
+                failure_category="pipeline_error",
+            )
+
+    def test_processed_outcome_without_response_count_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROCESSING_OUTCOME,
+                component=COMPONENT_WORKER,
+                outcome="processed_with_response",
+                outbox_row_count=0,
+            )
+
+    def test_processed_outcome_without_outbox_row_count_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROCESSING_OUTCOME,
+                component=COMPONENT_WORKER,
+                outcome="processed_without_response",
+                response_count=0,
+            )
+
+    def test_unknown_failure_category_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROCESSING_OUTCOME,
+                component=COMPONENT_WORKER,
+                outcome="retry_scheduled",
+                failure_category="not_in_allowlist",
+            )
+
+    def test_response_count_negative_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROCESSING_OUTCOME,
+                component=COMPONENT_WORKER,
+                outcome="processed_with_response",
+                response_count=-1,
+                outbox_row_count=0,
+            )
+
+    def test_response_count_above_bound_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROCESSING_OUTCOME,
+                component=COMPONENT_WORKER,
+                outcome="processed_with_response",
+                response_count=201,
+                outbox_row_count=0,
+            )
+
+    def test_outbox_row_count_non_integer_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROCESSING_OUTCOME,
+                component=COMPONENT_WORKER,
+                outcome="processed_with_response",
+                response_count=0,
+                outbox_row_count="zero",
+            )
+
+    def test_sensitive_fields_rejected(self) -> None:
+        for forbidden in (
+            "outbox_id",
+            "durable_state",
+            "provider_code",
+            "http_status",
+            "exception_type",
+            "elapsed_ms",
+            "phase",
+            "cycle_index",
+        ):
+            with self.subTest(forbidden=forbidden):
+                kwargs = {
+                    "event": EVENT_PROCESSING_OUTCOME,
+                    "component": COMPONENT_WORKER,
+                    "outcome": "processed_without_response",
+                    "response_count": 0,
+                    "outbox_row_count": 0,
+                    forbidden: 1 if forbidden != "exception_type" else "Boom",
+                }
+                with self.assertRaises(EventValidationError):
+                    build_event(**kwargs)
+
+    def test_each_outcome_round_trips_through_parse_event(self) -> None:
+        for outcome in self._ACCEPTED_OUTCOMES:
+            with self.subTest(outcome=outcome):
+                if outcome in (
+                    "retry_scheduled",
+                    "failed_terminal",
+                    "lease_lost",
+                ):
+                    kwargs = {"failure_category": "pipeline_error"}
+                elif outcome == "unavailable":
+                    kwargs = {"failure_category": "unavailable_commerce"}
+                else:
+                    kwargs = {
+                        "response_count": 0,
+                        "outbox_row_count": 0,
+                    }
+                payload = build_event(
+                    event=EVENT_PROCESSING_OUTCOME,
+                    component=COMPONENT_WORKER,
+                    outcome=outcome,
+                    **kwargs,
+                )
+                serialized = json.dumps(
+                    payload, sort_keys=True, separators=(",", ":")
+                )
+                parsed = parse_event(serialized)
+                self.assertEqual(parsed, payload)
+
+    def test_no_sensitive_payload_round_trip(self) -> None:
+        for outcome in (
+            "processed_with_response",
+            "processed_without_response",
+            "retry_scheduled",
+            "failed_terminal",
+            "lease_lost",
+            "unavailable",
+        ):
+            with self.subTest(outcome=outcome):
+                if outcome in (
+                    "retry_scheduled",
+                    "failed_terminal",
+                    "lease_lost",
+                ):
+                    kwargs = {"failure_category": "pipeline_error"}
+                elif outcome == "unavailable":
+                    kwargs = {"failure_category": "unavailable_commerce"}
+                else:
+                    kwargs = {
+                        "response_count": 0,
+                        "outbox_row_count": 0,
+                    }
+                payload = build_event(
+                    event=EVENT_PROCESSING_OUTCOME,
+                    component=COMPONENT_WORKER,
+                    outcome=outcome,
+                    **kwargs,
+                )
+                _no_payload_leaks(payload, event=EVENT_PROCESSING_OUTCOME)
+
+    def test_emit_event_round_trips_through_sink(self) -> None:
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_PROCESSING_OUTCOME,
+            component=COMPONENT_WORKER,
+            outcome="processed_without_response",
+            response_count=0,
+            outbox_row_count=0,
+            stream=sink,
+        )
+        self.assertTrue(ok)
+        serialized = sink.getvalue().strip()
+        parsed = json.loads(serialized)
+        self.assertEqual(parsed["event"], EVENT_PROCESSING_OUTCOME)
+        self.assertEqual(parsed["outcome"], "processed_without_response")
+        self.assertEqual(parsed["response_count"], 0)
+        self.assertEqual(parsed["outbox_row_count"], 0)
+        self.assertNotIn("failure_category", parsed)
 
 
 if __name__ == "__main__":

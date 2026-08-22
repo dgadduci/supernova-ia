@@ -776,8 +776,52 @@
     terminal: true
   };
 
+  var EMULATOR_DIAGNOSTIC_STATES = {
+    not_started: true,
+    pending: true,
+    leased: true,
+    processed_with_response: true,
+    processed_without_response: true,
+    retryable: true,
+    terminal: true,
+    unknown: true
+  };
+
+  var EMULATOR_NEUTRAL_POLLING_FAILURE = "No se pudo consultar el estado. Reintentá más tarde.";
+  var EMULATOR_NEUTRAL_PROCESSED_NO_RESPONSE = "Procesado sin respuesta outbound";
+
   var EMULATOR_MAX_POLL_ATTEMPTS = 20;
   var EMULATOR_POLL_INTERVAL_MS = 1500;
+
+  function isValidEmulatorDiagnostic(diag) {
+    if (!diag || typeof diag !== "object") {
+      return false;
+    }
+    if (!EMULATOR_DIAGNOSTIC_STATES[diag.processing_state]) {
+      return false;
+    }
+    if (
+      diag.response_count !== null &&
+      (!Number.isInteger(diag.response_count) || diag.response_count < 0 || diag.response_count > 200)
+    ) {
+      return false;
+    }
+    if (
+      diag.outbox_row_count !== null &&
+      (!Number.isInteger(diag.outbox_row_count) || diag.outbox_row_count < 0 || diag.outbox_row_count > 200)
+    ) {
+      return false;
+    }
+    if (
+      diag.failure_category !== null &&
+      (typeof diag.failure_category !== "string" ||
+        diag.failure_category.length === 0 ||
+        diag.failure_category.length > 32)
+    ) {
+      return false;
+    }
+    return true;
+  }
 
   function isValidEmulatorSubmitResponse(data) {
     return (
@@ -1243,6 +1287,14 @@
       }
     }
 
+    function failNeutralPolling(errorKey) {
+      clearEmulatorResult();
+      renderEmulatorTimeline(null);
+      setStatus(EMULATOR_NEUTRAL_POLLING_FAILURE);
+      setBusy(false);
+      currentInboundId = null;
+    }
+
     function failGeneric(errorKey) {
       clearEmulatorResult();
       if (errorKey) {
@@ -1253,13 +1305,25 @@
       setBusy(false);
     }
 
+    function finalizeProcessedWithoutResponse() {
+      if (currentInboundId) {
+        conversationAppendStatus(
+          currentInboundId,
+          EMULATOR_NEUTRAL_PROCESSED_NO_RESPONSE
+        );
+      }
+      setStatus(EMULATOR_NEUTRAL_PROCESSED_NO_RESPONSE);
+      setBusy(false);
+      currentInboundId = null;
+    }
+
     var pendingPollHandle = null;
     var currentInboundId = null;
     var submissionCounter = 0;
 
     function pollEmulatorStatus(attemptsLeft) {
       if (attemptsLeft <= 0 || !currentInboundId || !statusUrl) {
-        failGeneric(currentInboundId);
+        failNeutralPolling(currentInboundId);
         return;
       }
       pendingPollHandle = setTimeout(function () {
@@ -1282,11 +1346,19 @@
           })
           .then(function (result) {
             if (!result.ok || !isValidEmulatorStatusResponse(result.data)) {
-              failGeneric(currentInboundId);
+              failNeutralPolling(currentInboundId);
               return;
             }
             renderEmulatorResult(result.data);
             renderEmulatorTimeline(result.data.timeline);
+            if (
+              isValidEmulatorDiagnostic(result.data.diagnostic) &&
+              result.data.diagnostic.processing_state ===
+                "processed_without_response"
+            ) {
+              finalizeProcessedWithoutResponse();
+              return;
+            }
             if (result.data.status === "processed" && isBoundedDisplayString(result.data.outbound_body)) {
               conversationAppendReceived(currentInboundId, result.data.outbound_body);
             } else if (
@@ -1314,7 +1386,7 @@
             pollEmulatorStatus(attemptsLeft - 1);
           })
           .catch(function () {
-            failGeneric(currentInboundId);
+            failNeutralPolling(currentInboundId);
           });
       }, EMULATOR_POLL_INTERVAL_MS);
     }
@@ -1511,6 +1583,9 @@
       EMULATOR_CONVERSATION_TEXT_LIMIT: EMULATOR_CONVERSATION_TEXT_LIMIT,
       EMULATOR_TIMELINE_FIELDS: EMULATOR_TIMELINE_FIELDS,
       EMULATOR_TIMELINE_OUTCOME_VALUES: EMULATOR_TIMELINE_OUTCOME_VALUES,
+      EMULATOR_DIAGNOSTIC_STATES: EMULATOR_DIAGNOSTIC_STATES,
+      EMULATOR_NEUTRAL_POLLING_FAILURE: EMULATOR_NEUTRAL_POLLING_FAILURE,
+      EMULATOR_NEUTRAL_PROCESSED_NO_RESPONSE: EMULATOR_NEUTRAL_PROCESSED_NO_RESPONSE,
       truncateEmulatorConversationText: truncateEmulatorConversationText,
       createEmulatorConversationState: createEmulatorConversationState,
       createEmulatorTurnElement: createEmulatorTurnElement,
@@ -1519,7 +1594,8 @@
       trimEmulatorConversation: trimEmulatorConversation,
       formatLocalTime: formatLocalTime,
       formatLocalTimeFromIso: formatLocalTimeFromIso,
-      renderEmulatorTimeline: renderEmulatorTimeline
+      renderEmulatorTimeline: renderEmulatorTimeline,
+      isValidEmulatorDiagnostic: isValidEmulatorDiagnostic
     };
   }
 })();

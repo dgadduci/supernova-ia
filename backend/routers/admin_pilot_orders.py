@@ -92,6 +92,9 @@ from backend.models import (
 from backend.models import (
     Session as SessionModel,
 )
+from backend.models.procesamiento_mensaje_proveedor import (
+    ProcesamientoMensajeProveedorEstado,
+)
 from backend.services.admin_pilot_emulator_service import (
     EmulatorTestTarget,
     commerce_availability_status,
@@ -1077,6 +1080,18 @@ class EmulatorStatusResponse(BaseModel):
     worker reaches the corresponding milestone; the projection is
     never widened to another order, session, commerce or synthetic
     inbound identifier.
+
+    ``diagnostic`` is the closed, bounded processing-diagnostic
+    projection scoped to the exact synthetic inbound identifier.
+    It only carries the documented closed ``processing_state``
+    literal, nullable bounded response/outbox counts and a
+    nullable closed failure category. The diagnostic is the
+    evidence that lets the panel distinguish a
+    ``processed_without_response`` turn from a transport or
+    emulator rejection without leaking PII, bodies, SIDs,
+    prompts, exception messages or tracebacks. The projection is
+    NEVER widened to another pedido, session, commerce or
+    synthetic inbound identifier.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -1092,6 +1107,63 @@ class EmulatorStatusResponse(BaseModel):
     outbound_body: str | None = None
     provider_message_sid: str | None = None
     timeline: EmulatorTimeline
+    diagnostic: EmulatorDiagnostic
+
+
+# Bounded count ceiling for the closed ``EmulatorDiagnostic``
+# projection. The ceiling matches the catalogued
+# ``_MAX_PENDING_CONTEXT_CANDIDATE_COUNT`` used by the safe
+# ``provider_inbound_processing_outcome`` event so the wire
+# payload and the observability event share the exact same upper
+# bound. The diagnostic helper collapses any durable row count
+# above this ceiling to a neutral ``None`` projection so a future
+# regression cannot leak the unbounded integer into the panel.
+EMULATOR_DIAGNOSTIC_MAX_COUNT: int = 200
+
+
+class EmulatorDiagnostic(BaseModel):
+    """Closed, bounded processing diagnostic for one Emulator turn.
+
+    The schema is intentionally narrow:
+
+    * ``processing_state`` is a closed literal taken from the
+      documented receipt + processing + outbox states observed
+      for the exact synthetic inbound identifier. The
+      ``processed_without_response`` value is the definitive
+      evidence that the deferred processor committed
+      ``processed`` and zero outbound rows were staged.
+    * ``response_count`` and ``outbox_row_count`` are nullable
+      non-negative bounded integers; they reflect the durable
+      rows linked to the exact receipt and never expose
+      rendered text, bodies, SIDs or arbitrary text.
+    * ``failure_category`` is nullable and only ever carries the
+      closed processing failure category when the
+      processing row is non-``processed``.
+
+    ``extra='forbid'`` keeps the projection closed so a future
+    regression that tries to leak provider SIDs, bodies,
+    identifiers or arbitrary text fails at runtime.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    processing_state: Literal[
+        "not_started",
+        "pending",
+        "leased",
+        "processed_with_response",
+        "processed_without_response",
+        "retryable",
+        "terminal",
+        "unknown",
+    ]
+    response_count: int | None = Field(
+        default=None, ge=0, le=EMULATOR_DIAGNOSTIC_MAX_COUNT
+    )
+    outbox_row_count: int | None = Field(
+        default=None, ge=0, le=EMULATOR_DIAGNOSTIC_MAX_COUNT
+    )
+    failure_category: str | None = None
 
 
 class EmulatorTimeline(BaseModel):
@@ -1255,12 +1327,22 @@ def _emulator_outbox_summary(
     server-side milestones. Missing receipt, work item or outbox
     rows yield an all-``None`` timeline rather than a 404 — the
     status value is the documented branching signal.
+
+    The closed ``EmulatorDiagnostic`` projection is also returned:
+    it is derived solely from the exact receipt's processing row
+    state and the count of receipt-linked outbound rows. The
+    helper never reads raw exception text, body, SID, prompt,
+    model output, URL or credential data; the diagnostic surfaces
+    only the documented closed ``processing_state`` token,
+    nullable bounded counts and the closed processing failure
+    category.
     """
-    from sqlalchemy import select
+    from sqlalchemy import func, select
 
     from backend.models import (
         MensajeProveedorSaliente,
         OutboundProviderMessageState,
+        ProcesamientoMensajeProveedor,
         RecepcionMensajeProveedor,
     )
 
@@ -1280,9 +1362,49 @@ def _emulator_outbox_summary(
             outbound_body=None,
             provider_message_sid=None,
             timeline=empty_timeline,
+            diagnostic=EmulatorDiagnostic(
+                processing_state="not_started",
+                response_count=None,
+                outbox_row_count=None,
+                failure_category=None,
+            ),
         )
 
     timeline = _emulator_timeline_from_receipt(db, receipt=receipt)
+
+    outbox_count_stmt = (
+        select(func.count(MensajeProveedorSaliente.id))
+        .where(
+            MensajeProveedorSaliente.recepcion_mensaje_proveedor_id
+            == int(receipt.id)
+        )
+    )
+    outbox_row_count = int(
+        db.execute(outbox_count_stmt).scalar() or 0
+    )
+
+    processing_stmt = (
+        select(ProcesamientoMensajeProveedor)
+        .where(
+            ProcesamientoMensajeProveedor.recepcion_mensaje_proveedor_id
+            == int(receipt.id)
+        )
+    )
+    processing = db.execute(processing_stmt).unique().scalar_one_or_none()
+
+    diagnostic = _build_emulator_diagnostic(
+        processing=processing,
+        outbox_row_count=outbox_row_count,
+    )
+
+    if outbox_row_count == 0:
+        return EmulatorStatusResponse(
+            status="processed",
+            outbound_body=None,
+            provider_message_sid=None,
+            timeline=timeline,
+            diagnostic=diagnostic,
+        )
 
     outbound_stmt = (
         select(MensajeProveedorSaliente)
@@ -1295,13 +1417,6 @@ def _emulator_outbox_summary(
     outbound_rows = list(
         db.execute(outbound_stmt).unique().scalars()
     )
-    if not outbound_rows:
-        return EmulatorStatusResponse(
-            status="processed",
-            outbound_body=None,
-            provider_message_sid=None,
-            timeline=timeline,
-        )
     first = outbound_rows[0]
     estado = str(getattr(first, "estado", "") or "")
     sid = getattr(first, "identificador_proveedor", None)
@@ -1323,6 +1438,129 @@ def _emulator_outbox_summary(
         outbound_body=str(cuerpo) if isinstance(cuerpo, str) else None,
         provider_message_sid=str(sid) if sid is not None else None,
         timeline=timeline,
+        diagnostic=diagnostic,
+    )
+
+
+_ALLOWED_FAILURE_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "pipeline_error",
+        "database_error",
+        "budget_exhausted",
+        "terminal_processor_error",
+        "unavailable_commerce",
+    }
+)
+
+
+# Bounded count ceiling for the closed ``EmulatorDiagnostic``
+# projection is declared once near the schema definition above
+# (``EMULATOR_DIAGNOSTIC_MAX_COUNT``); the helper below reuses the
+# same constant so the wire payload, the helper output and the
+# observability event share the exact same upper bound.
+
+
+def _build_emulator_diagnostic(
+    *,
+    processing: Any | None,
+    outbox_row_count: int,
+) -> EmulatorDiagnostic:
+    """Build the closed diagnostic projection for one Emulator turn.
+
+    The helper is the single source of truth for the
+    ``processing_state`` mapping. It uses the existing durable
+    processing row state and the receipt-linked outbox count to
+    produce one of the documented closed literals. A missing
+    processing row collapses to ``pending`` so the panel never
+    invents a diagnostic; a stored unknown state collapses to
+    ``unknown`` so the panel never asserts a state that is not in
+    the closed allowlist.
+
+    Count semantics:
+
+    * ``processed_without_response`` MUST report zero for both
+      ``response_count`` and ``outbox_row_count`` so the panel
+      can distinguish the diagnostic terminal state from any
+      transport-level outcome.
+    * ``processed_with_response`` MUST mirror the durable count
+      into both fields so the operator can read the bounded
+      response volume from the diagnostic without ever leaking
+      the response body, a provider SID or any other sensitive
+      data.
+    * Any other processing state collapses both counts to
+      ``None`` so the panel never asserts a volume that the
+      durable projection has not durably confirmed.
+    * When the durable count exceeds
+      :data:`EMULATOR_DIAGNOSTIC_MAX_COUNT` the helper returns a
+      neutral ``None`` projection and the ``unknown`` state so a
+      future regression cannot leak the unbounded integer into
+      the panel or cause an HTTP 500.
+
+    The failure category, when present, is restricted to the
+    closed bounded allowlist so a future regression cannot leak
+    raw exception messages, free-form provider codes or arbitrary
+    identifiers.
+    """
+    raw_count = (
+        int(outbox_row_count) if isinstance(outbox_row_count, int) else 0
+    )
+
+    if raw_count > EMULATOR_DIAGNOSTIC_MAX_COUNT:
+        return EmulatorDiagnostic(
+            processing_state="unknown",
+            response_count=None,
+            outbox_row_count=None,
+            failure_category=None,
+        )
+
+    if processing is None:
+        return EmulatorDiagnostic(
+            processing_state="pending",
+            response_count=None,
+            outbox_row_count=raw_count,
+            failure_category=None,
+        )
+
+    raw_state = str(getattr(processing, "estado", "") or "")
+    raw_failure_category = getattr(
+        processing, "categoria_ultimo_fallo", None
+    )
+    failure_category: str | None = None
+    if isinstance(raw_failure_category, str) and (
+        raw_failure_category in _ALLOWED_FAILURE_CATEGORIES
+    ):
+        failure_category = raw_failure_category
+
+    if raw_state == ProcesamientoMensajeProveedorEstado.PROCESSED.value:
+        if raw_count > 0:
+            processing_state = "processed_with_response"
+            reported_count: int | None = raw_count
+        else:
+            processing_state = "processed_without_response"
+            reported_count = 0
+    elif raw_state == ProcesamientoMensajeProveedorEstado.PENDING.value:
+        processing_state = "pending"
+        reported_count = None
+    elif raw_state == ProcesamientoMensajeProveedorEstado.LEASED.value:
+        processing_state = "leased"
+        reported_count = None
+    elif raw_state == ProcesamientoMensajeProveedorEstado.RETRYABLE.value:
+        processing_state = "retryable"
+        reported_count = None
+    elif raw_state == (
+        ProcesamientoMensajeProveedorEstado.FAILED_TERMINAL.value
+    ):
+        processing_state = "terminal"
+        reported_count = None
+    else:
+        processing_state = "unknown"
+        reported_count = None
+
+    return EmulatorDiagnostic(
+        processing_state=processing_state,
+        response_count=reported_count,
+        outbox_row_count=reported_count,
+        failure_category=failure_category,
     )
 
 

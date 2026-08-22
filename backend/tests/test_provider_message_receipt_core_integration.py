@@ -38,6 +38,9 @@ from sqlalchemy.orm import Session as SqlSession
 from sqlalchemy.orm import sessionmaker
 
 from backend.config.settings import Settings
+from backend.intents.schemas.customer_response import (
+    CustomerResponse,
+)
 from backend.llm.query_llm import (
     QueryLlm,
     reset_llm_timing_recorder,
@@ -57,13 +60,26 @@ from backend.models import (
     PedidoProducto,
     ProcesamientoMensajeProveedor,
     ProcesamientoMensajeProveedorEstado,
+    ProcesamientoMensajeProveedorFailureCategory,
     RecepcionMensajeProveedor,
 )
 from backend.models import (
     Session as SessionModel,
 )
+from backend.observability import (
+    COMPONENT_WORKER,
+    EVENT_PROCESSING_OUTCOME,
+)
 from backend.repositories.recepcion_mensaje_proveedor_repository import (
     RecepcionMensajeProveedorRepository,
+)
+from backend.services.commerce_availability_service import (
+    CommerceAvailabilityOutcome,
+    CommerceAvailabilityStatus,
+    CommerceUnavailableReason,
+)
+from backend.services.outbound_response_mapper import (
+    StagedOutboundRow,
 )
 from backend.services.provider_inbound_message_coordinator import (
     ProviderInboundMessageCommand,
@@ -2030,6 +2046,727 @@ class RetryOrderingIntegrationTest(unittest.TestCase):
                 second_id,
                 "B must be claimable once A reaches a terminal state",
             )
+
+
+class ProcessingOutcomeEventEmissionTest(unittest.TestCase):
+    """The provider coordinator MUST emit one closed
+    ``provider_inbound_processing_outcome`` event AFTER the existing
+    authoritative durable result is known. The emission MUST NOT
+    widen the mapper work, MUST NOT invoke the outbound dispatcher
+    or T-C and MUST NOT create a fallback row when the pipeline
+    returns zero customer responses."""
+
+    def setUp(self) -> None:
+        suffix = _suffix()
+        self.comercio_id = _seed_comercio(suffix)
+        self.addCleanup(_delete_comercio, self.comercio_id)
+        self.cliente_id = _seed_cliente(suffix + "C")
+        self.addCleanup(_delete_cliente, self.cliente_id)
+        self.destination = f"+54971{suffix[:8]}"
+        self.addCleanup(_delete_canales_by_destination, self.destination)
+        self.canal_id = _seed_dedicated_channel(
+            suffix + "D", self.comercio_id, self.destination
+        )
+        self.proveedor = "twilio"
+        self.identificador = f"SM-{suffix}"
+        self.addCleanup(
+            _cleanup_provider_inbound_artifacts, self.comercio_id
+        )
+        self.addCleanup(
+            _delete_recepciones_by_comercio, self.comercio_id
+        )
+        self.addCleanup(
+            _delete_procesamientos_by_comercio, self.comercio_id
+        )
+
+    def _command(self) -> ProviderInboundMessageCommand:
+        return ProviderInboundMessageCommand(
+            proveedor=self.proveedor,
+            identificador_recepcion=self.identificador,
+            canal_id=self.canal_id,
+            cliente_id=self.cliente_id,
+            comercio_id=self.comercio_id,
+            mensaje="hola",
+            destinatario_e164=self.destination,
+        )
+
+    def _accept(self) -> tuple[int, int]:
+        coordinator = ProviderInboundMessageCoordinator(
+            session=TestingSessionLocal(),
+        )
+        with patch(
+            "backend.services.provider_inbound_message_coordinator"
+            ".process_incoming_message"
+        ):
+            outcome = coordinator.accept(self._command())
+        assert outcome.receipt_id is not None
+        assert outcome.procesamiento_id is not None
+        return int(outcome.receipt_id), int(outcome.procesamiento_id)
+
+    def _claim_and_process_with_emitter(
+        self,
+        *,
+        staged_rows: list[StagedOutboundRow],
+    ) -> tuple[
+        ProviderInboundProcessingResult,
+        list[dict[str, Any]],
+    ]:
+        """Run ``process_lease`` while capturing the JSON-line
+        observability events the coordinator emits through
+        :func:`emit_event` and forcing the mapper to return the
+        supplied ``staged_rows`` count.
+
+        The helper bypasses the LLM-driven customer response
+        rendering by stubbing ``stage_outbound_rows`` to return a
+        deterministic list. The mapper is the only consumer of
+        the intents list so the stub does not affect any
+        business-path contract.
+        """
+        session = TestingSessionLocal()
+        try:
+            coordinator = ProviderInboundMessageCoordinator(
+                session=session,
+                max_attempts=3,
+            )
+            leased = coordinator.claim_due_processing(now=_now())
+            assert leased is not None
+
+            captured: list[dict[str, Any]] = []
+
+            def _capture_emit(*, event: str, **kwargs: Any) -> bool:
+                from backend.observability.events import build_event
+
+                payload = build_event(event=event, **kwargs)
+                captured.append(payload)
+                return True
+
+            with patch(
+                "backend.services.provider_inbound_message_coordinator"
+                ".process_incoming_message",
+                return_value=[object()],
+            ), patch(
+                "backend.services.provider_inbound_message_coordinator"
+                ".stage_outbound_rows",
+                return_value=staged_rows,
+            ), patch(
+                "backend.services.provider_inbound_message_coordinator"
+                ".emit_event",
+                side_effect=_capture_emit,
+            ):
+                result = coordinator.process_lease(leased)
+            return result, captured
+        finally:
+            session.close()
+
+    def _processing_outcome_events(
+        self, captured: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        return [
+            event
+            for event in captured
+            if event.get("event") == EVENT_PROCESSING_OUTCOME
+        ]
+
+    def test_processed_with_response_emits_event_with_matching_counts(
+        self,
+    ) -> None:
+        """When the deferred processor commits one or more mapped
+        customer responses and their outbound rows it MUST emit
+        exactly one ``processed_with_response`` event with matching
+        bounded response/outbox counts."""
+        receipt_id, _ = self._accept()
+
+        staged_row = StagedOutboundRow(
+            mensaje_proveedor_saliente_id=1,
+            sequence=0,
+            customer_response=CustomerResponse(
+                message="ok",
+                intent="noop",
+                status="executed",
+            ),
+        )
+        result, captured = self._claim_and_process_with_emitter(
+            staged_rows=[staged_row]
+        )
+
+        self.assertEqual(
+            result.outcome, ProviderInboundProcessingOutcome.PROCESSED
+        )
+        with TestingSessionLocal() as session:
+            outbox_rows = list(
+                session.execute(
+                    select(MensajeProveedorSaliente).where(
+                        MensajeProveedorSaliente.recepcion_mensaje_proveedor_id
+                        == receipt_id
+                    )
+                ).scalars()
+            )
+        self.assertEqual(len(outbox_rows), 0)
+
+        events = self._processing_outcome_events(captured)
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["outcome"], "processed_with_response")
+        self.assertEqual(event["response_count"], 1)
+        self.assertEqual(event["outbox_row_count"], 1)
+        self.assertEqual(event["component"], COMPONENT_WORKER)
+        self.assertNotIn("failure_category", event)
+        self.assertEqual(
+            event["correlation_id"], self.identificador
+        )
+
+    def test_processed_without_response_emits_zero_count_event(
+        self,
+    ) -> None:
+        """When the deferred processor commits ``processed`` and the
+        mapper returns zero staged outbound rows it MUST emit
+        exactly one ``processed_without_response`` event with zero
+        counts and MUST NOT create a fallback row or invoke the
+        outbound dispatcher."""
+        receipt_id, _ = self._accept()
+
+        result, captured = self._claim_and_process_with_emitter(
+            staged_rows=[]
+        )
+
+        self.assertEqual(
+            result.outcome, ProviderInboundProcessingOutcome.PROCESSED
+        )
+        with TestingSessionLocal() as session:
+            outbox_rows = list(
+                session.execute(
+                    select(MensajeProveedorSaliente).where(
+                        MensajeProveedorSaliente.recepcion_mensaje_proveedor_id
+                        == receipt_id
+                    )
+                ).scalars()
+            )
+        self.assertEqual(
+            len(outbox_rows),
+            0,
+            "zero-response commit must not create an outbox row",
+        )
+
+        events = self._processing_outcome_events(captured)
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["outcome"], "processed_without_response")
+        self.assertEqual(event["response_count"], 0)
+        self.assertEqual(event["outbox_row_count"], 0)
+        self.assertNotIn("failure_category", event)
+        self.assertEqual(
+            event["correlation_id"], self.identificador
+        )
+
+    def test_retry_scheduled_failure_emits_failure_category(self) -> None:
+        """A pipeline exception that rolls back to retry MUST emit
+        exactly one ``retry_scheduled`` event with the safe bounded
+        failure category. The emission MUST NOT alter the existing
+        retry/lease contract."""
+        self._accept()
+        captured: list[dict[str, Any]] = []
+        session = TestingSessionLocal()
+        try:
+            coordinator = ProviderInboundMessageCoordinator(
+                session=session, max_attempts=3
+            )
+            leased = coordinator.claim_due_processing(now=_now())
+            assert leased is not None
+
+            def _capture_emit(*, event: str, **kwargs: Any) -> bool:
+                from backend.observability.events import build_event
+
+                payload = build_event(event=event, **kwargs)
+                captured.append(payload)
+                return True
+
+            with patch(
+                "backend.services.provider_inbound_message_coordinator"
+                ".process_incoming_message",
+                side_effect=RuntimeError("forced"),
+            ), patch(
+                "backend.services.provider_inbound_message_coordinator"
+                ".emit_event",
+                side_effect=_capture_emit,
+            ):
+                result = coordinator.process_lease(leased)
+        finally:
+            session.close()
+
+        self.assertEqual(
+            result.outcome, ProviderInboundProcessingOutcome.RETRY_SCHEDULED
+        )
+        events = self._processing_outcome_events(captured)
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["outcome"], "retry_scheduled")
+        self.assertEqual(event["failure_category"], "pipeline_error")
+        self.assertNotIn("response_count", event)
+        self.assertNotIn("outbox_row_count", event)
+
+    def test_terminal_exhaustion_emits_failed_terminal_event(self) -> None:
+        """When the attempt budget is exhausted on a forced pipeline
+        failure the coordinator MUST emit ``failed_terminal`` with
+        the safe bounded failure category and MUST keep the existing
+        bounded finalization contract intact."""
+        self._accept()
+        captured: list[dict[str, Any]] = []
+        session = TestingSessionLocal()
+        try:
+            coordinator = ProviderInboundMessageCoordinator(
+                session=session, max_attempts=1
+            )
+            leased = coordinator.claim_due_processing(now=_now())
+            assert leased is not None
+
+            def _capture_emit(*, event: str, **kwargs: Any) -> bool:
+                from backend.observability.events import build_event
+
+                payload = build_event(event=event, **kwargs)
+                captured.append(payload)
+                return True
+
+            with patch(
+                "backend.services.provider_inbound_message_coordinator"
+                ".process_incoming_message",
+                side_effect=RuntimeError("forced"),
+            ), patch(
+                "backend.services.provider_inbound_message_coordinator"
+                ".emit_event",
+                side_effect=_capture_emit,
+            ):
+                result = coordinator.process_lease(leased)
+        finally:
+            session.close()
+
+        self.assertEqual(
+            result.outcome,
+            ProviderInboundProcessingOutcome.FAILED_TERMINAL,
+        )
+        events = self._processing_outcome_events(captured)
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["outcome"], "failed_terminal")
+        self.assertEqual(event["failure_category"], "pipeline_error")
+
+    def test_emission_does_not_call_mapper_twice(self) -> None:
+        """The coordinator MUST use the existing ``stage_outbound_rows``
+        result count exactly once. A second invocation of the mapper
+        would be a regression of the diagnostic contract."""
+        self._accept()
+        session = TestingSessionLocal()
+        try:
+            coordinator = ProviderInboundMessageCoordinator(
+                session=session, max_attempts=3
+            )
+            leased = coordinator.claim_due_processing(now=_now())
+            assert leased is not None
+
+            call_counter = {"count": 0}
+
+            def _spy_stage(*args: Any, **kwargs: Any) -> list[StagedOutboundRow]:
+                call_counter["count"] += 1
+                return []
+
+            with patch(
+                "backend.services.provider_inbound_message_coordinator"
+                ".process_incoming_message",
+                return_value=[],
+            ), patch(
+                "backend.services.provider_inbound_message_coordinator"
+                ".stage_outbound_rows",
+                side_effect=_spy_stage,
+            ):
+                result = coordinator.process_lease(leased)
+        finally:
+            session.close()
+
+        self.assertEqual(
+            result.outcome, ProviderInboundProcessingOutcome.PROCESSED
+        )
+        self.assertEqual(
+            call_counter["count"],
+            1,
+            "stage_outbound_rows must be invoked exactly once",
+        )
+
+    def test_receipt_missing_emits_failed_terminal_after_finalization(
+        self,
+    ) -> None:
+        """When the receipt linked to the leased work item is
+        missing the coordinator MUST finalize the row as terminal
+        with the safe ``database_error`` category AND MUST emit
+        exactly one ``provider_inbound_processing_outcome`` event
+        with ``failed_terminal`` outcome AFTER the durable
+        finalization. The emission MUST NOT alter the existing
+        bounded transaction, lease or retry contract.
+        """
+        receipt_id, _ = self._accept()
+
+        session = TestingSessionLocal()
+        try:
+            coordinator = ProviderInboundMessageCoordinator(
+                session=session, max_attempts=3
+            )
+            leased = coordinator.claim_due_processing(now=_now())
+            assert leased is not None
+
+            captured: list[dict[str, Any]] = []
+            call_order: list[str] = []
+
+            def _capture_emit(*, event: str, **kwargs: Any) -> bool:
+                from backend.observability.events import build_event
+
+                call_order.append("emit")
+                payload = build_event(event=event, **kwargs)
+                captured.append(payload)
+                return True
+
+            real_finalize_terminal = (
+                coordinator._procesamiento_repo.finalize_terminal
+            )
+
+            def _spy_finalize_terminal(**kwargs: Any) -> bool:
+                call_order.append("finalize")
+                return real_finalize_terminal(**kwargs)
+
+            with patch(
+                "backend.services.provider_inbound_message_coordinator"
+                ".emit_event",
+                side_effect=_capture_emit,
+            ), patch.object(
+                coordinator._recepcion_repo,
+                "find_by_id",
+                return_value=None,
+            ), patch.object(
+                coordinator._procesamiento_repo,
+                "finalize_terminal",
+                side_effect=_spy_finalize_terminal,
+            ):
+                result = coordinator.process_lease(leased)
+        finally:
+            session.close()
+
+        self.assertEqual(
+            result.outcome,
+            ProviderInboundProcessingOutcome.FAILED_TERMINAL,
+        )
+        self.assertEqual(result.codigo, "receipt_missing")
+        self.assertEqual(
+            result.categoria,
+            ProcesamientoMensajeProveedorFailureCategory.DATABASE_ERROR,
+        )
+
+        events = self._processing_outcome_events(captured)
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["outcome"], "failed_terminal")
+        self.assertEqual(event["failure_category"], "database_error")
+        self.assertEqual(event["component"], COMPONENT_WORKER)
+        self.assertNotIn("response_count", event)
+        self.assertNotIn("outbox_row_count", event)
+
+        self.assertEqual(call_order, ["finalize", "emit"])
+
+        with TestingSessionLocal() as session:
+            stored = session.execute(
+                select(ProcesamientoMensajeProveedor).where(
+                    ProcesamientoMensajeProveedor.recepcion_mensaje_proveedor_id
+                    == receipt_id
+                )
+            ).scalar_one()
+        self.assertEqual(
+            stored.estado,
+            ProcesamientoMensajeProveedorEstado.FAILED_TERMINAL.value,
+        )
+        self.assertEqual(stored.categoria_ultimo_fallo, "database_error")
+        self.assertEqual(stored.codigo_ultimo_fallo, "receipt_missing")
+
+    def test_receipt_missing_emits_lease_lost_when_finalization_fails(
+        self,
+    ) -> None:
+        """When the receipt linked to the leased work item is
+        missing AND the terminal finalization loses the lease the
+        coordinator MUST emit ONLY ``lease_lost`` (without
+        ``failure_category``). The receipt_missing path keeps its
+        existing ``ProviderInboundProcessingResult`` semantic; the
+        emission MUST happen AFTER the bounded lease loss is
+        observed."""
+        self._accept()
+
+        session = TestingSessionLocal()
+        try:
+            coordinator = ProviderInboundMessageCoordinator(
+                session=session, max_attempts=3
+            )
+            leased = coordinator.claim_due_processing(now=_now())
+            assert leased is not None
+
+            captured: list[dict[str, Any]] = []
+            call_order: list[str] = []
+
+            def _capture_emit(*, event: str, **kwargs: Any) -> bool:
+                from backend.observability.events import build_event
+
+                call_order.append("emit")
+                payload = build_event(event=event, **kwargs)
+                captured.append(payload)
+                return True
+
+            def _spy_finalize_terminal(**kwargs: Any) -> bool:
+                call_order.append("finalize")
+                return False
+
+            with patch(
+                "backend.services.provider_inbound_message_coordinator"
+                ".emit_event",
+                side_effect=_capture_emit,
+            ), patch.object(
+                coordinator._recepcion_repo,
+                "find_by_id",
+                return_value=None,
+            ), patch.object(
+                coordinator._procesamiento_repo,
+                "finalize_terminal",
+                side_effect=_spy_finalize_terminal,
+            ):
+                result = coordinator.process_lease(leased)
+        finally:
+            session.close()
+
+        self.assertEqual(
+            result.outcome,
+            ProviderInboundProcessingOutcome.FAILED_TERMINAL,
+        )
+        self.assertEqual(result.codigo, "receipt_missing")
+
+        events = self._processing_outcome_events(captured)
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["outcome"], "lease_lost")
+        self.assertNotIn("failure_category", event)
+        self.assertEqual(event["component"], COMPONENT_WORKER)
+
+        self.assertEqual(call_order, ["finalize", "emit"])
+
+    @staticmethod
+    def _unavailable_outcome(
+        comercio_id: int,
+    ) -> CommerceAvailabilityOutcome:
+        """Return a typed ``unavailable`` / ``blocked_state`` outcome
+        suitable for monkey-patching the availability service."""
+        return CommerceAvailabilityOutcome(
+            status=CommerceAvailabilityStatus.UNAVAILABLE,
+            reason=CommerceUnavailableReason.BLOCKED_STATE,
+            comercio_id=comercio_id,
+            modo_operacion=None,
+            prueba_hasta=None,
+            prueba_max_pedidos=None,
+            prueba_pedidos_consumidos=0,
+        )
+
+    def test_unavailable_emits_event_with_failure_category_after_finalization(
+        self,
+    ) -> None:
+        """When the commerce is unavailable AND the terminal
+        finalization commits, the coordinator MUST emit exactly one
+        ``provider_inbound_processing_outcome`` event with
+        ``outcome='unavailable'`` and
+        ``failure_category='unavailable_commerce'`` AFTER the
+        durable finalization. The receipt and work item must be
+        finalized in ``failed_terminal`` and the row must carry the
+        bounded ``unavailable_blocked_state`` codigo. The emission
+        MUST NOT alter the existing transaction, lease or retry
+        contract."""
+        receipt_id, procesamiento_id = self._accept()
+
+        session = TestingSessionLocal()
+        try:
+            coordinator = ProviderInboundMessageCoordinator(
+                session=session, max_attempts=3
+            )
+            leased = coordinator.claim_due_processing(now=_now())
+            assert leased is not None
+
+            captured: list[dict[str, Any]] = []
+            call_order: list[str] = []
+
+            def _capture_emit(*, event: str, **kwargs: Any) -> bool:
+                from backend.observability.events import build_event
+
+                call_order.append("emit")
+                payload = build_event(event=event, **kwargs)
+                captured.append(payload)
+                return True
+
+            real_finalize_terminal = (
+                coordinator._procesamiento_repo.finalize_terminal
+            )
+
+            def _spy_finalize_terminal(**kwargs: Any) -> bool:
+                call_order.append("finalize")
+                return real_finalize_terminal(**kwargs)
+
+            with patch(
+                "backend.services.provider_inbound_message_coordinator"
+                ".emit_event",
+                side_effect=_capture_emit,
+            ), patch(
+                "backend.services.provider_inbound_message_coordinator"
+                ".CommerceAvailabilityService.evaluate",
+                return_value=self._unavailable_outcome(
+                    self.comercio_id
+                ),
+            ), patch.object(
+                coordinator._procesamiento_repo,
+                "finalize_terminal",
+                side_effect=_spy_finalize_terminal,
+            ):
+                result = coordinator.process_lease(leased)
+        finally:
+            session.close()
+
+        self.assertEqual(
+            result.outcome,
+            ProviderInboundProcessingOutcome.FAILED_TERMINAL,
+        )
+        self.assertEqual(
+            result.categoria,
+            ProcesamientoMensajeProveedorFailureCategory.TERMINAL_PROCESSOR_ERROR,
+        )
+        self.assertEqual(result.codigo, "unavailable_blocked_state")
+
+        events = self._processing_outcome_events(captured)
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["outcome"], "unavailable")
+        self.assertEqual(
+            event["failure_category"], "unavailable_commerce"
+        )
+        self.assertEqual(event["component"], COMPONENT_WORKER)
+        self.assertNotIn("response_count", event)
+        self.assertNotIn("outbox_row_count", event)
+        self.assertEqual(
+            event["correlation_id"], self.identificador
+        )
+
+        self.assertEqual(call_order, ["finalize", "emit"])
+
+        with TestingSessionLocal() as session:
+            stored = session.execute(
+                select(ProcesamientoMensajeProveedor).where(
+                    ProcesamientoMensajeProveedor.id == procesamiento_id
+                )
+            ).scalar_one()
+            self.assertEqual(
+                stored.estado,
+                ProcesamientoMensajeProveedorEstado.FAILED_TERMINAL.value,
+            )
+            self.assertEqual(
+                stored.categoria_ultimo_fallo,
+                "terminal_processor_error",
+            )
+            self.assertEqual(
+                stored.codigo_ultimo_fallo,
+                "unavailable_blocked_state",
+            )
+            receipt_still_present = session.execute(
+                select(RecepcionMensajeProveedor).where(
+                    RecepcionMensajeProveedor.id == receipt_id
+                )
+            ).scalar_one()
+            self.assertIsNotNone(receipt_still_present)
+
+    def test_unavailable_emits_lease_lost_when_finalization_fails(
+        self,
+    ) -> None:
+        """When the commerce is unavailable AND the terminal
+        finalization loses the lease, the coordinator MUST emit
+        ONLY ``lease_lost`` (without ``failure_category``) AFTER
+        the bounded lease loss is observed. The unavailable
+        outcome MUST NOT be reported when no durable finalization
+        was committed. The receipt and work item must remain in
+        their pre-finalization state for the next claim pass."""
+        _receipt_id, procesamiento_id = self._accept()
+
+        session = TestingSessionLocal()
+        try:
+            coordinator = ProviderInboundMessageCoordinator(
+                session=session, max_attempts=3
+            )
+            leased = coordinator.claim_due_processing(now=_now())
+            assert leased is not None
+
+            captured: list[dict[str, Any]] = []
+            call_order: list[str] = []
+
+            def _capture_emit(*, event: str, **kwargs: Any) -> bool:
+                from backend.observability.events import build_event
+
+                call_order.append("emit")
+                payload = build_event(event=event, **kwargs)
+                captured.append(payload)
+                return True
+
+            def _spy_finalize_terminal(**kwargs: Any) -> bool:
+                call_order.append("finalize")
+                return False
+
+            with patch(
+                "backend.services.provider_inbound_message_coordinator"
+                ".emit_event",
+                side_effect=_capture_emit,
+            ), patch(
+                "backend.services.provider_inbound_message_coordinator"
+                ".CommerceAvailabilityService.evaluate",
+                return_value=self._unavailable_outcome(
+                    self.comercio_id
+                ),
+            ), patch.object(
+                coordinator._procesamiento_repo,
+                "finalize_terminal",
+                side_effect=_spy_finalize_terminal,
+            ):
+                result = coordinator.process_lease(leased)
+        finally:
+            session.close()
+
+        self.assertEqual(
+            result.outcome,
+            ProviderInboundProcessingOutcome.FAILED_TERMINAL,
+        )
+        self.assertEqual(result.codigo, "unavailable_blocked_state")
+        assert result.categoria is not None
+        self.assertEqual(
+            result.categoria,
+            ProcesamientoMensajeProveedorFailureCategory.TERMINAL_PROCESSOR_ERROR,
+        )
+
+        events = self._processing_outcome_events(captured)
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["outcome"], "lease_lost")
+        self.assertNotIn("failure_category", event)
+        self.assertEqual(event["component"], COMPONENT_WORKER)
+        self.assertNotIn("response_count", event)
+        self.assertNotIn("outbox_row_count", event)
+        self.assertNotIn("correlation_id", event)
+
+        self.assertEqual(call_order, ["finalize", "emit"])
+
+        with TestingSessionLocal() as session:
+            stored = session.execute(
+                select(ProcesamientoMensajeProveedor).where(
+                    ProcesamientoMensajeProveedor.id == procesamiento_id
+                )
+            ).scalar_one()
+            self.assertEqual(
+                stored.estado,
+                ProcesamientoMensajeProveedorEstado.LEASED.value,
+                "rolled-back lease must remain claimable until it "
+                "expires",
+            )
+            self.assertIsNone(stored.fecha_finalizacion)
 
 
 if __name__ == "__main__":
