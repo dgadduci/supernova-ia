@@ -62,13 +62,51 @@
     <p class="muted">El historial vive solo en esta pestaña del navegador.
     No se guarda, ni usa cookies del navegador, ni el almacén persistente
     del navegador, ni parámetros de URL. Puede seleccionarse y copiarse
-    manualmente; el Emulator no contacta Twilio real.</p>
+    manualmente; el Emulator no contacta Twilio real. Los timestamps
+    que se muestran junto a cada turno son la hora local del navegador
+    en que el panel observó esa fila, no una transición del backend.</p>
     <div
       class="debug-emulator-conversation"
       data-debug-emulator-conversation
       role="list"
       aria-live="polite"
     ></div>
+    <h4>Línea de tiempo del servidor (solo esta página)</h4>
+    <p class="muted">Tiempos UTC del worker/LLM/outbox asociados al
+    identificador sintético. Los hitos no disponibles se muestran como
+    <code>—</code> y nunca reemplazan el estado. Esta línea es solo de
+    lectura: nunca expone prompts, respuestas, teléfonos, credenciales
+    ni payloads del proveedor.</p>
+    <dl
+      class="debug-emulator-timeline"
+      data-debug-emulator-timeline
+      aria-live="polite"
+    >
+      <div class="debug-state-row">
+        <dt>Inbound recibido:</dt>
+        <dd data-debug-timeline-inbound-received>—</dd>
+      </div>
+      <div class="debug-state-row">
+        <dt>LLM solicitada:</dt>
+        <dd data-debug-timeline-llm-requested>—</dd>
+      </div>
+      <div class="debug-state-row">
+        <dt>LLM finalizada:</dt>
+        <dd data-debug-timeline-llm-finished>—</dd>
+      </div>
+      <div class="debug-state-row">
+        <dt>Resultado LLM:</dt>
+        <dd data-debug-timeline-llm-outcome>—</dd>
+      </div>
+      <div class="debug-state-row">
+        <dt>Procesamiento finalizado:</dt>
+        <dd data-debug-timeline-processing-finished>—</dd>
+      </div>
+      <div class="debug-state-row">
+        <dt>Respuesta encolada:</dt>
+        <dd data-debug-timeline-response-staged>—</dd>
+      </div>
+    </dl>
     <p class="muted">Resultado del último turno (solo esta página):</p>
     <div class="debug-emulator-result" data-debug-emulator-result aria-live="polite">
       <p class="muted">Sin resultado del último turno todavía.</p>

@@ -234,6 +234,24 @@
     background: #fde8e8;
   }
   .debug-emulator-turn-error .debug-emulator-turn-label { color: var(--error); }
+  .debug-emulator-turn-timestamp {
+    float: right;
+    margin-left: 8px;
+    color: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    font-size: 0.78em;
+    white-space: nowrap;
+  }
+  .debug-emulator-timeline {
+    margin: 6px 0 12px 0;
+  }
+  .debug-emulator-timeline .debug-state-row {
+    align-items: baseline;
+  }
+  .debug-emulator-timeline dd {
+    font-family: ui-monospace, SFMono-Regular, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    font-size: 0.92em;
+  }
   .debug-form textarea {
     width: 100%;
     min-height: 3rem;
@@ -818,7 +836,7 @@
     };
   }
 
-  function createEmulatorTurnElement(kind, label, body) {
+  function createEmulatorTurnElement(kind, label, body, observedAtIso) {
     var item = document.createElement("div");
     item.setAttribute("role", "listitem");
     item.className =
@@ -831,6 +849,13 @@
     bodySpan.textContent = body;
     item.appendChild(labelSpan);
     item.appendChild(bodySpan);
+    if (observedAtIso) {
+      var timestampSpan = document.createElement("span");
+      timestampSpan.className = "debug-emulator-turn-timestamp";
+      timestampSpan.setAttribute("data-debug-emulator-turn-timestamp", kind);
+      timestampSpan.textContent = formatLocalTimeFromIso(observedAtIso);
+      item.appendChild(timestampSpan);
+    }
     return item;
   }
 
@@ -839,7 +864,25 @@
     for (var i = 0; i < EMULATOR_CONVERSATION_KIND_KEYS.length; i++) {
       entry[EMULATOR_CONVERSATION_KIND_KEYS[i]] = null;
     }
+    entry.observedAtIsoByKind = {};
+    for (var j = 0; j < EMULATOR_CONVERSATION_KIND_KEYS.length; j++) {
+      entry.observedAtIsoByKind[EMULATOR_CONVERSATION_KIND_KEYS[j]] = null;
+    }
     return entry;
+  }
+
+  function getEmulatorTurnObservedAtIso(entry, kind) {
+    if (!entry || !entry.observedAtIsoByKind || !kind) {
+      return null;
+    }
+    return entry.observedAtIsoByKind[kind] || null;
+  }
+
+  function setEmulatorTurnObservedAtIso(entry, kind, observedAtIso) {
+    if (!entry || !entry.observedAtIsoByKind || !kind) {
+      return;
+    }
+    entry.observedAtIsoByKind[kind] = observedAtIso || null;
   }
 
   function getEmulatorTurnEntryKindElement(entry, kind) {
@@ -854,6 +897,48 @@
       return;
     }
     entry[kind] = element || null;
+  }
+
+  function captureObservedAtIso() {
+    try {
+      return new Date().toISOString();
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function formatLocalTimeFromIso(iso) {
+    if (typeof iso !== "string" || !iso) {
+      return "";
+    }
+    var parsed = new Date(iso);
+    if (isNaN(parsed.getTime())) {
+      return "";
+    }
+    return formatLocalTime(parsed);
+  }
+
+  function formatLocalTime(date) {
+    if (!(date instanceof Date) || isNaN(date.getTime())) {
+      return "";
+    }
+    var h = String(date.getHours());
+    if (h.length < 2) {
+      h = "0" + h;
+    }
+    var m = String(date.getMinutes());
+    if (m.length < 2) {
+      m = "0" + m;
+    }
+    var s = String(date.getSeconds());
+    if (s.length < 2) {
+      s = "0" + s;
+    }
+    var ms = String(date.getMilliseconds());
+    while (ms.length < 3) {
+      ms = "0" + ms;
+    }
+    return h + ":" + m + ":" + s + "." + ms;
   }
 
   function trimEmulatorConversation(state) {
@@ -906,6 +991,11 @@
       state.turnMap[key] = entry;
       state.turnOrder.push(key);
     }
+    var observedAtIso = captureObservedAtIso();
+    if (observedAtIso) {
+      setEmulatorTurnObservedAtIso(entry, kind, observedAtIso);
+    }
+    var observedAtIsoForKind = getEmulatorTurnObservedAtIso(entry, kind);
     var existingElement = getEmulatorTurnEntryKindElement(entry, kind);
     if (existingElement) {
       existingElement.className =
@@ -913,13 +1003,42 @@
       if (existingElement.firstChild) {
         existingElement.firstChild.textContent = safeLabel;
       }
-      if (existingElement.lastChild) {
-        existingElement.lastChild.textContent = safeBody;
+      var bodyNode = existingElement.querySelector(
+        ".debug-emulator-turn-body"
+      );
+      if (bodyNode) {
+        bodyNode.textContent = safeBody;
+      } else {
+        var bodySpan = document.createElement("span");
+        bodySpan.className = "debug-emulator-turn-body";
+        bodySpan.textContent = safeBody;
+        existingElement.appendChild(bodySpan);
+      }
+      var timestampNode = existingElement.querySelector(
+        "[data-debug-emulator-turn-timestamp]"
+      );
+      if (!timestampNode) {
+        if (observedAtIsoForKind) {
+          var tsSpan = document.createElement("span");
+          tsSpan.className = "debug-emulator-turn-timestamp";
+          tsSpan.setAttribute("data-debug-emulator-turn-timestamp", kind);
+          tsSpan.textContent = formatLocalTimeFromIso(observedAtIsoForKind);
+          existingElement.appendChild(tsSpan);
+        }
+      } else {
+        timestampNode.textContent = formatLocalTimeFromIso(
+          observedAtIsoForKind
+        );
       }
       scrollEmulatorConversationToBottom(state);
       return entry;
     }
-    var element = createEmulatorTurnElement(kind, safeLabel, safeBody);
+    var element = createEmulatorTurnElement(
+      kind,
+      safeLabel,
+      safeBody,
+      observedAtIsoForKind
+    );
     state.container.appendChild(element);
     setEmulatorTurnEntryKindElement(entry, kind, element);
     trimEmulatorConversation(state);
@@ -969,6 +1088,77 @@
       sidP.textContent = "SID: " + result.provider_message_sid;
       container.appendChild(sidP);
     }
+  }
+
+  var EMULATOR_TIMELINE_FIELDS = [
+    { key: "inbound_received_at", attr: "data-debug-timeline-inbound-received" },
+    { key: "llm_requested_at", attr: "data-debug-timeline-llm-requested" },
+    { key: "llm_finished_at", attr: "data-debug-timeline-llm-finished" },
+    { key: "llm_outcome", attr: "data-debug-timeline-llm-outcome" },
+    { key: "processing_finished_at", attr: "data-debug-timeline-processing-finished" },
+    { key: "response_staged_at", attr: "data-debug-timeline-response-staged" }
+  ];
+
+  var EMULATOR_TIMELINE_OUTCOME_VALUES = {
+    completed: true,
+    timeout: true,
+    error: true
+  };
+
+  function renderEmulatorTimelineField(attr, rawValue, kind) {
+    var node = document.querySelector("[" + attr + "]");
+    if (!node) {
+      return false;
+    }
+    if (rawValue === null || rawValue === undefined || rawValue === "") {
+      node.textContent = EMPTY_DASH_TEXT;
+      return true;
+    }
+    if (kind === "outcome") {
+      if (typeof rawValue !== "string") {
+        return false;
+      }
+      if (!EMULATOR_TIMELINE_OUTCOME_VALUES[rawValue]) {
+        return false;
+      }
+      node.textContent = rawValue;
+      return true;
+    }
+    if (typeof rawValue !== "string") {
+      return false;
+    }
+    var formatted = formatLocalTimeFromIso(rawValue);
+    if (!formatted) {
+      return false;
+    }
+    node.textContent = formatted + " (" + rawValue + " UTC)";
+    return true;
+  }
+
+  function renderEmulatorTimeline(timeline) {
+    var container = document.querySelector("[data-debug-emulator-timeline]");
+    if (!container) {
+      return false;
+    }
+    if (!timeline || typeof timeline !== "object") {
+      for (var i = 0; i < EMULATOR_TIMELINE_FIELDS.length; i++) {
+        renderEmulatorTimelineField(
+          EMULATOR_TIMELINE_FIELDS[i].attr,
+          null,
+          null
+        );
+      }
+      return true;
+    }
+    for (var j = 0; j < EMULATOR_TIMELINE_FIELDS.length; j++) {
+      var field = EMULATOR_TIMELINE_FIELDS[j];
+      var value = Object.prototype.hasOwnProperty.call(timeline, field.key)
+        ? timeline[field.key]
+        : null;
+      var kind = field.key === "llm_outcome" ? "outcome" : "timestamp";
+      renderEmulatorTimelineField(field.attr, value, kind);
+    }
+    return true;
   }
 
   function clearEmulatorResult() {
@@ -1058,6 +1248,7 @@
       if (errorKey) {
         conversationMarkError(errorKey, "El Twilio Emulator rechazó el mensaje.");
       }
+      renderEmulatorTimeline(null);
       setStatus("El Twilio Emulator rechazó el mensaje.");
       setBusy(false);
     }
@@ -1095,6 +1286,7 @@
               return;
             }
             renderEmulatorResult(result.data);
+            renderEmulatorTimeline(result.data.timeline);
             if (result.data.status === "processed" && isBoundedDisplayString(result.data.outbound_body)) {
               conversationAppendReceived(currentInboundId, result.data.outbound_body);
             } else if (
@@ -1173,6 +1365,7 @@
           currentInboundId = result.data.synthetic_inbound_id;
           rekeyEmulatorTurn(conversationState, pendingKey, currentInboundId);
           conversationAppendStatus(currentInboundId, result.data.status || "accepted");
+          renderEmulatorTimeline(null);
           pollEmulatorStatus(EMULATOR_MAX_POLL_ATTEMPTS);
         })
         .catch(function () {
@@ -1316,12 +1509,17 @@
     window.__panelDebugEmulator = {
       EMULATOR_CONVERSATION_MAX_TURNS: EMULATOR_CONVERSATION_MAX_TURNS,
       EMULATOR_CONVERSATION_TEXT_LIMIT: EMULATOR_CONVERSATION_TEXT_LIMIT,
+      EMULATOR_TIMELINE_FIELDS: EMULATOR_TIMELINE_FIELDS,
+      EMULATOR_TIMELINE_OUTCOME_VALUES: EMULATOR_TIMELINE_OUTCOME_VALUES,
       truncateEmulatorConversationText: truncateEmulatorConversationText,
       createEmulatorConversationState: createEmulatorConversationState,
       createEmulatorTurnElement: createEmulatorTurnElement,
       appendOrUpdateEmulatorTurn: appendOrUpdateEmulatorTurn,
       rekeyEmulatorTurn: rekeyEmulatorTurn,
-      trimEmulatorConversation: trimEmulatorConversation
+      trimEmulatorConversation: trimEmulatorConversation,
+      formatLocalTime: formatLocalTime,
+      formatLocalTimeFromIso: formatLocalTimeFromIso,
+      renderEmulatorTimeline: renderEmulatorTimeline
     };
   }
 })();

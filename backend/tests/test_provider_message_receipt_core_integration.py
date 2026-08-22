@@ -28,14 +28,20 @@ from __future__ import annotations
 
 import unittest
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import patch
 
+import requests
 from sqlalchemy import create_engine, delete, select, text
 from sqlalchemy.orm import Session as SqlSession
 from sqlalchemy.orm import sessionmaker
 
+from backend.config.settings import Settings
+from backend.llm.query_llm import (
+    QueryLlm,
+    reset_llm_timing_recorder,
+)
 from backend.models import (
     CanalWhatsapp,
     CanalWhatsappMode,
@@ -1251,6 +1257,280 @@ class ProcessingIntegrationTest(unittest.TestCase):
             )
             self.assertIsNone(work.mensaje)
             self.assertIsNotNone(work.fecha_finalizacion)
+
+
+def _llm_timeout_settings() -> Settings:
+    """Build a minimal ``Settings`` instance suitable for QueryLlm
+    timeout simulation. Mirrors the schema used by the existing
+    timing-observability tests so the test only exercises the
+    coordinator and the database, never the real LLM endpoint.
+    """
+    from backend.config.settings import load_settings
+
+    base = load_settings().__dict__
+    base.update(
+        {
+            "llm_url": "http://llm.test/api/generate",
+            "llm_model": "test-llm",
+            "llm_timeout": 5,
+            "llm_keep_alive": "1h",
+            "llm_num_ctx": 2048,
+            "llm_num_predict": 256,
+            "llm_log_content": False,
+            "llm_log_max_chars": 50,
+        }
+    )
+    return Settings(**base)
+
+
+class LLMTimingRollbackPreservesMetadataTest(unittest.TestCase):
+    """Real PostgreSQL proof that an LLM timeout during processing:
+
+    1. rolls back every staged business effect (no ``sessions``,
+       no ``pedidos`` and no ``mensajes_proveedor_saliente`` rows);
+    2. preserves the LLM request/finish timestamps captured by the
+       safe ``WorkItemLLMTimingRecorder`` through the rollback;
+    3. finalizes the work item in the bounded ``retryable`` state
+       with ``llm_resultado == 'timeout'``;
+    4. schedules the next retry through ``proximo_intento_en``.
+
+    The test exercises the production coordinator and the real
+    ``procesamientos_mensajes_proveedor`` repository — the
+    recorder-only tests in
+    ``test_admin_pilot_emulator_timing_observability.py`` cover
+    the in-memory state machine, while this test guarantees the
+    persistent metadata survives the existing rollback / retry /
+    terminal finalization path.
+    """
+
+    def setUp(self) -> None:
+        suffix = _suffix()
+        self.comercio_id = _seed_comercio(suffix)
+        self.cliente_id = _seed_cliente(suffix + "C")
+        self.destination = f"+54995{suffix[:8]}"
+        self.canal_id = _seed_dedicated_channel(
+            suffix + "D", self.comercio_id, self.destination
+        )
+        self.proveedor = "twilio"
+        self.identificador = f"SM-{suffix}"
+        self.addCleanup(_delete_comercio, self.comercio_id)
+        self.addCleanup(_delete_cliente, self.cliente_id)
+        self.addCleanup(_delete_canales_by_destination, self.destination)
+        self.addCleanup(
+            _delete_recepciones_by_comercio, self.comercio_id
+        )
+        self.addCleanup(
+            _delete_procesamientos_by_comercio, self.comercio_id
+        )
+        self.addCleanup(
+            _cleanup_provider_inbound_artifacts, self.comercio_id
+        )
+        reset_llm_timing_recorder()
+        self.addCleanup(reset_llm_timing_recorder)
+
+    def _command(self) -> ProviderInboundMessageCommand:
+        return ProviderInboundMessageCommand(
+            proveedor=self.proveedor,
+            identificador_recepcion=self.identificador,
+            canal_id=self.canal_id,
+            cliente_id=self.cliente_id,
+            comercio_id=self.comercio_id,
+            mensaje="hola",
+            destinatario_e164=self.destination,
+        )
+
+    def _accept(self) -> tuple[int, int]:
+        coordinator = ProviderInboundMessageCoordinator(
+            session=TestingSessionLocal(),
+        )
+        with patch(
+            "backend.services.provider_inbound_message_coordinator"
+            ".process_incoming_message"
+        ):
+            outcome = coordinator.accept(self._command())
+        assert outcome.receipt_id is not None
+        assert outcome.procesamiento_id is not None
+        return int(outcome.receipt_id), int(outcome.procesamiento_id)
+
+    def test_llm_timeout_rolls_back_business_effects_and_preserves_timing(
+        self,
+    ) -> None:
+        """An LLM timeout during deferred processing must:
+
+        * roll back every staged business effect (session, pedido,
+          outbox) — the receipt and work item remain for retry;
+        * persist ``llm_solicitado_en`` and ``llm_finalizado_en``
+          captured before the rollback through the existing
+          ``finalize_retryable`` UPDATE;
+        * persist ``llm_resultado == 'timeout'`` so the operator can
+          distinguish the timeout from a Twilio Emulator transport
+          rejection without exposing exception detail;
+        * schedule the next retry through ``proximo_intento_en``;
+        * keep the transient body so the next pass can replay it.
+        """
+        receipt_id, procesamiento_id = self._accept()
+
+        vrf_settings = _llm_timeout_settings()
+
+        def _timeout_pipeline(*_args: Any, **_kwargs: Any) -> list[Any]:
+            """Patch ``process_incoming_message`` so the coordinator's
+            installed timing recorder observes a real
+            ``QueryLlmTimeoutError``. The transport raises
+            ``requests.exceptions.Timeout`` and QueryLlm maps it to
+            its bounded ``QueryLlmTimeoutError``; the recorder's
+            ``on_requested`` and ``on_finished(outcome='timeout')``
+            fire inside the existing try/except block, so the
+            coordinator's ``_finalize_failure`` path receives the
+            bounded metadata even after the business transaction
+            rolls back.
+            """
+
+            def _transport(*_t_args: Any, **_t_kwargs: Any) -> None:
+                raise requests.exceptions.Timeout(
+                    "simulated LLM timeout"
+                )
+
+            QueryLlm(settings=vrf_settings, transport=_transport).request(
+                "dummy-prompt"
+            )
+            return []
+
+        session = TestingSessionLocal()
+        try:
+            with patch(
+                "backend.services.provider_inbound_message_coordinator"
+                ".process_incoming_message",
+                side_effect=_timeout_pipeline,
+            ) as pipeline:
+                coordinator = ProviderInboundMessageCoordinator(
+                    session=session,
+                    max_attempts=3,
+                )
+                leased = coordinator.claim_due_processing(now=_now())
+                self.assertIsNotNone(leased)
+                assert leased is not None
+
+                result = coordinator.process_lease(leased)
+
+            pipeline.assert_called_once()
+
+            self.assertEqual(
+                result.outcome,
+                ProviderInboundProcessingOutcome.RETRY_SCHEDULED,
+            )
+            self.assertEqual(result.intentos, 1)
+        finally:
+            session.close()
+
+        with TestingSessionLocal() as session:
+            sesiones = len(
+                session.execute(
+                    select(SessionModel).where(
+                        SessionModel.id_comercio == self.comercio_id
+                    )
+                ).all()
+            )
+            self.assertEqual(
+                sesiones,
+                0,
+                "session row must be rolled back after LLM timeout",
+            )
+            pedidos = len(
+                session.execute(
+                    select(Pedido).where(
+                        Pedido.id_session.in_(
+                            select(SessionModel.id).where(
+                                SessionModel.id_comercio
+                                == self.comercio_id
+                            )
+                        )
+                    )
+                ).all()
+            )
+            self.assertEqual(
+                pedidos,
+                0,
+                "pedido row must be rolled back after LLM timeout",
+            )
+            outbox = len(
+                session.execute(
+                    select(MensajeProveedorSaliente).where(
+                        MensajeProveedorSaliente.recepcion_mensaje_proveedor_id
+                        == receipt_id
+                    )
+                ).all()
+            )
+            self.assertEqual(
+                outbox,
+                0,
+                "outbox row must be rolled back after LLM timeout",
+            )
+
+            work = session.execute(
+                select(ProcesamientoMensajeProveedor).where(
+                    ProcesamientoMensajeProveedor.id
+                    == procesamiento_id
+                )
+            ).scalar_one()
+            self.assertEqual(
+                work.estado,
+                ProcesamientoMensajeProveedorEstado.RETRYABLE.value,
+                "work item must be finalized as retryable",
+            )
+            self.assertIsNotNone(
+                work.llm_solicitado_en,
+                "llm_solicitado_en must survive the rollback",
+            )
+            self.assertIsNotNone(
+                work.llm_finalizado_en,
+                "llm_finalizado_en must survive the rollback",
+            )
+            self.assertIsNotNone(
+                work.llm_resultado,
+                "llm_resultado must survive the rollback",
+            )
+            self.assertEqual(
+                work.llm_resultado,
+                "timeout",
+                "llm_resultado must be persisted as 'timeout'",
+            )
+            assert work.llm_solicitado_en is not None
+            assert work.llm_finalizado_en is not None
+            self.assertLessEqual(
+                work.llm_solicitado_en,
+                work.llm_finalizado_en,
+                "LLM request timestamp must precede completion",
+            )
+            self.assertIsNotNone(
+                work.proximo_intento_en,
+                "next retry must be scheduled via proximo_intento_en",
+            )
+            assert work.proximo_intento_en is not None
+            self.assertGreater(
+                work.proximo_intento_en,
+                _now() - timedelta(seconds=2),
+                "next retry must be in the future (or recent past)",
+            )
+            self.assertIsNotNone(
+                work.mensaje,
+                "transient body must be preserved so the next "
+                "attempt can replay it",
+            )
+            self.assertEqual(
+                work.mensaje,
+                "hola",
+                "preserved body must match the original message",
+            )
+            self.assertIsNone(
+                work.fecha_finalizacion,
+                "retryable row must not carry fecha_finalizacion",
+            )
+            self.assertEqual(int(work.intentos), 1)
+            self.assertEqual(
+                work.categoria_ultimo_fallo,
+                "database_error",
+                "failure category must remain the bounded token",
+            )
 
 
 class RetryOrderingIntegrationTest(unittest.TestCase):

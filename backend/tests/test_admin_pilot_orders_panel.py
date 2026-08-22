@@ -7214,6 +7214,7 @@ class PanelEmulatorTestStatusTest(unittest.TestCase):
             status="pending",
             outbound_body=None,
             provider_message_sid=None,
+            timeline=router_module.EmulatorTimeline(),
         )
         with patch.object(
             router_module,
@@ -7954,7 +7955,13 @@ class PanelEmulatorConversationJSDOMTest(unittest.TestCase):
             "  labels: Array.from(container.children).map("
             "function (n) { return n.firstChild.textContent; }),\n"
             "  bodies: Array.from(container.children).map("
-            "function (n) { return n.lastChild.textContent; }),\n"
+            "function (n) { var body = n.querySelector("
+            "'.debug-emulator-turn-body'); "
+            "return body ? body.textContent : ''; }),\n"
+            "  timestamps: Array.from(container.children).map("
+            "function (n) { var ts = n.querySelector("
+            "'[data-debug-emulator-turn-timestamp]'); "
+            "return ts ? ts.textContent : ''; }),\n"
             "  mapKeys: Object.keys(state.turnMap),\n"
             "  orderKeys: state.turnOrder.slice(),\n"
             "  scrollTop: container.scrollTop,\n"
@@ -8453,6 +8460,336 @@ class PanelEmulatorConversationJSDOMTest(unittest.TestCase):
         # The surviving keys are sm-150..sm-249 (FIFO).
         self.assertEqual(result["orderKeys"][0], "sm-150")
         self.assertEqual(result["orderKeys"][-1], "sm-249")
+
+
+class PanelEmulatorPerKindTimestampJSDOMTest(unittest.TestCase):
+    """Runtime validation of the per-kind ``observedAtIsoByKind``
+    timestamp fix. Uses an injected fake clock so every kind is
+    captured at a distinct, deterministic UTC instant. Verifies
+    that Enviado, Estado, Respuesta recibida and Error each show
+    their own local timestamp, that polling updates only touch
+    the polled kind's timestamp, that rekey and bounded trim keep
+    working and that the in-memory state stores an independent
+    timestamp per kind."""
+
+    _CONTAINER_HTML = (
+        "'<div class=\"debug-emulator-conversation\" "
+        "data-debug-emulator-conversation role=\"list\" "
+        "aria-live=\"polite\"></div>'"
+    )
+
+    def _ops_with_clock(
+        self,
+        controlled_times_iso: typing.Sequence[str],
+        body: str,
+    ) -> str:
+        """Build a JSDOM operations script that drives
+        ``new Date()`` (no args) through a fixed list of UTC
+        instants so ``captureObservedAtIso`` returns a
+        deterministic ISO per call. Replacing the JSDOM window's
+        entire ``Date`` constructor is required because V8
+        caches ``new Date()`` against ``Date.now`` differently
+        from a plain assignment. The script also extends the
+        captured result with per-row timestamp kinds, the raw
+        ``observedAtIsoByKind`` entry map and a pre-computed
+        list of expected formatted times that the test can
+        compare against the rendered DOM text."""
+        times_literal = json.dumps(list(controlled_times_iso))
+        return (
+            "const RealDate = w.Date;\n"
+            "const fakeTimes = " + times_literal + ";\n"
+            "const fakeMs = fakeTimes.map(function (iso) {\n"
+            "  return new RealDate(iso).getTime();\n"
+            "});\n"
+            "let __counter = 0;\n"
+            "function FakeDate() {\n"
+            "  const args = Array.prototype.slice.call(arguments);\n"
+            "  if (args.length === 0) {\n"
+            "    const idx = Math.min(__counter, fakeMs.length - 1);\n"
+            "    __counter += 1;\n"
+            "    return new RealDate(fakeMs[idx]);\n"
+            "  }\n"
+            "  return new (Function.prototype.bind.apply(\n"
+            "    RealDate, [null].concat(args)));\n"
+            "}\n"
+            "FakeDate.prototype = RealDate.prototype;\n"
+            "FakeDate.now = function () {\n"
+            "  const idx = Math.min(__counter, fakeMs.length - 1);\n"
+            "  return fakeMs[idx];\n"
+            "};\n"
+            "FakeDate.parse = RealDate.parse;\n"
+            "FakeDate.UTC = RealDate.UTC;\n"
+            "w.Date = FakeDate;\n"
+            "const container = w.document.querySelector("
+            "'[data-debug-emulator-conversation]');\n"
+            "const helpers = w.__panelDebugEmulator;\n"
+            "const state = helpers.createEmulatorConversationState(container);\n"
+            + body
+            + "const expected = fakeTimes.map(function (iso) {\n"
+            "  return helpers.formatLocalTime(new RealDate(iso));\n"
+            "});\n"
+            "const result = {\n"
+            "  children: container.children.length,\n"
+            "  kinds: Array.from(container.children).map("
+            "function (n) { return n.getAttribute('role') + ':' "
+            "+ n.className; }),\n"
+            "  labels: Array.from(container.children).map("
+            "function (n) { return n.firstChild ? "
+            "n.firstChild.textContent : ''; }),\n"
+            "  bodies: Array.from(container.children).map("
+            "function (n) { var body = n.querySelector("
+            "'.debug-emulator-turn-body'); "
+            "return body ? body.textContent : ''; }),\n"
+            "  rowKind: Array.from(container.children).map("
+            "function (n) { var ts = n.querySelector("
+            "'[data-debug-emulator-turn-timestamp]'); "
+            "return ts ? ts.getAttribute("
+            "'data-debug-emulator-turn-timestamp') : ''; }),\n"
+            "  timestamps: Array.from(container.children).map("
+            "function (n) { var ts = n.querySelector("
+            "'[data-debug-emulator-turn-timestamp]'); "
+            "return ts ? ts.textContent : ''; }),\n"
+            "  mapKeys: Object.keys(state.turnMap),\n"
+            "  orderKeys: state.turnOrder.slice(),\n"
+            "  observedAtIsoByKind: Object.fromEntries("
+            "Object.keys(state.turnMap).map(function (k) { "
+            "return [k, state.turnMap[k].observedAtIsoByKind]; })),\n"
+            "  expected: expected,\n"
+            "  fakeTimes: fakeTimes.slice()\n"
+            "};\n"
+            "console.log(JSON.stringify(result));\n"
+        )
+
+    def test_each_kind_shows_its_own_local_timestamp(self) -> None:
+        """Scenario 1: Enviado, Estado, Respuesta recibida and
+        Error render four distinct local timestamps captured at
+        the moment each kind was first observed. The shared
+        single timestamp regression is gone."""
+        controlled = [
+            "2026-01-01T12:00:00.000Z",
+            "2026-01-01T12:00:01.500Z",
+            "2026-01-01T12:00:03.000Z",
+            "2026-01-01T12:00:05.250Z",
+        ]
+        ops = self._ops_with_clock(
+            controlled,
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'sent', 'Enviado', 'hola');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'status', 'Estado', 'accepted');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'received', 'Respuesta recibida', 'ok');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'error', 'Error', 'terminal');\n",
+        )
+        result = _run_emulator_conversation_in_jsdom(
+            initial_html=self._CONTAINER_HTML,
+            operations_js=ops,
+        )
+        self.assertEqual(result["children"], 4)
+        self.assertEqual(
+            result["rowKind"],
+            ["sent", "status", "received", "error"],
+        )
+        self.assertEqual(
+            result["timestamps"],
+            [
+                result["expected"][0],
+                result["expected"][1],
+                result["expected"][2],
+                result["expected"][3],
+            ],
+        )
+        # Four distinct local timestamps.
+        self.assertEqual(len(set(result["timestamps"])), 4)
+        # The in-memory map stores each kind's ISO independently.
+        observed = result["observedAtIsoByKind"]["sm-1"]
+        self.assertEqual(observed["sent"], controlled[0])
+        self.assertEqual(observed["status"], controlled[1])
+        self.assertEqual(observed["received"], controlled[2])
+        self.assertEqual(observed["error"], controlled[3])
+        # No leftover shared timestamp.
+        self.assertNotIn("observedAtIso", result["observedAtIsoByKind"]["sm-1"])
+
+    def test_repeated_status_polls_do_not_duplicate_rows(self) -> None:
+        """Scenario 2: updating Estado through polling keeps a
+        single row and never invents a second Estado or a second
+        Enviado."""
+        controlled = [
+            "2026-01-01T12:00:00.000Z",
+            "2026-01-01T12:00:01.000Z",
+            "2026-01-01T12:00:02.000Z",
+            "2026-01-01T12:00:03.000Z",
+        ]
+        ops = self._ops_with_clock(
+            controlled,
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'sent', 'Enviado', 'hola');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'status', 'Estado', 'accepted');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'status', 'Estado', 'pending');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'status', 'Estado', 'processed');\n",
+        )
+        result = _run_emulator_conversation_in_jsdom(
+            initial_html=self._CONTAINER_HTML,
+            operations_js=ops,
+        )
+        self.assertEqual(result["children"], 2)
+        self.assertEqual(result["rowKind"], ["sent", "status"])
+        self.assertEqual(result["mapKeys"], ["sm-1"])
+        self.assertEqual(result["orderKeys"], ["sm-1"])
+        # The Estado row reflects the latest polled status text.
+        self.assertEqual(result["bodies"][1], "processed")
+        # Its timestamp reflects the latest poll.
+        self.assertEqual(result["timestamps"][1], result["expected"][3])
+
+    def test_status_update_only_changes_status_timestamp(self) -> None:
+        """Scenario 3: an Estado poll updates only the Estado
+        timestamp; Enviado and Respuesta recibida keep the
+        timestamps captured when their rows were first rendered."""
+        controlled = [
+            "2026-01-01T12:00:00.000Z",  # sent
+            "2026-01-01T12:00:01.000Z",  # status
+            "2026-01-01T12:00:02.000Z",  # received
+            "2026-01-01T12:00:04.000Z",  # status update
+        ]
+        ops = self._ops_with_clock(
+            controlled,
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'sent', 'Enviado', 'hola');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'status', 'Estado', 'accepted');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'received', 'Respuesta recibida', 'ok');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'status', 'Estado', 'processed');\n",
+        )
+        result = _run_emulator_conversation_in_jsdom(
+            initial_html=self._CONTAINER_HTML,
+            operations_js=ops,
+        )
+        self.assertEqual(result["children"], 3)
+        self.assertEqual(
+            result["rowKind"],
+            ["sent", "status", "received"],
+        )
+        # Sent keeps its original timestamp.
+        self.assertEqual(result["timestamps"][0], result["expected"][0])
+        # Estado advanced to the latest poll.
+        self.assertEqual(result["timestamps"][1], result["expected"][3])
+        # Received keeps its own timestamp.
+        self.assertEqual(result["timestamps"][2], result["expected"][2])
+        observed = result["observedAtIsoByKind"]["sm-1"]
+        self.assertEqual(observed["sent"], controlled[0])
+        self.assertEqual(observed["status"], controlled[3])
+        self.assertEqual(observed["received"], controlled[2])
+
+    def test_received_and_error_keep_independent_timestamps(self) -> None:
+        """Scenarios 4 + 5: Enviado's timestamp never changes once
+        captured, and Respuesta recibida / Error keep the
+        timestamps captured at their own moment without
+        contaminating each other or Enviado."""
+        controlled = [
+            "2026-01-01T12:00:00.000Z",  # sent
+            "2026-01-01T12:00:02.500Z",  # received
+            "2026-01-01T12:00:04.750Z",  # error
+        ]
+        ops = self._ops_with_clock(
+            controlled,
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'sent', 'Enviado', 'hola');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'received', 'Respuesta recibida', 'ok');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'error', 'Error', 'retryable');\n",
+        )
+        result = _run_emulator_conversation_in_jsdom(
+            initial_html=self._CONTAINER_HTML,
+            operations_js=ops,
+        )
+        self.assertEqual(result["children"], 3)
+        self.assertEqual(
+            result["rowKind"],
+            ["sent", "received", "error"],
+        )
+        # Enviado's timestamp is the original one, untouched.
+        self.assertEqual(result["timestamps"][0], result["expected"][0])
+        self.assertEqual(result["timestamps"][1], result["expected"][1])
+        self.assertEqual(result["timestamps"][2], result["expected"][2])
+        observed = result["observedAtIsoByKind"]["sm-1"]
+        self.assertEqual(observed["sent"], controlled[0])
+        self.assertEqual(observed["received"], controlled[1])
+        self.assertEqual(observed["error"], controlled[2])
+        # No shared timestamp field remains.
+        self.assertNotIn("observedAtIso", observed)
+
+    def test_rekey_and_trim_preserve_per_kind_timestamps(self) -> None:
+        """Scenario 6: rekeyEmulatorTurn renames the synthetic
+        inbound key without dropping any per-kind timestamp and
+        the bounded trim still evicts the oldest turn entirely.
+        Each per-kind timestamp survives the rekey."""
+        controlled = [
+            "2026-01-01T12:00:00.000Z",  # sm-old sent
+            "2026-01-01T12:00:00.500Z",  # sm-old status
+            "2026-01-01T12:00:01.000Z",  # sm-old received
+            "2026-01-01T12:00:01.500Z",  # sm-old error
+            "2026-01-01T12:00:02.000Z",  # pending-1 sent (will be rekeyed)
+            "2026-01-01T12:00:02.500Z",  # pending-1 status (after rekey)
+        ]
+        ops = self._ops_with_clock(
+            controlled,
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-old', 'sent', 'Enviado', 'old-sent');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-old', 'status', 'Estado', 'old-accepted');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-old', 'received', 'Respuesta recibida', 'old-ok');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-old', 'error', 'Error', 'old-error');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'pending-1', 'sent', 'Enviado', 'primero');\n"
+            "helpers.rekeyEmulatorTurn(state, 'pending-1', 'sm-1');\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-1', 'status', 'Estado', 'pending');\n"
+            "for (let i = 0; i < 98; i++) {\n"
+            "  helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-new-' + i, 'sent', 'Enviado', 'new-' + i);\n"
+            "}\n"
+            "helpers.appendOrUpdateEmulatorTurn("
+            "state, 'sm-trigger', 'sent', 'Enviado', 'trigger');\n",
+        )
+        result = _run_emulator_conversation_in_jsdom(
+            initial_html=self._CONTAINER_HTML,
+            operations_js=ops,
+        )
+        # The rekeyed turn lives under 'sm-1' with its two
+        # per-kind timestamps preserved across the rename.
+        self.assertIn("sm-1", result["mapKeys"])
+        self.assertNotIn("pending-1", result["mapKeys"])
+        self.assertEqual(
+            result["observedAtIsoByKind"]["sm-1"]["sent"],
+            controlled[4],
+        )
+        self.assertEqual(
+            result["observedAtIsoByKind"]["sm-1"]["status"],
+            controlled[5],
+        )
+        # Trim evicted 'sm-old' entirely; all four of its kinds
+        # are gone and no row with its body survives in the DOM.
+        self.assertNotIn("sm-old", result["mapKeys"])
+        self.assertNotIn("sm-old", result["orderKeys"])
+        self.assertNotIn("old-sent", result["bodies"])
+        self.assertNotIn("old-accepted", result["bodies"])
+        self.assertNotIn("old-ok", result["bodies"])
+        self.assertNotIn("old-error", result["bodies"])
+        # 100 turns survived: 'sm-1' + 'sm-new-0'..'sm-new-97' + 'sm-trigger'.
+        self.assertEqual(len(result["mapKeys"]), 100)
+        self.assertEqual(len(result["orderKeys"]), 100)
+        self.assertEqual(result["orderKeys"][0], "sm-1")
+        self.assertEqual(result["orderKeys"][-1], "sm-trigger")
+        self.assertEqual(result["bodies"][-1], "trigger")
 
 
 if __name__ == "__main__":
