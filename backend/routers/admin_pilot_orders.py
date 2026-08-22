@@ -60,7 +60,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path as PathLib
-from typing import Annotated, Literal, cast
+from typing import Annotated, Any, Literal, cast
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Header, Path, Query, Request
@@ -1070,6 +1070,13 @@ class EmulatorStatusResponse(BaseModel):
     authenticated test channel. Body, signature, credentials, URLs,
     exception text and arbitrary operator input are intentionally
     absent.
+
+    ``timeline`` is the nullable closed timing projection scoped to
+    the exact selected pedido/session/comercio and
+    ``synthetic_inbound_id``. Every field is ``None`` until the
+    worker reaches the corresponding milestone; the projection is
+    never widened to another order, session, commerce or synthetic
+    inbound identifier.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -1084,6 +1091,149 @@ class EmulatorStatusResponse(BaseModel):
     ]
     outbound_body: str | None = None
     provider_message_sid: str | None = None
+    timeline: EmulatorTimeline
+
+
+class EmulatorTimeline(BaseModel):
+    """Closed nullable timing timeline for one Emulator turn.
+
+    The schema projects exactly six bounded keys; every field is
+    nullable until the corresponding milestone is reached. Server
+    timestamps travel as UTC ISO-8601 strings and the browser
+    converts them to the local timezone through ``HH:MM:SS.mmm``.
+
+    * ``inbound_received_at`` mirrors
+      ``recepciones_mensajes_proveedor.fecha_recepcion``.
+    * ``llm_requested_at`` is the moment the worker reached the
+      existing ``QueryLlm`` boundary.
+    * ``llm_finished_at`` is the moment the call finished normally
+      or with a captured timeout/error.
+    * ``llm_outcome`` is the closed ``completed`` / ``timeout`` /
+      ``error`` token.
+    * ``processing_finished_at`` mirrors
+      ``procesamientos_mensajes_proveedor.fecha_finalizacion``.
+    * ``response_staged_at`` mirrors the first outbox row's
+      ``fecha_creacion`` when an outbox row exists.
+
+    The schema deliberately omits prompt text, response bodies,
+    customer text, exception messages, credentials, secrets and
+    arbitrary provider payloads. ``extra='forbid'`` keeps the
+    surface closed.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    inbound_received_at: str | None = None
+    llm_requested_at: str | None = None
+    llm_finished_at: str | None = None
+    llm_outcome: Literal["completed", "timeout", "error"] | None = None
+    processing_finished_at: str | None = None
+    response_staged_at: str | None = None
+
+
+def _emulator_timeline_from_receipt(
+    db: Session,
+    *,
+    receipt: Any,
+) -> EmulatorTimeline:
+    """Build the closed nullable timeline projection for one receipt.
+
+    The helper reads only the existing provider receipt/work item
+    and the first outbox row tied to the exact receipt. It never
+    returns data for another receipt, work item, pedido, session
+    or commerce: the timeline is the projection of the canonical
+    pipeline state for the supplied ``receipt``.
+
+    All server timestamps are emitted as UTC ISO-8601 strings; the
+    browser converts them to the local timezone. Missing milestones
+    remain ``None`` so the panel can render ``—`` without forcing a
+    fallback that could be confused with a backend transition.
+    """
+    from backend.models import (
+        MensajeProveedorSaliente,
+        ProcesamientoMensajeProveedor,
+    )
+
+    timeline = EmulatorTimeline(
+        inbound_received_at=_iso_utc(getattr(receipt, "fecha_recepcion", None)),
+    )
+
+    processing_stmt = (
+        select(ProcesamientoMensajeProveedor)
+        .where(
+            ProcesamientoMensajeProveedor.recepcion_mensaje_proveedor_id
+            == int(receipt.id)
+        )
+    )
+    processing = db.execute(processing_stmt).unique().scalar_one_or_none()
+    if processing is not None:
+        timeline.llm_requested_at = _iso_utc(
+            getattr(processing, "llm_solicitado_en", None)
+        )
+        timeline.llm_finished_at = _iso_utc(
+            getattr(processing, "llm_finalizado_en", None)
+        )
+        normalized_outcome = _normalize_llm_outcome(
+            getattr(processing, "llm_resultado", None)
+        )
+        if normalized_outcome is not None:
+            timeline.llm_outcome = cast(
+                Literal["completed", "timeout", "error"],
+                normalized_outcome,
+            )
+        timeline.processing_finished_at = _iso_utc(
+            getattr(processing, "fecha_finalizacion", None)
+        )
+
+    outbound_stmt = (
+        select(MensajeProveedorSaliente)
+        .where(
+            MensajeProveedorSaliente.recepcion_mensaje_proveedor_id
+            == int(receipt.id)
+        )
+        .order_by(MensajeProveedorSaliente.id.asc())
+    )
+    first_outbound = db.execute(outbound_stmt).unique().scalars().first()
+    if first_outbound is not None:
+        timeline.response_staged_at = _iso_utc(
+            getattr(first_outbound, "fecha_creacion", None)
+        )
+    return timeline
+
+
+def _iso_utc(value: Any) -> str | None:
+    """Render an aware datetime as a UTC ISO-8601 string.
+
+    Naive datetimes are interpreted as UTC so the projection never
+    silently re-labels a wall-clock value. ``None`` and any other
+    type collapse to ``None`` so the panel can render ``—`` for
+    unavailable milestones.
+    """
+    from datetime import datetime, timezone
+
+    if value is None:
+        return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat()
+
+
+def _normalize_llm_outcome(value: Any) -> str | None:
+    """Coerce a stored LLM outcome into the closed wire token.
+
+    Unknown or empty values collapse to ``None`` so the panel can
+    render ``—`` rather than emit an arbitrary token. The function
+    never raises so a malformed stored value cannot break the
+    status projection.
+    """
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"completed", "timeout", "error"}:
+        return normalized
+    return None
 
 
 def _emulator_outbox_summary(
@@ -1099,6 +1249,12 @@ def _emulator_outbox_summary(
     tied to the exact selected pedido/session/comercio. It never
     queries the synthetic inbound identifier directly: the bounded
     state is the projection of the canonical pipeline.
+
+    The closed nullable timeline is always returned alongside the
+    existing projection so the browser can render the bounded
+    server-side milestones. Missing receipt, work item or outbox
+    rows yield an all-``None`` timeline rather than a 404 — the
+    status value is the documented branching signal.
     """
     from sqlalchemy import select
 
@@ -1108,6 +1264,7 @@ def _emulator_outbox_summary(
         RecepcionMensajeProveedor,
     )
 
+    empty_timeline = EmulatorTimeline()
     receipt_stmt = (
         select(RecepcionMensajeProveedor)
         .where(RecepcionMensajeProveedor.comercio_id == target.comercio_id)
@@ -1122,7 +1279,10 @@ def _emulator_outbox_summary(
             status="accepted",
             outbound_body=None,
             provider_message_sid=None,
+            timeline=empty_timeline,
         )
+
+    timeline = _emulator_timeline_from_receipt(db, receipt=receipt)
 
     outbound_stmt = (
         select(MensajeProveedorSaliente)
@@ -1140,6 +1300,7 @@ def _emulator_outbox_summary(
             status="processed",
             outbound_body=None,
             provider_message_sid=None,
+            timeline=timeline,
         )
     first = outbound_rows[0]
     estado = str(getattr(first, "estado", "") or "")
@@ -1161,6 +1322,7 @@ def _emulator_outbox_summary(
         status=status,
         outbound_body=str(cuerpo) if isinstance(cuerpo, str) else None,
         provider_message_sid=str(sid) if sid is not None else None,
+        timeline=timeline,
     )
 
 
@@ -1571,6 +1733,7 @@ __all__ = [
     "EmulatorStatusResponse",
     "EmulatorTestRequest",
     "EmulatorTestResponse",
+    "EmulatorTimeline",
     "LocalTestExecutionState",
     "LocalTestOrderLine",
     "LocalTestRequest",
@@ -1579,9 +1742,12 @@ __all__ = [
     "_emulator_bootstrap_rejection",
     "_emulator_outbox_summary",
     "_emulator_rejection",
+    "_emulator_timeline_from_receipt",
     "_is_confirmed_clean_context",
     "_is_single_status_intent",
+    "_iso_utc",
     "_load_confirmed_local_test_session",
+    "_normalize_llm_outcome",
     "_reload_exact_session_for_snapshot",
     "_serialize_execution_state",
     "emulator_bootstrap_inbound",

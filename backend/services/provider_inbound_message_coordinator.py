@@ -56,6 +56,10 @@ from sqlalchemy.orm import Session as SqlSession
 from backend.intents.orchestration.incoming_message_orchestrator import (
     process_incoming_message,
 )
+from backend.llm.query_llm import (
+    WorkItemLLMTimingRecorder,
+    install_llm_timing_recorder,
+)
 from backend.models import CanalWhatsappMode
 from backend.models.cliente import Cliente
 from backend.models.procesamiento_mensaje_proveedor import (
@@ -514,6 +518,26 @@ class ProviderInboundMessageCoordinator:
                 detalle=codigo,
             )
 
+        # Install the safe LLM timing recorder around the existing
+        # ``process_incoming_message`` call so the provider-path work
+        # item captures the moment the worker reaches the
+        # ``QueryLlm`` boundary and the moment the call finishes,
+        # without introducing a side transaction and without
+        # changing the LLM behaviour. The recorder is cleared in
+        # every exit branch (success, retryable, terminal and any
+        # unexpected exception) so other concurrent coordinators
+        # never inherit the hook through the worker threads. The
+        # existing safe correlation field — the receipt's
+        # ``identificador_recepcion`` — is attached to every
+        # ``llm_request`` event emitted from the same thread so the
+        # provider-path observability can be linked back to the
+        # exact synthetic inbound identifier without leaking
+        # prompts, responses, PII or secrets.
+        timing_recorder = WorkItemLLMTimingRecorder()
+        install_llm_timing_recorder(
+            timing_recorder,
+            correlation_id=str(receipt.identificador_recepcion or ""),
+        )
         try:
             session_row = self._session_repo.stage_active(
                 comercio_id, cliente_id
@@ -543,6 +567,7 @@ class ProviderInboundMessageCoordinator:
             )
             self._session.flush()
         except Exception as exc:  # noqa: BLE001 - coordinator owns the rollback
+            install_llm_timing_recorder(None)
             try:
                 self._session.rollback()
             except Exception:
@@ -554,12 +579,19 @@ class ProviderInboundMessageCoordinator:
                 leased=leased,
                 attempts=attempts,
                 exc=exc,
+                llm_solicitado_en=timing_recorder.solicitado_en,
+                llm_finalizado_en=timing_recorder.finalizado_en,
+                llm_resultado=timing_recorder.resultado,
             )
+        install_llm_timing_recorder(None)
 
         finalized = self._procesamiento_repo.finalize_processed(
             procesamiento_id=procesamiento_id,
             lease_token=lease_token,
             fecha_finalizacion=self._now_or(),
+            llm_solicitado_en=timing_recorder.solicitado_en,
+            llm_finalizado_en=timing_recorder.finalizado_en,
+            llm_resultado=timing_recorder.resultado,
         )
         if not finalized:
             self._session.rollback()
@@ -589,6 +621,9 @@ class ProviderInboundMessageCoordinator:
         leased: ProcesamientoMensajeProveedor,
         attempts: int,
         exc: BaseException,
+        llm_solicitado_en: datetime | None = None,
+        llm_finalizado_en: datetime | None = None,
+        llm_resultado: str | None = None,
     ) -> ProviderInboundProcessingResult:
         categoria, codigo = _classify_failure(exc)
         lease_token = str(leased.token_lease or "")
@@ -602,6 +637,9 @@ class ProviderInboundMessageCoordinator:
                 categoria=categoria.value,
                 codigo=codigo,
                 fecha_finalizacion=fecha_finalizacion,
+                llm_solicitado_en=llm_solicitado_en,
+                llm_finalizado_en=llm_finalizado_en,
+                llm_resultado=llm_resultado,
             )
             if not finalized:
                 self._session.rollback()
@@ -641,6 +679,9 @@ class ProviderInboundMessageCoordinator:
             categoria=categoria.value,
             codigo=codigo,
             proximo_intento_en=proximo_intento_en,
+            llm_solicitado_en=llm_solicitado_en,
+            llm_finalizado_en=llm_finalizado_en,
+            llm_resultado=llm_resultado,
         )
         if not finalized:
             self._session.rollback()
@@ -672,6 +713,9 @@ class ProviderInboundMessageCoordinator:
         leased: ProcesamientoMensajeProveedor,
         categoria: ProcesamientoMensajeProveedorFailureCategory,
         codigo: str,
+        llm_solicitado_en: datetime | None = None,
+        llm_finalizado_en: datetime | None = None,
+        llm_resultado: str | None = None,
     ) -> bool:
         finalized = self._procesamiento_repo.finalize_terminal(
             procesamiento_id=int(leased.id),
@@ -679,6 +723,9 @@ class ProviderInboundMessageCoordinator:
             categoria=categoria.value,
             codigo=codigo,
             fecha_finalizacion=self._now_or(),
+            llm_solicitado_en=llm_solicitado_en,
+            llm_finalizado_en=llm_finalizado_en,
+            llm_resultado=llm_resultado,
         )
         if finalized:
             self._session.commit()

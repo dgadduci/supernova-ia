@@ -353,7 +353,9 @@ _OPTIONAL_FIELDS_BY_EVENT: dict[str, frozenset[str]] = {
     EVENT_WORKER_UNEXPECTED_FAILURE: frozenset({"exception_type"}),
     EVENT_WORKER_READINESS_TRANSITION: frozenset({"elapsed_ms"}),
     EVENT_WORKER_DISABLED: frozenset(),
-    EVENT_LLM_REQUEST: frozenset({"elapsed_ms", "http_status", "exception_type"}),
+    EVENT_LLM_REQUEST: frozenset(
+        {"elapsed_ms", "http_status", "exception_type", "correlation_id"}
+    ),
     EVENT_EMBEDDING_REQUEST: frozenset(
         {"elapsed_ms", "http_status", "exception_type"}
     ),

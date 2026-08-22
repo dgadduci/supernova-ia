@@ -92,6 +92,24 @@ class ProcesamientoMensajeProveedorFailureCategory(str, enum.Enum):
     TERMINAL_PROCESSOR_ERROR = "terminal_processor_error"
 
 
+class ProcesamientoMensajeProveedorLLMOutcome(str, enum.Enum):
+    """Closed, safe classification of one LLM call attempt.
+
+    The outcome is the only durable identifier of how the existing
+    ``QueryLlm`` call finished for the provider-path work item. The
+    enum intentionally omits prompt text, response body, customer
+    text, exception messages and provider payloads. ``COMPLETED``
+    means the upstream returned a parseable response; ``TIMEOUT``
+    means the existing configured timeout elapsed before any
+    response arrived; ``ERROR`` covers every other bounded failure
+    (HTTP error, connection error, response error).
+    """
+
+    COMPLETED = "completed"
+    TIMEOUT = "timeout"
+    ERROR = "error"
+
+
 class ProcesamientoMensajeProveedor(Base):
     __tablename__ = "procesamientos_mensajes_proveedor"
 
@@ -172,9 +190,25 @@ class ProcesamientoMensajeProveedor(Base):
         nullable=True,
     )
 
+    llm_solicitado_en: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    llm_finalizado_en: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    llm_resultado: Mapped[str | None] = mapped_column(
+        String(16),
+        nullable=True,
+    )
+
 
 __all__ = [
     "ProcesamientoMensajeProveedor",
     "ProcesamientoMensajeProveedorEstado",
     "ProcesamientoMensajeProveedorFailureCategory",
+    "ProcesamientoMensajeProveedorLLMOutcome",
 ]

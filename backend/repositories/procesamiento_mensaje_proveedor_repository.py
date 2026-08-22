@@ -182,13 +182,34 @@ class ProcesamientoMensajeProveedorRepository:
         procesamiento_id: int,
         lease_token: str,
         fecha_finalizacion: datetime,
+        llm_solicitado_en: datetime | None = None,
+        llm_finalizado_en: datetime | None = None,
+        llm_resultado: str | None = None,
     ) -> bool:
         """Clear the transient body and lock the row in ``processed``.
 
         Returns ``True`` only when the matching lease token is still
         present; a late result from a prior attempt cannot overwrite
-        the terminal state.
+        the terminal state. Optional ``llm_*`` kwargs let the
+        coordinator persist the bounded LLM timing metadata captured
+        during the same lease/finalization transaction.
         """
+        values: dict[str, Any] = {
+            "estado": ProcesamientoMensajeProveedorEstado.PROCESSED.value,
+            "mensaje": None,
+            "token_lease": None,
+            "lease_expira_en": None,
+            "proximo_intento_en": None,
+            "categoria_ultimo_fallo": None,
+            "codigo_ultimo_fallo": None,
+            "fecha_finalizacion": fecha_finalizacion,
+        }
+        if llm_solicitado_en is not None:
+            values["llm_solicitado_en"] = llm_solicitado_en
+        if llm_finalizado_en is not None:
+            values["llm_finalizado_en"] = llm_finalizado_en
+        if llm_resultado is not None:
+            values["llm_resultado"] = llm_resultado
         stmt = (
             update(ProcesamientoMensajeProveedor)
             .where(
@@ -201,16 +222,7 @@ class ProcesamientoMensajeProveedorRepository:
                 ProcesamientoMensajeProveedor.estado
                 == ProcesamientoMensajeProveedorEstado.LEASED.value
             )
-            .values(
-                estado=ProcesamientoMensajeProveedorEstado.PROCESSED.value,
-                mensaje=None,
-                token_lease=None,
-                lease_expira_en=None,
-                proximo_intento_en=None,
-                categoria_ultimo_fallo=None,
-                codigo_ultimo_fallo=None,
-                fecha_finalizacion=fecha_finalizacion,
-            )
+            .values(**values)
             .returning(ProcesamientoMensajeProveedor.id)
         )
         result = self._session.execute(stmt).scalar_one_or_none()
@@ -224,12 +236,32 @@ class ProcesamientoMensajeProveedorRepository:
         categoria: str,
         codigo: str | None,
         proximo_intento_en: datetime,
+        llm_solicitado_en: datetime | None = None,
+        llm_finalizado_en: datetime | None = None,
+        llm_resultado: str | None = None,
     ) -> bool:
         """Release the lease and stage the row for a future explicit
         retry. Returns ``True`` only when the matching lease token is
         still present. The transient body is preserved so the next
-        pass can replay it.
+        pass can replay it. Optional ``llm_*`` kwargs let the
+        coordinator persist the bounded LLM timing metadata captured
+        during the same lease/finalization transaction so the retry
+        attempt retains the diagnosis of the previous one.
         """
+        values: dict[str, Any] = {
+            "estado": ProcesamientoMensajeProveedorEstado.RETRYABLE.value,
+            "categoria_ultimo_fallo": categoria,
+            "codigo_ultimo_fallo": codigo,
+            "proximo_intento_en": proximo_intento_en,
+            "token_lease": None,
+            "lease_expira_en": None,
+        }
+        if llm_solicitado_en is not None:
+            values["llm_solicitado_en"] = llm_solicitado_en
+        if llm_finalizado_en is not None:
+            values["llm_finalizado_en"] = llm_finalizado_en
+        if llm_resultado is not None:
+            values["llm_resultado"] = llm_resultado
         stmt = (
             update(ProcesamientoMensajeProveedor)
             .where(
@@ -242,14 +274,7 @@ class ProcesamientoMensajeProveedorRepository:
                 ProcesamientoMensajeProveedor.estado
                 == ProcesamientoMensajeProveedorEstado.LEASED.value
             )
-            .values(
-                estado=ProcesamientoMensajeProveedorEstado.RETRYABLE.value,
-                categoria_ultimo_fallo=categoria,
-                codigo_ultimo_fallo=codigo,
-                proximo_intento_en=proximo_intento_en,
-                token_lease=None,
-                lease_expira_en=None,
-            )
+            .values(**values)
             .returning(ProcesamientoMensajeProveedor.id)
         )
         result = self._session.execute(stmt).scalar_one_or_none()
@@ -263,11 +288,34 @@ class ProcesamientoMensajeProveedorRepository:
         categoria: str,
         codigo: str | None,
         fecha_finalizacion: datetime,
+        llm_solicitado_en: datetime | None = None,
+        llm_finalizado_en: datetime | None = None,
+        llm_resultado: str | None = None,
     ) -> bool:
         """Clear the transient body and lock the row in
         ``failed_terminal``. Returns ``True`` only when the matching
-        lease token is still present.
+        lease token is still present. Optional ``llm_*`` kwargs let
+        the coordinator persist the bounded LLM timing metadata
+        captured during the same lease/finalization transaction so
+        the terminal row retains the diagnosis of the final
+        attempt.
         """
+        values: dict[str, Any] = {
+            "estado": ProcesamientoMensajeProveedorEstado.FAILED_TERMINAL.value,
+            "mensaje": None,
+            "categoria_ultimo_fallo": categoria,
+            "codigo_ultimo_fallo": codigo,
+            "token_lease": None,
+            "lease_expira_en": None,
+            "proximo_intento_en": None,
+            "fecha_finalizacion": fecha_finalizacion,
+        }
+        if llm_solicitado_en is not None:
+            values["llm_solicitado_en"] = llm_solicitado_en
+        if llm_finalizado_en is not None:
+            values["llm_finalizado_en"] = llm_finalizado_en
+        if llm_resultado is not None:
+            values["llm_resultado"] = llm_resultado
         stmt = (
             update(ProcesamientoMensajeProveedor)
             .where(
@@ -280,16 +328,7 @@ class ProcesamientoMensajeProveedorRepository:
                 ProcesamientoMensajeProveedor.estado
                 == ProcesamientoMensajeProveedorEstado.LEASED.value
             )
-            .values(
-                estado=ProcesamientoMensajeProveedorEstado.FAILED_TERMINAL.value,
-                mensaje=None,
-                categoria_ultimo_fallo=categoria,
-                codigo_ultimo_fallo=codigo,
-                token_lease=None,
-                lease_expira_en=None,
-                proximo_intento_en=None,
-                fecha_finalizacion=fecha_finalizacion,
-            )
+            .values(**values)
             .returning(ProcesamientoMensajeProveedor.id)
         )
         result = self._session.execute(stmt).scalar_one_or_none()

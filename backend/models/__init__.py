@@ -44,6 +44,7 @@ from backend.models.procesamiento_mensaje_proveedor import (
     ProcesamientoMensajeProveedor,
     ProcesamientoMensajeProveedorEstado,
     ProcesamientoMensajeProveedorFailureCategory,
+    ProcesamientoMensajeProveedorLLMOutcome,
 )
 from backend.models.producto import Producto
 from backend.models.producto_alias import ProductoAlias
@@ -91,6 +92,7 @@ __all__ = [
     "ProcesamientoMensajeProveedor",
     "ProcesamientoMensajeProveedorEstado",
     "ProcesamientoMensajeProveedorFailureCategory",
+    "ProcesamientoMensajeProveedorLLMOutcome",
     "Producto",
     "ProductoAlias",
     "ProductoPresentacion",

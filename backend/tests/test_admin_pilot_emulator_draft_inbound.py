@@ -1014,6 +1014,7 @@ class EmulatorDraftRouteStatusTest(unittest.TestCase):
             status="accepted",
             outbound_body=None,
             provider_message_sid=None,
+            timeline=router_module.EmulatorTimeline(),
         )
         with patch.object(
             router_module,
