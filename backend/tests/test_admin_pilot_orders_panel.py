@@ -98,15 +98,15 @@ def _settings_with_emulator_enabled(
     """
     base = _settings(token=token)
     return Settings(
-        **{**base.__dict__, **{
+        **{**base.__dict__,
             "twilio_provider_mode": "emulator",
             "commerce_isolated_outbound_enabled": True,
             "twilio_emulator_base_url": "https://emulator.example.test",
             "twilio_emulator_account_sid": "AC" + "1" * 32,
             "twilio_emulator_auth_token": "emulator-auth-token-abc",
             "twilio_emulator_control_token": "control-token-xyz",
-            "twilio_emulator_http_timeout_seconds": 5,
-        }}
+            "twilio_emulator_http_timeout_seconds": 5
+        }
     )
 
 
@@ -7215,6 +7215,12 @@ class PanelEmulatorTestStatusTest(unittest.TestCase):
             outbound_body=None,
             provider_message_sid=None,
             timeline=router_module.EmulatorTimeline(),
+            diagnostic=router_module.EmulatorDiagnostic(
+                processing_state="pending",
+                response_count=None,
+                outbox_row_count=0,
+                failure_category=None,
+            ),
         )
         with patch.object(
             router_module,
@@ -7605,6 +7611,75 @@ class PanelEmulatorBrowserContractTest(unittest.TestCase):
             },
         )
         self.assertIn(response.status_code, (400, 422))
+
+    def test_emulator_handler_exposes_diagnostic_validation(self) -> None:
+        """The browser MUST validate the new ``diagnostic`` object
+        before using it; the closed allowlist and bounded counts
+        stay on the wire without ever leaking PII."""
+        body = self._render_detail(enabled=True)
+        body_no_css = _strip_css(body)
+        self.assertIn("isValidEmulatorDiagnostic", body_no_css)
+        self.assertIn("EMULATOR_DIAGNOSTIC_STATES", body_no_css)
+        self.assertIn("processed_without_response", body_no_css)
+
+    def test_emulator_handler_uses_neutral_polling_failure(self) -> None:
+        """Polling HTTP errors, malformed payloads and exhausted
+        attempts MUST surface a neutral status-query failure. The
+        browser MUST NOT append an emulator-rejected error row when
+        the polling path fails."""
+        body = self._render_detail(enabled=True)
+        body_no_css = _strip_css(body)
+        self.assertIn("failNeutralPolling", body_no_css)
+        self.assertIn("EMULATOR_NEUTRAL_POLLING_FAILURE", body_no_css)
+        self.assertIn(
+            "No se pudo consultar el estado. Reintentá más tarde.",
+            body_no_css,
+        )
+
+    def test_emulator_handler_finalizes_processed_without_response(
+        self,
+    ) -> None:
+        """When the server reports the definitive
+        ``processed_without_response`` diagnostic state the browser
+        MUST stop polling, release the form and append a neutral
+        diagnostic row. The branch MUST NOT use the emulator
+        rejection wording."""
+        body = self._render_detail(enabled=True)
+        body_no_css = _strip_css(body)
+        self.assertIn("finalizeProcessedWithoutResponse", body_no_css)
+        self.assertIn(
+            "EMULATOR_NEUTRAL_PROCESSED_NO_RESPONSE", body_no_css
+        )
+        self.assertIn(
+            "Procesado sin respuesta outbound", body_no_css
+        )
+
+    def test_emulator_polling_branch_does_not_append_emulator_rejection(
+        self,
+    ) -> None:
+        """The neutral polling failure path MUST NOT use the emulator
+        rejection wording. The bootstrap branch keeps its own
+        rejection message so the submit path stays unchanged."""
+        body = self._render_detail(enabled=True)
+        body_no_css = _strip_css(body)
+        neutral_path = "failNeutralPolling(currentInboundId)"
+        self.assertIn(neutral_path, body_no_css)
+        polling_neutral_failure = (
+            "setStatus(EMULATOR_NEUTRAL_POLLING_FAILURE)"
+        )
+        self.assertIn(polling_neutral_failure, body_no_css)
+        self.assertIn("El Twilio Emulator rechazó el mensaje.", body_no_css)
+
+    def test_emulator_handler_does_not_use_innerhtml_or_outerhtml(
+        self,
+    ) -> None:
+        """The diagnostic rendering path MUST stay on ``textContent``;
+        ``innerHTML`` / ``outerHTML`` are forbidden so a future
+        regression cannot smuggle PII into the diagnostic row."""
+        body = self._render_detail(enabled=True)
+        body_no_css = _strip_css(body)
+        self.assertNotIn("innerHTML", body_no_css)
+        self.assertNotIn("outerHTML", body_no_css)
 
 
 class PanelEmulatorConversationHistoryTemplateTest(unittest.TestCase):
@@ -8790,6 +8865,502 @@ class PanelEmulatorPerKindTimestampJSDOMTest(unittest.TestCase):
         self.assertEqual(result["orderKeys"][0], "sm-1")
         self.assertEqual(result["orderKeys"][-1], "sm-trigger")
         self.assertEqual(result["bodies"][-1], "trigger")
+
+
+class PanelEmulatorDiagnosticProjectionTest(unittest.TestCase):
+    """The Admin/Pilot status projection MUST expose a closed,
+    bounded ``EmulatorDiagnostic`` scoped to the exact selected
+    pedido/session/comercio and synthetic inbound identifier. The
+    diagnostic distinguishes ``processed_with_response`` from
+    ``processed_without_response`` so the panel stops polling the
+    zero-response terminal state instead of attributing it to a
+    Twilio Emulator rejection.
+    """
+
+    def test_diagnostic_model_rejects_unknown_processing_state(self) -> None:
+        from pydantic import ValidationError
+
+        with self.assertRaises(ValidationError):
+            router_module.EmulatorDiagnostic(
+                processing_state="emulator_rejected",
+                response_count=None,
+                outbox_row_count=0,
+                failure_category=None,
+            )
+
+    def test_diagnostic_model_rejects_negative_counts(self) -> None:
+        from pydantic import ValidationError
+
+        with self.assertRaises(ValidationError):
+            router_module.EmulatorDiagnostic(
+                processing_state="processed_with_response",
+                response_count=-1,
+                outbox_row_count=0,
+                failure_category=None,
+            )
+
+    def test_diagnostic_model_rejects_extra_fields(self) -> None:
+        from pydantic import ValidationError
+
+        with self.assertRaises(ValidationError):
+            router_module.EmulatorDiagnostic(
+                processing_state="processed_with_response",
+                response_count=1,
+                outbox_row_count=1,
+                failure_category=None,
+                cuerpo="leaked body",
+                sid="SM-leak",
+            )
+
+    def test_diagnostic_model_accepts_processed_without_response(self) -> None:
+        diagnostic = router_module.EmulatorDiagnostic(
+            processing_state="processed_without_response",
+            response_count=None,
+            outbox_row_count=0,
+            failure_category=None,
+        )
+        self.assertEqual(
+            diagnostic.processing_state, "processed_without_response"
+        )
+        self.assertEqual(diagnostic.outbox_row_count, 0)
+        self.assertIsNone(diagnostic.response_count)
+        self.assertIsNone(diagnostic.failure_category)
+
+    def test_diagnostic_model_accepts_processed_with_response(self) -> None:
+        diagnostic = router_module.EmulatorDiagnostic(
+            processing_state="processed_with_response",
+            response_count=1,
+            outbox_row_count=1,
+            failure_category=None,
+        )
+        self.assertEqual(
+            diagnostic.processing_state, "processed_with_response"
+        )
+        self.assertEqual(diagnostic.response_count, 1)
+        self.assertEqual(diagnostic.outbox_row_count, 1)
+
+    def test_diagnostic_model_accepts_failure_category(self) -> None:
+        diagnostic = router_module.EmulatorDiagnostic(
+            processing_state="retryable",
+            response_count=None,
+            outbox_row_count=0,
+            failure_category="pipeline_error",
+        )
+        self.assertEqual(diagnostic.processing_state, "retryable")
+        self.assertEqual(diagnostic.failure_category, "pipeline_error")
+
+    def test_status_response_round_trips_diagnostic(self) -> None:
+        """``EmulatorStatusResponse`` MUST expose the new
+        ``diagnostic`` projection without dropping the existing
+        status / outbound_body / provider_message_sid / timeline
+        contract."""
+        timeline = router_module.EmulatorTimeline(
+            inbound_received_at="2026-01-01T00:00:00+00:00"
+        )
+        diagnostic = router_module.EmulatorDiagnostic(
+            processing_state="processed_without_response",
+            response_count=None,
+            outbox_row_count=0,
+            failure_category=None,
+        )
+        response = router_module.EmulatorStatusResponse(
+            status="processed",
+            outbound_body=None,
+            provider_message_sid=None,
+            timeline=timeline,
+            diagnostic=diagnostic,
+        )
+        self.assertEqual(
+            response.diagnostic.processing_state,
+            "processed_without_response",
+        )
+        self.assertEqual(response.diagnostic.outbox_row_count, 0)
+        self.assertEqual(
+            response.timeline.inbound_received_at,
+            "2026-01-01T00:00:00+00:00",
+        )
+        dumped = response.model_dump()
+        self.assertIn("diagnostic", dumped)
+        self.assertEqual(
+            dumped["diagnostic"]["processing_state"],
+            "processed_without_response",
+        )
+
+    def test_status_response_rejects_missing_diagnostic(self) -> None:
+        """``EmulatorStatusResponse`` MUST keep ``diagnostic``
+        required so a regression that silently drops the
+        projection fails at runtime."""
+        from pydantic import ValidationError
+
+        with self.assertRaises(ValidationError):
+            router_module.EmulatorStatusResponse(
+                status="processed",
+                outbound_body=None,
+                provider_message_sid=None,
+                timeline=router_module.EmulatorTimeline(),
+            )
+
+    def test_diagnostic_carries_no_pii(self) -> None:
+        """The closed schema MUST NOT expose a body, SID, prompt,
+        exception text or arbitrary text. ``extra='forbid'``
+        covers the field-level contract; this test asserts the
+        common attack surface is not encoded as a documented
+        field."""
+        documented_fields = {
+            "processing_state",
+            "response_count",
+            "outbox_row_count",
+            "failure_category",
+        }
+        declared_fields = set(
+            router_module.EmulatorDiagnostic.model_fields.keys()
+        )
+        self.assertEqual(declared_fields, documented_fields)
+
+    def test_diagnostic_helper_maps_processed_without_response(self) -> None:
+        processing = SimpleNamespace(
+            estado="processed",
+            categoria_ultimo_fallo=None,
+        )
+        diagnostic = router_module._build_emulator_diagnostic(
+            processing=processing,
+            outbox_row_count=0,
+        )
+        self.assertEqual(
+            diagnostic.processing_state, "processed_without_response"
+        )
+        self.assertEqual(diagnostic.outbox_row_count, 0)
+        self.assertEqual(diagnostic.response_count, 0)
+        self.assertIsNone(diagnostic.failure_category)
+
+    def test_diagnostic_helper_maps_processed_with_response(self) -> None:
+        processing = SimpleNamespace(
+            estado="processed",
+            categoria_ultimo_fallo=None,
+        )
+        diagnostic = router_module._build_emulator_diagnostic(
+            processing=processing,
+            outbox_row_count=2,
+        )
+        self.assertEqual(
+            diagnostic.processing_state, "processed_with_response"
+        )
+        self.assertEqual(diagnostic.outbox_row_count, 2)
+        self.assertEqual(diagnostic.response_count, 2)
+        self.assertIsNone(diagnostic.failure_category)
+
+    def test_diagnostic_helper_clamps_overflow_to_unknown_neutral(
+        self,
+    ) -> None:
+        """When the durable outbox count exceeds the closed bounded
+        ceiling the helper MUST collapse to the ``unknown`` state
+        with both counts ``None`` so a future regression cannot leak
+        the unbounded integer into the panel or trigger an HTTP 500.
+        """
+        processing = SimpleNamespace(
+            estado="processed",
+            categoria_ultimo_fallo=None,
+        )
+        diagnostic = router_module._build_emulator_diagnostic(
+            processing=processing,
+            outbox_row_count=201,
+        )
+        self.assertEqual(diagnostic.processing_state, "unknown")
+        self.assertIsNone(diagnostic.response_count)
+        self.assertIsNone(diagnostic.outbox_row_count)
+
+    def test_diagnostic_helper_collapses_counts_for_pending(self) -> None:
+        """Non-processed states MUST expose ``None`` counts so the
+        panel never asserts a volume the durable projection has not
+        durably confirmed."""
+        processing = SimpleNamespace(
+            estado="leased",
+            categoria_ultimo_fallo=None,
+        )
+        diagnostic = router_module._build_emulator_diagnostic(
+            processing=processing,
+            outbox_row_count=3,
+        )
+        self.assertEqual(diagnostic.processing_state, "leased")
+        self.assertIsNone(diagnostic.response_count)
+        self.assertIsNone(diagnostic.outbox_row_count)
+
+    def test_diagnostic_model_enforces_upper_bound(self) -> None:
+        """The schema MUST reject a count above the bounded ceiling
+        so a future regression that tries to leak an unbounded
+        integer through the wire fails at runtime."""
+        from pydantic import ValidationError
+
+        with self.assertRaises(ValidationError):
+            router_module.EmulatorDiagnostic(
+                processing_state="processed_with_response",
+                response_count=201,
+                outbox_row_count=2,
+                failure_category=None,
+            )
+        with self.assertRaises(ValidationError):
+            router_module.EmulatorDiagnostic(
+                processing_state="processed_with_response",
+                response_count=2,
+                outbox_row_count=201,
+                failure_category=None,
+            )
+
+    def test_diagnostic_helper_maps_unknown_state(self) -> None:
+        processing = SimpleNamespace(
+            estado="surprise_state",
+            categoria_ultimo_fallo=None,
+        )
+        diagnostic = router_module._build_emulator_diagnostic(
+            processing=processing,
+            outbox_row_count=0,
+        )
+        self.assertEqual(diagnostic.processing_state, "unknown")
+
+    def test_diagnostic_helper_collapses_missing_processing_to_pending(
+        self,
+    ) -> None:
+        diagnostic = router_module._build_emulator_diagnostic(
+            processing=None,
+            outbox_row_count=0,
+        )
+        self.assertEqual(diagnostic.processing_state, "pending")
+        self.assertIsNone(diagnostic.failure_category)
+
+    def test_diagnostic_helper_rejects_unbounded_failure_category(
+        self,
+    ) -> None:
+        processing = SimpleNamespace(
+            estado="processed",
+            categoria_ultimo_fallo="secret-token-XYZ",
+        )
+        diagnostic = router_module._build_emulator_diagnostic(
+            processing=processing,
+            outbox_row_count=0,
+        )
+        self.assertIsNone(
+            diagnostic.failure_category,
+            "unbounded failure categories must be dropped, not echoed",
+        )
+
+
+def _build_emulator_processed_without_response_js(
+    *,
+    jsdom_path: str,
+    initial_timeline: dict[str, str | None],
+    timeline_response: dict[str, str | None],
+) -> str:
+    """Build the JSDOM script that simulates the Admin/Pilot
+    emulator-test polling loop and exercises the
+    ``processed_without_response`` terminal branch.
+
+    The script mocks :func:`fetch` so the first call (the
+    emulator-test submit) returns a synthetic inbound identifier and
+    the second call (the status poll) returns the
+    ``processed_without_response`` diagnostic along with a bounded
+    timeline payload. After the polling settles the script dumps
+    the timeline field ``textContent`` so the Python test can
+    assert the server-side timestamps remain visible.
+    """
+    template = _BASE_TEMPLATE_HTML_PATH.read_text(encoding="utf-8")
+    script = _extract_inline_script(template)
+    jsdom_literal = json.dumps(jsdom_path)
+    initial_literal = json.dumps(initial_timeline)
+    response_literal = json.dumps(timeline_response)
+    script_literal = json.dumps(script)
+    return (
+        "const {JSDOM} = require(" + jsdom_literal + ");\n"
+        "const initialTimeline = " + initial_literal + ";\n"
+        "const timelineResponse = " + response_literal + ";\n"
+        "const baseScript = " + script_literal + ";\n"
+        "function escapeScript(scriptBody) {\n"
+        "  return scriptBody.replace(/<\\/script/gi, '<\\\\/script');\n"
+        "}\n"
+        "const safeBaseScript = escapeScript(baseScript);\n"
+        "const fields = [\n"
+        "  ['data-debug-timeline-inbound-received', 'inbound_received_at'],\n"
+        "  ['data-debug-timeline-llm-requested', 'llm_requested_at'],\n"
+        "  ['data-debug-timeline-llm-finished', 'llm_finished_at'],\n"
+        "  ['data-debug-timeline-llm-outcome', 'llm_outcome'],\n"
+        "  ['data-debug-timeline-processing-finished', 'processing_finished_at'],\n"
+        "  ['data-debug-timeline-response-staged', 'response_staged_at']\n"
+        "];\n"
+        "function timelineCellsHtml(values) {\n"
+        "  var html = '<dl data-debug-emulator-timeline>';\n"
+        "  fields.forEach(function(pair) {\n"
+        "    var attr = pair[0];\n"
+        "    var value = values[pair[1]];\n"
+        "    if (value === null || value === undefined) {\n"
+        "      value = '\\u2014';\n"
+        "    }\n"
+        "    html += '<dd ' + attr + '>' + value + '</dd>';\n"
+        "  });\n"
+        "  html += '</dl>';\n"
+        "  return html;\n"
+        "}\n"
+        "const submitPayload = {"
+        "synthetic_inbound_id: 'sm-test-123'};\n"
+        "const statusPayload = {\n"
+        "  status: 'processed',\n"
+        "  outbound_body: null,\n"
+        "  provider_message_sid: null,\n"
+        "  timeline: timelineResponse,\n"
+        "  diagnostic: {\n"
+        "    processing_state: 'processed_without_response',\n"
+        "    response_count: 0,\n"
+        "    outbox_row_count: 0,\n"
+        "    failure_category: null\n"
+        "  }\n"
+        "};\n"
+        "const html = [\n"
+        "  '<!DOCTYPE html><html><body>',\n"
+        "  '<form data-debug-emulator-form action=\"/test\" "
+        "data-debug-emulator-status-url=\"/test/status\">',\n"
+        "  '<textarea data-debug-emulator-textarea></textarea>',\n"
+        "  '<button data-debug-emulator-submit></button>',\n"
+        "  '<p data-debug-emulator-status></p>',\n"
+        "  '<div data-debug-emulator-conversation role=\"list\" "
+        "aria-live=\"polite\"></div>',\n"
+        "  timelineCellsHtml(initialTimeline),\n"
+        "  '<script>',\n"
+        "  safeBaseScript,\n"
+        "  '</script>',\n"
+        "  '</body></html>'\n"
+        "].join('');\n"
+        "const dom = new JSDOM(html, {runScripts: 'dangerously'});\n"
+        "const w = dom.window;\n"
+        "w.fetch = function(url, options) {\n"
+        "  var body = options && options.body ? String(options.body) : '';\n"
+        "  if (body.indexOf('synthetic_inbound_id') !== -1) {\n"
+        "    return Promise.resolve({\n"
+        "      ok: true,\n"
+        "      json: function() { return Promise.resolve(statusPayload); }\n"
+        "    });\n"
+        "  }\n"
+        "  return Promise.resolve({\n"
+        "    ok: true,\n"
+        "    json: function() { return Promise.resolve(submitPayload); }\n"
+        "  });\n"
+        "};\n"
+        "const form = w.document.querySelector('[data-debug-emulator-form]');\n"
+        "const textarea = w.document.querySelector("
+        "'[data-debug-emulator-textarea]');\n"
+        "textarea.value = 'turno de prueba';\n"
+        "const submitEvent = new w.Event('submit', {bubbles: true, "
+        "cancelable: true});\n"
+        "form.dispatchEvent(submitEvent);\n"
+        "setTimeout(function() {\n"
+        "  const cells = {};\n"
+        "  fields.forEach(function(pair) {\n"
+        "    var node = w.document.querySelector('[' + pair[0] + ']');\n"
+        "    cells[pair[1]] = node ? node.textContent : null;\n"
+        "  });\n"
+        "  const result = {\n"
+        "    cells: cells,\n"
+        "    status: w.document.querySelector(\n"
+        "      '[data-debug-emulator-status]').textContent\n"
+        "  };\n"
+        "  console.log(JSON.stringify(result));\n"
+        "}, 2500);\n"
+    )
+
+
+def _run_emulator_processed_without_response_in_jsdom(
+    *,
+    initial_timeline: dict[str, str | None],
+    timeline_response: dict[str, str | None],
+) -> dict:
+    jsdom_path = _resolve_jsdom_require_path()
+    if jsdom_path is None:
+        raise unittest.SkipTest(
+            "jsdom not available; install via `npm install jsdom` "
+            "and set PANEL_JSDOM_PATH (or use /tmp/jsdom-test) to "
+            "enable the runtime timeline-preservation tests."
+        )
+    js_source = _build_emulator_processed_without_response_js(
+        jsdom_path=jsdom_path,
+        initial_timeline=initial_timeline,
+        timeline_response=timeline_response,
+    )
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".js", delete=False, encoding="utf-8"
+    ) as handle:
+        handle.write(js_source)
+        script_path = handle.name
+    try:
+        completed = subprocess.run(
+            ["node", script_path],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    finally:
+        Path(script_path).unlink(missing_ok=True)
+    output = completed.stdout.decode("utf-8").strip()
+    if not output:
+        raise AssertionError(
+            "node produced no stdout; stderr was: "
+            + completed.stderr.decode("utf-8")
+        )
+    return json.loads(output.splitlines()[-1])
+
+
+class PanelEmulatorProcessedWithoutResponseTimelineTest(unittest.TestCase):
+    """The ``processed_without_response`` terminal branch MUST
+    preserve the bounded server-side timeline. The branch MUST NOT
+    call ``renderEmulatorTimeline(null)`` so the operator still
+    reads the received/LLM/processing milestones for the exact
+    synthetic inbound identifier after the polling loop ends.
+    """
+
+    _INITIAL_TIMELINE: typing.ClassVar[dict[str, str | None]] = {
+        "inbound_received_at": None,
+        "llm_requested_at": None,
+        "llm_finished_at": None,
+        "llm_outcome": None,
+        "processing_finished_at": None,
+        "response_staged_at": None,
+    }
+
+    _RESPONSE_TIMELINE: typing.ClassVar[dict[str, str | None]] = {
+        "inbound_received_at": "2026-01-01T12:00:00.000+00:00",
+        "llm_requested_at": "2026-01-01T12:00:01.000+00:00",
+        "llm_finished_at": "2026-01-01T12:00:02.500+00:00",
+        "llm_outcome": "completed",
+        "processing_finished_at": "2026-01-01T12:00:02.750+00:00",
+        "response_staged_at": None,
+    }
+
+    def test_processed_without_response_preserves_timeline_timestamps(
+        self,
+    ) -> None:
+        result = _run_emulator_processed_without_response_in_jsdom(
+            initial_timeline=self._INITIAL_TIMELINE,
+            timeline_response=self._RESPONSE_TIMELINE,
+        )
+        cells = result["cells"]
+        self.assertEqual(
+            cells["inbound_received_at"],
+            "09:00:00.000 (2026-01-01T12:00:00.000+00:00 UTC)",
+        )
+        self.assertEqual(
+            cells["llm_requested_at"],
+            "09:00:01.000 (2026-01-01T12:00:01.000+00:00 UTC)",
+        )
+        self.assertEqual(
+            cells["llm_finished_at"],
+            "09:00:02.500 (2026-01-01T12:00:02.500+00:00 UTC)",
+        )
+        self.assertEqual(cells["llm_outcome"], "completed")
+        self.assertEqual(
+            cells["processing_finished_at"],
+            "09:00:02.750 (2026-01-01T12:00:02.750+00:00 UTC)",
+        )
+        self.assertEqual(cells["response_staged_at"], "—")
+        self.assertEqual(
+            result["status"],
+            "Procesado sin respuesta outbound",
+        )
 
 
 if __name__ == "__main__":

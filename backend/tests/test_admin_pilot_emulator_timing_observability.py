@@ -41,6 +41,7 @@ from backend.llm.query_llm import (
     reset_llm_timing_recorder,
 )
 from backend.routers.admin_pilot_orders import (
+    EmulatorDiagnostic,
     EmulatorStatusResponse,
     EmulatorTimeline,
     _emulator_timeline_from_receipt,
@@ -117,6 +118,12 @@ class EmulatorTimelineSchemaTest(unittest.TestCase):
                 outbound_body=None,
                 provider_message_sid=None,
                 timeline=EmulatorTimeline(),
+                diagnostic=EmulatorDiagnostic(
+                    processing_state="pending",
+                    response_count=None,
+                    outbox_row_count=0,
+                    failure_category=None,
+                ),
                 extra_field="forbidden",  # type: ignore[call-arg]
             )
 
@@ -826,6 +833,12 @@ class EmulatorStatusWireSchemaTest(unittest.TestCase):
                 processing_finished_at="2026-08-21T18:45:24.200000+00:00",
                 response_staged_at="2026-08-21T18:45:24.700000+00:00",
             ),
+            diagnostic=EmulatorDiagnostic(
+                processing_state="processed_with_response",
+                response_count=1,
+                outbox_row_count=1,
+                failure_category=None,
+            ),
         )
         serialized = payload.model_dump()
         self.assertEqual(
@@ -850,6 +863,12 @@ class EmulatorStatusWireSchemaTest(unittest.TestCase):
                 outbound_body=None,
                 provider_message_sid=None,
                 timeline={"inbound_received_at": None, "secret": "x"},  # type: ignore[arg-type]
+                diagnostic=EmulatorDiagnostic(
+                    processing_state="pending",
+                    response_count=None,
+                    outbox_row_count=0,
+                    failure_category=None,
+                ),
             )
 
 

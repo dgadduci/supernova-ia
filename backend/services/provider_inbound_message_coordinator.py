@@ -66,6 +66,11 @@ from backend.models.procesamiento_mensaje_proveedor import (
     ProcesamientoMensajeProveedor,
     ProcesamientoMensajeProveedorFailureCategory,
 )
+from backend.observability import (
+    COMPONENT_WORKER,
+    EVENT_PROCESSING_OUTCOME,
+    emit_event,
+)
 from backend.repositories.canal_whatsapp_repository import (
     CanalWhatsappRepository,
 )
@@ -458,11 +463,21 @@ class ProviderInboundMessageCoordinator:
             int(leased.recepcion_mensaje_proveedor_id)
         )
         if receipt is None:
-            self._finalize_terminal(
+            finalized = self._finalize_terminal(
                 leased=leased,
                 categoria=ProcesamientoMensajeProveedorFailureCategory.DATABASE_ERROR,
                 codigo="receipt_missing",
             )
+            if finalized:
+                self._emit_processing_outcome(
+                    outcome="failed_terminal",
+                    failure_category=(
+                        ProcesamientoMensajeProveedorFailureCategory
+                        .DATABASE_ERROR.value
+                    ),
+                )
+            else:
+                self._emit_processing_outcome(outcome="lease_lost")
             return ProviderInboundProcessingResult(
                 outcome=ProviderInboundProcessingOutcome.FAILED_TERMINAL,
                 procesamiento_id=procesamiento_id,
@@ -503,11 +518,21 @@ class ProviderInboundMessageCoordinator:
                 else "blocked_state"
             )
             codigo = f"unavailable_{reason}"
-            self._finalize_terminal(
+            finalized = self._finalize_terminal(
                 leased=leased,
                 categoria=ProcesamientoMensajeProveedorFailureCategory.TERMINAL_PROCESSOR_ERROR,
                 codigo=codigo,
             )
+            if finalized:
+                self._emit_processing_outcome(
+                    outcome="unavailable",
+                    failure_category="unavailable_commerce",
+                    correlation_id=str(
+                        receipt.identificador_recepcion or ""
+                    ),
+                )
+            else:
+                self._emit_processing_outcome(outcome="lease_lost")
             return ProviderInboundProcessingResult(
                 outcome=ProviderInboundProcessingOutcome.FAILED_TERMINAL,
                 procesamiento_id=procesamiento_id,
@@ -556,7 +581,7 @@ class ProviderInboundMessageCoordinator:
                 self._session, session_row, body
             )
 
-            stage_outbound_rows(
+            staged_rows = stage_outbound_rows(
                 self._session,
                 session_row,
                 proveedor=proveedor,
@@ -566,6 +591,8 @@ class ProviderInboundMessageCoordinator:
                 outbox_repo=self._outbox_repo,
             )
             self._session.flush()
+            outbox_row_count = len(staged_rows)
+            response_count = outbox_row_count
         except Exception as exc:  # noqa: BLE001 - coordinator owns the rollback
             install_llm_timing_recorder(None)
             try:
@@ -595,6 +622,12 @@ class ProviderInboundMessageCoordinator:
         )
         if not finalized:
             self._session.rollback()
+            self._emit_processing_outcome(
+                outcome="lease_lost",
+                correlation_id=str(
+                    receipt.identificador_recepcion or ""
+                ),
+            )
             return ProviderInboundProcessingResult(
                 outcome=ProviderInboundProcessingOutcome.RETRY_SCHEDULED,
                 procesamiento_id=procesamiento_id,
@@ -605,6 +638,24 @@ class ProviderInboundMessageCoordinator:
                 detalle="lease_lost",
             )
         self._session.commit()
+        if outbox_row_count > 0:
+            self._emit_processing_outcome(
+                outcome="processed_with_response",
+                response_count=response_count,
+                outbox_row_count=outbox_row_count,
+                correlation_id=str(
+                    receipt.identificador_recepcion or ""
+                ),
+            )
+        else:
+            self._emit_processing_outcome(
+                outcome="processed_without_response",
+                response_count=response_count,
+                outbox_row_count=outbox_row_count,
+                correlation_id=str(
+                    receipt.identificador_recepcion or ""
+                ),
+            )
         return ProviderInboundProcessingResult(
             outcome=ProviderInboundProcessingOutcome.PROCESSED,
             procesamiento_id=procesamiento_id,
@@ -643,6 +694,10 @@ class ProviderInboundMessageCoordinator:
             )
             if not finalized:
                 self._session.rollback()
+                self._emit_processing_outcome(
+                    outcome="lease_lost",
+                    failure_category=categoria.value,
+                )
                 return ProviderInboundProcessingResult(
                     outcome=ProviderInboundProcessingOutcome.RETRY_SCHEDULED,
                     procesamiento_id=procesamiento_id,
@@ -655,6 +710,10 @@ class ProviderInboundMessageCoordinator:
                     detalle="lease_lost",
                 )
             self._session.commit()
+            self._emit_processing_outcome(
+                outcome="failed_terminal",
+                failure_category=categoria.value,
+            )
             return ProviderInboundProcessingResult(
                 outcome=ProviderInboundProcessingOutcome.FAILED_TERMINAL,
                 procesamiento_id=procesamiento_id,
@@ -685,6 +744,10 @@ class ProviderInboundMessageCoordinator:
         )
         if not finalized:
             self._session.rollback()
+            self._emit_processing_outcome(
+                outcome="lease_lost",
+                failure_category=categoria.value,
+            )
             return ProviderInboundProcessingResult(
                 outcome=ProviderInboundProcessingOutcome.RETRY_SCHEDULED,
                 procesamiento_id=procesamiento_id,
@@ -697,6 +760,10 @@ class ProviderInboundMessageCoordinator:
                 detalle="lease_lost",
             )
         self._session.commit()
+        self._emit_processing_outcome(
+            outcome="retry_scheduled",
+            failure_category=categoria.value,
+        )
         return ProviderInboundProcessingResult(
             outcome=ProviderInboundProcessingOutcome.RETRY_SCHEDULED,
             procesamiento_id=procesamiento_id,
@@ -808,6 +875,43 @@ class ProviderInboundMessageCoordinator:
         if self._now is not None:
             return self._now
         return datetime.now(tz=_utc())
+
+    def _emit_processing_outcome(
+        self,
+        *,
+        outcome: str,
+        failure_category: str | None = None,
+        response_count: int | None = None,
+        outbox_row_count: int | None = None,
+        correlation_id: str | None = None,
+    ) -> None:
+        """Emit the closed processing-outcome event.
+
+        The helper is the single best-effort emitter for the
+        ``provider_inbound_processing_outcome`` event. It is invoked
+        AFTER the corresponding authoritative durable result is
+        committed or rolled back so the event cannot influence
+        business processing, leases or retries. Validation or
+        serialization failures are swallowed by the underlying
+        :func:`emit_event` and never propagate back into the
+        coordinator transaction.
+
+        The helper does NOT add new mapper calls, dispatcher calls
+        or worker transitions. It also does NOT log the raw
+        exception text, the inbound body, the receipt identifier,
+        a Twilio SID or any other sensitive value: every argument
+        is a bounded token, integer or the existing opaque
+        ``identificador_recepcion`` correlation.
+        """
+        emit_event(
+            event=EVENT_PROCESSING_OUTCOME,
+            component=COMPONENT_WORKER,
+            outcome=outcome,
+            failure_category=failure_category,
+            response_count=response_count,
+            outbox_row_count=outbox_row_count,
+            correlation_id=correlation_id,
+        )
 
 
 def _utc():
