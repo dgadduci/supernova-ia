@@ -1398,8 +1398,11 @@ def _emulator_outbox_summary(
     )
 
     if outbox_row_count == 0:
+        wire_status = _map_no_outbox_wire_status(
+            diagnostic.processing_state
+        )
         return EmulatorStatusResponse(
-            status="processed",
+            status=wire_status,
             outbound_body=None,
             provider_message_sid=None,
             timeline=timeline,
@@ -1451,6 +1454,50 @@ _ALLOWED_FAILURE_CATEGORIES: frozenset[str] = frozenset(
         "unavailable_commerce",
     }
 )
+
+
+_NO_OUTBOX_PENDING_STATES: frozenset[str] = frozenset(
+    {"not_started", "pending", "leased", "unknown"}
+)
+
+
+def _map_no_outbox_wire_status(
+    diagnostic_processing_state: str,
+) -> Literal["pending", "processed", "retryable", "terminal"]:
+    """Map a no-outbox diagnostic state to the documented wire status.
+
+    When the exact selected receipt has no receipt-linked outbox
+    rows, the route MUST derive the wire status from the closed
+    diagnostic state rather than from the row count. The mapping is
+    intentionally narrow:
+
+    * ``not_started``, ``pending``, ``leased`` and ``unknown``
+      collapse to ``pending`` so the browser keeps polling while the
+      worker still owns the lease.
+    * ``processed_without_response`` collapses to ``processed`` so the
+      browser can stop polling for the definitive zero-response
+      terminal.
+    * ``retryable`` collapses to ``retryable`` so the operator sees
+      the closed retryable state.
+    * ``terminal`` collapses to ``terminal`` so the operator sees
+      the closed terminal state.
+
+    Any other value is treated defensively as ``pending``: the
+    helper never invents a processed state when the diagnostic is
+    not in the closed allowlist, so a future regression that
+    introduces a new diagnostic state cannot mislabel the panel as
+    ``processed`` simply because the outbox is empty.
+    """
+    state = str(diagnostic_processing_state or "")
+    if state in _NO_OUTBOX_PENDING_STATES:
+        return "pending"
+    if state == "processed_without_response":
+        return "processed"
+    if state == "retryable":
+        return "retryable"
+    if state == "terminal":
+        return "terminal"
+    return "pending"
 
 
 # Bounded count ceiling for the closed ``EmulatorDiagnostic``

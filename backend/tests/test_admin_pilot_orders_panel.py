@@ -9363,5 +9363,419 @@ class PanelEmulatorProcessedWithoutResponseTimelineTest(unittest.TestCase):
         )
 
 
+class PanelEmulatorNoOutboxStatusMappingTest(unittest.TestCase):
+    """The Admin/Pilot status projection MUST derive its wire
+    ``status`` from the closed diagnostic state for the exact
+    selected receipt when no receipt-linked outbound row exists.
+
+    The closed mapping is:
+
+    * ``not_started``, ``pending``, ``leased`` and ``unknown``
+      collapse to ``status=pending`` so the browser keeps polling.
+    * ``processed_without_response`` collapses to ``status=processed``
+      so the browser can stop polling the definitive terminal.
+    * ``retryable`` collapses to ``status=retryable``.
+    * ``terminal`` collapses to ``status=terminal``.
+
+    The missing-receipt branch keeps the documented
+    ``status=accepted`` projection.
+    """
+
+    def _setup_db_session(
+        self,
+        *,
+        receipt_id: int | None,
+        processing: Any,
+        outbox_row_count: int,
+    ) -> tuple[Any, MagicMock]:
+        """Build a SQLAlchemy session stub that drives
+        ``_emulator_outbox_summary`` through the documented query
+        surface without touching the real database.
+
+        The stub is intentionally minimal: it returns the receipt
+        row, the receipt-linked processing row, the outbox-row
+        count and the first outbound row, so the helper can exercise
+        the no-outbox branch deterministically without patching the
+        timeline helper.
+        """
+        from backend.models import (
+            MensajeProveedorSaliente,
+            ProcesamientoMensajeProveedor,
+            RecepcionMensajeProveedor,
+        )
+
+        session = MagicMock(name="DatabaseSession")
+        receipt = (
+            SimpleNamespace(
+                id=int(receipt_id or 0),
+                fecha_recepcion=None,
+            )
+            if receipt_id is not None
+            else None
+        )
+
+        def _result(scalar: Any) -> MagicMock:
+            outer = MagicMock(name="Result")
+            unique = MagicMock(name="UniqueResult")
+            scalars = MagicMock(name="ScalarResult")
+            unique.scalars.return_value = scalars
+            unique.scalar_one_or_none.return_value = scalar
+            unique.scalar.return_value = scalar
+            scalars.first.return_value = scalar
+            scalars.all.return_value = (
+                [scalar] if scalar is not None else []
+            )
+            outer.unique.return_value = unique
+            outer.scalars.return_value = scalars
+            outer.scalar_one_or_none.return_value = scalar
+            outer.scalar.return_value = scalar
+            return outer
+
+        def _execute(stmt: Any) -> MagicMock:
+            text = str(stmt)
+            if RecepcionMensajeProveedor.__tablename__ in text:
+                return _result(receipt)
+            if (
+                ProcesamientoMensajeProveedor.__tablename__ in text
+                and "count(" not in text
+            ):
+                return _result(processing)
+            if "count(" in text:
+                return _result(int(outbox_row_count))
+            if MensajeProveedorSaliente.__tablename__ in text:
+                return _result(None)
+            return _result(None)
+
+        session.execute.side_effect = _execute
+        return session, MagicMock(name="ScalarResult")
+
+    def _build_target(self, comercio_id: int = 1) -> Any:
+        from backend.services.admin_pilot_emulator_service import (
+            EmulatorTestTarget,
+        )
+
+        return EmulatorTestTarget(
+            pedido_id=42,
+            session_id=21,
+            cliente_id=31,
+            comercio_id=comercio_id,
+            canal_id=5,
+            canal_destination_e164="+5491100000000",
+        )
+
+    def test_no_outbox_pending_state_returns_pending(self) -> None:
+        processing = SimpleNamespace(
+            estado="pending",
+            categoria_ultimo_fallo=None,
+        )
+        session, _ = self._setup_db_session(
+            receipt_id=10,
+            processing=processing,
+            outbox_row_count=0,
+        )
+        response = router_module._emulator_outbox_summary(
+            session,
+            pedido_id=42,
+            target=self._build_target(),
+            synthetic_inbound_id="SM-PENDING",
+        )
+        self.assertEqual(response.status, "pending")
+        self.assertIsNone(response.outbound_body)
+        self.assertIsNone(response.provider_message_sid)
+        self.assertEqual(
+            response.diagnostic.processing_state, "pending"
+        )
+
+    def test_no_outbox_leased_state_returns_pending(self) -> None:
+        processing = SimpleNamespace(
+            estado="leased",
+            categoria_ultimo_fallo=None,
+        )
+        session, _ = self._setup_db_session(
+            receipt_id=11,
+            processing=processing,
+            outbox_row_count=0,
+        )
+        response = router_module._emulator_outbox_summary(
+            session,
+            pedido_id=42,
+            target=self._build_target(),
+            synthetic_inbound_id="SM-LEASED",
+        )
+        self.assertEqual(response.status, "pending")
+        self.assertEqual(
+            response.diagnostic.processing_state, "leased"
+        )
+
+    def test_no_outbox_processed_without_response_returns_processed(
+        self,
+    ) -> None:
+        processing = SimpleNamespace(
+            estado="processed",
+            categoria_ultimo_fallo=None,
+        )
+        session, _ = self._setup_db_session(
+            receipt_id=12,
+            processing=processing,
+            outbox_row_count=0,
+        )
+        response = router_module._emulator_outbox_summary(
+            session,
+            pedido_id=42,
+            target=self._build_target(),
+            synthetic_inbound_id="SM-PROCESSED",
+        )
+        self.assertEqual(response.status, "processed")
+        self.assertEqual(
+            response.diagnostic.processing_state,
+            "processed_without_response",
+        )
+
+    def test_no_outbox_retryable_state_returns_retryable(self) -> None:
+        processing = SimpleNamespace(
+            estado="retryable",
+            categoria_ultimo_fallo="pipeline_error",
+        )
+        session, _ = self._setup_db_session(
+            receipt_id=13,
+            processing=processing,
+            outbox_row_count=0,
+        )
+        response = router_module._emulator_outbox_summary(
+            session,
+            pedido_id=42,
+            target=self._build_target(),
+            synthetic_inbound_id="SM-RETRYABLE",
+        )
+        self.assertEqual(response.status, "retryable")
+        self.assertEqual(
+            response.diagnostic.processing_state, "retryable"
+        )
+
+    def test_no_outbox_terminal_state_returns_terminal(self) -> None:
+        processing = SimpleNamespace(
+            estado="failed_terminal",
+            categoria_ultimo_fallo="terminal_processor_error",
+        )
+        session, _ = self._setup_db_session(
+            receipt_id=14,
+            processing=processing,
+            outbox_row_count=0,
+        )
+        response = router_module._emulator_outbox_summary(
+            session,
+            pedido_id=42,
+            target=self._build_target(),
+            synthetic_inbound_id="SM-TERMINAL",
+        )
+        self.assertEqual(response.status, "terminal")
+        self.assertEqual(
+            response.diagnostic.processing_state, "terminal"
+        )
+
+    def test_missing_receipt_keeps_accepted_projection(self) -> None:
+        session, _ = self._setup_db_session(
+            receipt_id=None,
+            processing=None,
+            outbox_row_count=0,
+        )
+        response = router_module._emulator_outbox_summary(
+            session,
+            pedido_id=42,
+            target=self._build_target(),
+            synthetic_inbound_id="SM-MISSING",
+        )
+        self.assertEqual(response.status, "accepted")
+        self.assertEqual(
+            response.diagnostic.processing_state, "not_started"
+        )
+
+    def test_no_outbox_unknown_processing_state_returns_pending(
+        self,
+    ) -> None:
+        processing = SimpleNamespace(
+            estado="surprise_state",
+            categoria_ultimo_fallo=None,
+        )
+        session, _ = self._setup_db_session(
+            receipt_id=15,
+            processing=processing,
+            outbox_row_count=0,
+        )
+        response = router_module._emulator_outbox_summary(
+            session,
+            pedido_id=42,
+            target=self._build_target(),
+            synthetic_inbound_id="SM-UNKNOWN",
+        )
+        self.assertEqual(response.status, "pending")
+        self.assertEqual(
+            response.diagnostic.processing_state, "unknown"
+        )
+
+    def test_isolation_by_comercio_id(self) -> None:
+        """Pending data from another comercio MUST NOT enter the
+        projection. ``_emulator_outbox_summary`` selects the receipt
+        by ``comercio_id`` AND ``identificador_recepcion``; the
+        helper returns ``status=accepted`` when the receipt for the
+        exact selected target does not exist."""
+
+        session, _ = self._setup_db_session(
+            receipt_id=None,
+            processing=None,
+            outbox_row_count=0,
+        )
+        response = router_module._emulator_outbox_summary(
+            session,
+            pedido_id=42,
+            target=self._build_target(comercio_id=99),
+            synthetic_inbound_id="SM-OTHER-COMERCIO",
+        )
+        self.assertEqual(response.status, "accepted")
+        self.assertEqual(
+            response.diagnostic.processing_state, "not_started"
+        )
+
+    def test_no_outbox_helper_does_not_mutate_session(self) -> None:
+        """The status projection remains a read-only helper: it
+        never calls ``commit``, ``rollback``, ``flush``, ``refresh``,
+        ``begin`` or ``close`` on the SQLAlchemy session."""
+
+        processing = SimpleNamespace(
+            estado="leased",
+            categoria_ultimo_fallo=None,
+        )
+        session, _ = self._setup_db_session(
+            receipt_id=16,
+            processing=processing,
+            outbox_row_count=0,
+        )
+        router_module._emulator_outbox_summary(
+            session,
+            pedido_id=42,
+            target=self._build_target(),
+            synthetic_inbound_id="SM-LEASED-ISO",
+        )
+        session.commit.assert_not_called()
+        session.rollback.assert_not_called()
+        session.flush.assert_not_called()
+        session.refresh.assert_not_called()
+        session.begin.assert_not_called()
+        session.close.assert_not_called()
+
+
+class PanelEmulatorPendingPollingBrowserContractTest(unittest.TestCase):
+    """The Admin/Pilot Emulator browser MUST keep polling when the
+    server reports ``status=pending`` and MUST NOT append an Emulator
+    rejection error in that branch. The bounded polling exhaustion
+    remains neutral."""
+
+    def _render_detail(self) -> str:
+        session = MagicMock(name="DatabaseSession")
+        session_override = _SessionOverride(session)
+        app = _build_app()
+        app.dependency_overrides[get_session] = session_override
+        settings_patcher = patch.object(
+            dependencies_module,
+            "load_settings",
+            return_value=_settings_with_emulator_enabled(),
+        )
+        router_settings_patcher = patch.object(
+            router_module,
+            "load_settings",
+            return_value=_settings_with_emulator_enabled(),
+        )
+        settings_patcher.start()
+        router_settings_patcher.start()
+        try:
+            client = TestClient(app, raise_server_exceptions=False)
+            with patch.object(
+                router_module, "load_active_emulator_target"
+            ) as target_mock, patch.object(
+                router_module,
+                "_is_emulator_action_enabled",
+                return_value=True,
+            ), patch.object(
+                router_module, "PilotOrderOperationsViewService"
+            ) as service_cls:
+                target_mock.return_value = SimpleNamespace(
+                    pedido_id=42,
+                    session_id=21,
+                    cliente_id=31,
+                    comercio_id=1,
+                    canal_id=5,
+                    canal_destination_e164="+5491100000000",
+                )
+                service_cls.return_value = _stub_service(
+                    detail=_build_detail(),
+                    history=_build_history(),
+                    order_lines_snapshot=[],
+                )
+                response = client.get(
+                    "/admin/pilot/orders/42",
+                    headers=_basic_auth_header(
+                        "ignored", CONFIGURED_TOKEN
+                    ),
+                )
+        finally:
+            settings_patcher.stop()
+            router_settings_patcher.stop()
+            app.dependency_overrides.clear()
+        self.assertEqual(response.status_code, 200)
+        return response.text
+
+    def test_pending_status_polls_without_emulator_rejection(self) -> None:
+        """The browser handler MUST continue polling when the server
+        reports ``status=pending`` and MUST NOT append an emulator
+        rejection message in that branch."""
+
+        body = self._render_detail()
+        body_no_css = _strip_css(body)
+
+        self.assertIn(
+            "pollEmulatorStatus",
+            body_no_css,
+            "browser MUST expose the polling seam for pending status",
+        )
+        self.assertIn(
+            "EMULATOR_MAX_POLL_ATTEMPTS",
+            body_no_css,
+            "browser MUST keep the bounded polling attempts seam",
+        )
+        self.assertIn(
+            "EMULATOR_NEUTRAL_POLLING_FAILURE",
+            body_no_css,
+            "browser MUST keep the neutral polling exhaustion message",
+        )
+        # The polling exhaustion path uses the neutral message,
+        # never the Emulator rejection message.
+        neutral_path = "failNeutralPolling(currentInboundId)"
+        self.assertIn(
+            neutral_path,
+            body_no_css,
+            "browser MUST route polling exhaustion to the neutral branch",
+        )
+        polling_neutral_failure = (
+            "setStatus(EMULATOR_NEUTRAL_POLLING_FAILURE)"
+        )
+        self.assertIn(
+            polling_neutral_failure,
+            body_no_css,
+            "browser MUST render the neutral polling failure status",
+        )
+        # The pending branch keeps the existing conversation row
+        # appender so the operator still sees the bounded status
+        # without the Emulator rejection wording.
+        self.assertIn(
+            "conversationAppendStatus(currentInboundId, result.data.status)",
+            body_no_css,
+        )
+        self.assertIn(
+            "El Twilio Emulator rechazó el mensaje.",
+            body_no_css,
+            "the Emulator rejection wording stays reserved for the submit path",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
