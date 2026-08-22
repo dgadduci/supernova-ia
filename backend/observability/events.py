@@ -72,6 +72,7 @@ EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME = (
 EVENT_TWILIO_EMULATOR_OUTBOUND_OUTCOME = "twilio_emulator_outbound_outcome"
 EVENT_ADMIN_PILOT_EMULATOR_OUTCOME = "admin_pilot_emulator_outcome"
 EVENT_PROCESSING_OUTCOME = "provider_inbound_processing_outcome"
+EVENT_PROVIDER_INBOUND_STAGE = "provider_inbound_stage"
 
 
 # ``EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME`` is emitted by BOTH
@@ -105,6 +106,7 @@ _EVENT_CATALOGUE: dict[str, str | frozenset[str]] = {
     EVENT_TWILIO_EMULATOR_OUTBOUND_OUTCOME: COMPONENT_TWILIO_EMULATOR,
     EVENT_ADMIN_PILOT_EMULATOR_OUTCOME: COMPONENT_ADMIN_PILOT_EMULATOR,
     EVENT_PROCESSING_OUTCOME: COMPONENT_WORKER,
+    EVENT_PROVIDER_INBOUND_STAGE: COMPONENT_WORKER,
 }
 
 
@@ -240,6 +242,9 @@ _OUTCOMES_BY_EVENT: dict[str, frozenset[str]] = {
             "unavailable",
         }
     ),
+    EVENT_PROVIDER_INBOUND_STAGE: frozenset(
+        {"started", "completed", "failed"}
+    ),
 }
 
 
@@ -363,11 +368,31 @@ _EVENTS_WITH_LIVENESS_FIELDS: frozenset[str] = frozenset(
 _EVENTS_WITH_PROCESSING_OUTCOME_FIELDS: frozenset[str] = frozenset(
     {EVENT_PROCESSING_OUTCOME}
 )
+_EVENTS_WITH_PROVIDER_INBOUND_STAGE_FIELDS: frozenset[str] = frozenset(
+    {EVENT_PROVIDER_INBOUND_STAGE}
+)
 _PROCESSING_OUTCOME_PROCESSED_VALUES: frozenset[str] = frozenset(
     {"processed_with_response", "processed_without_response"}
 )
 _PROCESSING_OUTCOME_FAILURE_VALUES: frozenset[str] = frozenset(
     {"retry_scheduled", "failed_terminal", "lease_lost", "unavailable"}
+)
+
+# Closed stage allowlist for the ``provider_inbound_stage`` event.
+# The vocabulary mirrors the bounded coordinator seams and is
+# shared with the production-log parser so Railway operators can
+# group one leased inbound turn by the last reached boundary
+# without parsing free-form labels. The contract forbids
+# arbitrary stage tokens, provider/customer identifiers, runner
+# names or caller-supplied labels.
+_PROVIDER_INBOUND_STAGE_STAGES: frozenset[str] = frozenset(
+    {
+        "availability",
+        "session_order",
+        "business_pipeline",
+        "outbound_staging",
+        "processing_finalization",
+    }
 )
 
 
@@ -387,7 +412,7 @@ _OPTIONAL_FIELDS_BY_EVENT: dict[str, frozenset[str]] = {
         {"elapsed_ms", "http_status", "exception_type", "correlation_id"}
     ),
     EVENT_EMBEDDING_REQUEST: frozenset(
-        {"elapsed_ms", "http_status", "exception_type"}
+        {"elapsed_ms", "http_status", "exception_type", "correlation_id"}
     ),
     EVENT_DATABASE_TECHNICAL_FAILURE: frozenset({"exception_type"}),
     EVENT_OBSERVABILITY_EMIT_FAILED: frozenset({"exception_type"}),
@@ -411,6 +436,9 @@ _OPTIONAL_FIELDS_BY_EVENT: dict[str, frozenset[str]] = {
     EVENT_ADMIN_PILOT_EMULATOR_OUTCOME: frozenset({"reason"}),
     EVENT_PROCESSING_OUTCOME: frozenset(
         {"response_count", "outbox_row_count", "correlation_id"}
+    ),
+    EVENT_PROVIDER_INBOUND_STAGE: frozenset(
+        {"stage", "elapsed_ms", "exception_type", "correlation_id"}
     ),
 }
 
@@ -469,6 +497,7 @@ _ALLOWED_PAYLOAD_KEYS: frozenset[str] = frozenset(
         "reason",
         "response_count",
         "outbox_row_count",
+        "stage",
     }
 )
 
@@ -616,6 +645,10 @@ def _is_safe_optional_field(name: str, value: Any) -> bool:
         if isinstance(value, bool) or not isinstance(value, int):
             return False
         return 0 <= value <= _MAX_PENDING_CONTEXT_CANDIDATE_COUNT
+    if name == "stage":
+        if not _is_safe_short_string(value, max_length=_MAX_OUTCOME):
+            return False
+        return value in _PROVIDER_INBOUND_STAGE_STAGES
     return False
 
 
@@ -1057,6 +1090,131 @@ def _validate_liveness_event_fields(
     return fields
 
 
+def _validate_provider_inbound_stage_event_fields(
+    *,
+    outcome: Any,
+    stage: Any,
+    elapsed_ms: Any,
+    exception_type: Any,
+    correlation_id: Any,
+) -> dict[str, Any]:
+    """Validate the closed ``provider_inbound_stage`` payload.
+
+    The contract enforces:
+
+    * ``stage`` is REQUIRED for every provider-inbound-stage event
+      and MUST come from :data:`_PROVIDER_INBOUND_STAGE_STAGES`.
+    * ``outcome`` is REQUIRED and MUST come from the closed
+      ``started`` / ``completed`` / ``failed`` allowlist.
+    * ``elapsed_ms`` is REQUIRED for ``completed`` and ``failed``
+      and MUST be a bounded non-negative integer; it MUST be
+      ABSENT on ``started`` because the boundary has not returned.
+    * ``exception_type`` is REQUIRED for ``failed`` and MUST come
+      from the catalogued safe exception-type contract; it MUST
+      be ABSENT on ``started`` and ``completed``.
+    * ``correlation_id`` is OPTIONAL and, when present, MUST be
+      the existing opaque provider synthetic identifier (already
+      bounded by ``_MAX_CORRELATION_ID``). A missing value is
+      permitted only outside the provider-scoped evidence path.
+    """
+    fields: dict[str, Any] = {}
+
+    if not isinstance(stage, str) or not stage:
+        raise EventValidationError(
+            "stage is required for provider_inbound_stage "
+            "and must be a non-empty string (got "
+            f"{type(stage).__name__}: {stage!r})"
+        )
+    if not _is_safe_short_string(stage, max_length=_MAX_OUTCOME):
+        raise EventValidationError(
+            "stage must be a short alnum token (got "
+            f"{type(stage).__name__}: {stage!r})"
+        )
+    if stage not in _PROVIDER_INBOUND_STAGE_STAGES:
+        raise EventValidationError(
+            f"stage {stage!r} not in provider_inbound_stage allowlist "
+            f"{sorted(_PROVIDER_INBOUND_STAGE_STAGES)}"
+        )
+    fields["stage"] = stage
+
+    if outcome == "failed":
+        if elapsed_ms is None:
+            raise EventValidationError(
+                "event 'provider_inbound_stage' with outcome 'failed' "
+                "requires 'elapsed_ms'"
+            )
+        if (
+            isinstance(elapsed_ms, bool)
+            or not isinstance(elapsed_ms, int)
+            or not 0 <= elapsed_ms <= _MAX_ELAPSED_MS
+        ):
+            raise EventValidationError(
+                "elapsed_ms must be in [0, "
+                f"{_MAX_ELAPSED_MS}] for provider_inbound_stage "
+                f"(got {elapsed_ms!r})"
+            )
+        fields["elapsed_ms"] = int(elapsed_ms)
+        if exception_type is None:
+            raise EventValidationError(
+                "event 'provider_inbound_stage' with outcome 'failed' "
+                "requires 'exception_type'"
+            )
+        if not _is_safe_optional_field("exception_type", exception_type):
+            raise EventValidationError(
+                f"invalid value for field 'exception_type': {exception_type!r}"
+            )
+        fields["exception_type"] = exception_type
+    elif outcome == "completed":
+        if elapsed_ms is None:
+            raise EventValidationError(
+                "event 'provider_inbound_stage' with outcome 'completed' "
+                "requires 'elapsed_ms'"
+            )
+        if (
+            isinstance(elapsed_ms, bool)
+            or not isinstance(elapsed_ms, int)
+            or not 0 <= elapsed_ms <= _MAX_ELAPSED_MS
+        ):
+            raise EventValidationError(
+                "elapsed_ms must be in [0, "
+                f"{_MAX_ELAPSED_MS}] for provider_inbound_stage "
+                f"(got {elapsed_ms!r})"
+            )
+        fields["elapsed_ms"] = int(elapsed_ms)
+        if exception_type is not None:
+            raise EventValidationError(
+                "event 'provider_inbound_stage' with outcome 'completed' "
+                "does not accept 'exception_type'; "
+                "'exception_type' is reserved for outcome 'failed'"
+            )
+    elif outcome == "started":
+        if elapsed_ms is not None:
+            raise EventValidationError(
+                "event 'provider_inbound_stage' with outcome 'started' "
+                "does not accept 'elapsed_ms'; "
+                "'elapsed_ms' is reserved for completed/failed outcomes"
+            )
+        if exception_type is not None:
+            raise EventValidationError(
+                "event 'provider_inbound_stage' with outcome 'started' "
+                "does not accept 'exception_type'; "
+                "'exception_type' is reserved for outcome 'failed'"
+            )
+    else:
+        raise EventValidationError(
+            f"unknown provider_inbound_stage outcome {outcome!r}"
+        )
+
+    if correlation_id is not None:
+        if not _is_safe_optional_field("correlation_id", correlation_id):
+            raise EventValidationError(
+                f"invalid value for field 'correlation_id': {correlation_id!r}"
+            )
+        fields["correlation_id"] = correlation_id
+
+    return fields
+
+
 def build_event(
     *,
     event: str,
@@ -1097,6 +1255,7 @@ def build_event(
     cycle_index: int | None = None,
     response_count: int | None = None,
     outbox_row_count: int | None = None,
+    stage: str | None = None,
 ) -> dict[str, Any]:
     """Validate the input and return the JSON-ready payload.
 
@@ -1145,6 +1304,9 @@ def build_event(
     is_liveness_event = event in _EVENTS_WITH_LIVENESS_FIELDS
     is_processing_outcome_event = (
         event in _EVENTS_WITH_PROCESSING_OUTCOME_FIELDS
+    )
+    is_provider_inbound_stage_event = (
+        event in _EVENTS_WITH_PROVIDER_INBOUND_STAGE_FIELDS
     )
     allows_no_outcome_or_failure = (
         event in _EVENTS_WITHOUT_OUTCOME_OR_FAILURE
@@ -1248,6 +1410,18 @@ def build_event(
             raise EventValidationError(
                 f"unknown processing outcome {outcome!r}"
             )
+    elif is_provider_inbound_stage_event:
+        if outcome is None:
+            raise EventValidationError(
+                f"event {event!r} requires an outcome"
+            )
+        _validate_outcome(event, outcome)
+        if failure_category is not None:
+            raise EventValidationError(
+                f"event {event!r} does not accept 'failure_category'; "
+                "'failure_category' is reserved for technical boundary "
+                "events, not for the closed provider_inbound_stage event"
+            )
     else:
         if outcome is None and failure_category is None:
             raise EventValidationError(
@@ -1273,7 +1447,11 @@ def build_event(
         ),
     }
     if not is_recognition_event and not allows_no_outcome_or_failure:
-        if is_liveness_event or is_processing_outcome_event:
+        if (
+            is_liveness_event
+            or is_processing_outcome_event
+            or is_provider_inbound_stage_event
+        ):
             payload["outcome"] = outcome
             if failure_category is not None:
                 payload["failure_category"] = failure_category
@@ -1485,6 +1663,57 @@ def build_event(
             payload["exception_type"] = exception_type
         return payload
 
+    if is_provider_inbound_stage_event:
+        if any(
+            value is not None
+            for value in (
+                outbox_id,
+                attempt,
+                durable_state,
+                provider_code,
+                http_status,
+                configured_mode,
+                effective_mode,
+                authoritative_strategy,
+                hybrid_decision,
+                fallback,
+                fallback_category,
+                fuzzy_latency_ms,
+                embedding_latency_ms,
+                vector_latency_ms,
+                context_kind,
+                status_before,
+                status_after,
+                candidate_count_before,
+                candidate_count_after,
+                context_cleared,
+                flavor_code,
+                eligible_count,
+                applied_count,
+                outbound_style_prompt_template_version,
+                outbound_style_prompt_template_hash,
+                reason,
+                response_count,
+                outbox_row_count,
+                phase,
+                cycle_index,
+            )
+        ):
+            raise EventValidationError(
+                f"event {event!r} does not accept extra fields; only the "
+                "closed stage/outcome/elapsed_ms/exception_type/"
+                "correlation_id payload is allowed"
+            )
+        stage_fields = _validate_provider_inbound_stage_event_fields(
+            outcome=outcome,
+            stage=stage,
+            elapsed_ms=elapsed_ms,
+            exception_type=exception_type,
+            correlation_id=correlation_id,
+        )
+        payload.update(stage_fields)
+        return payload
+
     if any(
         value is not None
         for value in (
@@ -1633,6 +1862,7 @@ def parse_event(line: str) -> dict[str, Any]:
         cycle_index=decoded.get("cycle_index"),
         response_count=decoded.get("response_count"),
         outbox_row_count=decoded.get("outbox_row_count"),
+        stage=decoded.get("stage"),
     )
 
 
@@ -1705,6 +1935,7 @@ def emit_event(
     cycle_index: int | None = None,
     response_count: int | None = None,
     outbox_row_count: int | None = None,
+    stage: str | None = None,
     stream: Any = None,
 ) -> bool:
     """Build and emit a single JSON event line to the supplied stream.
@@ -1761,6 +1992,7 @@ def emit_event(
             cycle_index=cycle_index,
             response_count=response_count,
             outbox_row_count=outbox_row_count,
+            stage=stage,
         )
     except EventValidationError as exc:
         try:
@@ -1821,6 +2053,7 @@ __all__ = [
     "EVENT_OUTBOUND_STYLE",
     "EVENT_PENDING_CONTEXT_TRANSITION",
     "EVENT_PRODUCT_ADD_EXECUTION",
+    "EVENT_PROVIDER_INBOUND_STAGE",
     "EVENT_SHADOW_PRODUCT_RECOGNITION",
     "EVENT_TWILIO_EMULATOR_OUTBOUND_OUTCOME",
     "EVENT_WORKER_CYCLE",

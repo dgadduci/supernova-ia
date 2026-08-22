@@ -25,7 +25,7 @@ from __future__ import annotations
 import io
 import json
 import unittest
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from backend.observability import (
     COMPONENT_CALLBACK,
@@ -49,6 +49,7 @@ from backend.observability import (
     EVENT_PENDING_CONTEXT_TRANSITION,
     EVENT_PROCESSING_OUTCOME,
     EVENT_PRODUCT_ADD_EXECUTION,
+    EVENT_PROVIDER_INBOUND_STAGE,
     EVENT_SHADOW_PRODUCT_RECOGNITION,
     EVENT_WORKER_CYCLE,
     EVENT_WORKER_DISABLED,
@@ -3312,6 +3313,420 @@ class ProviderInboundProcessingOutcomeEventTest(unittest.TestCase):
         self.assertEqual(parsed["response_count"], 0)
         self.assertEqual(parsed["outbox_row_count"], 0)
         self.assertNotIn("failure_category", parsed)
+
+
+class ProviderInboundStageEventTest(unittest.TestCase):
+    """Closed catalogue / parser / privacy / bounds tests for the
+    ``provider_inbound_stage`` event used by the bounded
+    coordinator stage wrappers.
+
+    Coverage:
+
+    * each closed ``stage`` value round-trips through the
+      catalogue with the correct ``outcome`` family
+      (``started``/``completed``/``failed``);
+    * ``elapsed_ms`` is REQUIRED for ``completed`` and
+      ``failed`` and ABSENT for ``started``;
+    * ``exception_type`` is REQUIRED for ``failed`` and ABSENT
+      for ``started``/``completed``; the safe-type contract
+      rejects dotted or spaced exception names;
+    * unknown stage, unknown outcome, negative or oversized
+      ``elapsed_ms``, raw exception text, PII-like fields and
+      extra catalogue fields are rejected;
+    * the production-log parser (``parse_event``) round-trips a
+      catalogued line and rejects unknown keys;
+    * the payload never leaks customer tokens, prompt text or
+      exception messages;
+    * the helper degrades safely when a caller passes a
+      malformed event.
+    """
+
+    _ALLOWED_STAGES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "availability",
+            "session_order",
+            "business_pipeline",
+            "outbound_staging",
+            "processing_finalization",
+        }
+    )
+
+    _SAFE_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "event",
+            "schema_version",
+            "component",
+            "timestamp",
+            "outcome",
+            "stage",
+            "elapsed_ms",
+            "exception_type",
+            "correlation_id",
+        }
+    )
+
+    def _base_kwargs(self, **overrides: Any) -> dict:
+        kwargs: dict[str, Any] = {
+            "event": EVENT_PROVIDER_INBOUND_STAGE,
+            "component": COMPONENT_WORKER,
+            "outcome": "started",
+            "stage": "availability",
+        }
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_event_belongs_to_provider_worker_component(self) -> None:
+        from backend.observability.events import _EVENT_CATALOGUE
+
+        self.assertEqual(
+            _EVENT_CATALOGUE[EVENT_PROVIDER_INBOUND_STAGE],
+            COMPONENT_WORKER,
+        )
+
+    def test_each_stage_round_trips_with_started_outcome(self) -> None:
+        for stage in self._ALLOWED_STAGES:
+            with self.subTest(stage=stage):
+                payload = build_event(
+                    event=EVENT_PROVIDER_INBOUND_STAGE,
+                    component=COMPONENT_WORKER,
+                    stage=stage,
+                    outcome="started",
+                    correlation_id="SYN-123",
+                )
+                self.assertEqual(payload["stage"], stage)
+                self.assertEqual(payload["outcome"], "started")
+                self.assertEqual(
+                    payload["correlation_id"], "SYN-123"
+                )
+                line = json.dumps(
+                    payload, sort_keys=True, separators=(",", ":")
+                )
+                parsed = parse_event(line)
+                self.assertEqual(parsed, payload)
+
+    def test_completed_outcome_requires_elapsed_ms(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROVIDER_INBOUND_STAGE,
+                component=COMPONENT_WORKER,
+                stage="business_pipeline",
+                outcome="completed",
+            )
+
+    def test_failed_outcome_requires_elapsed_ms_and_exception_type(
+        self,
+    ) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROVIDER_INBOUND_STAGE,
+                component=COMPONENT_WORKER,
+                stage="availability",
+                outcome="failed",
+                elapsed_ms=12,
+            )
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROVIDER_INBOUND_STAGE,
+                component=COMPONENT_WORKER,
+                stage="availability",
+                outcome="failed",
+                exception_type="OperationalError",
+            )
+
+    def test_started_outcome_rejects_elapsed_ms(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROVIDER_INBOUND_STAGE,
+                component=COMPONENT_WORKER,
+                stage="availability",
+                outcome="started",
+                elapsed_ms=12,
+            )
+
+    def test_started_outcome_rejects_exception_type(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROVIDER_INBOUND_STAGE,
+                component=COMPONENT_WORKER,
+                stage="availability",
+                outcome="started",
+                exception_type="RuntimeError",
+            )
+
+    def test_completed_outcome_rejects_exception_type(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROVIDER_INBOUND_STAGE,
+                component=COMPONENT_WORKER,
+                stage="availability",
+                outcome="completed",
+                elapsed_ms=12,
+                exception_type="RuntimeError",
+            )
+
+    def test_outcome_required(self) -> None:
+        kwargs = self._base_kwargs()
+        kwargs.pop("outcome")
+        with self.assertRaises(EventValidationError):
+            build_event(**kwargs)
+
+    def test_outcome_outside_allowlist_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROVIDER_INBOUND_STAGE,
+                component=COMPONENT_WORKER,
+                stage="availability",
+                outcome="succeeded",
+            )
+
+    def test_stage_required(self) -> None:
+        kwargs = self._base_kwargs()
+        kwargs.pop("stage")
+        with self.assertRaises(EventValidationError):
+            build_event(**kwargs)
+
+    def test_stage_none_rejected(self) -> None:
+        kwargs = self._base_kwargs()
+        kwargs["stage"] = None
+        with self.assertRaises(EventValidationError):
+            build_event(**kwargs)
+
+    def test_stage_unknown_value_rejected(self) -> None:
+        for stage in (
+            "unknown_stage",
+            "trigger_warning",
+            "AVAILABILITY",
+            "availability ",
+            " customer_lookup",
+            "",
+        ):
+            with self.subTest(stage=stage):
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=EVENT_PROVIDER_INBOUND_STAGE,
+                        component=COMPONENT_WORKER,
+                        stage=stage,
+                        outcome="started",
+                    )
+
+    def test_component_mismatch_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROVIDER_INBOUND_STAGE,
+                component=COMPONENT_OUTBOUND,
+                stage="availability",
+                outcome="started",
+            )
+
+    def test_elapsed_ms_negative_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROVIDER_INBOUND_STAGE,
+                component=COMPONENT_WORKER,
+                stage="availability",
+                outcome="completed",
+                elapsed_ms=-1,
+            )
+
+    def test_elapsed_ms_oversized_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROVIDER_INBOUND_STAGE,
+                component=COMPONENT_WORKER,
+                stage="availability",
+                outcome="completed",
+                elapsed_ms=24 * 60 * 60 * 1000 + 1,
+            )
+
+    def test_exception_type_must_not_contain_dot_or_space(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROVIDER_INBOUND_STAGE,
+                component=COMPONENT_WORKER,
+                stage="availability",
+                outcome="failed",
+                elapsed_ms=12,
+                exception_type="a.b.OperationalError",
+            )
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROVIDER_INBOUND_STAGE,
+                component=COMPONENT_WORKER,
+                stage="availability",
+                outcome="failed",
+                elapsed_ms=12,
+                exception_type="OperationalError: connection refused",
+            )
+
+    def test_extra_optional_fields_rejected(self) -> None:
+        for forbidden_field, value in (
+            ("outbox_id", 1),
+            ("attempt", 1),
+            ("durable_state", "processed"),
+            ("provider_code", "500"),
+            ("http_status", 500),
+            ("response_count", 1),
+            ("outbox_row_count", 1),
+            ("phase", "inbound"),
+            ("cycle_index", 1),
+        ):
+            with self.subTest(field=forbidden_field):
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=EVENT_PROVIDER_INBOUND_STAGE,
+                        component=COMPONENT_WORKER,
+                        stage="availability",
+                        outcome="started",
+                        **{forbidden_field: value},
+                    )
+
+    def test_correlation_id_optional(self) -> None:
+        payload = build_event(
+            event=EVENT_PROVIDER_INBOUND_STAGE,
+            component=COMPONENT_WORKER,
+            stage="availability",
+            outcome="started",
+        )
+        self.assertNotIn("correlation_id", payload)
+
+    def test_correlation_id_oversized_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROVIDER_INBOUND_STAGE,
+                component=COMPONENT_WORKER,
+                stage="availability",
+                outcome="started",
+                correlation_id="x" * 100,
+            )
+
+    def test_parse_event_round_trips_started(self) -> None:
+        payload = build_event(
+            event=EVENT_PROVIDER_INBOUND_STAGE,
+            component=COMPONENT_WORKER,
+            stage="business_pipeline",
+            outcome="started",
+            correlation_id="SM-CORR-1",
+        )
+        line = json.dumps(
+            payload, sort_keys=True, separators=(",", ":")
+        )
+        self.assertEqual(parse_event(line), payload)
+
+    def test_parse_event_round_trips_failed(self) -> None:
+        payload = build_event(
+            event=EVENT_PROVIDER_INBOUND_STAGE,
+            component=COMPONENT_WORKER,
+            stage="availability",
+            outcome="failed",
+            elapsed_ms=42,
+            exception_type="RuntimeError",
+            correlation_id="SM-CORR-2",
+        )
+        line = json.dumps(
+            payload, sort_keys=True, separators=(",", ":")
+        )
+        self.assertEqual(parse_event(line), payload)
+
+    def test_parse_event_rejects_unknown_keys(self) -> None:
+        with self.assertRaises(EventValidationError):
+            parse_event(
+                '{"event":"provider_inbound_stage","schema_version":1,'
+                '"component":"provider_worker","outcome":"started",'
+                '"stage":"availability",'
+                '"timestamp":"2026-08-22T00:00:00+00:00",'
+                '"id_comercio":42,"customer_text":"hola"}'
+            )
+
+    def test_emit_event_emits_only_allowed_keys(self) -> None:
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_PROVIDER_INBOUND_STAGE,
+            component=COMPONENT_WORKER,
+            stage="availability",
+            outcome="started",
+            correlation_id="SM-OK-1",
+            stream=sink,
+        )
+        self.assertTrue(ok)
+        parsed = json.loads(sink.getvalue().strip())
+        # The envelope + outcome + stage + correlation_id are the
+        # minimum closed shape for a started event. ``elapsed_ms``
+        # and ``exception_type`` MUST NOT appear on a started
+        # outcome (they are reserved for completed/failed).
+        self.assertTrue(self._SAFE_FIELDS.issuperset(set(parsed.keys())))
+        self.assertNotIn("elapsed_ms", parsed)
+        self.assertNotIn("exception_type", parsed)
+        self.assertIn("stage", parsed)
+        self.assertIn("outcome", parsed)
+        self.assertIn("correlation_id", parsed)
+
+    def test_no_sentinel_leaks_in_stage_payload(self) -> None:
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_PROVIDER_INBOUND_STAGE,
+            component=COMPONENT_WORKER,
+            stage="business_pipeline",
+            outcome="failed",
+            elapsed_ms=10,
+            exception_type="RuntimeError",
+            correlation_id="SM-LEAK-1",
+            stream=sink,
+        )
+        self.assertTrue(ok)
+        line = sink.getvalue()
+        for token in SENTINELS:
+            if token in (
+                "RuntimeError",
+                "business_pipeline",
+                EVENT_PROVIDER_INBOUND_STAGE,
+            ):
+                continue
+            self.assertNotIn(token, line)
+
+    def test_emit_event_degrades_on_invalid_stage(self) -> None:
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_PROVIDER_INBOUND_STAGE,
+            component=COMPONENT_WORKER,
+            stage="banana",
+            outcome="started",
+            stream=sink,
+        )
+        self.assertFalse(ok)
+        parsed = json.loads(sink.getvalue().strip())
+        self.assertEqual(parsed["event"], "observability_emit_failed")
+        self.assertEqual(parsed["failure_category"], "validation")
+        self.assertEqual(
+            parsed["component"], "observability_helper"
+        )
+
+    def test_emit_event_degrades_on_started_with_elapsed_ms(self) -> None:
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_PROVIDER_INBOUND_STAGE,
+            component=COMPONENT_WORKER,
+            stage="session_order",
+            outcome="started",
+            elapsed_ms=10,
+            stream=sink,
+        )
+        self.assertFalse(ok)
+        parsed = json.loads(sink.getvalue().strip())
+        self.assertEqual(parsed["event"], "observability_emit_failed")
+
+    def test_emit_event_does_not_raise_on_broken_stream(self) -> None:
+        class _BrokenStream:
+            def write(self, _data: str) -> None:
+                raise OSError("simulated stream failure")
+
+        ok = emit_event(
+            event=EVENT_PROVIDER_INBOUND_STAGE,
+            component=COMPONENT_WORKER,
+            stage="availability",
+            outcome="started",
+            stream=_BrokenStream(),
+        )
+        self.assertFalse(ok)
 
 
 if __name__ == "__main__":

@@ -26,6 +26,28 @@ from backend.observability import (
 )
 
 
+def _current_llm_correlation_id() -> str | None:
+    """Return the thread-local provider correlation value.
+
+    The helper is a deferred wrapper around
+    :func:`backend.llm.query_llm.current_llm_correlation_id`
+    so the embedding client does not pull
+    :mod:`backend.llm.query_llm` (and through it
+    :mod:`backend.config.settings`) at import time. The
+    deferred call keeps the embedding client safe to import
+    during ``backend.services`` initialisation, which the
+    coordinator needs to register the bounded seams before
+    any worker thread starts.
+
+    Returns ``None`` outside the provider scope so direct
+    non-provider embedding calls retain the previous
+    uncorrelated behavior.
+    """
+    from backend.llm.query_llm import current_llm_correlation_id
+
+    return current_llm_correlation_id()
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -307,6 +329,7 @@ class OllamaEmbeddingClient:
             event=EVENT_EMBEDDING_REQUEST,
             component=COMPONENT_EMBEDDING,
             outcome="started",
+            correlation_id=_current_llm_correlation_id(),
         )
         started = self._clock()
         status_code: int | None = None
@@ -340,6 +363,7 @@ class OllamaEmbeddingClient:
                 failure_category="timeout",
                 exception_type=type(exc).__name__,
                 elapsed_ms=int((self._clock() - started) * 1000),
+                correlation_id=_current_llm_correlation_id(),
             )
             elapsed = self._clock() - started
             logger.error(
@@ -356,6 +380,7 @@ class OllamaEmbeddingClient:
                 failure_category="connection",
                 exception_type=type(exc).__name__,
                 elapsed_ms=int((self._clock() - started) * 1000),
+                correlation_id=_current_llm_correlation_id(),
             )
             elapsed = self._clock() - started
             logger.error(
@@ -375,6 +400,7 @@ class OllamaEmbeddingClient:
                 if exc.status_code is not None
                 else None,
                 elapsed_ms=int((self._clock() - started) * 1000),
+                correlation_id=_current_llm_correlation_id(),
             )
             elapsed = self._clock() - started
             logger.error(
@@ -400,6 +426,7 @@ class OllamaEmbeddingClient:
                 failure_category="unexpected",
                 exception_type=type(exc).__name__,
                 elapsed_ms=int((self._clock() - started) * 1000),
+                correlation_id=_current_llm_correlation_id(),
             )
             elapsed = self._clock() - started
             logger.error(
@@ -425,6 +452,7 @@ class OllamaEmbeddingClient:
             outcome="completed",
             elapsed_ms=int(elapsed * 1000),
             http_status=int(status_code) if status_code is not None else None,
+            correlation_id=_current_llm_correlation_id(),
         )
         return vectors
 

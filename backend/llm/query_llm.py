@@ -157,6 +157,24 @@ def _current_llm_correlation_id() -> str | None:
     return getattr(_TLS, "correlation_id", None)
 
 
+def current_llm_correlation_id() -> str | None:
+    """Return the thread-local provider correlation identifier.
+
+    The helper is shared by the :class:`QueryLlm` and
+    :class:`OllamaEmbeddingClient` boundaries so both clients emit
+    the exact same opaque synthetic inbound value when the
+    provider coordinator installs one for the current turn.
+
+    The value is the bounded opaque correlation the coordinator
+    already installs for ``llm_request`` events - never prompt
+    text, response bodies, customer text or credentials. The
+    helper returns ``None`` outside the provider scope so
+    direct non-provider calls retain the previous
+    uncorrelated behavior.
+    """
+    return _current_llm_correlation_id()
+
+
 def reset_llm_timing_recorder() -> None:
     """Clear the process-local LLM timing recorder (test seam)."""
     _TLS.recorder = None
@@ -428,6 +446,7 @@ __all__ = [
     "QueryLlmResponseError",
     "QueryLlmTimeoutError",
     "WorkItemLLMTimingRecorder",
+    "current_llm_correlation_id",
     "install_llm_timing_recorder",
     "reset_llm_timing_recorder",
 ]

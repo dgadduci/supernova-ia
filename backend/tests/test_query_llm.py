@@ -14,6 +14,9 @@ from backend.llm.query_llm import (
     QueryLlmHttpError,
     QueryLlmResponseError,
     QueryLlmTimeoutError,
+    current_llm_correlation_id,
+    install_llm_timing_recorder,
+    reset_llm_timing_recorder,
 )
 
 
@@ -360,6 +363,293 @@ class QueryLlmLoggingTest(unittest.TestCase):
 
         root_handlers_after = list(logging.getLogger().handlers)
         self.assertEqual(root_handlers_before, root_handlers_after)
+
+
+class QueryLlmProviderCorrelationTest(unittest.TestCase):
+    """The provider coordinator installs the safe synthetic
+    inbound correlation value via :func:`install_llm_timing_recorder`
+    so every ``llm_request`` event emitted from the same thread
+    carries the same opaque identifier.
+
+    Direct non-provider callers that do NOT install a recorder
+    MUST continue to emit uncorrelated ``llm_request`` events
+    so the bounded production-log parser can separate provider
+    turns from background probes.
+    """
+
+    def setUp(self) -> None:
+        reset_llm_timing_recorder()
+
+    def tearDown(self) -> None:
+        reset_llm_timing_recorder()
+
+    def _capture_emit_events(self) -> list[dict]:
+        captured: list[dict] = []
+
+        def _capture(*, event: str, **kwargs: object) -> bool:
+            from backend.observability.events import build_event
+
+            payload = build_event(event=event, **kwargs)
+            captured.append(payload)
+            return True
+
+        return captured, _capture
+
+    def test_llm_request_emits_correlation_id_when_recorder_installed(
+        self,
+    ) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        transport = mock.Mock(
+            return_value=_FakeResponse(json.dumps({"ok": True}))
+        )
+        client = QueryLlm(settings=_settings(), transport=transport)
+        install_llm_timing_recorder(
+            mock.Mock(), correlation_id="SYN-PROV-1"
+        )
+        try:
+            with mock.patch(
+                "backend.llm.query_llm.emit_event",
+                side_effect=capture_fn,
+            ):
+                client.request("hola")
+        finally:
+            reset_llm_timing_recorder()
+
+        self.assertEqual(len(captured), 2)
+        self.assertEqual(captured[0]["event"], "llm_request")
+        self.assertEqual(captured[0]["outcome"], "started")
+        self.assertEqual(
+            captured[0]["correlation_id"], "SYN-PROV-1"
+        )
+        self.assertEqual(captured[1]["event"], "llm_request")
+        self.assertEqual(captured[1]["outcome"], "completed")
+        self.assertEqual(
+            captured[1]["correlation_id"], "SYN-PROV-1"
+        )
+
+    def test_direct_call_emits_no_correlation_id(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        transport = mock.Mock(
+            return_value=_FakeResponse(json.dumps({"ok": True}))
+        )
+        client = QueryLlm(settings=_settings(), transport=transport)
+        with mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            client.request("hola")
+
+        self.assertEqual(len(captured), 2)
+        self.assertNotIn("correlation_id", captured[0])
+        self.assertNotIn("correlation_id", captured[1])
+
+    def test_correlation_id_cleared_after_reset(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        transport = mock.Mock(
+            return_value=_FakeResponse(json.dumps({"ok": True}))
+        )
+        client = QueryLlm(settings=_settings(), transport=transport)
+        install_llm_timing_recorder(
+            mock.Mock(), correlation_id="SYN-PROV-2"
+        )
+        with mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            client.request("hola")
+        reset_llm_timing_recorder()
+        with mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            client.request("hola")
+        # Only the FIRST pair must carry the correlation value.
+        # The direct call after reset MUST be uncorrelated.
+        self.assertEqual(
+            captured[0]["correlation_id"], "SYN-PROV-2"
+        )
+        self.assertEqual(
+            captured[1]["correlation_id"], "SYN-PROV-2"
+        )
+        self.assertNotIn("correlation_id", captured[2])
+        self.assertNotIn("correlation_id", captured[3])
+
+    def test_correlation_id_truncated_to_max_length(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        transport = mock.Mock(
+            return_value=_FakeResponse(json.dumps({"ok": True}))
+        )
+        client = QueryLlm(settings=_settings(), transport=transport)
+        install_llm_timing_recorder(
+            mock.Mock(), correlation_id="x" * 200
+        )
+        try:
+            with mock.patch(
+                "backend.llm.query_llm.emit_event",
+                side_effect=capture_fn,
+            ):
+                client.request("hola")
+        finally:
+            reset_llm_timing_recorder()
+
+        self.assertEqual(
+            len(captured[0]["correlation_id"]), 64
+        )
+        self.assertEqual(
+            len(captured[1]["correlation_id"]), 64
+        )
+
+    def test_current_llm_correlation_id_returns_none_when_unset(self):
+        reset_llm_timing_recorder()
+        self.assertIsNone(current_llm_correlation_id())
+
+    def test_explicit_correlation_id_overrides_thread_local(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        transport = mock.Mock(
+            return_value=_FakeResponse(json.dumps({"ok": True}))
+        )
+        client = QueryLlm(settings=_settings(), transport=transport)
+        install_llm_timing_recorder(
+            mock.Mock(), correlation_id="SYN-THREAD"
+        )
+        try:
+            with mock.patch(
+                "backend.llm.query_llm.emit_event",
+                side_effect=capture_fn,
+            ):
+                client.request("hola", correlation_id="SYN-OVERRIDE")
+        finally:
+            reset_llm_timing_recorder()
+
+        self.assertEqual(
+            captured[0]["correlation_id"], "SYN-OVERRIDE"
+        )
+        self.assertEqual(
+            captured[1]["correlation_id"], "SYN-OVERRIDE"
+        )
+
+
+class QueryLlmProviderBaseExceptionCleanupTest(unittest.TestCase):
+    """``BaseException`` raised inside the provider scope MUST NOT
+    leave the opaque synthetic inbound correlation installed on
+    the worker thread.
+
+    The provider coordinator wraps the leased inbound flow in a
+    ``try/finally`` that calls
+    :func:`install_llm_timing_recorder` with ``None`` whenever
+    the flow exits — success, ``Exception`` or ``BaseException``
+    such as :class:`KeyboardInterrupt` and :class:`SystemExit`.
+    The unit-level contract is verified here against the
+    ``query_llm`` thread-local helper so the LLM boundary cannot
+    ever be polluted by a stale provider correlation. The full
+    coordinator flow is verified separately in
+    ``test_provider_message_receipt_core_integration``.
+    """
+
+    def setUp(self) -> None:
+        reset_llm_timing_recorder()
+
+    def tearDown(self) -> None:
+        reset_llm_timing_recorder()
+
+    def test_base_exception_inside_provider_scope_clears_correlation(
+        self,
+    ) -> None:
+        """A ``BaseException`` raised inside the provider-scoped
+        ``try/finally`` MUST clear the thread-local correlation so a
+        later direct ``QueryLlm`` call from the same thread cannot
+        inherit a stale opaque synthetic inbound identifier."""
+        self.assertIsNone(current_llm_correlation_id())
+
+        class _WorkerInterrupt(KeyboardInterrupt):
+            pass
+
+        # Simulate the coordinator's provider-scoped body: install
+        # correlation, attempt work that raises a
+        # ``BaseException``, then the ``finally`` block clears it
+        # before the exception escapes.
+        install_llm_timing_recorder(
+            mock.Mock(), correlation_id="SYN-PROV-BASE"
+        )
+        self.assertEqual(
+            current_llm_correlation_id(), "SYN-PROV-BASE"
+        )
+        with self.assertRaises(KeyboardInterrupt):
+            try:
+                raise _WorkerInterrupt("interrupted by operator")
+            finally:
+                install_llm_timing_recorder(None)
+
+        # The BaseException escapes this scope but the thread
+        # state is now clean.
+        self.assertIsNone(current_llm_correlation_id())
+
+        # A direct ``QueryLlm`` call MUST NOT carry the stale
+        # provider correlation_id.
+        captured, capture_fn = self._capture_emit_events()
+        transport = mock.Mock(
+            return_value=_FakeResponse(json.dumps({"ok": True}))
+        )
+        client = QueryLlm(settings=_settings(), transport=transport)
+        with mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            client.request("hola")
+
+        self.assertNotIn("correlation_id", captured[0])
+        self.assertNotIn("correlation_id", captured[1])
+
+    def test_system_exit_inside_provider_scope_clears_correlation(
+        self,
+    ) -> None:
+        """``SystemExit`` is also a ``BaseException`` and MUST be
+        cleaned up exactly like ``KeyboardInterrupt``. A subsequent
+        direct ``QueryLlm`` call must remain uncorrelated."""
+        self.assertIsNone(current_llm_correlation_id())
+
+        class _WorkerExit(SystemExit):
+            pass
+
+        install_llm_timing_recorder(
+            mock.Mock(), correlation_id="SYN-PROV-EXIT"
+        )
+        self.assertEqual(
+            current_llm_correlation_id(), "SYN-PROV-EXIT"
+        )
+        with self.assertRaises(SystemExit):
+            try:
+                raise _WorkerExit("interrupted by systemd")
+            finally:
+                install_llm_timing_recorder(None)
+
+        self.assertIsNone(current_llm_correlation_id())
+
+        captured, capture_fn = self._capture_emit_events()
+        transport = mock.Mock(
+            return_value=_FakeResponse(json.dumps({"ok": True}))
+        )
+        client = QueryLlm(settings=_settings(), transport=transport)
+        with mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            client.request("hola")
+
+        self.assertNotIn("correlation_id", captured[0])
+        self.assertNotIn("correlation_id", captured[1])
+
+    def _capture_emit_events(self) -> tuple[list[dict], object]:
+        captured: list[dict] = []
+
+        def _capture(*, event: str, **kwargs: object) -> bool:
+            from backend.observability.events import build_event
+
+            payload = build_event(event=event, **kwargs)
+            captured.append(payload)
+            return True
+
+        return captured, _capture
 
 
 if __name__ == "__main__":
