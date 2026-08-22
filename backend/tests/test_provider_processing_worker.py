@@ -40,13 +40,16 @@ import io
 import json
 import logging
 import os
+import signal
 import subprocess
+import time
 import unittest
 from pathlib import Path
 from typing import Any
 from unittest import mock
 from unittest.mock import MagicMock
 
+from backend.cli import run_inbound_processing as inbound_cli
 from backend.cli import run_provider_processing_worker as worker_cli
 from backend.cli.run_provider_processing_worker import (
     _build_cycle_summary,
@@ -104,6 +107,7 @@ def _settings(
     poll_interval_seconds: int = 5,
     inbound_bound: int = 1,
     outbound_bound: int = 16,
+    inbound_timeout_seconds: int = 240,
     account_sid: str | None = "AC" + "0" * 32,
     auth_token: str | None = "secret-auth-token-value",
     sender: str | None = "+5491100000000",
@@ -136,6 +140,7 @@ def _settings(
         provider_processing_worker_poll_interval_seconds=poll_interval_seconds,
         provider_processing_worker_inbound_max_items_per_pass=inbound_bound,
         provider_processing_worker_outbound_max_attempts_per_pass=outbound_bound,
+        provider_processing_worker_inbound_timeout_seconds=inbound_timeout_seconds,
     )
 
 
@@ -3238,6 +3243,682 @@ class WorkerLivenessSafeMetadataTest(unittest.TestCase):
                 rendered,
                 f"sentinel {token!r} leaked in liveness output",
             )
+
+
+class WorkerInboundTimeoutTest(unittest.TestCase):
+    """Focused coverage for the bounded inbound-pass timeout seam.
+
+    The seam applies only to the automatic inbound pass, restores
+    the SIGALRM timer/handler on every return path, propagates the
+    safe timeout through the existing supervisor, never invokes the
+    outbound runner when the bound fires and never opens a database
+    session or calls transaction or lease repair methods. The tests
+    drive the loop through the existing injectable seams so they
+    do not touch the real coordinator, dispatcher, Twilio or DB.
+    """
+
+    def setUp(self) -> None:
+        self._previous_sigterm = signal.getsignal(signal.SIGTERM)
+        self._previous_sigint = signal.getsignal(signal.SIGINT)
+
+    def tearDown(self) -> None:
+        # Defensive restore so a misbehaving test cannot leak state
+        # into the rest of the suite: signal handlers are
+        # process-global and the worker validator restores them per
+        # cycle.
+        signal.signal(signal.SIGTERM, self._previous_sigterm)
+        signal.signal(signal.SIGINT, self._previous_sigint)
+        signal.setitimer(signal.ITIMER_REAL, 0)
+
+    def test_normal_inbound_preserves_inbound_then_outbound_order(
+        self,
+    ) -> None:
+        call_order: list[str] = []
+
+        def _inbound(bound: int) -> int:
+            call_order.append(f"inbound:{bound}")
+            return 0
+
+        def _outbound(bound: int) -> int:
+            call_order.append(f"outbound:{bound}")
+            return 0
+
+        with _capture_stdout() as stdout:
+            summary = run_cycle(
+                settings=_settings(
+                    inbound_bound=1,
+                    outbound_bound=8,
+                    inbound_timeout_seconds=2,
+                ),
+                cycle_index=1,
+                inbound_runner=_inbound,
+                outbound_runner=_outbound,
+                sleep_decision=lambda _settings, _cycle: False,
+                cycle_summary_writer=lambda _summary: None,
+            )
+
+        self.assertEqual(call_order, ["inbound:1", "outbound:8"])
+        self.assertEqual(summary["inbound_exit_code"], 0)
+        self.assertEqual(summary["outbound_exit_code"], 0)
+
+        liveness = _liveness_events(stdout.getvalue())
+        outcomes = [
+            (event.get("phase"), event.get("outcome"))
+            for event in liveness
+        ]
+        self.assertEqual(
+            outcomes,
+            [
+                ("inbound", "phase_started"),
+                ("inbound", "phase_completed"),
+                ("outbound", "phase_started"),
+                ("outbound", "phase_completed"),
+            ],
+        )
+
+    def test_inbound_timeout_fires_phase_failed_and_skips_outbound(
+        self,
+    ) -> None:
+        inbound_calls: list[int] = []
+        outbound_calls: list[int] = []
+
+        def _slow_inbound(_bound: int) -> int:
+            inbound_calls.append(1)
+            time.sleep(2.0)
+            return 0
+
+        def _outbound(bound: int) -> int:
+            outbound_calls.append(bound)
+            return 0
+
+        with _capture_stdout() as stdout:
+            with self.assertRaises(worker_cli._InboundTimeoutError):
+                run_cycle(
+                    settings=_settings(
+                        inbound_timeout_seconds=1,
+                    ),
+                    cycle_index=3,
+                    inbound_runner=_slow_inbound,
+                    outbound_runner=_outbound,
+                    sleep_decision=lambda _settings, _cycle: False,
+                    cycle_summary_writer=lambda _summary: None,
+                )
+
+        self.assertEqual(inbound_calls, [1])
+        self.assertEqual(
+            outbound_calls,
+            [],
+            "outbound runner MUST NOT be invoked when the inbound pass times out",
+        )
+
+        liveness = _liveness_events(stdout.getvalue())
+        outcomes = [
+            (event.get("phase"), event.get("outcome"))
+            for event in liveness
+        ]
+        self.assertEqual(
+            outcomes,
+            [
+                ("inbound", "phase_started"),
+                ("inbound", "phase_failed"),
+            ],
+            "timeout MUST emit phase_failed only; no phase_completed, no outbound",
+        )
+
+        failed = [
+            event
+            for event in liveness
+            if event.get("outcome") == "phase_failed"
+        ]
+        self.assertEqual(len(failed), 1)
+        event = failed[0]
+        self.assertEqual(event["phase"], "inbound")
+        self.assertEqual(event["failure_category"], "worker_exception")
+        self.assertEqual(
+            event["exception_type"], "_InboundTimeoutError"
+        )
+        self.assertEqual(event["cycle_index"], 3)
+        self.assertIsInstance(event["elapsed_ms"], int)
+
+        completed = [
+            event
+            for event in liveness
+            if event.get("outcome") == "phase_completed"
+        ]
+        self.assertEqual(
+            completed,
+            [],
+            "phase_completed MUST NOT be fabricated after a timeout",
+        )
+
+        cycle_completed = [
+            event
+            for event in liveness
+            if event.get("outcome") == "cycle_completed"
+        ]
+        self.assertEqual(
+            cycle_completed,
+            [],
+            "cycle_completed MUST NOT be emitted after a timeout",
+        )
+
+    def test_inbound_timeout_restores_signal_handler(self) -> None:
+        sentinel_handler = signal.SIG_DFL
+        previous = signal.signal(signal.SIGALRM, sentinel_handler)
+
+        def _slow_inbound(_bound: int) -> int:
+            time.sleep(2.0)
+            return 0
+
+        try:
+            with self.assertRaises(worker_cli._InboundTimeoutError):
+                worker_cli._run_inbound_with_timeout(
+                    _slow_inbound,
+                    1,
+                    1,
+                )
+        finally:
+            signal.signal(signal.SIGALRM, previous)
+
+        restored = signal.getsignal(signal.SIGALRM)
+        self.assertEqual(
+            restored,
+            sentinel_handler,
+            "SIGALRM handler MUST be restored to the previous value",
+        )
+
+    def test_inbound_timeout_cancels_active_timer(self) -> None:
+        def _slow_inbound(_bound: int) -> int:
+            time.sleep(2.0)
+            return 0
+
+        previous = signal.getsignal(signal.SIGALRM)
+        try:
+            with self.assertRaises(worker_cli._InboundTimeoutError):
+                worker_cli._run_inbound_with_timeout(
+                    _slow_inbound, 1, 1
+                )
+        finally:
+            signal.signal(signal.SIGALRM, previous)
+
+        remaining = signal.setitimer(signal.ITIMER_REAL, 0)
+        self.assertEqual(
+            remaining,
+            (0.0, 0.0),
+            "the ITIMER_REAL timer MUST be cancelled after the timeout path",
+        )
+
+    def test_normal_inbound_restores_signal_handler(self) -> None:
+        sentinel_handler = signal.SIG_DFL
+        previous = signal.signal(signal.SIGALRM, sentinel_handler)
+        try:
+            exit_code = worker_cli._run_inbound_with_timeout(
+                lambda bound: int(bound), 4, 60
+            )
+        finally:
+            signal.signal(signal.SIGALRM, previous)
+
+        self.assertEqual(exit_code, 4)
+        restored = signal.getsignal(signal.SIGALRM)
+        self.assertEqual(
+            restored,
+            sentinel_handler,
+            "SIGALRM handler MUST be restored after a normal return",
+        )
+
+    def test_inbound_runner_exception_restores_signal_handler(self) -> None:
+        sentinel_handler = signal.SIG_DFL
+        previous = signal.signal(signal.SIGALRM, sentinel_handler)
+
+        def _raise(_bound: int) -> int:
+            raise RuntimeError("forced inbound failure")
+
+        try:
+            with self.assertRaises(RuntimeError):
+                worker_cli._run_inbound_with_timeout(_raise, 1, 60)
+        finally:
+            signal.signal(signal.SIGALRM, previous)
+
+        restored = signal.getsignal(signal.SIGALRM)
+        self.assertEqual(
+            restored,
+            sentinel_handler,
+            "SIGALRM handler MUST be restored when the runner raises",
+        )
+
+    def test_inbound_timeout_propagates_through_supervisor(self) -> None:
+        """The bounded timeout MUST reach the supervisor path so the
+        worker process exits non-zero and the existing entrypoint
+        supervisor can restart the service."""
+
+        def _slow_inbound(_bound: int) -> int:
+            time.sleep(2.0)
+            return 0
+
+        with self.assertRaises(worker_cli._InboundTimeoutError):
+            run_forever(
+                settings=_settings(inbound_timeout_seconds=1),
+                inbound_runner=_slow_inbound,
+                outbound_runner=lambda _bound: 0,
+                sleeper=lambda _seconds: None,
+                sleep_decision=lambda _settings, _cycle: False,
+                cycle_summary_writer=lambda _summary: None,
+                stop_predicate=lambda: False,
+                unexpected_exception_log=lambda **_kwargs: None,
+                readiness_probe=worker_cli._always_ready_probe,
+            )
+
+    def test_inbound_timeout_does_not_invoke_outbound(self) -> None:
+        """A timed-out inbound pass MUST NOT call the outbound
+        runner: the existing inbound-before-outbound ordering is
+        broken on timeout by design so the worker exits non-zero and
+        Railway can restart the service."""
+
+        outbound_calls: list[int] = []
+
+        def _slow_inbound(_bound: int) -> int:
+            time.sleep(2.0)
+            return 0
+
+        def _outbound(bound: int) -> int:
+            outbound_calls.append(bound)
+            return 0
+
+        with self.assertRaises(worker_cli._InboundTimeoutError):
+            run_cycle(
+                settings=_settings(inbound_timeout_seconds=1),
+                cycle_index=5,
+                inbound_runner=_slow_inbound,
+                outbound_runner=_outbound,
+                sleep_decision=lambda _settings, _cycle: False,
+                cycle_summary_writer=lambda _summary: None,
+            )
+
+        self.assertEqual(
+            outbound_calls,
+            [],
+            "outbound runner MUST NOT be invoked when the inbound pass times out",
+        )
+
+    def test_inbound_timeout_does_not_call_transaction_or_lease_methods(
+        self,
+    ) -> None:
+        """The timeout helper MUST NOT touch SQLAlchemy session,
+        commit, rollback, flush, close, lease finalization, replay
+        or any coordinator-side repair. The existing lease
+        expiry/reclaim path is the only recovery authority."""
+
+        forbidden_calls: list[str] = []
+
+        def _slow_inbound(_bound: int) -> int:
+            # Snapshot the call frames on the timeout path so the
+            # assertion sees the exact callsite surface.
+            import inspect
+
+            frame = inspect.currentframe()
+            try:
+                while frame is not None:
+                    locals_snapshot = list(frame.f_locals.keys())
+                    for name in locals_snapshot:
+                        if name in {
+                            "commit",
+                            "rollback",
+                            "flush",
+                            "close",
+                            "begin",
+                            "refresh",
+                            "expire",
+                        } and callable(frame.f_locals.get(name)):
+                            forbidden_calls.append(name)
+                    frame = frame.f_back
+            finally:
+                del frame
+            time.sleep(2.0)
+            return 0
+
+        with self.assertRaises(worker_cli._InboundTimeoutError):
+            worker_cli._run_inbound_with_timeout(
+                _slow_inbound, 1, 1
+            )
+
+        self.assertEqual(
+            forbidden_calls,
+            [],
+            "timeout path MUST NOT call transaction or session methods",
+        )
+
+    def test_inbound_timeout_evidence_carries_no_payload_or_secrets(
+        self,
+    ) -> None:
+        """A timeout must never leak the inbound / outbound body,
+        customer E.164 number, LLM content, provider signature,
+        account SID, auth token, prompt or arbitrary text. The
+        liveness evidence carries only the safe timeout class name."""
+
+        secret_message = (
+            "leak: secret-auth-token-value / "
+            "AC00000000000000000000000000000000 / +5491100000000 / "
+            "inbound body / outbound body / prompt"
+        )
+
+        def _slow_inbound(_bound: int) -> int:
+            raise RuntimeError(secret_message)
+
+        # Force the runner to raise so the inbound exception path
+        # picks up the secret and we can verify the liveness event
+        # keeps only the safe exception class name.
+        # We swap the slow runner for an immediate raiser to keep
+        # the test fast while still exercising the same call site.
+
+        with _capture_stdout() as stdout:
+            with self.assertRaises(RuntimeError):
+                run_cycle(
+                    settings=_settings(inbound_timeout_seconds=60),
+                    cycle_index=2,
+                    inbound_runner=_slow_inbound,
+                    outbound_runner=lambda _bound: 0,
+                    sleep_decision=lambda _settings, _cycle: False,
+                    cycle_summary_writer=lambda _summary: None,
+                )
+
+        rendered = stdout.getvalue()
+        for token in (
+            "secret-auth-token-value",
+            "AC00000000000000000000000000000000",
+            "+5491100000000",
+            "inbound body",
+            "outbound body",
+            "prompt",
+        ):
+            self.assertNotIn(
+                token,
+                rendered,
+                f"sentinel {token!r} leaked in liveness output",
+            )
+
+    def test_timeout_helper_rejects_non_positive_bound(self) -> None:
+        """The helper fails closed when the timeout is non-positive so
+        a regression that bypasses the worker startup validation
+        cannot spawn an unbounded inbound pass."""
+
+        from backend.services.exceptions import (
+            InvalidProviderProcessingWorkerConfig,
+        )
+
+        with self.assertRaises(InvalidProviderProcessingWorkerConfig):
+            worker_cli._run_inbound_with_timeout(lambda _bound: 0, 1, 0)
+        with self.assertRaises(InvalidProviderProcessingWorkerConfig):
+            worker_cli._run_inbound_with_timeout(
+                lambda _bound: 0, 1, -5
+            )
+
+
+class WorkerInboundTimeoutTraversesInboundCliTest(unittest.TestCase):
+    """The bounded timeout signal MUST traverse the real inbound CLI.
+
+    ``backend.cli.run_inbound_processing.main`` wraps
+    ``process_lease`` in a defensive ``except Exception`` handler that
+    converts any escaping failure into exit code ``1``. A timeout
+    absorbed that way would let the worker continue into the outbound
+    pass and would hide the stuck turn from the supervisor, so the
+    signal MUST reach the caller untouched and the worker MUST NOT
+    invoke outbound. The tests drive the real inbound CLI through its
+    injectable seams so no database session, coordinator, LLM or
+    Twilio client is involved.
+    """
+
+    def _inbound_cli_runner(
+        self,
+        *,
+        process_calls: list[int],
+    ) -> Any:
+        """Build an inbound runner backed by the real inbound CLI.
+
+        The coordinator seam leases exactly one row and raises the
+        worker timeout signal from ``process_lease``, which is the
+        exact production boundary: the SIGALRM handler fires while the
+        coordinator is processing the leased row.
+        """
+        leases: list[Any] = []
+        leased = MagicMock(name="LeasedRow")
+        leased.id = 1
+        leases.append(leased)
+
+        def _claim_due(*, now: Any) -> Any:
+            if not leases:
+                return None
+            return leases.pop(0)
+
+        def _process_lease(leased_row: Any) -> Any:
+            process_calls.append(int(leased_row.id))
+            raise worker_cli._InboundTimeoutError()
+
+        def _coordinator_builder(**_kwargs: Any) -> MagicMock:
+            coordinator = MagicMock(
+                name="ProviderInboundMessageCoordinator"
+            )
+            coordinator.claim_due_processing.side_effect = _claim_due
+            coordinator.process_lease.side_effect = _process_lease
+            return coordinator
+
+        session_factory = MagicMock(name="SessionFactory")
+        session_factory.return_value = MagicMock(name="Session")
+
+        def _runner(bound: int) -> int:
+            return inbound_cli.main(
+                argv=["--max-items-per-pass", str(int(bound))],
+                settings_loader=lambda: _settings(),
+                session_factory_builder=lambda: session_factory,
+                coordinator_builder=_coordinator_builder,
+            )
+
+        return _runner
+
+    def test_timeout_is_not_converted_into_inbound_exit_code_one(
+        self,
+    ) -> None:
+        process_calls: list[int] = []
+        runner = self._inbound_cli_runner(process_calls=process_calls)
+
+        with _capture_stdout() as stdout, _capture_stderr() as stderr:
+            with self.assertRaises(worker_cli._InboundTimeoutError):
+                runner(1)
+
+        self.assertEqual(
+            process_calls,
+            [1],
+            "the real inbound CLI MUST reach process_lease before the timeout",
+        )
+        self.assertNotIn(
+            "inbound_processing_failed",
+            stderr.getvalue(),
+            "the inbound CLI MUST NOT absorb the timeout as exit code 1",
+        )
+        self.assertNotIn(
+            "processed=",
+            stdout.getvalue(),
+            "the inbound CLI MUST NOT print a pass summary after a timeout",
+        )
+
+    def test_worker_cycle_timeout_through_inbound_cli_skips_outbound(
+        self,
+    ) -> None:
+        process_calls: list[int] = []
+        outbound_calls: list[int] = []
+        runner = self._inbound_cli_runner(process_calls=process_calls)
+
+        def _outbound(bound: int) -> int:
+            outbound_calls.append(bound)
+            return 0
+
+        with _capture_stdout() as stdout, _capture_stderr():
+            with self.assertRaises(worker_cli._InboundTimeoutError):
+                run_cycle(
+                    settings=_settings(inbound_timeout_seconds=60),
+                    cycle_index=9,
+                    inbound_runner=runner,
+                    outbound_runner=_outbound,
+                    sleep_decision=lambda _settings, _cycle: False,
+                    cycle_summary_writer=lambda _summary: None,
+                )
+
+        self.assertEqual(process_calls, [1])
+        self.assertEqual(
+            outbound_calls,
+            [],
+            "outbound MUST NOT run when the timeout traverses the inbound CLI",
+        )
+
+        rendered = stdout.getvalue()
+        self.assertNotIn(
+            "provider_inbound_processing_outcome",
+            rendered,
+            "no inbound outcome may be recorded for a timed-out pass",
+        )
+
+        liveness = _liveness_events(rendered)
+        outcomes = [
+            (event.get("phase"), event.get("outcome"))
+            for event in liveness
+        ]
+        self.assertEqual(
+            outcomes,
+            [
+                ("inbound", "phase_started"),
+                ("inbound", "phase_failed"),
+            ],
+            "timeout MUST emit phase_failed only; no phase_completed, no outbound",
+        )
+        failed = liveness[-1]
+        self.assertEqual(failed["failure_category"], "worker_exception")
+        self.assertEqual(
+            failed["exception_type"], "_InboundTimeoutError"
+        )
+        self.assertEqual(failed["cycle_index"], 9)
+
+    def test_worker_supervisor_receives_timeout_from_inbound_cli(
+        self,
+    ) -> None:
+        """``run_forever`` MUST re-raise the signal so the entrypoint
+        supervisor exits non-zero instead of looping forever."""
+
+        process_calls: list[int] = []
+        outbound_calls: list[int] = []
+        runner = self._inbound_cli_runner(process_calls=process_calls)
+
+        with _capture_stdout(), _capture_stderr():
+            with self.assertRaises(worker_cli._InboundTimeoutError):
+                run_forever(
+                    settings=_settings(inbound_timeout_seconds=60),
+                    inbound_runner=runner,
+                    outbound_runner=lambda bound: outbound_calls.append(
+                        bound
+                    )
+                    or 0,
+                    sleeper=lambda _seconds: None,
+                    sleep_decision=lambda _settings, _cycle: False,
+                    cycle_summary_writer=lambda _summary: None,
+                    stop_predicate=lambda: False,
+                    unexpected_exception_log=lambda **_kwargs: None,
+                    readiness_probe=worker_cli._always_ready_probe,
+                )
+
+        self.assertEqual(process_calls, [1])
+        self.assertEqual(outbound_calls, [])
+
+
+class WorkerInboundTimeoutSettingsTest(unittest.TestCase):
+    """The inbound-pass timeout setting MUST validate as a positive
+    integer when the worker is enabled, default to a bound derived
+    from the configured model/embedding timeouts and refuse a
+    fallback to an unbounded worker."""
+
+    def test_default_timeout_is_positive_and_derived(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            settings = load_settings()
+        self.assertGreater(
+            settings.provider_processing_worker_inbound_timeout_seconds, 0
+        )
+        self.assertGreaterEqual(
+            settings.provider_processing_worker_inbound_timeout_seconds,
+            settings.llm_timeout,
+        )
+        self.assertGreaterEqual(
+            settings.provider_processing_worker_inbound_timeout_seconds,
+            settings.embedding_timeout_seconds,
+        )
+
+    def test_explicit_positive_override_is_accepted(self) -> None:
+        env = {"PROVIDER_PROCESSING_WORKER_INBOUND_TIMEOUT_SECONDS": "120"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            settings = load_settings()
+        self.assertEqual(
+            settings.provider_processing_worker_inbound_timeout_seconds, 120
+        )
+
+    def test_zero_override_is_rejected(self) -> None:
+        from backend.services.exceptions import (
+            InvalidProviderProcessingWorkerConfig,
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {"PROVIDER_PROCESSING_WORKER_INBOUND_TIMEOUT_SECONDS": "0"},
+            clear=True,
+        ):
+            with self.assertRaises(InvalidProviderProcessingWorkerConfig):
+                load_settings()
+
+    def test_negative_override_is_rejected(self) -> None:
+        from backend.services.exceptions import (
+            InvalidProviderProcessingWorkerConfig,
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {"PROVIDER_PROCESSING_WORKER_INBOUND_TIMEOUT_SECONDS": "-10"},
+            clear=True,
+        ):
+            with self.assertRaises(InvalidProviderProcessingWorkerConfig):
+                load_settings()
+
+    def test_non_integer_override_is_rejected(self) -> None:
+        from backend.services.exceptions import (
+            InvalidProviderProcessingWorkerConfig,
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {"PROVIDER_PROCESSING_WORKER_INBOUND_TIMEOUT_SECONDS": "abc"},
+            clear=True,
+        ):
+            with self.assertRaises(InvalidProviderProcessingWorkerConfig):
+                load_settings()
+
+    def test_worker_startup_validation_rejects_non_positive_timeout(
+        self,
+    ) -> None:
+        from backend.services.exceptions import (
+            InvalidProviderProcessingWorkerConfig,
+        )
+
+        with self.assertRaises(InvalidProviderProcessingWorkerConfig):
+            worker_cli._validate_worker_settings(
+                _settings(
+                    enabled=True,
+                    inbound_timeout_seconds=0,
+                )
+            )
+
+    def test_worker_startup_validation_accepts_positive_timeout(
+        self,
+    ) -> None:
+        worker_cli._validate_worker_settings(
+            _settings(
+                enabled=True,
+                inbound_timeout_seconds=120,
+            )
+        )
 
 
 if __name__ == "__main__":

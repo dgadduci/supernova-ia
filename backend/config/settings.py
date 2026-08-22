@@ -473,6 +473,8 @@ DEFAULT_PROVIDER_PROCESSING_WORKER_ENABLED = False
 DEFAULT_PROVIDER_PROCESSING_WORKER_POLL_INTERVAL_SECONDS = 5
 DEFAULT_PROVIDER_PROCESSING_WORKER_INBOUND_MAX_ITEMS_PER_PASS = 1
 DEFAULT_PROVIDER_PROCESSING_WORKER_OUTBOUND_MAX_ATTEMPTS_PER_PASS = 16
+DEFAULT_PROVIDER_PROCESSING_WORKER_INBOUND_TIMEOUT_SECONDS = 0
+DEFAULT_PROVIDER_PROCESSING_WORKER_INBOUND_TIMEOUT_HEADROOM_SECONDS = 60
 DEFAULT_SUPABASE_AUTH_ENABLED = False
 DEFAULT_SUPABASE_PROJECT_URL: str | None = None
 DEFAULT_SUPABASE_JWT_ISSUER: str | None = None
@@ -507,6 +509,60 @@ def _provider_processing_worker_positive_int_env(
             f"{name} must be greater than zero (got {value})"
         )
     return value
+
+
+def _resolve_inbound_timeout_seconds(
+    *,
+    llm_timeout: int,
+    embedding_timeout_seconds: int,
+) -> int:
+    """Resolve the inbound-pass worker timeout in seconds.
+
+    The default is derived from the configured model and embedding
+    timeouts so the bound is never shorter than a valid configured
+    model operation: it takes the larger of the two timeouts and
+    adds a bounded safety headroom. An explicit
+    ``PROVIDER_PROCESSING_WORKER_INBOUND_TIMEOUT_SECONDS`` env
+    override, when present, replaces the derived default and is
+    validated as a strictly positive integer.
+
+    The helper never logs or echoes the resolved value, and the
+    derived default is intentionally chosen so that a misconfigured
+    deployment cannot spawn a worker without an upper bound: the
+    operator either accepts the derived bound or supplies a valid
+    positive override.
+    """
+    raw = os.environ.get("PROVIDER_PROCESSING_WORKER_INBOUND_TIMEOUT_SECONDS")
+    if raw is None or raw == "":
+        derived = int(llm_timeout) + int(
+            DEFAULT_PROVIDER_PROCESSING_WORKER_INBOUND_TIMEOUT_HEADROOM_SECONDS
+        )
+        if int(embedding_timeout_seconds) > int(llm_timeout):
+            derived = (
+                int(embedding_timeout_seconds)
+                + int(
+                    DEFAULT_PROVIDER_PROCESSING_WORKER_INBOUND_TIMEOUT_HEADROOM_SECONDS
+                )
+            )
+        if derived <= 0:
+            raise InvalidProviderProcessingWorkerConfig(
+                "PROVIDER_PROCESSING_WORKER_INBOUND_TIMEOUT_SECONDS must be "
+                "greater than zero when the worker is enabled"
+            )
+        return int(derived)
+    try:
+        override = int(raw)
+    except ValueError as exc:
+        raise InvalidProviderProcessingWorkerConfig(
+            "PROVIDER_PROCESSING_WORKER_INBOUND_TIMEOUT_SECONDS must be an "
+            "integer (got an unparseable value)"
+        ) from exc
+    if override <= 0:
+        raise InvalidProviderProcessingWorkerConfig(
+            "PROVIDER_PROCESSING_WORKER_INBOUND_TIMEOUT_SECONDS must be "
+            "greater than zero when the worker is enabled"
+        )
+    return int(override)
 
 
 def _supabase_session_max_age_env(name: str, default: int) -> int:
@@ -717,6 +773,9 @@ class Settings:
     provider_processing_worker_outbound_max_attempts_per_pass: int = (
         DEFAULT_PROVIDER_PROCESSING_WORKER_OUTBOUND_MAX_ATTEMPTS_PER_PASS
     )
+    provider_processing_worker_inbound_timeout_seconds: int = (
+        DEFAULT_PROVIDER_PROCESSING_WORKER_INBOUND_TIMEOUT_SECONDS
+    )
     order_management_admin_token: str | None = None
     admin_panel_csrf_secret: str | None = None
     admin_panel_allowed_origin: str | None = None
@@ -868,6 +927,15 @@ def load_settings() -> Settings:
             _provider_processing_worker_positive_int_env(
                 "PROVIDER_PROCESSING_WORKER_OUTBOUND_MAX_ATTEMPTS_PER_PASS",
                 DEFAULT_PROVIDER_PROCESSING_WORKER_OUTBOUND_MAX_ATTEMPTS_PER_PASS,
+            )
+        ),
+        provider_processing_worker_inbound_timeout_seconds=(
+            _resolve_inbound_timeout_seconds(
+                llm_timeout=_int_env("LLM_TIMEOUT", 180),
+                embedding_timeout_seconds=_positive_int_env(
+                    "EMBEDDING_TIMEOUT_SECONDS",
+                    DEFAULT_EMBEDDING_TIMEOUT_SECONDS,
+                ),
             )
         ),
         order_management_admin_token=_order_management_admin_token_env(
@@ -1032,6 +1100,8 @@ __all__ = [
     "DEFAULT_PRODUCT_RECOGNIZER_MODE",
     "DEFAULT_PROVIDER_PROCESSING_WORKER_ENABLED",
     "DEFAULT_PROVIDER_PROCESSING_WORKER_INBOUND_MAX_ITEMS_PER_PASS",
+    "DEFAULT_PROVIDER_PROCESSING_WORKER_INBOUND_TIMEOUT_HEADROOM_SECONDS",
+    "DEFAULT_PROVIDER_PROCESSING_WORKER_INBOUND_TIMEOUT_SECONDS",
     "DEFAULT_PROVIDER_PROCESSING_WORKER_OUTBOUND_MAX_ATTEMPTS_PER_PASS",
     "DEFAULT_PROVIDER_PROCESSING_WORKER_POLL_INTERVAL_SECONDS",
     "DEFAULT_SHADOW_HYBRID_MIN_SCORE_GAP",

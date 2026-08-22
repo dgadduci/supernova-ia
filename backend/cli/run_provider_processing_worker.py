@@ -81,6 +81,7 @@ Production code uses the defaults. Tests substitute the seams.
 from __future__ import annotations
 
 import logging
+import signal
 import sys
 import time
 from collections.abc import Callable
@@ -148,6 +149,84 @@ _NOT_READY_FALLBACK_RESULT = OllamaReadinessResult(
     generate_duration_seconds=0.0,
     embed_duration_seconds=0.0,
 )
+
+
+class _InboundTimeoutError(BaseException):
+    """Safe internal timeout signal raised by the SIGALRM handler.
+
+    The exception class is private to the worker module and carries
+    no payload: only its class name surfaces in the closed
+    ``provider_worker_liveness`` event. The class is intentionally
+    distinct from any exception that the inbound CLI may raise so the
+    supervisor can recognise the timeout boundary without inspecting
+    the message body.
+
+    The class derives from :class:`BaseException` (NOT
+    :class:`Exception`) on purpose. The bounded inbound pass runs
+    inside :func:`backend.cli.run_inbound_processing.main`, whose
+    defensive ``except Exception`` handlers convert any escaping
+    failure into exit code ``1``. A timeout absorbed that way would
+    let the worker continue into the outbound pass and would hide the
+    stuck turn from the supervisor, so the signal MUST traverse those
+    handlers untouched and reach the worker supervisor path. The
+    ``finally`` blocks of the inbound CLI (session close) and of
+    :func:`_run_inbound_with_timeout` (timer cancel, handler restore)
+    still run, so no timer, handler or session is leaked.
+    """
+
+
+def _raise_inbound_timeout(_signum: int, _frame: Any) -> None:
+    """SIGALRM handler that raises the safe timeout signal.
+
+    The handler MUST only be installed on the main thread while a
+    bounded inbound pass is running. The handler is restored in a
+    ``finally`` block by :func:`_run_inbound_with_timeout`.
+    """
+    raise _InboundTimeoutError()
+
+
+def _run_inbound_with_timeout(
+    inbound_runner: InboundRunner,
+    bound: int,
+    timeout_seconds: int,
+) -> int:
+    """Invoke one bounded inbound pass under a positive SIGALRM bound.
+
+    The helper installs a SIGALRM timer for the supplied positive
+    integer bound BEFORE delegating to the inbound runner and always
+    cancels the timer and restores the previous handler inside a
+    ``finally`` block. When the bound fires, the SIGALRM handler
+    raises the safe :class:`_InboundTimeoutError`, which traverses the
+    inbound CLI's defensive ``except Exception`` handlers untouched
+    (it derives from :class:`BaseException`) and reaches the existing
+    worker supervisor path instead of degrading to exit code 1. The
+    helper never returns a fabricated completion, never invokes the
+    outbound runner and never touches the coordinator transaction or
+    the lease — the exception is propagated as-is so the existing
+    worker supervisor path can restart the service.
+
+    A non-positive ``timeout_seconds`` is a hard configuration error:
+    the worker validation step rejects an enabled worker with a
+    non-positive inbound timeout, so the helper may treat the value
+    as already validated by the caller.
+    """
+    if timeout_seconds <= 0:
+        # Defensive guard only: the worker startup validation
+        # refuses an enabled worker with a non-positive timeout, so
+        # this branch is unreachable in production. The assertion
+        # fails closed to surface a programming regression rather
+        # than silently run an unbounded inbound pass.
+        raise InvalidProviderProcessingWorkerConfig(
+            "PROVIDER_PROCESSING_WORKER_INBOUND_TIMEOUT_SECONDS must be "
+            "greater than zero when the worker is enabled"
+        )
+    previous_handler = signal.signal(signal.SIGALRM, _raise_inbound_timeout)
+    signal.setitimer(signal.ITIMER_REAL, float(int(timeout_seconds)))
+    try:
+        return int(inbound_runner(int(bound)))
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
 
 
 class _WorkerOutboundAggregateCell:
@@ -478,6 +557,11 @@ def _validate_worker_settings(settings: Settings) -> None:
             "PROVIDER_PROCESSING_WORKER_OUTBOUND_MAX_ATTEMPTS_PER_PASS "
             "must be greater than zero when the worker is enabled"
         )
+    if settings.provider_processing_worker_inbound_timeout_seconds <= 0:
+        raise InvalidProviderProcessingWorkerConfig(
+            "PROVIDER_PROCESSING_WORKER_INBOUND_TIMEOUT_SECONDS must be "
+            "greater than zero when the worker is enabled"
+        )
 
 
 def validate_worker_startup_or_exit() -> None:
@@ -575,12 +659,14 @@ def run_cycle(
         )
         inbound_started = time.monotonic()
         try:
-            inbound_exit_code: int | None = int(
-                inbound_runner(
-                    int(
-                        settings.provider_processing_worker_inbound_max_items_per_pass
-                    )
-                )
+            inbound_exit_code: int | None = _run_inbound_with_timeout(
+                inbound_runner,
+                int(
+                    settings.provider_processing_worker_inbound_max_items_per_pass
+                ),
+                int(
+                    settings.provider_processing_worker_inbound_timeout_seconds
+                ),
             )
         except BaseException:
             inbound_elapsed_ms = int(
