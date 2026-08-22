@@ -47,11 +47,15 @@ from __future__ import annotations
 
 import enum
 import logging
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, TypeVar
 
 from sqlalchemy.orm import Session as SqlSession
+
+_T = TypeVar("_T")
 
 from backend.intents.orchestration.incoming_message_orchestrator import (
     process_incoming_message,
@@ -69,6 +73,7 @@ from backend.models.procesamiento_mensaje_proveedor import (
 from backend.observability import (
     COMPONENT_WORKER,
     EVENT_PROCESSING_OUTCOME,
+    EVENT_PROVIDER_INBOUND_STAGE,
     emit_event,
 )
 from backend.repositories.canal_whatsapp_repository import (
@@ -136,6 +141,18 @@ DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_INITIAL_BACKOFF_SECONDS = 30
 DEFAULT_MAX_BACKOFF_SECONDS = 300
 DEFAULT_LEASE_SECONDS = 60
+
+
+# Closed stage allowlist for the bounded
+# ``provider_inbound_stage`` observability event. The vocabulary
+# mirrors the production observability contract so Railway
+# operators can group one leased inbound turn by the last
+# reached boundary without parsing free-form labels.
+_STAGE_AVAILABILITY = "availability"
+_STAGE_SESSION_ORDER = "session_order"
+_STAGE_BUSINESS_PIPELINE = "business_pipeline"
+_STAGE_OUTBOUND_STAGING = "outbound_staging"
+_STAGE_PROCESSING_FINALIZATION = "processing_finalization"
 
 
 @dataclass(frozen=True)
@@ -463,10 +480,16 @@ class ProviderInboundMessageCoordinator:
             int(leased.recepcion_mensaje_proveedor_id)
         )
         if receipt is None:
-            finalized = self._finalize_terminal(
-                leased=leased,
-                categoria=ProcesamientoMensajeProveedorFailureCategory.DATABASE_ERROR,
-                codigo="receipt_missing",
+            finalized = self._run_processing_finalization(
+                correlation_id=None,
+                finalize_call=lambda: self._finalize_terminal(
+                    leased=leased,
+                    categoria=(
+                        ProcesamientoMensajeProveedorFailureCategory
+                        .DATABASE_ERROR
+                    ),
+                    codigo="receipt_missing",
+                ),
             )
             if finalized:
                 self._emit_processing_outcome(
@@ -492,11 +515,16 @@ class ProviderInboundMessageCoordinator:
         comercio_id = int(receipt.comercio_id)
         proveedor = str(receipt.proveedor)
         destinatario_e164 = self._destinatario_from_receipt(receipt)
+        correlation_id = str(receipt.identificador_recepcion or "")
 
         try:
-            availability = CommerceAvailabilityService(
-                self._session
-            ).evaluate(comercio_id)
+            availability = self._run_stage(
+                stage=_STAGE_AVAILABILITY,
+                correlation_id=correlation_id,
+                fn=lambda: CommerceAvailabilityService(
+                    self._session
+                ).evaluate(comercio_id),
+            )
         except Exception as exc:  # noqa: BLE001 - coordinator owns the rollback
             try:
                 self._session.rollback()
@@ -518,18 +546,22 @@ class ProviderInboundMessageCoordinator:
                 else "blocked_state"
             )
             codigo = f"unavailable_{reason}"
-            finalized = self._finalize_terminal(
-                leased=leased,
-                categoria=ProcesamientoMensajeProveedorFailureCategory.TERMINAL_PROCESSOR_ERROR,
-                codigo=codigo,
+            finalized = self._run_processing_finalization(
+                correlation_id=correlation_id,
+                finalize_call=lambda: self._finalize_terminal(
+                    leased=leased,
+                    categoria=(
+                        ProcesamientoMensajeProveedorFailureCategory
+                        .TERMINAL_PROCESSOR_ERROR
+                    ),
+                    codigo=codigo,
+                ),
             )
             if finalized:
                 self._emit_processing_outcome(
                     outcome="unavailable",
                     failure_category="unavailable_commerce",
-                    correlation_id=str(
-                        receipt.identificador_recepcion or ""
-                    ),
+                    correlation_id=correlation_id,
                 )
             else:
                 self._emit_processing_outcome(outcome="lease_lost")
@@ -549,122 +581,176 @@ class ProviderInboundMessageCoordinator:
         # ``QueryLlm`` boundary and the moment the call finishes,
         # without introducing a side transaction and without
         # changing the LLM behaviour. The recorder is cleared in
-        # every exit branch (success, retryable, terminal and any
-        # unexpected exception) so other concurrent coordinators
-        # never inherit the hook through the worker threads. The
-        # existing safe correlation field — the receipt's
-        # ``identificador_recepcion`` — is attached to every
-        # ``llm_request`` event emitted from the same thread so the
-        # provider-path observability can be linked back to the
-        # exact synthetic inbound identifier without leaking
-        # prompts, responses, PII or secrets.
+        # the ``finally`` block below so every provider-scoped
+        # exit branch (success, rollback, retryable, terminal,
+        # unavailable, lease_lost, ``Exception`` and ``BaseException``
+        # such as ``KeyboardInterrupt``) leaves the thread-local
+        # correlation context untouched. Without the ``finally``
+        # a ``BaseException`` could propagate past the existing
+        # ``except Exception`` branches and contaminate a later
+        # direct ``QueryLlm`` or ``OllamaEmbeddingClient`` call
+        # on the same worker thread. The existing safe correlation
+        # field — the receipt's ``identificador_recepcion`` — is
+        # attached to every ``llm_request`` event emitted from
+        # the same thread so the provider-path observability can
+        # be linked back to the exact synthetic inbound identifier
+        # without leaking prompts, responses, PII or secrets.
         timing_recorder = WorkItemLLMTimingRecorder()
         install_llm_timing_recorder(
             timing_recorder,
-            correlation_id=str(receipt.identificador_recepcion or ""),
+            correlation_id=correlation_id,
         )
         try:
-            session_row = self._session_repo.stage_active(
-                comercio_id, cliente_id
-            )
-            if session_row.id_pedido is None:
-                if session_row.id is None:
-                    self._session.flush()
-                pedido_row = self._pedido_repo.stage_draft_for_session(
-                    int(session_row.id)
-                )
-                self._session.flush()
-                session_row.id_pedido = int(pedido_row.id)
-            self._session.flush()
-
-            intents = process_incoming_message(
-                self._session, session_row, body
-            )
-
-            staged_rows = stage_outbound_rows(
-                self._session,
-                session_row,
-                proveedor=proveedor,
-                recepcion_mensaje_proveedor_id=int(receipt.id),
-                destinatario_e164=destinatario_e164,
-                intents=tuple(intents),
-                outbox_repo=self._outbox_repo,
-            )
-            self._session.flush()
-            outbox_row_count = len(staged_rows)
-            response_count = outbox_row_count
-        except Exception as exc:  # noqa: BLE001 - coordinator owns the rollback
-            install_llm_timing_recorder(None)
             try:
-                self._session.rollback()
-            except Exception:
-                logger.exception(
-                    "twilio_inbound_processor_business_rollback_failed",
-                    extra={"procesamiento_id": procesamiento_id},
+                session_row = self._run_stage(
+                    stage=_STAGE_SESSION_ORDER,
+                    correlation_id=correlation_id,
+                    fn=lambda: self._stage_session_order(
+                        comercio_id, cliente_id
+                    ),
                 )
-            return self._finalize_failure(
-                leased=leased,
-                attempts=attempts,
-                exc=exc,
-                llm_solicitado_en=timing_recorder.solicitado_en,
-                llm_finalizado_en=timing_recorder.finalizado_en,
-                llm_resultado=timing_recorder.resultado,
-            )
-        install_llm_timing_recorder(None)
 
-        finalized = self._procesamiento_repo.finalize_processed(
-            procesamiento_id=procesamiento_id,
-            lease_token=lease_token,
-            fecha_finalizacion=self._now_or(),
-            llm_solicitado_en=timing_recorder.solicitado_en,
-            llm_finalizado_en=timing_recorder.finalizado_en,
-            llm_resultado=timing_recorder.resultado,
-        )
-        if not finalized:
-            self._session.rollback()
-            self._emit_processing_outcome(
-                outcome="lease_lost",
-                correlation_id=str(
-                    receipt.identificador_recepcion or ""
-                ),
+                intents = self._run_stage(
+                    stage=_STAGE_BUSINESS_PIPELINE,
+                    correlation_id=correlation_id,
+                    fn=lambda: process_incoming_message(
+                        self._session, session_row, body
+                    ),
+                )
+
+                def _stage_outbound() -> list:
+                    rows = stage_outbound_rows(
+                        self._session,
+                        session_row,
+                        proveedor=proveedor,
+                        recepcion_mensaje_proveedor_id=int(receipt.id),
+                        destinatario_e164=destinatario_e164,
+                        intents=tuple(intents),
+                        outbox_repo=self._outbox_repo,
+                    )
+                    self._session.flush()
+                    return list(rows)
+
+                staged_rows = self._run_stage(
+                    stage=_STAGE_OUTBOUND_STAGING,
+                    correlation_id=correlation_id,
+                    fn=_stage_outbound,
+                )
+                outbox_row_count = len(staged_rows)
+                response_count = outbox_row_count
+            except Exception as exc:  # noqa: BLE001 - coordinator owns the rollback
+                try:
+                    self._session.rollback()
+                except Exception:
+                    logger.exception(
+                        "twilio_inbound_processor_business_rollback_failed",
+                        extra={"procesamiento_id": procesamiento_id},
+                    )
+                return self._finalize_failure(
+                    leased=leased,
+                    attempts=attempts,
+                    exc=exc,
+                    correlation_id=correlation_id,
+                    llm_solicitado_en=timing_recorder.solicitado_en,
+                    llm_finalizado_en=timing_recorder.finalizado_en,
+                    llm_resultado=timing_recorder.resultado,
+                )
+
+            # The closure commits the leased row in-process when
+            # ``finalized=True`` and rolls back when
+            # ``finalize_processed`` returns ``False`` so the
+            # ``processing_finalization`` ``completed`` /
+            # ``failed (LeaseLost)`` stage event is emitted only
+            # AFTER the matching commit/rollback, preserving the
+            # existing ``finalize -> commit/rollback -> stage
+            # event -> provider_inbound_processing_outcome``
+            # order. The helper also handles ``BaseException``
+            # raised by either the repo call or ``commit()`` by
+            # rolling back internally BEFORE emitting ``failed``
+            # with the safe exception_type so no
+            # ``processing_finalization=failed`` event is ever
+            # emitted before the rollback completes. The
+            # exception is re-raised unchanged so the existing
+            # rollback / lease / retry / terminal paths remain
+            # authoritative.
+            def _finalize_processed_and_commit() -> bool:
+                finalized = self._procesamiento_repo.finalize_processed(
+                    procesamiento_id=procesamiento_id,
+                    lease_token=lease_token,
+                    fecha_finalizacion=self._now_or(),
+                    llm_solicitado_en=timing_recorder.solicitado_en,
+                    llm_finalizado_en=timing_recorder.finalizado_en,
+                    llm_resultado=timing_recorder.resultado,
+                )
+                if finalized:
+                    self._session.commit()
+                    return True
+                self._session.rollback()
+                return False
+
+            finalized = self._run_processing_finalization(
+                correlation_id=correlation_id,
+                finalize_call=_finalize_processed_and_commit,
             )
+            if not finalized:
+                # The rollback already ran inside the closure
+                # before it returned ``False``; this external
+                # rollback is preserved so the existing policy
+                # remains unchanged (idempotent no-op when the
+                # transaction is already closed).
+                self._session.rollback()
+                self._emit_processing_outcome(
+                    outcome="lease_lost",
+                    correlation_id=correlation_id,
+                )
+                return ProviderInboundProcessingResult(
+                    outcome=ProviderInboundProcessingOutcome.RETRY_SCHEDULED,
+                    procesamiento_id=procesamiento_id,
+                    receipt_id=int(receipt.id),
+                    intentos=attempts,
+                    categoria=None,
+                    codigo=None,
+                    detalle="lease_lost",
+                )
+            if outbox_row_count > 0:
+                self._emit_processing_outcome(
+                    outcome="processed_with_response",
+                    response_count=response_count,
+                    outbox_row_count=outbox_row_count,
+                    correlation_id=correlation_id,
+                )
+            else:
+                self._emit_processing_outcome(
+                    outcome="processed_without_response",
+                    response_count=response_count,
+                    outbox_row_count=outbox_row_count,
+                    correlation_id=correlation_id,
+                )
             return ProviderInboundProcessingResult(
-                outcome=ProviderInboundProcessingOutcome.RETRY_SCHEDULED,
+                outcome=ProviderInboundProcessingOutcome.PROCESSED,
                 procesamiento_id=procesamiento_id,
                 receipt_id=int(receipt.id),
                 intentos=attempts,
                 categoria=None,
                 codigo=None,
-                detalle="lease_lost",
+                detalle=None,
             )
-        self._session.commit()
-        if outbox_row_count > 0:
-            self._emit_processing_outcome(
-                outcome="processed_with_response",
-                response_count=response_count,
-                outbox_row_count=outbox_row_count,
-                correlation_id=str(
-                    receipt.identificador_recepcion or ""
-                ),
-            )
-        else:
-            self._emit_processing_outcome(
-                outcome="processed_without_response",
-                response_count=response_count,
-                outbox_row_count=outbox_row_count,
-                correlation_id=str(
-                    receipt.identificador_recepcion or ""
-                ),
-            )
-        return ProviderInboundProcessingResult(
-            outcome=ProviderInboundProcessingOutcome.PROCESSED,
-            procesamiento_id=procesamiento_id,
-            receipt_id=int(receipt.id),
-            intentos=attempts,
-            categoria=None,
-            codigo=None,
-            detalle=None,
-        )
+        finally:
+            # Clear the provider-scoped correlation context in
+            # EVERY exit branch (success, rollback, retryable,
+            # terminal, unavailable, lease_lost, ``Exception`` and
+            # ``BaseException`` such as ``KeyboardInterrupt``).
+            # A ``BaseException`` raised inside the business
+            # pipeline stage or the ``finalize_processed`` repo
+            # call must NEVER leak a stale opaque synthetic
+            # inbound identifier to a later direct ``QueryLlm``
+            # or ``OllamaEmbeddingClient`` call on the same
+            # worker thread. Cleanup failures do not replace the
+            # original business outcome: a swallowed error here
+            # only leaves the worker thread without an LLM
+            # timing recorder, which is the original pre-change
+            # contract.
+            install_llm_timing_recorder(None)
 
     def _finalize_failure(
         self,
@@ -672,6 +758,7 @@ class ProviderInboundMessageCoordinator:
         leased: ProcesamientoMensajeProveedor,
         attempts: int,
         exc: BaseException,
+        correlation_id: str | None = None,
         llm_solicitado_en: datetime | None = None,
         llm_finalizado_en: datetime | None = None,
         llm_resultado: str | None = None,
@@ -682,21 +769,32 @@ class ProviderInboundMessageCoordinator:
         fecha_finalizacion = self._now_or()
 
         if attempts >= self._max_attempts:
-            finalized = self._procesamiento_repo.finalize_terminal(
-                procesamiento_id=procesamiento_id,
-                lease_token=lease_token,
-                categoria=categoria.value,
-                codigo=codigo,
-                fecha_finalizacion=fecha_finalizacion,
-                llm_solicitado_en=llm_solicitado_en,
-                llm_finalizado_en=llm_finalizado_en,
-                llm_resultado=llm_resultado,
+            def _finalize_terminal_and_commit() -> bool:
+                finalized = self._procesamiento_repo.finalize_terminal(
+                    procesamiento_id=procesamiento_id,
+                    lease_token=lease_token,
+                    categoria=categoria.value,
+                    codigo=codigo,
+                    fecha_finalizacion=fecha_finalizacion,
+                    llm_solicitado_en=llm_solicitado_en,
+                    llm_finalizado_en=llm_finalizado_en,
+                    llm_resultado=llm_resultado,
+                )
+                if finalized:
+                    self._session.commit()
+                    return True
+                self._session.rollback()
+                return False
+
+            finalized = self._run_processing_finalization(
+                correlation_id=correlation_id,
+                finalize_call=_finalize_terminal_and_commit,
             )
             if not finalized:
-                self._session.rollback()
                 self._emit_processing_outcome(
                     outcome="lease_lost",
                     failure_category=categoria.value,
+                    correlation_id=correlation_id,
                 )
                 return ProviderInboundProcessingResult(
                     outcome=ProviderInboundProcessingOutcome.RETRY_SCHEDULED,
@@ -709,10 +807,10 @@ class ProviderInboundMessageCoordinator:
                     codigo=codigo,
                     detalle="lease_lost",
                 )
-            self._session.commit()
             self._emit_processing_outcome(
                 outcome="failed_terminal",
                 failure_category=categoria.value,
+                correlation_id=correlation_id,
             )
             return ProviderInboundProcessingResult(
                 outcome=ProviderInboundProcessingOutcome.FAILED_TERMINAL,
@@ -732,21 +830,33 @@ class ProviderInboundMessageCoordinator:
             initial_seconds=self._initial_backoff_seconds,
             max_seconds=self._max_backoff_seconds,
         )
-        finalized = self._procesamiento_repo.finalize_retryable(
-            procesamiento_id=procesamiento_id,
-            lease_token=lease_token,
-            categoria=categoria.value,
-            codigo=codigo,
-            proximo_intento_en=proximo_intento_en,
-            llm_solicitado_en=llm_solicitado_en,
-            llm_finalizado_en=llm_finalizado_en,
-            llm_resultado=llm_resultado,
+
+        def _finalize_retryable_and_commit() -> bool:
+            finalized = self._procesamiento_repo.finalize_retryable(
+                procesamiento_id=procesamiento_id,
+                lease_token=lease_token,
+                categoria=categoria.value,
+                codigo=codigo,
+                proximo_intento_en=proximo_intento_en,
+                llm_solicitado_en=llm_solicitado_en,
+                llm_finalizado_en=llm_finalizado_en,
+                llm_resultado=llm_resultado,
+            )
+            if finalized:
+                self._session.commit()
+                return True
+            self._session.rollback()
+            return False
+
+        finalized = self._run_processing_finalization(
+            correlation_id=correlation_id,
+            finalize_call=_finalize_retryable_and_commit,
         )
         if not finalized:
-            self._session.rollback()
             self._emit_processing_outcome(
                 outcome="lease_lost",
                 failure_category=categoria.value,
+                correlation_id=correlation_id,
             )
             return ProviderInboundProcessingResult(
                 outcome=ProviderInboundProcessingOutcome.RETRY_SCHEDULED,
@@ -759,10 +869,10 @@ class ProviderInboundMessageCoordinator:
                 codigo=codigo,
                 detalle="lease_lost",
             )
-        self._session.commit()
         self._emit_processing_outcome(
             outcome="retry_scheduled",
             failure_category=categoria.value,
+            correlation_id=correlation_id,
         )
         return ProviderInboundProcessingResult(
             outcome=ProviderInboundProcessingOutcome.RETRY_SCHEDULED,
@@ -876,6 +986,26 @@ class ProviderInboundMessageCoordinator:
             return self._now
         return datetime.now(tz=_utc())
 
+    def _stage_session_order(self, comercio_id: int, cliente_id: int) -> Any:
+        """Stage the active session and, when required, the draft
+        pedido. Mirrors the existing coordinator sequence so the
+        ``session_order`` stage wrapper observes the same flush
+        cadence the production path uses today.
+        """
+        session_row = self._session_repo.stage_active(
+            comercio_id, cliente_id
+        )
+        if session_row.id_pedido is None:
+            if session_row.id is None:
+                self._session.flush()
+            pedido_row = self._pedido_repo.stage_draft_for_session(
+                int(session_row.id)
+            )
+            self._session.flush()
+            session_row.id_pedido = int(pedido_row.id)
+        self._session.flush()
+        return session_row
+
     def _emit_processing_outcome(
         self,
         *,
@@ -912,6 +1042,200 @@ class ProviderInboundMessageCoordinator:
             outbox_row_count=outbox_row_count,
             correlation_id=correlation_id,
         )
+
+    def _emit_stage_event(
+        self,
+        *,
+        stage: str,
+        outcome: str,
+        correlation_id: str | None = None,
+        elapsed_ms: int | None = None,
+        exception_type: str | None = None,
+    ) -> None:
+        """Best-effort emitter for the closed
+        ``provider_inbound_stage`` event.
+
+        The helper wraps :func:`emit_event` for the bounded stage
+        instrumentation. It is invoked by :meth:`_run_stage` and
+        by the finalization wrapper around the existing
+        coordinator seams. Validation or serialization failures
+        are swallowed by the underlying emitter so the diagnostic
+        never changes the durable business result.
+        """
+        emit_event(
+            event=EVENT_PROVIDER_INBOUND_STAGE,
+            component=COMPONENT_WORKER,
+            stage=stage,
+            outcome=outcome,
+            correlation_id=correlation_id,
+            elapsed_ms=elapsed_ms,
+            exception_type=exception_type,
+        )
+
+    def _run_stage(
+        self,
+        *,
+        stage: str,
+        correlation_id: str | None,
+        fn: Callable[[], _T],
+    ) -> _T:
+        """Run a coordinator boundary inside a stage wrapper.
+
+        Emits ``provider_inbound_stage`` ``started`` before the
+        boundary, ``completed`` after a normal return, and
+        ``failed`` (with the safe exception type name only) if
+        the boundary raises. The wrapper never fabricates a
+        terminal event for a boundary that does not return; if
+        ``fn`` does not return, only the ``started`` event is
+        left behind as evidence of the last reached boundary.
+
+        The helper is fail-soft: a stage event that fails
+        validation or serialization is swallowed by the
+        underlying emitter and never replaces the business
+        outcome. The exception is ALWAYS re-raised so the
+        coordinator's existing rollback, retry, lease-loss and
+        terminal finalization paths remain authoritative.
+        """
+        started_at = time.monotonic()
+        self._emit_stage_event(
+            stage=stage,
+            outcome="started",
+            correlation_id=correlation_id,
+        )
+        try:
+            result = fn()
+        except BaseException as exc:
+            elapsed_ms = int((time.monotonic() - started_at) * 1000)
+            self._emit_stage_event(
+                stage=stage,
+                outcome="failed",
+                correlation_id=correlation_id,
+                elapsed_ms=elapsed_ms,
+                exception_type=type(exc).__name__,
+            )
+            raise
+        elapsed_ms = int((time.monotonic() - started_at) * 1000)
+        self._emit_stage_event(
+            stage=stage,
+            outcome="completed",
+            correlation_id=correlation_id,
+            elapsed_ms=elapsed_ms,
+        )
+        return result
+
+    def _run_processing_finalization(
+        self,
+        *,
+        correlation_id: str | None,
+        finalize_call: Callable[[], bool],
+    ) -> bool:
+        """Run a finalize operation inside the
+        ``processing_finalization`` stage wrapper.
+
+        The helper is the single bounded seam around every
+        existing finalization (``finalize_processed``,
+        ``finalize_retryable``, ``finalize_terminal`` —
+        including the ``receipt_missing`` and ``unavailable``
+        branches that share ``_finalize_terminal``) so a future
+        finalization branch can never silently miss its
+        observability evidence.
+
+        Contract:
+
+        * emit ``provider_inbound_stage`` ``started`` with the
+          safe opaque synthetic inbound correlation BEFORE
+          ``finalize_call`` runs so the existing
+          "started first" semantic is preserved;
+        * when ``finalize_call`` raises ANY
+          :class:`BaseException`, roll back the caller-owned
+          transaction BEFORE emitting ``failed`` with the
+          safe exception_type name and re-raise so the
+          existing rollback / lease / retry / terminal paths
+          remain authoritative. The re-raise is not
+          swallowed and does not turn ``KeyboardInterrupt``
+          or ``SystemExit`` into a retry or business outcome;
+          the rollback itself is wrapped so a secondary
+          failure (e.g. a closed session) cannot mask the
+          original exception;
+        * when ``finalize_call`` returns ``True``, the helper
+          emits ``completed`` so the existing
+          ``finalize -> commit -> stage event ->
+          provider_inbound_processing_outcome`` order is
+          preserved (callers commit inside ``finalize_call``
+          before returning ``True``);
+        * when ``finalize_call`` returns ``False``, the
+          helper emits ``failed`` with the safe ``LeaseLost``
+          exception_type so the existing
+          ``finalize -> rollback -> stage event ->
+          provider_inbound_processing_outcome (lease_lost)``
+          order is preserved (callers roll back inside
+          ``finalize_call`` before returning ``False``);
+        * never fabricate an event when the finalization did
+          not return.
+
+        The helper is fail-soft: a stage event that fails
+        validation or serialization is swallowed by the
+        underlying emitter and never replaces the durable
+        business outcome. The pre-emit rollback on exception
+        guarantees that no
+        ``processing_finalization=failed`` event is ever
+        emitted before the rollback completes; the existing
+        external rollback in :meth:`process_lease` is
+        preserved unchanged so the caller-owned rollback
+        policy remains authoritative (the external call is
+        an idempotent no-op when the transaction is already
+        closed).
+        """
+        started_at = time.monotonic()
+        self._emit_stage_event(
+            stage=_STAGE_PROCESSING_FINALIZATION,
+            outcome="started",
+            correlation_id=correlation_id,
+        )
+        try:
+            finalized = finalize_call()
+        except BaseException as exc:
+            elapsed_ms = int((time.monotonic() - started_at) * 1000)
+            # Roll back BEFORE emitting ``failed`` so the
+            # observable order is
+            # ``finalize -> rollback -> processing_finalization
+            # failed -> (external) provider_inbound_processing
+            # _outcome`` even when the finalize seam raises
+            # mid-commit. A secondary rollback failure (e.g.
+            # the session is already closed) is logged and
+            # never masks the original exception.
+            try:
+                self._session.rollback()
+            except Exception:
+                logger.exception(
+                    "twilio_inbound_processor_finalization_rollback_failed",
+                    extra={"correlation_id": correlation_id},
+                )
+            self._emit_stage_event(
+                stage=_STAGE_PROCESSING_FINALIZATION,
+                outcome="failed",
+                correlation_id=correlation_id,
+                elapsed_ms=elapsed_ms,
+                exception_type=type(exc).__name__,
+            )
+            raise
+        elapsed_ms = int((time.monotonic() - started_at) * 1000)
+        if finalized:
+            self._emit_stage_event(
+                stage=_STAGE_PROCESSING_FINALIZATION,
+                outcome="completed",
+                correlation_id=correlation_id,
+                elapsed_ms=elapsed_ms,
+            )
+        else:
+            self._emit_stage_event(
+                stage=_STAGE_PROCESSING_FINALIZATION,
+                outcome="failed",
+                correlation_id=correlation_id,
+                elapsed_ms=elapsed_ms,
+                exception_type="LeaseLost",
+            )
+        return finalized
 
 
 def _utc():

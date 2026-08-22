@@ -14,6 +14,10 @@ from backend.llm.embedding_client import (
     EmbeddingTimeoutError,
     OllamaEmbeddingClient,
 )
+from backend.llm.query_llm import (
+    install_llm_timing_recorder,
+    reset_llm_timing_recorder,
+)
 
 
 def _vector(value: float) -> list[float]:
@@ -472,6 +476,172 @@ def _ok_response_obj(payload, status_code: int = 200) -> mock.Mock:
     response.json.return_value = payload
     response.raise_for_status.return_value = None
     return response
+
+
+class EmbeddingProviderCorrelationTest(unittest.TestCase):
+    """When the provider coordinator installs the safe synthetic
+    inbound correlation value, every ``embedding_request`` event
+    emitted from the same thread MUST carry the same opaque
+    identifier.
+
+    Direct non-provider callers that do NOT install a recorder
+    MUST continue to emit uncorrelated ``embedding_request``
+    events so the bounded production-log parser can separate
+    provider turns from background probes.
+    """
+
+    def setUp(self) -> None:
+        reset_llm_timing_recorder()
+
+    def tearDown(self) -> None:
+        reset_llm_timing_recorder()
+
+    def _capture_emit_events(self) -> tuple[list[dict], Any]:
+        captured: list[dict] = []
+
+        def _capture(*, event: str, **kwargs: object) -> bool:
+            from backend.observability.events import build_event
+
+            payload = build_event(event=event, **kwargs)
+            captured.append(payload)
+            return True
+
+        return captured, _capture
+
+    def test_embed_query_emits_correlation_id_when_recorder_installed(
+        self,
+    ) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        client = OllamaEmbeddingClient(
+            settings=_settings(),
+            transport=mock.Mock(return_value=_ok_response([_vector(1.0)])),
+        )
+        install_llm_timing_recorder(
+            mock.Mock(), correlation_id="SYN-EMB-1"
+        )
+        try:
+            with mock.patch(
+                "backend.llm.embedding_client.emit_event",
+                side_effect=capture_fn,
+            ):
+                client.embed_query("hola")
+        finally:
+            reset_llm_timing_recorder()
+
+        self.assertEqual(len(captured), 2)
+        self.assertEqual(captured[0]["event"], "embedding_request")
+        self.assertEqual(captured[0]["outcome"], "started")
+        self.assertEqual(
+            captured[0]["correlation_id"], "SYN-EMB-1"
+        )
+        self.assertEqual(captured[1]["event"], "embedding_request")
+        self.assertEqual(captured[1]["outcome"], "completed")
+        self.assertEqual(
+            captured[1]["correlation_id"], "SYN-EMB-1"
+        )
+
+    def test_embed_query_emits_no_correlation_when_recorder_unset(
+        self,
+    ) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        client = OllamaEmbeddingClient(
+            settings=_settings(),
+            transport=mock.Mock(return_value=_ok_response([_vector(1.0)])),
+        )
+        with mock.patch(
+            "backend.llm.embedding_client.emit_event",
+            side_effect=capture_fn,
+        ):
+            client.embed_query("hola")
+
+        self.assertEqual(len(captured), 2)
+        self.assertNotIn("correlation_id", captured[0])
+        self.assertNotIn("correlation_id", captured[1])
+
+    def test_embedding_failure_emits_correlation_id(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+
+        def _boom(url, **kwargs):
+            raise requests.exceptions.Timeout("slow")
+
+        client = OllamaEmbeddingClient(
+            settings=_settings(), transport=_boom
+        )
+        install_llm_timing_recorder(
+            mock.Mock(), correlation_id="SYN-EMB-2"
+        )
+        try:
+            with mock.patch(
+                "backend.llm.embedding_client.emit_event",
+                side_effect=capture_fn,
+            ):
+                with self.assertRaises(EmbeddingTimeoutError):
+                    client.embed_query("hola")
+        finally:
+            reset_llm_timing_recorder()
+
+        self.assertEqual(len(captured), 2)
+        self.assertEqual(captured[0]["correlation_id"], "SYN-EMB-2")
+        self.assertEqual(captured[1]["correlation_id"], "SYN-EMB-2")
+        self.assertEqual(captured[1]["failure_category"], "timeout")
+
+    def test_embed_documents_propagates_correlation_per_batch(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        client = OllamaEmbeddingClient(
+            settings=_settings(embedding_batch_size=1),
+            transport=mock.Mock(
+                side_effect=[
+                    _ok_response([_vector(1.0)]),
+                    _ok_response([_vector(2.0)]),
+                ]
+            ),
+        )
+        install_llm_timing_recorder(
+            mock.Mock(), correlation_id="SYN-EMB-3"
+        )
+        try:
+            with mock.patch(
+                "backend.llm.embedding_client.emit_event",
+                side_effect=capture_fn,
+            ):
+                client.embed_documents(["a", "b"])
+        finally:
+            reset_llm_timing_recorder()
+
+        self.assertEqual(len(captured), 4)
+        for event in captured:
+            self.assertEqual(event["correlation_id"], "SYN-EMB-3")
+
+    def test_correlation_id_cleared_after_reset(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        client = OllamaEmbeddingClient(
+            settings=_settings(),
+            transport=mock.Mock(return_value=_ok_response([_vector(1.0)])),
+        )
+        install_llm_timing_recorder(
+            mock.Mock(), correlation_id="SYN-EMB-4"
+        )
+        with mock.patch(
+            "backend.llm.embedding_client.emit_event",
+            side_effect=capture_fn,
+        ):
+            client.embed_query("hola")
+        reset_llm_timing_recorder()
+        with mock.patch(
+            "backend.llm.embedding_client.emit_event",
+            side_effect=capture_fn,
+        ):
+            client.embed_query("hola")
+        # First call: correlation_id present.
+        self.assertEqual(
+            captured[0]["correlation_id"], "SYN-EMB-4"
+        )
+        self.assertEqual(
+            captured[1]["correlation_id"], "SYN-EMB-4"
+        )
+        # Second call (after reset): correlation_id absent.
+        self.assertNotIn("correlation_id", captured[2])
+        self.assertNotIn("correlation_id", captured[3])
 
 
 if __name__ == "__main__":
