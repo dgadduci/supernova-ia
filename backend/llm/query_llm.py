@@ -11,6 +11,7 @@ from backend.config.settings import Settings, load_settings
 from backend.observability import (
     COMPONENT_LLM,
     EVENT_LLM_REQUEST,
+    EVENT_LLM_REQUEST_TRANSPORT_PHASE,
     emit_event,
 )
 
@@ -181,6 +182,49 @@ def reset_llm_timing_recorder() -> None:
     _TLS.correlation_id = None
 
 
+def _emit_llm_transport_phase(
+    *,
+    phase: str,
+    elapsed_ms: int | None,
+    http_status: int | None,
+    response_bytes: int | None,
+    correlation_id: str | None,
+) -> None:
+    """Emit one bounded ``llm_request_transport_phase`` observation.
+
+    The diagnostic helper is the safe seam the
+    :class:`QueryLlm` boundary uses to surface the last client-side
+    transport phase reached during a request/response cycle. The
+    payload is allowlist-bounded and privacy-safe by construction:
+    only the closed phase token, bounded elapsed milliseconds,
+    optional bounded HTTP status, optional bounded response byte
+    count and the existing opaque correlation identifier are
+    permitted. No prompt, response body, URL, proxy value, header,
+    credential or exception text is ever included.
+
+    The helper MUST NOT mutate the surrounding business state. The
+    existing ``emit_event`` contract already swallows validation
+    failures and stream errors without raising; this wrapper keeps
+    the diagnostic strictly observational so a misconfigured
+    emitter cannot break :class:`QueryLlm.request`.
+    """
+    try:
+        emit_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase=phase,
+            elapsed_ms=elapsed_ms,
+            http_status=http_status,
+            response_bytes=response_bytes,
+            correlation_id=correlation_id,
+        )
+    except Exception:
+        logger.exception(
+            "llm_transport_phase_emit_failed",
+            extra={"phase": phase},
+        )
+
+
 class QueryLlmError(RuntimeError):
     """Base error for QueryLlm failures."""
 
@@ -308,7 +352,21 @@ class QueryLlm:
         status_code: int | None = None
         body = ""
         try:
+            _emit_llm_transport_phase(
+                phase="request_started",
+                elapsed_ms=0,
+                http_status=None,
+                response_bytes=None,
+                correlation_id=effective_correlation_id,
+            )
             response = self._post(payload)
+            _emit_llm_transport_phase(
+                phase="response_received",
+                elapsed_ms=int((self._clock() - started) * 1000),
+                http_status=getattr(response, "status_code", None),
+                response_bytes=None,
+                correlation_id=effective_correlation_id,
+            )
             if self._transport is not None and hasattr(response, "raise_for_status"):
                 status_code = getattr(response, "status_code", None)
                 response.raise_for_status()
@@ -325,7 +383,21 @@ class QueryLlm:
                 except ValueError:
                     data = {"response": getattr(response, "text", "")}
                 body = (data.get("response") or "") if isinstance(data, dict) else ""
+            _emit_llm_transport_phase(
+                phase="json_extracted",
+                elapsed_ms=int((self._clock() - started) * 1000),
+                http_status=int(status_code) if status_code is not None else None,
+                response_bytes=len(body.encode("utf-8")) if body else 0,
+                correlation_id=effective_correlation_id,
+            )
             result = self._parse(body)
+            _emit_llm_transport_phase(
+                phase="result_parsed",
+                elapsed_ms=int((self._clock() - started) * 1000),
+                http_status=int(status_code) if status_code is not None else None,
+                response_bytes=len(body.encode("utf-8")) if body else 0,
+                correlation_id=effective_correlation_id,
+            )
         except requests.exceptions.HTTPError as exc:
             status_code = exc.response.status_code if exc.response is not None else None
             recorder.on_finished(

@@ -59,6 +59,7 @@ EVENT_WORKER_UNEXPECTED_FAILURE = "provider_worker_unexpected_failure"
 EVENT_WORKER_READINESS_TRANSITION = "provider_worker_readiness_transition"
 EVENT_WORKER_DISABLED = "provider_worker_disabled"
 EVENT_LLM_REQUEST = "llm_request"
+EVENT_LLM_REQUEST_TRANSPORT_PHASE = "llm_request_transport_phase"
 EVENT_EMBEDDING_REQUEST = "embedding_request"
 EVENT_DATABASE_TECHNICAL_FAILURE = "database_technical_failure"
 EVENT_SHADOW_PRODUCT_RECOGNITION = "shadow_product_recognition"
@@ -90,6 +91,7 @@ _EVENT_CATALOGUE: dict[str, str | frozenset[str]] = {
     EVENT_WORKER_READINESS_TRANSITION: COMPONENT_WORKER,
     EVENT_WORKER_DISABLED: COMPONENT_WORKER,
     EVENT_LLM_REQUEST: COMPONENT_LLM,
+    EVENT_LLM_REQUEST_TRANSPORT_PHASE: COMPONENT_LLM,
     EVENT_EMBEDDING_REQUEST: COMPONENT_EMBEDDING,
     EVENT_DATABASE_TECHNICAL_FAILURE: COMPONENT_DATABASE,
     EVENT_SHADOW_PRODUCT_RECOGNITION: COMPONENT_PRODUCT_RECOGNITION,
@@ -329,7 +331,7 @@ _RECOGNITION_FALLBACK_CATEGORIES: frozenset[str] = frozenset(
 
 
 _EVENTS_WITHOUT_OUTCOME_OR_FAILURE: frozenset[str] = frozenset(
-    {EVENT_SHADOW_PRODUCT_RECOGNITION}
+    {EVENT_SHADOW_PRODUCT_RECOGNITION, EVENT_LLM_REQUEST_TRANSPORT_PHASE}
 )
 _EVENTS_WITH_RECOGNITION_FIELDS: frozenset[str] = frozenset(
     {EVENT_SHADOW_PRODUCT_RECOGNITION}
@@ -362,6 +364,24 @@ _LIVENESS_CYCLE_OUTCOMES: frozenset[str] = frozenset(
 )
 
 
+# Closed phase allowlist for the ``llm_request_transport_phase`` event.
+# The vocabulary is shared between the existing ``QueryLlm`` boundary
+# and the bounded production-log parser so Railway operators can
+# determine the last client-side transport phase reached during a
+# request/response cycle (Ollama 200 vs client timeout gap). The
+# contract forbids arbitrary phase tokens, prompt/response fragments,
+# URLs, proxy values, headers, credentials, customer/provider
+# identifiers and exception text.
+_LLM_REQUEST_TRANSPORT_PHASES: frozenset[str] = frozenset(
+    {
+        "request_started",
+        "response_received",
+        "json_extracted",
+        "result_parsed",
+    }
+)
+
+
 _EVENTS_WITH_LIVENESS_FIELDS: frozenset[str] = frozenset(
     {EVENT_WORKER_LIVENESS}
 )
@@ -371,11 +391,17 @@ _EVENTS_WITH_PROCESSING_OUTCOME_FIELDS: frozenset[str] = frozenset(
 _EVENTS_WITH_PROVIDER_INBOUND_STAGE_FIELDS: frozenset[str] = frozenset(
     {EVENT_PROVIDER_INBOUND_STAGE}
 )
+_EVENTS_WITH_LLM_REQUEST_TRANSPORT_PHASE_FIELDS: frozenset[str] = frozenset(
+    {EVENT_LLM_REQUEST_TRANSPORT_PHASE}
+)
 _PROCESSING_OUTCOME_PROCESSED_VALUES: frozenset[str] = frozenset(
     {"processed_with_response", "processed_without_response"}
 )
 _PROCESSING_OUTCOME_FAILURE_VALUES: frozenset[str] = frozenset(
     {"retry_scheduled", "failed_terminal", "lease_lost", "unavailable"}
+)
+_PHASE_ACCEPTING_EVENTS: frozenset[str] = frozenset(
+    {EVENT_WORKER_LIVENESS, EVENT_LLM_REQUEST_TRANSPORT_PHASE}
 )
 
 # Closed stage allowlist for the ``provider_inbound_stage`` event.
@@ -410,6 +436,15 @@ _OPTIONAL_FIELDS_BY_EVENT: dict[str, frozenset[str]] = {
     EVENT_WORKER_DISABLED: frozenset(),
     EVENT_LLM_REQUEST: frozenset(
         {"elapsed_ms", "http_status", "exception_type", "correlation_id"}
+    ),
+    EVENT_LLM_REQUEST_TRANSPORT_PHASE: frozenset(
+        {
+            "phase",
+            "elapsed_ms",
+            "http_status",
+            "response_bytes",
+            "correlation_id",
+        }
     ),
     EVENT_EMBEDDING_REQUEST: frozenset(
         {"elapsed_ms", "http_status", "exception_type", "correlation_id"}
@@ -498,6 +533,7 @@ _ALLOWED_PAYLOAD_KEYS: frozenset[str] = frozenset(
         "response_count",
         "outbox_row_count",
         "stage",
+        "response_bytes",
     }
 )
 
@@ -518,6 +554,7 @@ _MAX_PENDING_CONTEXT_CANDIDATE_COUNT = 200
 _MAX_TEMPLATE_VERSION = 64
 _MAX_SHA256_HEX = 64
 _MAX_CYCLE_INDEX = 2**31 - 1
+_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
 
 class EventValidationError(ValueError):
@@ -645,6 +682,10 @@ def _is_safe_optional_field(name: str, value: Any) -> bool:
         if isinstance(value, bool) or not isinstance(value, int):
             return False
         return 0 <= value <= _MAX_PENDING_CONTEXT_CANDIDATE_COUNT
+    if name == "response_bytes":
+        if isinstance(value, bool) or not isinstance(value, int):
+            return False
+        return 0 <= value <= _MAX_RESPONSE_BYTES
     if name == "stage":
         if not _is_safe_short_string(value, max_length=_MAX_OUTCOME):
             return False
@@ -1256,6 +1297,7 @@ def build_event(
     response_count: int | None = None,
     outbox_row_count: int | None = None,
     stage: str | None = None,
+    response_bytes: int | None = None,
 ) -> dict[str, Any]:
     """Validate the input and return the JSON-ready payload.
 
@@ -1266,12 +1308,12 @@ def build_event(
     if not _is_safe_event_name(event):
         raise EventValidationError(f"invalid event name: {event!r}")
 
-    if event != EVENT_WORKER_LIVENESS:
+    if event not in _PHASE_ACCEPTING_EVENTS:
         if phase is not None:
             raise EventValidationError(
                 f"event {event!r} does not accept 'phase'; "
-                "'phase' is reserved for "
-                f"{EVENT_WORKER_LIVENESS!r}"
+                "'phase' is reserved for events in "
+                f"{sorted(_PHASE_ACCEPTING_EVENTS)}"
             )
         if cycle_index is not None:
             raise EventValidationError(
@@ -1714,6 +1756,70 @@ def build_event(
         payload.update(stage_fields)
         return payload
 
+    is_llm_transport_phase_event = (
+        event in _EVENTS_WITH_LLM_REQUEST_TRANSPORT_PHASE_FIELDS
+    )
+
+    if is_llm_transport_phase_event:
+        if any(
+            value is not None
+            for value in (
+                outbox_id,
+                attempt,
+                durable_state,
+                provider_code,
+                configured_mode,
+                effective_mode,
+                authoritative_strategy,
+                hybrid_decision,
+                fallback,
+                fallback_category,
+                fuzzy_latency_ms,
+                embedding_latency_ms,
+                vector_latency_ms,
+                context_kind,
+                status_before,
+                status_after,
+                candidate_count_before,
+                candidate_count_after,
+                context_cleared,
+                flavor_code,
+                eligible_count,
+                applied_count,
+                outbound_style_prompt_template_version,
+                outbound_style_prompt_template_hash,
+                reason,
+                response_count,
+                outbox_row_count,
+                cycle_index,
+                stage,
+            )
+        ):
+            raise EventValidationError(
+                f"event {event!r} does not accept extra fields; only the "
+                "closed phase/elapsed_ms/http_status/response_bytes/"
+                "correlation_id payload is allowed"
+            )
+        if phase is None:
+            raise EventValidationError(
+                f"event {event!r} requires 'phase' from "
+                f"{sorted(_LLM_REQUEST_TRANSPORT_PHASES)}"
+            )
+        if not isinstance(phase, str):
+            raise EventValidationError(
+                f"phase must be a short alnum token (got {type(phase).__name__})"
+            )
+        if not _is_safe_short_string(phase, max_length=_MAX_OUTCOME):
+            raise EventValidationError(
+                f"phase must be a short alnum token (got {phase!r})"
+            )
+        if phase not in _LLM_REQUEST_TRANSPORT_PHASES:
+            raise EventValidationError(
+                f"phase {phase!r} not in llm_request_transport_phase "
+                f"allowlist {sorted(_LLM_REQUEST_TRANSPORT_PHASES)}"
+            )
+        payload["phase"] = phase
+
     if any(
         value is not None
         for value in (
@@ -1746,6 +1852,7 @@ def build_event(
         "outbound_style_prompt_template_hash": outbound_style_prompt_template_hash,
         "response_count": response_count,
         "outbox_row_count": outbox_row_count,
+        "response_bytes": response_bytes,
     }
     for field_name, value in optional_values.items():
         if value is None:
@@ -1863,6 +1970,7 @@ def parse_event(line: str) -> dict[str, Any]:
         response_count=decoded.get("response_count"),
         outbox_row_count=decoded.get("outbox_row_count"),
         stage=decoded.get("stage"),
+        response_bytes=decoded.get("response_bytes"),
     )
 
 
@@ -1936,6 +2044,7 @@ def emit_event(
     response_count: int | None = None,
     outbox_row_count: int | None = None,
     stage: str | None = None,
+    response_bytes: int | None = None,
     stream: Any = None,
 ) -> bool:
     """Build and emit a single JSON event line to the supplied stream.
@@ -1993,6 +2102,7 @@ def emit_event(
             response_count=response_count,
             outbox_row_count=outbox_row_count,
             stage=stage,
+            response_bytes=response_bytes,
         )
     except EventValidationError as exc:
         try:

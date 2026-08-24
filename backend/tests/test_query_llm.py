@@ -1,3 +1,4 @@
+import io
 import json
 import logging
 import os
@@ -18,6 +19,7 @@ from backend.llm.query_llm import (
     install_llm_timing_recorder,
     reset_llm_timing_recorder,
 )
+from backend.observability import EventValidationError
 
 
 def _settings(**overrides) -> Settings:
@@ -415,16 +417,17 @@ class QueryLlmProviderCorrelationTest(unittest.TestCase):
         finally:
             reset_llm_timing_recorder()
 
-        self.assertEqual(len(captured), 2)
-        self.assertEqual(captured[0]["event"], "llm_request")
-        self.assertEqual(captured[0]["outcome"], "started")
+        lifecycle_events = [
+            ev for ev in captured if ev.get("event") == "llm_request"
+        ]
+        self.assertEqual(len(lifecycle_events), 2)
+        self.assertEqual(lifecycle_events[0]["outcome"], "started")
         self.assertEqual(
-            captured[0]["correlation_id"], "SYN-PROV-1"
+            lifecycle_events[0]["correlation_id"], "SYN-PROV-1"
         )
-        self.assertEqual(captured[1]["event"], "llm_request")
-        self.assertEqual(captured[1]["outcome"], "completed")
+        self.assertEqual(lifecycle_events[1]["outcome"], "completed")
         self.assertEqual(
-            captured[1]["correlation_id"], "SYN-PROV-1"
+            lifecycle_events[1]["correlation_id"], "SYN-PROV-1"
         )
 
     def test_direct_call_emits_no_correlation_id(self) -> None:
@@ -439,9 +442,12 @@ class QueryLlmProviderCorrelationTest(unittest.TestCase):
         ):
             client.request("hola")
 
-        self.assertEqual(len(captured), 2)
-        self.assertNotIn("correlation_id", captured[0])
-        self.assertNotIn("correlation_id", captured[1])
+        lifecycle_events = [
+            ev for ev in captured if ev.get("event") == "llm_request"
+        ]
+        self.assertEqual(len(lifecycle_events), 2)
+        self.assertNotIn("correlation_id", lifecycle_events[0])
+        self.assertNotIn("correlation_id", lifecycle_events[1])
 
     def test_correlation_id_cleared_after_reset(self) -> None:
         captured, capture_fn = self._capture_emit_events()
@@ -465,14 +471,18 @@ class QueryLlmProviderCorrelationTest(unittest.TestCase):
             client.request("hola")
         # Only the FIRST pair must carry the correlation value.
         # The direct call after reset MUST be uncorrelated.
+        lifecycle_events = [
+            ev for ev in captured if ev.get("event") == "llm_request"
+        ]
+        self.assertEqual(len(lifecycle_events), 4)
         self.assertEqual(
-            captured[0]["correlation_id"], "SYN-PROV-2"
+            lifecycle_events[0]["correlation_id"], "SYN-PROV-2"
         )
         self.assertEqual(
-            captured[1]["correlation_id"], "SYN-PROV-2"
+            lifecycle_events[1]["correlation_id"], "SYN-PROV-2"
         )
-        self.assertNotIn("correlation_id", captured[2])
-        self.assertNotIn("correlation_id", captured[3])
+        self.assertNotIn("correlation_id", lifecycle_events[2])
+        self.assertNotIn("correlation_id", lifecycle_events[3])
 
     def test_correlation_id_truncated_to_max_length(self) -> None:
         captured, capture_fn = self._capture_emit_events()
@@ -492,11 +502,14 @@ class QueryLlmProviderCorrelationTest(unittest.TestCase):
         finally:
             reset_llm_timing_recorder()
 
+        lifecycle_events = [
+            ev for ev in captured if ev.get("event") == "llm_request"
+        ]
         self.assertEqual(
-            len(captured[0]["correlation_id"]), 64
+            len(lifecycle_events[0]["correlation_id"]), 64
         )
         self.assertEqual(
-            len(captured[1]["correlation_id"]), 64
+            len(lifecycle_events[1]["correlation_id"]), 64
         )
 
     def test_current_llm_correlation_id_returns_none_when_unset(self):
@@ -521,11 +534,14 @@ class QueryLlmProviderCorrelationTest(unittest.TestCase):
         finally:
             reset_llm_timing_recorder()
 
+        lifecycle_events = [
+            ev for ev in captured if ev.get("event") == "llm_request"
+        ]
         self.assertEqual(
-            captured[0]["correlation_id"], "SYN-OVERRIDE"
+            lifecycle_events[0]["correlation_id"], "SYN-OVERRIDE"
         )
         self.assertEqual(
-            captured[1]["correlation_id"], "SYN-OVERRIDE"
+            lifecycle_events[1]["correlation_id"], "SYN-OVERRIDE"
         )
 
 
@@ -597,8 +613,12 @@ class QueryLlmProviderBaseExceptionCleanupTest(unittest.TestCase):
         ):
             client.request("hola")
 
-        self.assertNotIn("correlation_id", captured[0])
-        self.assertNotIn("correlation_id", captured[1])
+        lifecycle_events = [
+            ev for ev in captured if ev.get("event") == "llm_request"
+        ]
+        self.assertEqual(len(lifecycle_events), 2)
+        self.assertNotIn("correlation_id", lifecycle_events[0])
+        self.assertNotIn("correlation_id", lifecycle_events[1])
 
     def test_system_exit_inside_provider_scope_clears_correlation(
         self,
@@ -636,8 +656,12 @@ class QueryLlmProviderBaseExceptionCleanupTest(unittest.TestCase):
         ):
             client.request("hola")
 
-        self.assertNotIn("correlation_id", captured[0])
-        self.assertNotIn("correlation_id", captured[1])
+        lifecycle_events = [
+            ev for ev in captured if ev.get("event") == "llm_request"
+        ]
+        self.assertEqual(len(lifecycle_events), 2)
+        self.assertNotIn("correlation_id", lifecycle_events[0])
+        self.assertNotIn("correlation_id", lifecycle_events[1])
 
     def _capture_emit_events(self) -> tuple[list[dict], object]:
         captured: list[dict] = []
@@ -650,6 +674,511 @@ class QueryLlmProviderBaseExceptionCleanupTest(unittest.TestCase):
             return True
 
         return captured, _capture
+
+
+class QueryLlmTransportPhaseTest(unittest.TestCase):
+    """The :class:`QueryLlm` boundary MUST emit bounded
+    ``llm_request_transport_phase`` observations at the four
+    transport seams so the Railway operator can correlate the
+    ``llm_request`` outcome with the local Ollama access log
+    timestamp.
+
+    Coverage:
+
+    * successful request emits the four phases in order
+      (``request_started`` -> ``response_received`` ->
+      ``json_extracted`` -> ``result_parsed``) and preserves the
+      existing ``llm_request`` lifecycle;
+    * transport timeout before response receipt emits only
+      ``request_started`` (no false ``response_received`` /
+      ``json_extracted`` / ``result_parsed``);
+    * HTTP, malformed-response and empty-response behaviour remain
+      unchanged: the existing failure ``llm_request`` event is
+      emitted and only the phases the boundary actually reached are
+      surfaced;
+    * ``response_bytes``, ``elapsed_ms`` and ``http_status`` honour
+      the closed catalogue bounds;
+    * the opaque correlation identifier is preserved across phases;
+    * the contract rejects any sensitive free-form field;
+    * an emitter failure does NOT change the
+      :class:`QueryLlm.request()` result or exception.
+    """
+
+    def setUp(self) -> None:
+        reset_llm_timing_recorder()
+
+    def tearDown(self) -> None:
+        reset_llm_timing_recorder()
+
+    def _capture_emit_events(self) -> tuple[list[dict], object]:
+        captured: list[dict] = []
+
+        def _capture(*, event: str, **kwargs: object) -> bool:
+            from backend.observability.events import build_event
+
+            payload = build_event(event=event, **kwargs)
+            captured.append(payload)
+            return True
+
+        return captured, _capture
+
+    def _phases(self, captured: list[dict]) -> list[str]:
+        return [
+            ev["phase"]
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+        ]
+
+    def test_successful_request_emits_four_phases_in_order(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        transport = mock.Mock(
+            return_value=_FakeResponse(json.dumps({"ok": True}))
+        )
+        client = QueryLlm(settings=_settings(), transport=transport)
+        with mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            result = client.request(
+                "hola", correlation_id="SYN-PHASE-OK"
+            )
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(
+            self._phases(captured),
+            [
+                "request_started",
+                "response_received",
+                "json_extracted",
+                "result_parsed",
+            ],
+        )
+
+        phase_events = [
+            ev
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+        ]
+        for ev in phase_events:
+            self.assertEqual(ev.get("component"), "query_llm")
+            self.assertEqual(ev.get("correlation_id"), "SYN-PHASE-OK")
+            self.assertNotIn("prompt", ev)
+            self.assertNotIn("response", ev)
+            self.assertNotIn("url", ev)
+            self.assertNotIn("proxy", ev)
+            self.assertNotIn("headers", ev)
+
+        lifecycle_events = [
+            ev
+            for ev in captured
+            if ev.get("event") == "llm_request"
+        ]
+        self.assertEqual(len(lifecycle_events), 2)
+        self.assertEqual(lifecycle_events[0]["outcome"], "started")
+        self.assertEqual(lifecycle_events[1]["outcome"], "completed")
+
+    def test_response_received_includes_http_status(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        transport = mock.Mock(
+            return_value=_FakeResponse(json.dumps({"ok": True}), status_code=201)
+        )
+        client = QueryLlm(settings=_settings(), transport=transport)
+        with mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            client.request("hola")
+
+        phase_events = [
+            ev
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+        ]
+        response_received = next(
+            ev for ev in phase_events if ev["phase"] == "response_received"
+        )
+        self.assertEqual(response_received["http_status"], 201)
+
+    def test_json_extracted_and_result_parsed_include_response_bytes(
+        self,
+    ) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        body = json.dumps({"intents": ["a", "b"]})
+        transport = mock.Mock(return_value=_FakeResponse(body))
+        client = QueryLlm(settings=_settings(), transport=transport)
+        with mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            client.request("hola")
+
+        phase_events = [
+            ev
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+        ]
+        json_extracted = next(
+            ev for ev in phase_events if ev["phase"] == "json_extracted"
+        )
+        result_parsed = next(
+            ev for ev in phase_events if ev["phase"] == "result_parsed"
+        )
+        self.assertEqual(
+            json_extracted["response_bytes"],
+            len(body.encode("utf-8")),
+        )
+        self.assertEqual(
+            result_parsed["response_bytes"],
+            len(body.encode("utf-8")),
+        )
+
+    def test_elapsed_ms_is_non_negative_and_bounded(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        transport = mock.Mock(
+            return_value=_FakeResponse(json.dumps({"ok": True}))
+        )
+        client = QueryLlm(settings=_settings(), transport=transport)
+        with mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            client.request("hola")
+
+        phase_events = [
+            ev
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+        ]
+        for ev in phase_events:
+            self.assertIsInstance(ev["elapsed_ms"], int)
+            self.assertGreaterEqual(ev["elapsed_ms"], 0)
+        self.assertEqual(phase_events[0]["elapsed_ms"], 0)
+
+    def test_timeout_before_response_emits_only_request_started(
+        self,
+    ) -> None:
+        captured, capture_fn = self._capture_emit_events()
+
+        def transport(url, json=None, timeout=None):
+            raise requests.exceptions.Timeout("slow")
+
+        client = QueryLlm(settings=_settings(), transport=transport)
+        with mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            with self.assertRaises(QueryLlmTimeoutError):
+                client.request("hola", correlation_id="SYN-PHASE-TO")
+
+        self.assertEqual(self._phases(captured), ["request_started"])
+
+        lifecycle_events = [
+            ev
+            for ev in captured
+            if ev.get("event") == "llm_request"
+        ]
+        self.assertEqual(len(lifecycle_events), 2)
+        self.assertEqual(lifecycle_events[0]["outcome"], "started")
+        self.assertEqual(lifecycle_events[1]["failure_category"], "timeout")
+        self.assertEqual(
+            lifecycle_events[1]["correlation_id"], "SYN-PHASE-TO"
+        )
+
+    def test_http_error_stops_after_response_received(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        transport = mock.Mock(
+            return_value=_FakeResponse("boom", status_code=503)
+        )
+        client = QueryLlm(settings=_settings(), transport=transport)
+        with mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            with self.assertRaises(QueryLlmHttpError):
+                client.request("hola", correlation_id="SYN-PHASE-HTTP")
+
+        self.assertEqual(
+            self._phases(captured),
+            ["request_started", "response_received"],
+        )
+
+        lifecycle_events = [
+            ev
+            for ev in captured
+            if ev.get("event") == "llm_request"
+        ]
+        self.assertEqual(len(lifecycle_events), 2)
+        self.assertEqual(
+            lifecycle_events[1]["failure_category"], "http_error"
+        )
+        self.assertEqual(lifecycle_events[1]["http_status"], 503)
+
+    def test_empty_response_stops_after_json_extracted(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        transport = mock.Mock(return_value=_FakeResponse(""))
+        client = QueryLlm(settings=_settings(), transport=transport)
+        with mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            with self.assertRaises(QueryLlmResponseError):
+                client.request("hola", correlation_id="SYN-PHASE-EMPTY")
+
+        self.assertEqual(
+            self._phases(captured),
+            [
+                "request_started",
+                "response_received",
+                "json_extracted",
+            ],
+        )
+
+        lifecycle_events = [
+            ev
+            for ev in captured
+            if ev.get("event") == "llm_request"
+        ]
+        self.assertEqual(
+            lifecycle_events[1]["failure_category"], "response_error"
+        )
+
+    def test_malformed_json_stops_after_json_extracted(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        transport = mock.Mock(return_value=_FakeResponse("not-json"))
+        client = QueryLlm(settings=_settings(), transport=transport)
+        with mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            with self.assertRaises(QueryLlmResponseError):
+                client.request("hola")
+
+        self.assertEqual(
+            self._phases(captured),
+            [
+                "request_started",
+                "response_received",
+                "json_extracted",
+            ],
+        )
+
+    def test_correlation_id_preserved_across_phases(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        transport = mock.Mock(
+            return_value=_FakeResponse(json.dumps({"ok": True}))
+        )
+        client = QueryLlm(settings=_settings(), transport=transport)
+        install_llm_timing_recorder(
+            mock.Mock(), correlation_id="SYN-PROV-PHASE"
+        )
+        try:
+            with mock.patch(
+                "backend.llm.query_llm.emit_event",
+                side_effect=capture_fn,
+            ):
+                client.request("hola")
+        finally:
+            reset_llm_timing_recorder()
+
+        phase_events = [
+            ev
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+        ]
+        for ev in phase_events:
+            self.assertEqual(ev["correlation_id"], "SYN-PROV-PHASE")
+
+    def test_correlation_id_truncated_across_phases(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        transport = mock.Mock(
+            return_value=_FakeResponse(json.dumps({"ok": True}))
+        )
+        client = QueryLlm(settings=_settings(), transport=transport)
+        install_llm_timing_recorder(
+            mock.Mock(), correlation_id="x" * 200
+        )
+        try:
+            with mock.patch(
+                "backend.llm.query_llm.emit_event",
+                side_effect=capture_fn,
+            ):
+                client.request("hola")
+        finally:
+            reset_llm_timing_recorder()
+
+        phase_events = [
+            ev
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+        ]
+        for ev in phase_events:
+            self.assertEqual(len(ev["correlation_id"]), 64)
+
+    def test_response_bytes_matches_utf8_body_length(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        body = "   \n  "
+        transport = mock.Mock(return_value=_FakeResponse(body))
+        client = QueryLlm(settings=_settings(), transport=transport)
+        with mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            with self.assertRaises(QueryLlmResponseError):
+                client.request("hola")
+
+        json_extracted = next(
+            ev
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+            and ev["phase"] == "json_extracted"
+        )
+        self.assertEqual(
+            json_extracted["response_bytes"],
+            len(body.encode("utf-8")),
+        )
+
+    def test_no_sensitive_field_in_any_phase_event(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        body = json.dumps({"intents": ["x"]})
+        transport = mock.Mock(return_value=_FakeResponse(body))
+        client = QueryLlm(settings=_settings(), transport=transport)
+        with mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            client.request("super-secret-prompt")
+
+        phase_events = [
+            ev
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+        ]
+        for ev in phase_events:
+            serialized = json.dumps(ev, sort_keys=True)
+            self.assertNotIn("super-secret-prompt", serialized)
+            self.assertNotIn("intents", serialized)
+            self.assertNotIn("super-secret-url", serialized)
+            self.assertNotIn("super-secret-proxy", serialized)
+            self.assertNotIn("socks5h", serialized)
+            self.assertNotIn("127.0.0.1", serialized)
+            self.assertNotIn("user:pass", serialized)
+            self.assertNotIn("Bearer", serialized)
+            self.assertNotIn("X-Secret", serialized)
+            self.assertNotIn("X-Twilio-Signature", serialized)
+            self.assertNotIn("AC000000000000000000000000000000", serialized)
+            self.assertNotIn("+5491100000000", serialized)
+            self.assertNotIn("SM-ABC-XYZ", serialized)
+            self.assertNotIn("Exception message", serialized)
+            self.assertNotIn("Traceback", serialized)
+
+    def test_phase_field_rejects_sensitive_payload_via_validator(
+        self,
+    ) -> None:
+        from backend.observability import (
+            COMPONENT_LLM,
+            EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            build_event,
+            emit_event,
+        )
+
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="request_started",
+            correlation_id="SYN-PHASE-VAL",
+            stream=sink,
+        )
+        self.assertTrue(ok)
+        line = sink.getvalue()
+        self.assertNotIn("super-secret-prompt", line)
+        self.assertNotIn("user:pass", line)
+        self.assertNotIn("Bearer", line)
+
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+                phase="request_started",
+                correlation_id="x" * 200,
+            )
+
+    def test_emission_failure_does_not_break_query_llm(self) -> None:
+        def _explode_transport_phase_only(**kwargs):
+            if kwargs.get("event") == "llm_request_transport_phase":
+                raise RuntimeError("phase emitter boom")
+            return True
+
+        transport = mock.Mock(
+            return_value=_FakeResponse(json.dumps({"ok": True}))
+        )
+        client = QueryLlm(settings=_settings(), transport=transport)
+        with mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=_explode_transport_phase_only,
+        ):
+            result = client.request("hola", correlation_id="SYN-PHASE-EX")
+
+        self.assertEqual(result, {"ok": True})
+
+    def test_emission_failure_does_not_swallow_timeout_exception(self) -> None:
+        def _explode_transport_phase_only(**kwargs):
+            if kwargs.get("event") == "llm_request_transport_phase":
+                raise RuntimeError("phase emitter boom")
+            return True
+
+        def transport(url, json=None, timeout=None):
+            raise requests.exceptions.Timeout("slow")
+
+        client = QueryLlm(settings=_settings(), transport=transport)
+        with mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=_explode_transport_phase_only,
+        ):
+            with self.assertRaises(QueryLlmTimeoutError):
+                client.request("hola")
+
+    def test_emission_failure_does_not_swallow_http_exception(self) -> None:
+        def _explode_transport_phase_only(**kwargs):
+            if kwargs.get("event") == "llm_request_transport_phase":
+                raise RuntimeError("phase emitter boom")
+            return True
+
+        transport = mock.Mock(
+            return_value=_FakeResponse("boom", status_code=502)
+        )
+        client = QueryLlm(settings=_settings(), transport=transport)
+        with mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=_explode_transport_phase_only,
+        ):
+            with self.assertRaises(QueryLlmHttpError) as ctx:
+                client.request("hola")
+            self.assertEqual(ctx.exception.status_code, 502)
+
+    def test_request_started_emitted_with_zero_elapsed(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+
+        def transport(url, json=None, timeout=None):
+            raise requests.exceptions.Timeout("slow")
+
+        client = QueryLlm(settings=_settings(), transport=transport)
+        with mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            with self.assertRaises(QueryLlmTimeoutError):
+                client.request("hola")
+
+        request_started = next(
+            ev
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+            and ev["phase"] == "request_started"
+        )
+        self.assertEqual(request_started["elapsed_ms"], 0)
+        self.assertNotIn("http_status", request_started)
+        self.assertNotIn("response_bytes", request_started)
 
 
 if __name__ == "__main__":
