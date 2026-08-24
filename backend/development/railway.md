@@ -154,3 +154,108 @@ integrated ephemeral node and invalidate its auth key. Do not run an automatic
 PostgreSQL downgrade. If integrated verification fails, retain the disposable
 spike only as diagnostic infrastructure and keep real WhatsApp traffic off the
 service.
+
+## Provider-flow live audit
+
+The integrated `supernova-ia` Railway service runs the closed provider
+pipeline (`recepciones_mensajes_proveedor` → `procesamientos_mensajes_proveedor`
+→ `mensajes_proveedor_salientes`). When a Twilio test message goes through
+the integrated service and the operator must locate the last persisted
+boundary without changing business state, run the read-only audit CLI
+**before** the test message is sent.
+
+### Pre-flight
+
+1. Open the Railway shell for the integrated web service.
+2. Verify `SUPERNOVA_DATABASE_URL` is configured (the CLI does not print it
+   and reads it from the environment, matching every other Railway-driven
+   client).
+3. Decide on a duration. The default is `--duration-seconds=600` (10 min).
+   Pick a window long enough to cover the slowest expected round trip plus
+   the operator's manual steps. The CLI terminates cleanly with exit code
+   `0` once the duration elapses.
+
+### Command
+
+```sh
+PYTHONPATH=. python -m backend.scripts.audit_provider_flow_live \
+  --duration-seconds 600 \
+  --interval-seconds 1
+```
+
+* `--interval-seconds` controls the polling cadence. Must be positive.
+  The default is `1`. Tighter intervals (e.g. `0.5`) are fine for short
+  audits; longer intervals reduce database pressure but may miss fast
+  transitions.
+* `--duration-seconds` is the bounded audit lifetime. Must be positive.
+  Defaults to `600` so the CLI never lingers indefinitely.
+* `--database-url` is optional. When omitted, the CLI uses
+  `SUPERNOVA_DATABASE_URL` from the Railway environment and falls back to
+  the local `postgresql+psycopg:///supernova_test` URL only for tests.
+
+The CLI never writes, never commits, never flushes, never updates, never
+deletes, never claims a work item, never retries, never replays, never
+sends an HTTP request and never reads message bodies. It only opens a
+short-lived read-only session per poll, runs bounded `SELECT`s, closes
+the session and discards intermediate state.
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0`  | Clean termination: duration elapsed or `Ctrl-C`. |
+| `1`  | A polling read failed. Only the closed `module.Class` label is printed. |
+| `2`  | Argument validation failed (negative or zero `--interval-seconds` / `--duration-seconds`). No database session was opened. |
+
+### Reading the timeline
+
+Each emitted snapshot is bound to one receipt and is keyed by its numeric
+`recepcion_id`. The opaque `fingerprint` is a short SHA-256 of the provider
+receipt key — it never reveals the underlying provider identifier, but it
+is stable per receipt so the operator can correlate observations across
+successive polls.
+
+The safe fields the CLI prints:
+
+* `recepcion_id`, `procesamiento_id`, `outbox_first_id`, `outbox_row_count`.
+* `fingerprint`, `fecha_recepcion`, `observado_en`.
+* `procesamiento_estado`, `intentos`, `categoria_ultimo_fallo`,
+  `codigo_ultimo_fallo`.
+* `llm_resultado`, `llm_solicitado_en`, `llm_finalizado_en`.
+* `outbox_estados`.
+
+The CLI never prints `cuerpo`, `destinatario_e164`,
+`identificador_proveedor`, the Twilio Account SID, the auth token, the
+webhook signature, the inbound message text, the LLM prompt, the LLM
+response, exception tracebacks, the database URL or any other secret.
+
+The emitted `observation: procesado + outbox_row_count=0` line is an
+**observable terminal condition** — the worker has committed its terminal
+state for that turn but the outbox staging did not produce a durable
+outbound row. The auditor labels it as an observation and does **not**
+infer a root cause; correlate it manually with the Railway log timeline
+and with the Twilio message status before drawing any conclusion.
+
+### What the CLI does not do
+
+* It does not read stdout from `supernova-ia`. Correlate the printed
+  timeline with the Railway log panel for the same web service from a
+  separate terminal or browser tab.
+* It does not invoke `railway`, does not connect to Twilio, does not
+  call any provider HTTP endpoint, and does not process the inbound
+  message itself.
+* It does not commit, flush, update, delete, claim, lease, retry or
+  replay.
+
+### Stopping the audit
+
+* `Ctrl-C` (SIGINT): the CLI sets an internal flag at the next poll
+  iteration, prints `audit: terminated observado_en=...` and exits `0`
+  after releasing the read-only session.
+* Letting the duration expire: identical outcome with the wall-clock
+  boundary as the trigger.
+
+If a single isolated observation is reported, do **not** treat it as a
+root cause. Correlate the four-way boundary (Twilio inbound timestamp,
+CLI snapshot, Railway log line, Twilio status callback) before drawing
+any conclusion.
