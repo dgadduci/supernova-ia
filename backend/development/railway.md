@@ -259,3 +259,118 @@ If a single isolated observation is reported, do **not** treat it as a
 root cause. Correlate the four-way boundary (Twilio inbound timestamp,
 CLI snapshot, Railway log line, Twilio status callback) before drawing
 any conclusion.
+
+## Repeated HTTP transport diagnostic at the local SOCKS5 boundary
+
+When intermittent `QueryLlm` request loss cannot be narrowed by the
+single-shot `--transport-diagnostic --target generate` probe, run the
+bounded repeated-transport diagnostic below to compare the
+production-shaped `requests.post` call shape against a diagnostic-only
+reused `requests.Session`. The probe sits below the production
+`QueryLlm` boundary so it can observe the exact `requests` →
+`socks5h://127.0.0.1:1055` call shape without depending on the worker,
+the coordinator, the database, Twilio, Tailscale or Ollama.
+
+### Pre-flight
+
+1. Open the Railway shell for the integrated web service in the `core`
+   project, `test` environment, `supernova-ia` service.
+2. Confirm `LLM_URL`, `OLLAMA_PROXY_URL` and the SOCKS5 daemon are still
+   configured exactly as the deployment runbook prescribes. The probe
+   reads them through `Settings` and never prints them.
+3. Pick a bounded attempt count. The default is `10` so each run stays
+   under a minute; raise it only when you need to reproduce a known
+   intermittent failure pattern.
+
+### Command — fresh mode (matches the current application shape)
+
+```sh
+PYTHONPATH=. python -m backend.scripts.probe_railway_socks5_repeated \
+  --mode fresh \
+  --count 10 \
+  --connect-timeout-seconds 5 \
+  --read-timeout-seconds 20
+```
+
+`fresh` invokes the top-level `requests.post` once per attempt, exactly
+the same call shape `QueryLlm._post` uses today. It does not own a
+session, so every attempt opens a fresh proxy-side connection.
+
+### Command — session mode (diagnostic-only comparison)
+
+```sh
+PYTHONPATH=. python -m backend.scripts.probe_railway_socks5_repeated \
+  --mode session \
+  --count 10 \
+  --connect-timeout-seconds 5 \
+  --read-timeout-seconds 20
+```
+
+`session` creates one `requests.Session` for the bounded run and reuses
+it across the loop. The session is **diagnostic-only**; it is not used
+by `QueryLlm`, the worker or the coordinator.
+
+### Arguments
+
+* `--mode` — `fresh` (default) or `session`. Anything else exits `2`
+  without issuing any request.
+* `--count` — positive integer (default `10`). Must be a positive
+  integer; zero or negative values exit `2`.
+* `--connect-timeout-seconds` — positive finite number (default `5`).
+* `--read-timeout-seconds` — positive finite number (default `20`).
+
+The probe forwards the timeouts as the tuple
+`(connect_timeout_seconds, read_timeout_seconds)` so the connect phase
+and the response-read phase are bounded independently.
+
+### Safe output
+
+Each attempt prints a single bounded line containing only:
+
+* `mode` (`fresh` or `session`).
+* `attempt` (1-based index).
+* `inicio_utc`, `fin_utc` (ISO-8601 UTC with `Z` suffix).
+* `duracion_ms` (elapsed milliseconds for the attempt).
+* `phase` (`returned` or `exception`).
+* `http_status` (when a response was returned).
+* `received_bytes` (when a response was returned).
+* `outcome` (closed token — `success`, `empty_response`, `http_status`,
+  `connect_timeout`, `read_timeout`, `proxy_error`, `connection_error`,
+  `request_error`, `configuration_error`).
+* `exception_class` (closed Requests class label when an exception is
+  classified).
+
+The probe NEVER prints the target URL, proxy URL, request body, response
+body, headers, credentials, customer/order data, exception text or
+tracebacks. Each attempt is independent: a failed attempt is recorded
+and the next bounded attempt still runs.
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0`  | All requested attempts returned a successful HTTP response with at least one byte. |
+| `1`  | At least one attempt reported a non-`success` outcome (timeout, HTTP failure, empty response, transport error). |
+| `2`  | Invalid arguments (`--count`, `--mode`, timeouts). No request or `requests.Session` was created. |
+
+### Reading the two runs
+
+Compare the bounded output from a `fresh` run against a `session` run
+executed back-to-back under the same Railway conditions:
+
+| Observation | Narrow interpretation |
+| --- | --- |
+| `fresh` fails and `session` succeeds | Repeated fresh connection setup is implicated. Do not yet infer a specific infrastructure cause. |
+| Both modes fail with `connect_timeout`, `proxy_error` or `connection_error` | The failure occurs before a usable HTTP response at the local proxy boundary. |
+| Both modes fail with `read_timeout` | The HTTP call was established but no response completed within the read bound; the destination remains a black box. |
+| Both modes succeed repeatedly | This isolated boundary is not reproducing the issue under that run; revisit the worker, the lease/finalize transaction, the observability seam or the destination service. |
+
+These outcomes are diagnostic evidence only. They must not trigger a
+runtime fix automatically. Do not correlate against `tailscale ping`,
+Ollama access logs or a single attempt in isolation.
+
+### Stopping the probe
+
+The probe terminates cleanly when the bounded attempt count finishes.
+`Ctrl-C` (SIGINT) aborts the in-flight attempt and exits non-zero with
+no further output.
