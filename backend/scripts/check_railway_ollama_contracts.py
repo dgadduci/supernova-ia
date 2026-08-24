@@ -18,6 +18,15 @@ from backend.llm.query_llm import QueryLlm, QueryLlmError
 _OLLAMA_READINESS_PROBE_GENERATE_PROMPT = "Respond with exactly {}."
 _OLLAMA_READINESS_PROBE_EMBED_INPUT = "health check"
 
+# Fixed controlled input for the operator-run generate transport diagnostic.
+# It is intentionally unrelated to business content and is NEVER printed or
+# returned so the diagnostic cannot leak the probe prompt or the response.
+_OLLAMA_GENERATE_TRANSPORT_PROBE_PROMPT = "ok"
+
+_TRANSPORT_TARGET_EMBED = "embed"
+_TRANSPORT_TARGET_GENERATE = "generate"
+_TRANSPORT_TARGETS = frozenset({_TRANSPORT_TARGET_EMBED, _TRANSPORT_TARGET_GENERATE})
+
 
 @dataclass(frozen=True)
 class OllamaReadinessResult:
@@ -109,25 +118,33 @@ def check_ollama_readiness(*, settings: Settings) -> OllamaReadinessResult:
     )
 
 
-def run_transport_diagnostic(settings) -> int:
-    if settings.ollama_proxy_url != "socks5h://127.0.0.1:1055":
-        print(
-            "transport=embed connection=not_attempted http_status=none "
-            "elapsed_seconds=0.0000 received_bytes=0 "
-            "category=invalid_proxy_configuration"
-        )
-        return 1
+def _run_transport_probe(
+    settings,
+    *,
+    url: str,
+    payload: dict,
+    timeout: int,
+    target: str,
+) -> tuple[str, int | None, int, str, float]:
+    """Issue one bounded transport probe and return sanitized outcome.
 
+    The probe never re-raises. It closes the response on every connected
+    path and reports the closed result category. ``str(exc)`` and
+    tracebacks are NEVER included in the returned tuple. For the
+    ``generate`` target the diagnostic_error fallback is remapped to
+    ``request_error`` so the reported category stays inside the closed
+    generate contract; the embed contract is left untouched.
+    """
     started = time.monotonic()
-    status_code = None
+    status_code: int | None = None
     received_bytes = 0
     connection = "failed"
     category = "unknown"
     try:
         response = requests.post(
-            settings.embedding_url,
-            json={"model": settings.embedding_model, "input": ["health check"]},
-            timeout=settings.embedding_timeout_seconds,
+            url,
+            json=payload,
+            timeout=timeout,
             proxies={
                 "http": settings.ollama_proxy_url,
                 "https": settings.ollama_proxy_url,
@@ -154,24 +171,92 @@ def run_transport_diagnostic(settings) -> int:
     except requests.exceptions.RequestException:
         category = "request_error"
     except (TypeError, ValueError, OSError):
-        category = "diagnostic_error"
+        if target == _TRANSPORT_TARGET_GENERATE:
+            category = "request_error"
+        else:
+            category = "diagnostic_error"
     elapsed = time.monotonic() - started
-    status = str(status_code) if status_code is not None else "none"
-    print(
-        f"transport=embed connection={connection} status={category} "
-        f"http_status={status} elapsed_seconds={elapsed:.4f} "
-        f"received_bytes={received_bytes} category={category}"
+    return connection, status_code, received_bytes, category, elapsed
+
+
+def run_transport_diagnostic(settings, *, target: str = "embed") -> int:
+    """Run the bounded operator transport diagnostic.
+
+    The default ``target="embed"`` preserves the existing diagnostic CLI
+    behavior and output format. ``target="generate"`` extends the same
+    configured proxy boundary to ``Settings.llm_url`` with a fixed
+    controlled prompt and reports a closed six-field result category.
+    The diagnostic never prints the prompt, the response body, the URL,
+    the proxy value, credentials, headers, exception text, or tracebacks.
+    """
+    if target not in _TRANSPORT_TARGETS:
+        raise ValueError(f"Unknown transport target: {target!r}")
+
+    if settings.ollama_proxy_url != "socks5h://127.0.0.1:1055":
+        if target == _TRANSPORT_TARGET_EMBED:
+            print(
+                "transport=embed connection=not_attempted http_status=none "
+                "elapsed_seconds=0.0000 received_bytes=0 "
+                "category=invalid_proxy_configuration"
+            )
+        else:
+            print(
+                f"target={_TRANSPORT_TARGET_GENERATE} "
+                "connection=not_attempted "
+                "category=invalid_proxy_configuration "
+                "http_status=none elapsed_seconds=0.0000 received_bytes=0"
+            )
+        return 1
+
+    if target == _TRANSPORT_TARGET_EMBED:
+        url = settings.embedding_url
+        payload = {"model": settings.embedding_model, "input": ["health check"]}
+        timeout = settings.embedding_timeout_seconds
+    else:
+        url = settings.llm_url
+        payload = {
+            "model": settings.llm_model,
+            "prompt": _OLLAMA_GENERATE_TRANSPORT_PROBE_PROMPT,
+            "stream": False,
+        }
+        timeout = settings.llm_timeout
+
+    connection, status_code, received_bytes, category, elapsed = _run_transport_probe(
+        settings, url=url, payload=payload, timeout=timeout, target=target
     )
+    status = str(status_code) if status_code is not None else "none"
+
+    if target == _TRANSPORT_TARGET_EMBED:
+        print(
+            f"transport=embed connection={connection} status={category} "
+            f"http_status={status} elapsed_seconds={elapsed:.4f} "
+            f"received_bytes={received_bytes} category={category}"
+        )
+    else:
+        print(
+            f"target={_TRANSPORT_TARGET_GENERATE} connection={connection} "
+            f"category={category} http_status={status} "
+            f"elapsed_seconds={elapsed:.4f} "
+            f"received_bytes={received_bytes}"
+        )
     return 0 if category == "response_bytes_received" else 1
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--transport-diagnostic", action="store_true")
+    parser.add_argument(
+        "--target",
+        choices=(
+            _TRANSPORT_TARGET_EMBED,
+            _TRANSPORT_TARGET_GENERATE,
+        ),
+        default=_TRANSPORT_TARGET_EMBED,
+    )
     args = parser.parse_args(argv)
     settings = load_settings()
     if args.transport_diagnostic:
-        return run_transport_diagnostic(settings)
+        return run_transport_diagnostic(settings, target=args.target)
 
     result = check_ollama_readiness(settings=settings)
 

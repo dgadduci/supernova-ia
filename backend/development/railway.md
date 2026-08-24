@@ -120,6 +120,17 @@ vectors, database URLs, or raw Tailscale status:
    ```
 
    It must report the connection result, HTTP status, elapsed time, received-byte count, and an error category only. A `200` with zero bytes remains a failed diagnostic; do not treat `tailscale ping` or the Ollama access log alone as proof of returned HTTP bytes.
+
+   For intermittent `QueryLlm` losses against the `/api/generate` route, run the same diagnostic against the generate target without changing settings, timeout, proxy, model, or worker behavior:
+
+   ```sh
+   PYTHONPATH=. python -m backend.scripts.check_railway_ollama_contracts \
+     --transport-diagnostic --target generate
+   ```
+
+   It reuses `Settings.llm_url`, `Settings.llm_model`, `Settings.ollama_proxy_url`, and `Settings.llm_timeout`. The probe uses a fixed controlled prompt that is never printed or returned. The result reports only `target`, `connection`, `category`, `http_status`, `elapsed_seconds`, and `received_bytes`, and exits `0` only when HTTP succeeds with received bytes. Exit code `1` with `category=response_bytes_received` is impossible; a `200` with zero bytes remains `category=empty_response`.
+
+   After each attempt, record the UTC timestamp and the safe result, then correlate manually with the Ollama access log for a matching `/api/generate` request. Repeat the command manually to reproduce intermittent failures. A single isolated result is not a root cause: correlate the four-way boundary (request reached Ollama, Ollama response observed, bytes received, byte count bounded) before drawing any conclusion. Do not infer a cause from `tailscale ping`, a single Ollama log line, or one diagnostic run alone.
 5. In a Railway shell for the integrated web service, run:
 
    ```sh

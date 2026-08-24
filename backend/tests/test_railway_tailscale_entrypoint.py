@@ -8,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import requests
+
 _ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -101,6 +103,396 @@ class RailwayTailscaleEntrypointTest(unittest.TestCase):
         self.assertIn("http_status=200", output.getvalue())
         self.assertIn("received_bytes=0", output.getvalue())
         self.assertIn("category=empty_response", output.getvalue())
+
+
+class RailwayGenerateTransportDiagnosticTest(unittest.TestCase):
+    """Sanitized operator-run generate transport diagnostic.
+
+    The diagnostic must report only ``target``, ``connection``,
+    ``category``, ``http_status``, ``elapsed_seconds`` and
+    ``received_bytes``. It must never print the probe prompt, the
+    response body, the URL, the proxy value, credentials, headers,
+    exception text or tracebacks. The ``requests`` boundary is reused
+    unchanged with ``stream=True`` and ``iter_content`` to count bytes.
+    """
+
+    _PROXY_URL = "socks5h://127.0.0.1:1055"
+    _LLM_URL = "http://100.113.65.40:11434/api/generate"
+    _LLM_MODEL = "qwen2.5-coder:7b-ctx8192"
+
+    def _settings(self, **overrides):
+        return SimpleNamespace(
+            ollama_proxy_url=self._PROXY_URL,
+            embedding_url="http://100.113.65.40:11434/api/embed",
+            embedding_model="all-minilm:latest",
+            embedding_timeout_seconds=30,
+            llm_url=self._LLM_URL,
+            llm_model=self._LLM_MODEL,
+            llm_timeout=180,
+            **overrides,
+        )
+
+    def test_generate_reports_received_bytes_without_response_body(self):
+        from backend.scripts.check_railway_ollama_contracts import (
+            run_transport_diagnostic,
+        )
+
+        response = SimpleNamespace(
+            status_code=200,
+            iter_content=lambda chunk_size: [b"abc", b"de"],
+            close=lambda: None,
+        )
+        output = io.StringIO()
+        with patch(
+            "backend.scripts.check_railway_ollama_contracts.requests.post",
+            return_value=response,
+        ) as post, contextlib.redirect_stdout(output):
+            result = run_transport_diagnostic(
+                self._settings(), target="generate"
+            )
+
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("target=generate", rendered)
+        self.assertIn("connection=connected", rendered)
+        self.assertIn("http_status=200", rendered)
+        self.assertIn("received_bytes=5", rendered)
+        self.assertIn("category=response_bytes_received", rendered)
+        self.assertNotIn("abc", rendered)
+        self.assertNotIn("de", rendered)
+        post.assert_called_once()
+        self.assertEqual(post.call_args.args[0], self._LLM_URL)
+        self.assertEqual(post.call_args.kwargs["stream"], True)
+        self.assertEqual(post.call_args.kwargs["timeout"], 180)
+        self.assertEqual(
+            post.call_args.kwargs["proxies"]["http"],
+            self._PROXY_URL,
+        )
+        self.assertEqual(
+            post.call_args.kwargs["json"]["model"], self._LLM_MODEL
+        )
+        self.assertEqual(post.call_args.kwargs["json"]["stream"], False)
+        self.assertEqual(
+            post.call_args.kwargs["json"]["prompt"], "ok"
+        )
+
+    def test_generate_keeps_zero_byte_response_failed(self):
+        from backend.scripts.check_railway_ollama_contracts import (
+            run_transport_diagnostic,
+        )
+
+        response = SimpleNamespace(
+            status_code=200,
+            iter_content=lambda chunk_size: [],
+            close=lambda: None,
+        )
+        output = io.StringIO()
+        with patch(
+            "backend.scripts.check_railway_ollama_contracts.requests.post",
+            return_value=response,
+        ), contextlib.redirect_stdout(output):
+            result = run_transport_diagnostic(
+                self._settings(), target="generate"
+            )
+
+        self.assertEqual(result, 1)
+        rendered = output.getvalue()
+        self.assertIn("target=generate", rendered)
+        self.assertIn("connection=connected", rendered)
+        self.assertIn("http_status=200", rendered)
+        self.assertIn("received_bytes=0", rendered)
+        self.assertIn("category=empty_response", rendered)
+
+    def test_generate_reports_non_two_xx_as_http_status(self):
+        from backend.scripts.check_railway_ollama_contracts import (
+            run_transport_diagnostic,
+        )
+
+        response = SimpleNamespace(
+            status_code=503,
+            iter_content=lambda chunk_size: [b"server-error-body"],
+            close=lambda: None,
+        )
+        output = io.StringIO()
+        with patch(
+            "backend.scripts.check_railway_ollama_contracts.requests.post",
+            return_value=response,
+        ), contextlib.redirect_stdout(output):
+            result = run_transport_diagnostic(
+                self._settings(), target="generate"
+            )
+
+        self.assertEqual(result, 1)
+        rendered = output.getvalue()
+        self.assertIn("target=generate", rendered)
+        self.assertIn("connection=connected", rendered)
+        self.assertIn("http_status=503", rendered)
+        self.assertIn("category=http_status", rendered)
+        self.assertNotIn("server-error-body", rendered)
+
+    def test_generate_reports_timeout(self):
+        from backend.scripts.check_railway_ollama_contracts import (
+            run_transport_diagnostic,
+        )
+
+        def _raise_timeout(*args, **kwargs):
+            raise requests.exceptions.Timeout("super-secret-leak")
+
+        output = io.StringIO()
+        with patch(
+            "backend.scripts.check_railway_ollama_contracts.requests.post",
+            side_effect=_raise_timeout,
+        ), contextlib.redirect_stdout(output):
+            result = run_transport_diagnostic(
+                self._settings(), target="generate"
+            )
+
+        self.assertEqual(result, 1)
+        rendered = output.getvalue()
+        self.assertIn("target=generate", rendered)
+        self.assertIn("connection=failed", rendered)
+        self.assertIn("http_status=none", rendered)
+        self.assertIn("category=timeout", rendered)
+        self.assertNotIn("super-secret-leak", rendered)
+
+    def test_generate_reports_connection_error(self):
+        from backend.scripts.check_railway_ollama_contracts import (
+            run_transport_diagnostic,
+        )
+
+        def _raise_conn(*args, **kwargs):
+            raise requests.exceptions.ConnectionError("nope-detail-leak")
+
+        output = io.StringIO()
+        with patch(
+            "backend.scripts.check_railway_ollama_contracts.requests.post",
+            side_effect=_raise_conn,
+        ), contextlib.redirect_stdout(output):
+            result = run_transport_diagnostic(
+                self._settings(), target="generate"
+            )
+
+        self.assertEqual(result, 1)
+        rendered = output.getvalue()
+        self.assertIn("target=generate", rendered)
+        self.assertIn("connection=failed", rendered)
+        self.assertIn("http_status=none", rendered)
+        self.assertIn("category=connection_error", rendered)
+        self.assertNotIn("nope-detail-leak", rendered)
+
+    def test_generate_reports_invalid_proxy_configuration(self):
+        from backend.scripts.check_railway_ollama_contracts import (
+            run_transport_diagnostic,
+        )
+
+        settings = SimpleNamespace(
+            ollama_proxy_url="http://127.0.0.1:9050",
+            embedding_url="http://100.113.65.40:11434/api/embed",
+            embedding_model="all-minilm:latest",
+            embedding_timeout_seconds=30,
+            llm_url=self._LLM_URL,
+            llm_model=self._LLM_MODEL,
+            llm_timeout=180,
+        )
+        output = io.StringIO()
+        with patch(
+            "backend.scripts.check_railway_ollama_contracts.requests.post"
+        ) as post, contextlib.redirect_stdout(output):
+            result = run_transport_diagnostic(settings, target="generate")
+
+        self.assertEqual(result, 1)
+        rendered = output.getvalue()
+        self.assertIn("target=generate", rendered)
+        self.assertIn("connection=not_attempted", rendered)
+        self.assertIn("category=invalid_proxy_configuration", rendered)
+        self.assertIn("http_status=none", rendered)
+        self.assertIn("received_bytes=0", rendered)
+        post.assert_not_called()
+
+    def test_generate_closes_response_after_iteration(self):
+        from backend.scripts.check_railway_ollama_contracts import (
+            run_transport_diagnostic,
+        )
+
+        closed = {"called": False}
+
+        def _close():
+            closed["called"] = True
+
+        response = SimpleNamespace(
+            status_code=200,
+            iter_content=lambda chunk_size: [b"x"],
+            close=_close,
+        )
+        with patch(
+            "backend.scripts.check_railway_ollama_contracts.requests.post",
+            return_value=response,
+        ), contextlib.redirect_stdout(io.StringIO()):
+            run_transport_diagnostic(self._settings(), target="generate")
+        self.assertTrue(closed["called"])
+
+    def test_generate_closes_response_on_exception(self):
+        from backend.scripts.check_railway_ollama_contracts import (
+            run_transport_diagnostic,
+        )
+
+        closed = {"called": False}
+
+        def _close():
+            closed["called"] = True
+
+        def _iter_content(chunk_size):
+            raise OSError("super-secret-iter-leak")
+            yield b""  # pragma: no cover - unreachable generator marker
+
+        response = SimpleNamespace(
+            status_code=200,
+            iter_content=_iter_content,
+            close=_close,
+        )
+        with patch(
+            "backend.scripts.check_railway_ollama_contracts.requests.post",
+            return_value=response,
+        ), contextlib.redirect_stdout(io.StringIO()):
+            run_transport_diagnostic(self._settings(), target="generate")
+        self.assertTrue(closed["called"])
+
+    def test_generate_output_omits_prompt_response_url_proxy_secrets(
+        self,
+    ):
+        from backend.scripts.check_railway_ollama_contracts import (
+            _OLLAMA_GENERATE_TRANSPORT_PROBE_PROMPT,
+            run_transport_diagnostic,
+        )
+
+        response_body = b"PROMPT-SENTINEL-LEAK RESPONSE-SENTINEL-LEAK"
+        response = SimpleNamespace(
+            status_code=200,
+            iter_content=lambda chunk_size: [response_body],
+            close=lambda: None,
+        )
+        settings = self._settings()
+        output = io.StringIO()
+        with patch(
+            "backend.scripts.check_railway_ollama_contracts.requests.post",
+            return_value=response,
+        ), contextlib.redirect_stdout(output):
+            run_transport_diagnostic(settings, target="generate")
+
+        rendered = output.getvalue()
+        for forbidden in (
+            _OLLAMA_GENERATE_TRANSPORT_PROBE_PROMPT,
+            "PROMPT-SENTINEL-LEAK",
+            "RESPONSE-SENTINEL-LEAK",
+            self._LLM_URL,
+            "100.113.65.40",
+            self._PROXY_URL,
+            "127.0.0.1:1055",
+            "Authorization",
+            "Bearer",
+            "api_key",
+            "Traceback",
+            "socks5h",
+        ):
+            self.assertNotIn(forbidden, rendered)
+        self.assertIn("target=generate", rendered)
+        self.assertIn("received_bytes=43", rendered)
+
+    def test_generate_unknown_target_raises_value_error(self):
+        from backend.scripts.check_railway_ollama_contracts import (
+            run_transport_diagnostic,
+        )
+
+        with self.assertRaises(ValueError):
+            run_transport_diagnostic(self._settings(), target="bogus")
+
+    def test_generate_target_keeps_proxy_passthrough(self):
+        from backend.scripts.check_railway_ollama_contracts import (
+            run_transport_diagnostic,
+        )
+
+        response = SimpleNamespace(
+            status_code=200,
+            iter_content=lambda chunk_size: [b"{}"],
+            close=lambda: None,
+        )
+        with patch(
+            "backend.scripts.check_railway_ollama_contracts.requests.post",
+            return_value=response,
+        ) as post, contextlib.redirect_stdout(io.StringIO()):
+            run_transport_diagnostic(self._settings(), target="generate")
+        call_kwargs = post.call_args.kwargs
+        self.assertEqual(
+            call_kwargs["proxies"]["http"], self._PROXY_URL
+        )
+        self.assertEqual(
+            call_kwargs["proxies"]["https"], self._PROXY_URL
+        )
+        self.assertTrue(call_kwargs["stream"])
+
+    def test_generate_maps_diagnostic_error_to_request_error(self):
+        from backend.scripts.check_railway_ollama_contracts import (
+            run_transport_diagnostic,
+        )
+
+        for exc_cls in (TypeError, ValueError, OSError):
+            sentinel = f"super-secret-{exc_cls.__name__}-leak"
+
+            def _raise(*args, _exc=exc_cls, _msg=sentinel, **kwargs):
+                raise _exc(_msg)
+
+            output = io.StringIO()
+            with patch(
+                "backend.scripts.check_railway_ollama_contracts.requests.post",
+                side_effect=_raise,
+            ), contextlib.redirect_stdout(output):
+                with self.subTest(exception=exc_cls.__name__):
+                    result = run_transport_diagnostic(
+                        self._settings(), target="generate"
+                    )
+                    rendered = output.getvalue()
+
+            self.assertEqual(result, 1)
+            self.assertIn("target=generate", rendered)
+            self.assertIn("connection=failed", rendered)
+            self.assertIn("http_status=none", rendered)
+            self.assertIn("category=request_error", rendered)
+            self.assertNotIn("diagnostic_error", rendered)
+            self.assertNotIn(sentinel, rendered)
+            output.truncate(0)
+            output.seek(0)
+
+    def test_embed_default_target_remains_compatible(self):
+        from backend.scripts.check_railway_ollama_contracts import (
+            run_transport_diagnostic,
+        )
+
+        response = SimpleNamespace(
+            status_code=200,
+            iter_content=lambda chunk_size: [b"abc"],
+            close=lambda: None,
+        )
+        settings = SimpleNamespace(
+            ollama_proxy_url="socks5h://127.0.0.1:1055",
+            embedding_url="http://100.113.65.40:11434/api/embed",
+            embedding_model="all-minilm:latest",
+            embedding_timeout_seconds=30,
+        )
+        output = io.StringIO()
+        with patch(
+            "backend.scripts.check_railway_ollama_contracts.requests.post",
+            return_value=response,
+        ) as post, contextlib.redirect_stdout(output):
+            result = run_transport_diagnostic(settings)
+
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("transport=embed", rendered)
+        self.assertIn("category=response_bytes_received", rendered)
+        self.assertEqual(
+            post.call_args.args[0],
+            "http://100.113.65.40:11434/api/embed",
+        )
 
 
 class EntrypointMigrationGateTest(unittest.TestCase):
