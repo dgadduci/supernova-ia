@@ -43,6 +43,7 @@ from backend.observability import (
     EVENT_DATABASE_TECHNICAL_FAILURE,
     EVENT_EMBEDDING_REQUEST,
     EVENT_LLM_REQUEST,
+    EVENT_LLM_REQUEST_TRANSPORT_PHASE,
     EVENT_OBSERVABILITY_EMIT_FAILED,
     EVENT_OUTBOUND_OUTCOME,
     EVENT_OUTBOUND_STYLE,
@@ -3724,6 +3725,393 @@ class ProviderInboundStageEventTest(unittest.TestCase):
             component=COMPONENT_WORKER,
             stage="availability",
             outcome="started",
+            stream=_BrokenStream(),
+        )
+        self.assertFalse(ok)
+
+
+class LlmRequestTransportPhaseEventTest(unittest.TestCase):
+    """Closed catalogue / parser / privacy / bounds tests for the
+    ``llm_request_transport_phase`` diagnostic event emitted by the
+    :class:`backend.llm.query_llm.QueryLlm` boundary.
+
+    Coverage:
+
+    * each closed ``phase`` value round-trips through the catalogue
+      with the right ``elapsed_ms`` / ``http_status`` / ``response_bytes``
+      / ``correlation_id`` metadata;
+    * the ``phase`` field is REQUIRED;
+    * unknown phase, negative or oversized ``elapsed_ms``,
+      ``http_status`` / ``response_bytes`` / ``correlation_id``,
+      free-form text or extra catalogue fields are rejected;
+    * the production-log parser (``parse_event``) round-trips a
+      catalogued line and rejects unknown keys;
+    * the payload never leaks customer tokens, prompt text,
+      proxy/URL/credential strings or exception messages;
+    * the helper degrades safely when a caller passes a malformed
+      event.
+    """
+
+    _ALLOWED_PHASES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "request_started",
+            "response_received",
+            "json_extracted",
+            "result_parsed",
+        }
+    )
+
+    def _base_kwargs(self, **overrides: Any) -> dict:
+        kwargs: dict[str, Any] = {
+            "event": EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            "component": COMPONENT_LLM,
+            "phase": "request_started",
+            "elapsed_ms": 0,
+        }
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_phase_request_started_round_trips(self) -> None:
+        payload = build_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="request_started",
+            elapsed_ms=0,
+            correlation_id="SYN-PROV-1",
+        )
+        self.assertEqual(payload["event"], "llm_request_transport_phase")
+        self.assertEqual(payload["component"], "query_llm")
+        self.assertEqual(payload["phase"], "request_started")
+        self.assertEqual(payload["elapsed_ms"], 0)
+        self.assertEqual(payload["correlation_id"], "SYN-PROV-1")
+        self.assertNotIn("outcome", payload)
+        self.assertNotIn("failure_category", payload)
+
+    def test_phase_response_received_with_status(self) -> None:
+        payload = build_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="response_received",
+            elapsed_ms=123,
+            http_status=200,
+        )
+        self.assertEqual(payload["phase"], "response_received")
+        self.assertEqual(payload["http_status"], 200)
+        self.assertEqual(payload["elapsed_ms"], 123)
+        self.assertNotIn("response_bytes", payload)
+
+    def test_phase_json_extracted_with_response_bytes(self) -> None:
+        payload = build_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="json_extracted",
+            elapsed_ms=130,
+            http_status=200,
+            response_bytes=4096,
+        )
+        self.assertEqual(payload["phase"], "json_extracted")
+        self.assertEqual(payload["response_bytes"], 4096)
+
+    def test_phase_result_parsed_carries_metadata(self) -> None:
+        payload = build_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="result_parsed",
+            elapsed_ms=135,
+            http_status=200,
+            response_bytes=4096,
+            correlation_id="SYN-PROV-2",
+        )
+        self.assertEqual(payload["phase"], "result_parsed")
+        self.assertEqual(payload["elapsed_ms"], 135)
+        self.assertEqual(payload["response_bytes"], 4096)
+        self.assertEqual(payload["correlation_id"], "SYN-PROV-2")
+
+    def test_all_four_phases_accepted(self) -> None:
+        for phase in self._ALLOWED_PHASES:
+            payload = build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+                phase=phase,
+                elapsed_ms=0,
+            )
+            self.assertEqual(payload["phase"], phase)
+
+    def test_phase_required(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+            )
+
+    def test_unknown_phase_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+                phase="post_response_hacked",
+            )
+
+    def test_liveness_phase_not_accepted(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+                phase="inbound",
+            )
+
+    def test_transport_phase_not_accepted_by_liveness(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_WORKER_LIVENESS,
+                component=COMPONENT_WORKER,
+                outcome="phase_started",
+                phase="request_started",
+                cycle_index=1,
+            )
+
+    def test_outcome_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+                phase="request_started",
+                outcome="started",
+            )
+
+    def test_failure_category_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+                phase="request_started",
+                failure_category="timeout",
+            )
+
+    def test_exception_type_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+                phase="result_parsed",
+                exception_type="RuntimeError",
+            )
+
+    def test_elapsed_ms_negative_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+                phase="request_started",
+                elapsed_ms=-1,
+            )
+
+    def test_elapsed_ms_oversized_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+                phase="request_started",
+                elapsed_ms=10**12,
+            )
+
+    def test_http_status_out_of_range_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+                phase="response_received",
+                http_status=99,
+            )
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+                phase="response_received",
+                http_status=600,
+            )
+
+    def test_http_status_non_integer_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+                phase="response_received",
+                http_status="200",
+            )
+
+    def test_response_bytes_negative_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+                phase="json_extracted",
+                response_bytes=-1,
+            )
+
+    def test_response_bytes_oversized_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+                phase="json_extracted",
+                response_bytes=20 * 1024 * 1024,
+            )
+
+    def test_response_bytes_non_integer_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+                phase="json_extracted",
+                response_bytes="4096",
+            )
+
+    def test_correlation_id_oversized_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+                phase="request_started",
+                correlation_id="x" * 100,
+            )
+
+    def test_correlation_id_with_control_char_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+                phase="request_started",
+                correlation_id="abc\nleak",
+            )
+
+    def test_phase_with_control_char_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+                phase="request_started\nleak",
+            )
+
+    def test_no_sensitive_payload_leaks(self) -> None:
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="result_parsed",
+            elapsed_ms=42,
+            http_status=200,
+            response_bytes=4096,
+            correlation_id="SYN-PROV-3",
+            stream=sink,
+        )
+        self.assertTrue(ok)
+        line = sink.getvalue()
+        for token in SENTINELS:
+            if token in EVENT_LLM_REQUEST_TRANSPORT_PHASE:
+                continue
+            if token in COMPONENT_LLM:
+                continue
+            self.assertNotIn(token, line)
+
+    def test_no_url_proxy_or_credential_in_payload(self) -> None:
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="response_received",
+            elapsed_ms=100,
+            http_status=200,
+            correlation_id="SYN-PROV-4",
+            stream=sink,
+        )
+        self.assertTrue(ok)
+        line = sink.getvalue()
+        for forbidden in (
+            "socks5h",
+            "127.0.0.1",
+            "user:pass",
+            "secret-host",
+            "Bearer",
+            "+549",
+            "SM-",
+        ):
+            self.assertNotIn(forbidden, line)
+
+    def test_parse_event_round_trips(self) -> None:
+        payload = build_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="json_extracted",
+            elapsed_ms=42,
+            http_status=200,
+            response_bytes=4096,
+            correlation_id="SYN-PROV-5",
+        )
+        line = json.dumps(
+            payload, sort_keys=True, separators=(",", ":")
+        )
+        self.assertEqual(parse_event(line), payload)
+
+    def test_parse_event_rejects_unknown_keys(self) -> None:
+        with self.assertRaises(EventValidationError):
+            parse_event(
+                '{"event":"llm_request_transport_phase","schema_version":1,'
+                '"component":"query_llm","phase":"request_started",'
+                '"timestamp":"2026-08-11T00:00:00+00:00",'
+                '"prompt":"super-secret-prompt"}'
+            )
+
+    def test_emit_event_degrades_on_invalid_phase(self) -> None:
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="hacked",
+            elapsed_ms=0,
+            stream=sink,
+        )
+        self.assertFalse(ok)
+        parsed = json.loads(sink.getvalue().strip())
+        self.assertEqual(parsed["event"], "observability_emit_failed")
+        self.assertEqual(parsed["failure_category"], "validation")
+
+    def test_emit_event_degrades_on_outcome(self) -> None:
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="request_started",
+            elapsed_ms=0,
+            outcome="started",
+            stream=sink,
+        )
+        self.assertFalse(ok)
+        parsed = json.loads(sink.getvalue().strip())
+        self.assertEqual(parsed["event"], "observability_emit_failed")
+
+    def test_emit_event_degrades_on_oversized_response_bytes(self) -> None:
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="json_extracted",
+            response_bytes=20 * 1024 * 1024,
+            stream=sink,
+        )
+        self.assertFalse(ok)
+        parsed = json.loads(sink.getvalue().strip())
+        self.assertEqual(parsed["event"], "observability_emit_failed")
+
+    def test_emit_event_does_not_raise_on_broken_stream(self) -> None:
+        class _BrokenStream:
+            def write(self, _data: str) -> None:
+                raise OSError("simulated stream failure")
+
+        ok = emit_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="request_started",
             stream=_BrokenStream(),
         )
         self.assertFalse(ok)
