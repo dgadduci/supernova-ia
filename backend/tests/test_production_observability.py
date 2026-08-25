@@ -3755,6 +3755,9 @@ class LlmRequestTransportPhaseEventTest(unittest.TestCase):
     _ALLOWED_PHASES: ClassVar[frozenset[str]] = frozenset(
         {
             "request_started",
+            "response_headers_received",
+            "first_body_chunk",
+            "body_completed",
             "response_received",
             "json_extracted",
             "result_parsed",
@@ -3787,18 +3790,82 @@ class LlmRequestTransportPhaseEventTest(unittest.TestCase):
         self.assertNotIn("outcome", payload)
         self.assertNotIn("failure_category", payload)
 
-    def test_phase_response_received_with_status(self) -> None:
+    def test_phase_response_headers_received_with_status(self) -> None:
+        payload = build_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="response_headers_received",
+            elapsed_ms=123,
+            http_status=200,
+        )
+        self.assertEqual(payload["phase"], "response_headers_received")
+        self.assertEqual(payload["http_status"], 200)
+        self.assertEqual(payload["elapsed_ms"], 123)
+        self.assertNotIn("response_bytes", payload)
+        self.assertNotIn("chunk_count", payload)
+
+    def test_phase_first_body_chunk_with_chunk_count(self) -> None:
+        payload = build_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="first_body_chunk",
+            elapsed_ms=125,
+            http_status=200,
+            chunk_count=1,
+        )
+        self.assertEqual(payload["phase"], "first_body_chunk")
+        self.assertEqual(payload["chunk_count"], 1)
+        self.assertEqual(payload["http_status"], 200)
+        self.assertNotIn("response_bytes", payload)
+
+    def test_phase_body_completed_with_chunk_count_and_bytes(self) -> None:
+        payload = build_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="body_completed",
+            elapsed_ms=130,
+            http_status=200,
+            response_bytes=4096,
+            chunk_count=4,
+            correlation_id="SYN-PROV-CH",
+        )
+        self.assertEqual(payload["phase"], "body_completed")
+        self.assertEqual(payload["response_bytes"], 4096)
+        self.assertEqual(payload["chunk_count"], 4)
+        self.assertEqual(payload["correlation_id"], "SYN-PROV-CH")
+
+    def test_historical_response_received_phase_round_trips(self) -> None:
         payload = build_event(
             event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
             component=COMPONENT_LLM,
             phase="response_received",
-            elapsed_ms=123,
+            elapsed_ms=0,
             http_status=200,
+            response_bytes=4096,
+            correlation_id="SYN-PROV-RR",
         )
         self.assertEqual(payload["phase"], "response_received")
         self.assertEqual(payload["http_status"], 200)
-        self.assertEqual(payload["elapsed_ms"], 123)
-        self.assertNotIn("response_bytes", payload)
+        self.assertEqual(payload["response_bytes"], 4096)
+        self.assertEqual(payload["correlation_id"], "SYN-PROV-RR")
+
+    def test_historical_response_received_parse_event_round_trips(
+        self,
+    ) -> None:
+        payload = build_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="response_received",
+            elapsed_ms=12,
+            http_status=200,
+            correlation_id="SYN-PROV-RR-PARSE",
+        )
+        line = json.dumps(
+            payload, sort_keys=True, separators=(",", ":")
+        )
+        parsed = parse_event(line)
+        self.assertEqual(parsed, payload)
+        self.assertEqual(parsed["phase"], "response_received")
 
     def test_phase_json_extracted_with_response_bytes(self) -> None:
         payload = build_event(
@@ -3827,7 +3894,7 @@ class LlmRequestTransportPhaseEventTest(unittest.TestCase):
         self.assertEqual(payload["response_bytes"], 4096)
         self.assertEqual(payload["correlation_id"], "SYN-PROV-2")
 
-    def test_all_four_phases_accepted(self) -> None:
+    def test_all_seven_phases_accepted(self) -> None:
         for phase in self._ALLOWED_PHASES:
             payload = build_event(
                 event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
@@ -4019,7 +4086,7 @@ class LlmRequestTransportPhaseEventTest(unittest.TestCase):
         ok = emit_event(
             event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
             component=COMPONENT_LLM,
-            phase="response_received",
+            phase="response_headers_received",
             elapsed_ms=100,
             http_status=200,
             correlation_id="SYN-PROV-4",
@@ -4060,6 +4127,87 @@ class LlmRequestTransportPhaseEventTest(unittest.TestCase):
                 '"component":"query_llm","phase":"request_started",'
                 '"timestamp":"2026-08-11T00:00:00+00:00",'
                 '"prompt":"super-secret-prompt"}'
+            )
+
+    def test_parse_event_round_trips_chunk_count(self) -> None:
+        payload = build_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="body_completed",
+            elapsed_ms=42,
+            http_status=200,
+            response_bytes=4096,
+            chunk_count=4,
+            correlation_id="SYN-PROV-CC",
+        )
+        line = json.dumps(
+            payload, sort_keys=True, separators=(",", ":")
+        )
+        parsed = parse_event(line)
+        self.assertEqual(parsed["chunk_count"], 4)
+        self.assertEqual(parsed, payload)
+
+    def test_parse_event_rejects_chunk_count_unknown(self) -> None:
+        with self.assertRaises(EventValidationError):
+            parse_event(
+                '{"event":"llm_request_transport_phase","schema_version":1,'
+                '"component":"query_llm","phase":"body_completed",'
+                '"timestamp":"2026-08-11T00:00:00+00:00",'
+                '"chunk_count":"4"}'
+            )
+
+    def test_chunk_count_negative_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+                phase="first_body_chunk",
+                chunk_count=-1,
+            )
+
+    def test_chunk_count_oversized_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+                phase="body_completed",
+                chunk_count=10**9,
+            )
+
+    def test_chunk_count_non_integer_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+                phase="first_body_chunk",
+                chunk_count="1",
+            )
+
+    def test_chunk_count_bool_rejected(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+                phase="first_body_chunk",
+                chunk_count=True,
+            )
+
+    def test_chunk_count_zero_accepted(self) -> None:
+        payload = build_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="body_completed",
+            chunk_count=0,
+        )
+        self.assertEqual(payload["chunk_count"], 0)
+
+    def test_chunk_count_not_admitted_by_other_event(self) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST,
+                component=COMPONENT_LLM,
+                outcome="started",
+                chunk_count=2,
             )
 
     def test_emit_event_degrades_on_invalid_phase(self) -> None:

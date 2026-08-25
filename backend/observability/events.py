@@ -375,6 +375,9 @@ _LIVENESS_CYCLE_OUTCOMES: frozenset[str] = frozenset(
 _LLM_REQUEST_TRANSPORT_PHASES: frozenset[str] = frozenset(
     {
         "request_started",
+        "response_headers_received",
+        "first_body_chunk",
+        "body_completed",
         "response_received",
         "json_extracted",
         "result_parsed",
@@ -443,6 +446,7 @@ _OPTIONAL_FIELDS_BY_EVENT: dict[str, frozenset[str]] = {
             "elapsed_ms",
             "http_status",
             "response_bytes",
+            "chunk_count",
             "correlation_id",
         }
     ),
@@ -534,6 +538,7 @@ _ALLOWED_PAYLOAD_KEYS: frozenset[str] = frozenset(
         "outbox_row_count",
         "stage",
         "response_bytes",
+        "chunk_count",
     }
 )
 
@@ -555,6 +560,7 @@ _MAX_TEMPLATE_VERSION = 64
 _MAX_SHA256_HEX = 64
 _MAX_CYCLE_INDEX = 2**31 - 1
 _MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+_MAX_CHUNK_COUNT = 100_000
 
 
 class EventValidationError(ValueError):
@@ -686,6 +692,10 @@ def _is_safe_optional_field(name: str, value: Any) -> bool:
         if isinstance(value, bool) or not isinstance(value, int):
             return False
         return 0 <= value <= _MAX_RESPONSE_BYTES
+    if name == "chunk_count":
+        if isinstance(value, bool) or not isinstance(value, int):
+            return False
+        return 0 <= value <= _MAX_CHUNK_COUNT
     if name == "stage":
         if not _is_safe_short_string(value, max_length=_MAX_OUTCOME):
             return False
@@ -1298,6 +1308,7 @@ def build_event(
     outbox_row_count: int | None = None,
     stage: str | None = None,
     response_bytes: int | None = None,
+    chunk_count: int | None = None,
 ) -> dict[str, Any]:
     """Validate the input and return the JSON-ready payload.
 
@@ -1853,6 +1864,7 @@ def build_event(
         "response_count": response_count,
         "outbox_row_count": outbox_row_count,
         "response_bytes": response_bytes,
+        "chunk_count": chunk_count,
     }
     for field_name, value in optional_values.items():
         if value is None:
@@ -1971,6 +1983,7 @@ def parse_event(line: str) -> dict[str, Any]:
         outbox_row_count=decoded.get("outbox_row_count"),
         stage=decoded.get("stage"),
         response_bytes=decoded.get("response_bytes"),
+        chunk_count=decoded.get("chunk_count"),
     )
 
 
@@ -2045,6 +2058,7 @@ def emit_event(
     outbox_row_count: int | None = None,
     stage: str | None = None,
     response_bytes: int | None = None,
+    chunk_count: int | None = None,
     stream: Any = None,
 ) -> bool:
     """Build and emit a single JSON event line to the supplied stream.
@@ -2103,6 +2117,7 @@ def emit_event(
             outbox_row_count=outbox_row_count,
             stage=stage,
             response_bytes=response_bytes,
+            chunk_count=chunk_count,
         )
     except EventValidationError as exc:
         try:

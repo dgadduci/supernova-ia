@@ -42,6 +42,7 @@ class _FakeResponse:
         self._body = body
         self.status_code = status_code
         self.text = body
+        self.closed = False
 
     def json(self):
         return {"response": self._body}
@@ -51,6 +52,56 @@ class _FakeResponse:
             err = requests.exceptions.HTTPError(f"{self.status_code} error")
             err.response = self
             raise err
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeStreamingResponse:
+    """Streaming-capable fake response for the ``iter_content`` path.
+
+    The ``inner_body`` constructor argument is the JSON string Ollama
+    stores inside the ``response`` envelope field. The wrapper
+    serialises that inner string with :func:`json.dumps` so the
+    envelope bytes returned through :meth:`iter_content` reconstruct
+    exactly the same envelope string the real Ollama ``/api/generate``
+    path produces with ``stream: false``. ``close`` records the call
+    so success / failure close semantics can be asserted.
+    """
+
+    def __init__(
+        self,
+        inner_body: str,
+        *,
+        status_code: int = 200,
+        chunk_size: int = 4,
+    ) -> None:
+        self._inner_body = inner_body
+        self._envelope = json.dumps({"response": inner_body})
+        self.status_code = status_code
+        self.text = self._envelope
+        self._chunk_size = chunk_size
+        self.closed = False
+        self.iter_calls = 0
+
+    def iter_content(self, chunk_size: int = 8192):
+        self.iter_calls += 1
+        data = self._envelope.encode("utf-8")
+        size = self._chunk_size if self._chunk_size > 0 else chunk_size
+        for i in range(0, len(data), size):
+            yield data[i:i + size]
+
+    def json(self):
+        return {"response": self._inner_body}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            err = requests.exceptions.HTTPError(f"{self.status_code} error")
+            err.response = self
+            raise err
+
+    def close(self):
+        self.closed = True
 
 
 class QueryLlmPayloadTest(unittest.TestCase):
@@ -678,20 +729,23 @@ class QueryLlmProviderBaseExceptionCleanupTest(unittest.TestCase):
 
 class QueryLlmTransportPhaseTest(unittest.TestCase):
     """The :class:`QueryLlm` boundary MUST emit bounded
-    ``llm_request_transport_phase`` observations at the four
+    ``llm_request_transport_phase`` observations at the seven
     transport seams so the Railway operator can correlate the
     ``llm_request`` outcome with the local Ollama access log
     timestamp.
 
     Coverage:
 
-    * successful request emits the four phases in order
-      (``request_started`` -> ``response_received`` ->
-      ``json_extracted`` -> ``result_parsed``) and preserves the
-      existing ``llm_request`` lifecycle;
+    * successful request emits the seven phases in order
+      (``request_started`` -> ``response_headers_received`` ->
+      ``first_body_chunk`` -> ``body_completed`` ->
+      ``response_received`` -> ``json_extracted`` ->
+      ``result_parsed``) and preserves the existing
+      ``llm_request`` lifecycle;
     * transport timeout before response receipt emits only
-      ``request_started`` (no false ``response_received`` /
-      ``json_extracted`` / ``result_parsed``);
+      ``request_started`` (no false ``response_headers_received`` /
+      ``first_body_chunk`` / ``body_completed`` / ``json_extracted``
+      / ``result_parsed``);
     * HTTP, malformed-response and empty-response behaviour remain
       unchanged: the existing failure ``llm_request`` event is
       emitted and only the phases the boundary actually reached are
@@ -729,7 +783,7 @@ class QueryLlmTransportPhaseTest(unittest.TestCase):
             if ev.get("event") == "llm_request_transport_phase"
         ]
 
-    def test_successful_request_emits_four_phases_in_order(self) -> None:
+    def test_successful_request_emits_seven_phases_in_order(self) -> None:
         captured, capture_fn = self._capture_emit_events()
         transport = mock.Mock(
             return_value=_FakeResponse(json.dumps({"ok": True}))
@@ -748,6 +802,9 @@ class QueryLlmTransportPhaseTest(unittest.TestCase):
             self._phases(captured),
             [
                 "request_started",
+                "response_headers_received",
+                "first_body_chunk",
+                "body_completed",
                 "response_received",
                 "json_extracted",
                 "result_parsed",
@@ -777,7 +834,123 @@ class QueryLlmTransportPhaseTest(unittest.TestCase):
         self.assertEqual(lifecycle_events[0]["outcome"], "started")
         self.assertEqual(lifecycle_events[1]["outcome"], "completed")
 
-    def test_response_received_includes_http_status(self) -> None:
+    def test_historical_response_received_phase_remains_accepted(self) -> None:
+        from backend.observability import (
+            COMPONENT_LLM,
+            EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            build_event,
+        )
+
+        payload = build_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="response_received",
+            elapsed_ms=10,
+            http_status=200,
+        )
+        self.assertEqual(payload["phase"], "response_received")
+        self.assertEqual(payload["http_status"], 200)
+
+    def test_response_received_emitted_after_body_completed(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        transport = mock.Mock(
+            return_value=_FakeResponse(json.dumps({"ok": True}))
+        )
+        client = QueryLlm(settings=_settings(), transport=transport)
+        with mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            client.request("hola", correlation_id="SYN-PHASE-RR")
+
+        phase_events = [
+            ev
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+        ]
+        order = [ev["phase"] for ev in phase_events]
+        self.assertIn("response_received", order)
+        body_completed_idx = order.index("body_completed")
+        response_received_idx = order.index("response_received")
+        json_extracted_idx = order.index("json_extracted")
+        result_parsed_idx = order.index("result_parsed")
+        self.assertLess(body_completed_idx, response_received_idx)
+        self.assertLess(response_received_idx, json_extracted_idx)
+        self.assertLess(json_extracted_idx, result_parsed_idx)
+
+        response_received_event = phase_events[response_received_idx]
+        body_completed_event = phase_events[body_completed_idx]
+        self.assertEqual(
+            response_received_event["response_bytes"],
+            body_completed_event["response_bytes"],
+        )
+        self.assertEqual(
+            response_received_event["http_status"],
+            body_completed_event["http_status"],
+        )
+        self.assertEqual(
+            response_received_event["correlation_id"], "SYN-PHASE-RR"
+        )
+
+    def test_partial_body_does_not_emit_response_received(self) -> None:
+        class _PartialBodyStreamingResponse(_FakeStreamingResponse):
+            def iter_content(self, chunk_size: int = 8192):
+                self.iter_calls += 1
+                data = self._envelope.encode("utf-8")
+                half = len(data) // 2
+                yield data[:half]
+                raise requests.exceptions.Timeout("read deadline")
+
+        captured, capture_fn = self._capture_emit_events()
+        response = _PartialBodyStreamingResponse(
+            json.dumps({"ok": True})
+        )
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ):
+            with mock.patch(
+                "backend.llm.query_llm.emit_event",
+                side_effect=capture_fn,
+            ):
+                with self.assertRaises(QueryLlmTimeoutError):
+                    QueryLlm(settings=_settings()).request(
+                        "hola", correlation_id="SYN-PHASE-PARTIAL"
+                    )
+
+        phases = self._phases(captured)
+        self.assertNotIn("response_received", phases)
+        self.assertNotIn("body_completed", phases)
+        self.assertIn("first_body_chunk", phases)
+        self.assertIn("response_headers_received", phases)
+
+    def test_header_only_timeout_does_not_emit_response_received(self) -> None:
+        class _HeaderOnlyStreamingResponse(_FakeStreamingResponse):
+            def iter_content(self, chunk_size: int = 8192):
+                self.iter_calls += 1
+                raise requests.exceptions.Timeout("read deadline")
+
+        captured, capture_fn = self._capture_emit_events()
+        response = _HeaderOnlyStreamingResponse(
+            json.dumps({"ok": True})
+        )
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ):
+            with mock.patch(
+                "backend.llm.query_llm.emit_event",
+                side_effect=capture_fn,
+            ):
+                with self.assertRaises(QueryLlmTimeoutError):
+                    QueryLlm(settings=_settings()).request(
+                        "hola", correlation_id="SYN-PHASE-HEADONLY"
+                    )
+
+        phases = self._phases(captured)
+        self.assertNotIn("response_received", phases)
+        self.assertNotIn("body_completed", phases)
+        self.assertNotIn("first_body_chunk", phases)
+
+    def test_response_headers_received_includes_http_status(self) -> None:
         captured, capture_fn = self._capture_emit_events()
         transport = mock.Mock(
             return_value=_FakeResponse(json.dumps({"ok": True}), status_code=201)
@@ -794,10 +967,12 @@ class QueryLlmTransportPhaseTest(unittest.TestCase):
             for ev in captured
             if ev.get("event") == "llm_request_transport_phase"
         ]
-        response_received = next(
-            ev for ev in phase_events if ev["phase"] == "response_received"
+        headers_event = next(
+            ev
+            for ev in phase_events
+            if ev["phase"] == "response_headers_received"
         )
-        self.assertEqual(response_received["http_status"], 201)
+        self.assertEqual(headers_event["http_status"], 201)
 
     def test_json_extracted_and_result_parsed_include_response_bytes(
         self,
@@ -884,7 +1059,7 @@ class QueryLlmTransportPhaseTest(unittest.TestCase):
             lifecycle_events[1]["correlation_id"], "SYN-PHASE-TO"
         )
 
-    def test_http_error_stops_after_response_received(self) -> None:
+    def test_http_error_stops_after_response_headers_received(self) -> None:
         captured, capture_fn = self._capture_emit_events()
         transport = mock.Mock(
             return_value=_FakeResponse("boom", status_code=503)
@@ -899,7 +1074,7 @@ class QueryLlmTransportPhaseTest(unittest.TestCase):
 
         self.assertEqual(
             self._phases(captured),
-            ["request_started", "response_received"],
+            ["request_started", "response_headers_received"],
         )
 
         lifecycle_events = [
@@ -928,6 +1103,8 @@ class QueryLlmTransportPhaseTest(unittest.TestCase):
             self._phases(captured),
             [
                 "request_started",
+                "response_headers_received",
+                "body_completed",
                 "response_received",
                 "json_extracted",
             ],
@@ -957,6 +1134,9 @@ class QueryLlmTransportPhaseTest(unittest.TestCase):
             self._phases(captured),
             [
                 "request_started",
+                "response_headers_received",
+                "first_body_chunk",
+                "body_completed",
                 "response_received",
                 "json_extracted",
             ],
@@ -1179,6 +1359,647 @@ class QueryLlmTransportPhaseTest(unittest.TestCase):
         self.assertEqual(request_started["elapsed_ms"], 0)
         self.assertNotIn("http_status", request_started)
         self.assertNotIn("response_bytes", request_started)
+
+
+class QueryLlmStreamingResponseTest(unittest.TestCase):
+    """``QueryLlm.request`` MUST observe the real HTTP body receipt
+    boundary through ``requests.post(..., stream=True)`` while
+    keeping the Ollama payload ``stream: false`` unchanged.
+
+    Coverage:
+
+    * ``requests.post`` is called with ``stream=True`` and the
+      payload keeps ``stream: false``;
+    * the streaming fake response emits
+      ``response_headers_received`` -> ``first_body_chunk`` ->
+      ``body_completed`` -> ``json_extracted`` -> ``result_parsed``
+      in order;
+    * ``first_body_chunk`` and ``body_completed`` carry a bounded
+      ``chunk_count`` and ``response_bytes`` while the rest of the
+      phase events stay free of headers / URLs / proxies / prompt /
+      response fragments;
+    * a read timeout during body iteration never fabricates
+      ``body_completed``;
+    * a partial body (one chunk then read timeout) keeps
+      ``first_body_chunk`` and never emits ``body_completed``;
+    * the response is closed on success and on every error path
+      (read timeout, HTTP error, parse failure);
+    * complete body reconstructs the exact same parsed result the
+      previous non-streaming path produced;
+    * existing non-streaming ``_FakeResponse`` stubs still pass
+      through the eager adapter seam without producing a second
+      business path.
+    """
+
+    def setUp(self) -> None:
+        reset_llm_timing_recorder()
+
+    def tearDown(self) -> None:
+        reset_llm_timing_recorder()
+
+    def _capture_emit_events(self) -> tuple[list[dict], object]:
+        captured: list[dict] = []
+
+        def _capture(*, event: str, **kwargs: object) -> bool:
+            from backend.observability.events import build_event
+
+            payload = build_event(event=event, **kwargs)
+            captured.append(payload)
+            return True
+
+        return captured, _capture
+
+    def _phases(self, captured: list[dict]) -> list[str]:
+        return [
+            ev["phase"]
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+        ]
+
+    def _phase(self, captured: list[dict], name: str) -> dict:
+        return next(
+            ev
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+            and ev["phase"] == name
+        )
+
+    def test_requests_post_uses_stream_true_and_keeps_payload_stream_false(
+        self,
+    ) -> None:
+        response = _FakeStreamingResponse(json.dumps({"ok": True}))
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ) as post:
+            QueryLlm(settings=_settings()).request("hola")
+
+        self.assertTrue(post.call_args.kwargs.get("stream"))
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["stream"], False)
+
+    def test_streaming_response_emits_seven_phases_with_chunk_count(
+        self,
+    ) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        response = _FakeStreamingResponse(
+            json.dumps({"ok": True}), chunk_size=4
+        )
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ):
+            with mock.patch(
+                "backend.llm.query_llm.emit_event",
+                side_effect=capture_fn,
+            ):
+                result = QueryLlm(settings=_settings()).request(
+                    "hola", correlation_id="SYN-STREAM-OK"
+                )
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(
+            self._phases(captured),
+            [
+                "request_started",
+                "response_headers_received",
+                "first_body_chunk",
+                "body_completed",
+                "response_received",
+                "json_extracted",
+                "result_parsed",
+            ],
+        )
+
+        first_chunk = self._phase(captured, "first_body_chunk")
+        body_completed = self._phase(captured, "body_completed")
+        self.assertEqual(first_chunk["chunk_count"], 1)
+        self.assertIsInstance(first_chunk["chunk_count"], int)
+        self.assertGreaterEqual(first_chunk["chunk_count"], 0)
+        self.assertIsInstance(body_completed["chunk_count"], int)
+        self.assertGreaterEqual(body_completed["chunk_count"], first_chunk["chunk_count"])
+        self.assertEqual(body_completed["response_bytes"], len(response.text.encode("utf-8")))
+        self.assertEqual(body_completed["http_status"], 200)
+
+        for ev in (
+            first_chunk,
+            body_completed,
+            self._phase(captured, "response_headers_received"),
+        ):
+            self.assertEqual(ev["correlation_id"], "SYN-STREAM-OK")
+            self.assertNotIn("prompt", ev)
+            self.assertNotIn("response", ev)
+            self.assertNotIn("url", ev)
+            self.assertNotIn("proxy", ev)
+            self.assertNotIn("headers", ev)
+
+    def test_streaming_response_chunk_count_matches_received_chunks(
+        self,
+    ) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        response = _FakeStreamingResponse(
+            json.dumps({"intents": ["a", "b"]}),
+            chunk_size=4,
+        )
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ):
+            with mock.patch(
+                "backend.llm.query_llm.emit_event",
+                side_effect=capture_fn,
+            ):
+                QueryLlm(settings=_settings()).request("hola")
+
+        body_completed = self._phase(captured, "body_completed")
+        expected_chunks = (len(response.text.encode("utf-8")) + 3) // 4
+        self.assertEqual(body_completed["chunk_count"], expected_chunks)
+        self.assertGreater(body_completed["chunk_count"], 1)
+
+    def test_streaming_response_closed_on_success(self) -> None:
+        response = _FakeStreamingResponse(json.dumps({"ok": True}))
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ):
+            QueryLlm(settings=_settings()).request("hola")
+        self.assertTrue(response.closed)
+
+    def test_streaming_response_closed_on_http_error(self) -> None:
+        response = _FakeStreamingResponse(
+            json.dumps({"ok": True}), status_code=502
+        )
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ):
+            with self.assertRaises(QueryLlmHttpError):
+                QueryLlm(settings=_settings()).request("hola")
+        self.assertTrue(response.closed)
+
+    def test_streaming_response_closed_on_read_timeout(self) -> None:
+        class _TimeoutStreamingResponse(_FakeStreamingResponse):
+            def iter_content(self, chunk_size: int = 8192):
+                self.iter_calls += 1
+                yield b'{"response":'
+                raise requests.exceptions.Timeout("read deadline")
+
+        response = _TimeoutStreamingResponse(
+            json.dumps({"ok": True}), chunk_size=8
+        )
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ):
+            with self.assertRaises(QueryLlmTimeoutError):
+                QueryLlm(settings=_settings()).request("hola")
+        self.assertTrue(response.closed)
+
+    def test_streaming_read_timeout_does_not_fabricate_body_completed(
+        self,
+    ) -> None:
+        class _ImmediateTimeoutStreamingResponse(_FakeStreamingResponse):
+            def iter_content(self, chunk_size: int = 8192):
+                self.iter_calls += 1
+                raise requests.exceptions.Timeout("read deadline")
+
+        captured, capture_fn = self._capture_emit_events()
+        response = _ImmediateTimeoutStreamingResponse(
+            json.dumps({"ok": True})
+        )
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ):
+            with mock.patch(
+                "backend.llm.query_llm.emit_event",
+                side_effect=capture_fn,
+            ):
+                with self.assertRaises(QueryLlmTimeoutError):
+                    QueryLlm(settings=_settings()).request(
+                        "hola", correlation_id="SYN-STREAM-HEAD"
+                    )
+
+        self.assertEqual(
+            self._phases(captured),
+            [
+                "request_started",
+                "response_headers_received",
+            ],
+        )
+
+    def test_streaming_partial_body_keeps_first_chunk_no_completed(
+        self,
+    ) -> None:
+        class _PartialBodyStreamingResponse(_FakeStreamingResponse):
+            def iter_content(self, chunk_size: int = 8192):
+                self.iter_calls += 1
+                data = self._envelope.encode("utf-8")
+                half = len(data) // 2
+                yield data[:half]
+                raise requests.exceptions.Timeout("read deadline")
+
+        captured, capture_fn = self._capture_emit_events()
+        response = _PartialBodyStreamingResponse(
+            json.dumps({"ok": True})
+        )
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ):
+            with mock.patch(
+                "backend.llm.query_llm.emit_event",
+                side_effect=capture_fn,
+            ):
+                with self.assertRaises(QueryLlmTimeoutError):
+                    QueryLlm(settings=_settings()).request("hola")
+
+        self.assertEqual(
+            self._phases(captured),
+            [
+                "request_started",
+                "response_headers_received",
+                "first_body_chunk",
+            ],
+        )
+        first_chunk = self._phase(captured, "first_body_chunk")
+        self.assertEqual(first_chunk["chunk_count"], 1)
+
+    def test_streaming_complete_body_matches_previous_parsed_result(
+        self,
+    ) -> None:
+        inner_body = json.dumps(
+            {"intents": [{"name": "agregar_producto", "qty": 1}]}
+        )
+        streaming_response = _FakeStreamingResponse(inner_body, chunk_size=4)
+        eager_response = _FakeResponse(inner_body)
+
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=streaming_response
+        ):
+            streaming_result = QueryLlm(settings=_settings()).request("hola")
+
+        transport = mock.Mock(return_value=eager_response)
+        eager_result = QueryLlm(settings=_settings(), transport=transport).request(
+            "hola"
+        )
+
+        self.assertEqual(streaming_result, eager_result)
+
+    def test_streaming_empty_body_raises_response_error_and_completes_body_phase(
+        self,
+    ) -> None:
+        class _EmptyStreamingResponse(_FakeStreamingResponse):
+            def __init__(self) -> None:
+                super().__init__("", chunk_size=4)
+                self._envelope = ""
+
+        captured, capture_fn = self._capture_emit_events()
+        response = _EmptyStreamingResponse()
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ):
+            with mock.patch(
+                "backend.llm.query_llm.emit_event",
+                side_effect=capture_fn,
+            ):
+                with self.assertRaises(QueryLlmResponseError):
+                    QueryLlm(settings=_settings()).request("hola")
+
+        self.assertEqual(
+            self._phases(captured),
+            [
+                "request_started",
+                "response_headers_received",
+                "body_completed",
+                "response_received",
+                "json_extracted",
+            ],
+        )
+        body_completed = self._phase(captured, "body_completed")
+        self.assertEqual(body_completed["chunk_count"], 0)
+        self.assertEqual(body_completed["response_bytes"], 0)
+        self.assertTrue(response.closed)
+
+    def test_chunk_count_validator_rejects_negative(self) -> None:
+        from backend.observability.events import build_event
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event="llm_request_transport_phase",
+                component="query_llm",
+                phase="first_body_chunk",
+                chunk_count=-1,
+            )
+
+    def test_chunk_count_validator_rejects_oversized(self) -> None:
+        from backend.observability.events import build_event
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event="llm_request_transport_phase",
+                component="query_llm",
+                phase="body_completed",
+                chunk_count=10**9,
+            )
+
+    def test_chunk_count_validator_rejects_non_integer(self) -> None:
+        from backend.observability.events import build_event
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event="llm_request_transport_phase",
+                component="query_llm",
+                phase="first_body_chunk",
+                chunk_count="1",
+            )
+
+    def test_phase_emitter_failure_does_not_swallow_streaming_read_timeout(
+        self,
+    ) -> None:
+        class _BoomStreamingResponse(_FakeStreamingResponse):
+            def iter_content(self, chunk_size: int = 8192):
+                self.iter_calls += 1
+                raise requests.exceptions.Timeout("read deadline")
+
+        def _boom_transport_phase_only(**kwargs):
+            if kwargs.get("event") == "llm_request_transport_phase":
+                raise RuntimeError("phase emitter boom")
+            return True
+
+        response = _BoomStreamingResponse(json.dumps({"ok": True}))
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ):
+            with mock.patch(
+                "backend.llm.query_llm.emit_event",
+                side_effect=_boom_transport_phase_only,
+            ):
+                with self.assertRaises(QueryLlmTimeoutError):
+                    QueryLlm(settings=_settings()).request("hola")
+        self.assertTrue(response.closed)
+
+
+class QueryLlmNonDictEnvelopeRegressionTest(unittest.TestCase):
+    """The streaming branch must preserve the previous
+    ``response.json()`` semantics: a JSON-decodable envelope that
+    is NOT an object (``[]``, ``null``, number, string) must
+    surface as an empty body that ``_parse`` rejects with
+    ``QueryLlmResponseError``. A non-JSON envelope must still
+    fall back to the raw envelope text so ``_parse`` can recover
+    the first balanced JSON object.
+
+    Both the streaming (``iter_content``) and eager adapter
+    (``response.json()``) seams must honour the same contract.
+    """
+
+    def setUp(self) -> None:
+        reset_llm_timing_recorder()
+
+    def tearDown(self) -> None:
+        reset_llm_timing_recorder()
+
+    def _streaming_response_with_envelope(
+        self, envelope_text: str
+    ) -> _FakeStreamingResponse:
+        """Build a streaming response whose ``iter_content``
+        yields exactly ``envelope_text`` (not wrapped in the
+        Ollama ``{"response": ...}`` envelope)."""
+
+        class _RawEnvelopeStreamingResponse(_FakeStreamingResponse):
+            def __init__(self) -> None:
+                super().__init__("", chunk_size=4)
+                self._envelope = envelope_text
+
+        return _RawEnvelopeStreamingResponse()
+
+    def test_streaming_empty_array_envelope_is_rejected(
+        self,
+    ) -> None:
+        response = self._streaming_response_with_envelope("[]")
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ):
+            with self.assertRaises(QueryLlmResponseError):
+                QueryLlm(settings=_settings()).request("hola")
+        self.assertTrue(response.closed)
+
+    def test_streaming_null_envelope_is_rejected(self) -> None:
+        response = self._streaming_response_with_envelope("null")
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ):
+            with self.assertRaises(QueryLlmResponseError):
+                QueryLlm(settings=_settings()).request("hola")
+        self.assertTrue(response.closed)
+
+    def test_streaming_number_envelope_is_rejected(self) -> None:
+        response = self._streaming_response_with_envelope("42")
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ):
+            with self.assertRaises(QueryLlmResponseError):
+                QueryLlm(settings=_settings()).request("hola")
+        self.assertTrue(response.closed)
+
+    def test_streaming_string_envelope_is_rejected(self) -> None:
+        response = self._streaming_response_with_envelope('"hello"')
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ):
+            with self.assertRaises(QueryLlmResponseError):
+                QueryLlm(settings=_settings()).request("hola")
+        self.assertTrue(response.closed)
+
+    def test_eager_empty_array_envelope_is_rejected(self) -> None:
+        class _RawJsonArrayResponse(_FakeResponse):
+            def json(self):
+                return []
+
+        response = _RawJsonArrayResponse("[]")
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ):
+            with self.assertRaises(QueryLlmResponseError):
+                QueryLlm(settings=_settings()).request("hola")
+        self.assertTrue(response.closed)
+
+    def test_eager_null_envelope_is_rejected(self) -> None:
+        class _RawJsonNullResponse(_FakeResponse):
+            def json(self):
+                return None
+
+        response = _RawJsonNullResponse("null")
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ):
+            with self.assertRaises(QueryLlmResponseError):
+                QueryLlm(settings=_settings()).request("hola")
+        self.assertTrue(response.closed)
+
+    def test_streaming_non_json_envelope_falls_back_to_parse(
+        self,
+    ) -> None:
+        response = self._streaming_response_with_envelope(
+            'prelude {"intents": []} postlude'
+        )
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ):
+            result = QueryLlm(settings=_settings()).request("hola")
+        self.assertEqual(result, {"intents": []})
+        self.assertTrue(response.closed)
+
+
+class QueryLlmStreamingExceptionMappingTest(unittest.TestCase):
+    """The streaming ``iter_content`` reading must classify the
+    same Requests failure modes as the initial ``requests.post``
+    call: ``Timeout`` → ``QueryLlmTimeoutError`` and
+    ``ConnectionError`` → ``QueryLlmConnectionError``.
+
+    Coverage:
+
+    * ``requests.exceptions.Timeout`` raised mid-iteration keeps
+      ``QueryLlmTimeoutError`` (does not fall through to the
+      generic ``QueryLlmError``).
+    * ``requests.exceptions.ConnectionError`` raised mid-iteration
+      keeps ``QueryLlmConnectionError`` (does not fall through to
+      the generic ``QueryLlmError``).
+    * ``requests.exceptions.ChunkedEncodingError`` (a
+      ``ConnectionError`` subclass Requests sometimes uses for a
+      read-timeout during streaming) classifies as
+      ``QueryLlmConnectionError`` so the contract stays
+      consistent with the previous non-streaming seam.
+    * The response is closed in every error path; no retry or
+      second request is performed.
+    """
+
+    def setUp(self) -> None:
+        reset_llm_timing_recorder()
+
+    def tearDown(self) -> None:
+        reset_llm_timing_recorder()
+
+    def _capture_emit_events(self) -> tuple[list[dict], object]:
+        captured: list[dict] = []
+
+        def _capture(*, event: str, **kwargs: object) -> bool:
+            from backend.observability.events import build_event
+
+            payload = build_event(event=event, **kwargs)
+            captured.append(payload)
+            return True
+
+        return captured, _capture
+
+    def _phases(self, captured: list[dict]) -> list[str]:
+        return [
+            ev["phase"]
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+        ]
+
+    def test_streaming_timeout_preserves_query_llm_timeout_error(
+        self,
+    ) -> None:
+        class _StreamingTimeoutResponse(_FakeStreamingResponse):
+            def iter_content(self, chunk_size: int = 8192):
+                self.iter_calls += 1
+                yield b'{"response":'
+                raise requests.exceptions.Timeout("read deadline")
+
+        response = _StreamingTimeoutResponse(json.dumps({"ok": True}))
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ):
+            with self.assertRaises(QueryLlmTimeoutError):
+                QueryLlm(settings=_settings()).request("hola")
+        self.assertTrue(response.closed)
+
+    def test_streaming_connection_error_preserves_query_llm_connection_error(
+        self,
+    ) -> None:
+        class _StreamingConnectionErrorResponse(_FakeStreamingResponse):
+            def iter_content(self, chunk_size: int = 8192):
+                self.iter_calls += 1
+                yield b'{"response":'
+                raise requests.exceptions.ConnectionError(
+                    "stream connection lost"
+                )
+
+        captured, capture_fn = self._capture_emit_events()
+        response = _StreamingConnectionErrorResponse(
+            json.dumps({"ok": True})
+        )
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ):
+            with mock.patch(
+                "backend.llm.query_llm.emit_event",
+                side_effect=capture_fn,
+            ):
+                with self.assertRaises(QueryLlmConnectionError):
+                    QueryLlm(settings=_settings()).request(
+                        "hola", correlation_id="SYN-STREAM-CE"
+                    )
+
+        self.assertEqual(
+            self._phases(captured),
+            [
+                "request_started",
+                "response_headers_received",
+                "first_body_chunk",
+            ],
+        )
+        self.assertTrue(response.closed)
+
+    def test_streaming_chunked_encoding_error_classifies_as_connection_error(
+        self,
+    ) -> None:
+        class _StreamingChunkedEncodingResponse(_FakeStreamingResponse):
+            def iter_content(self, chunk_size: int = 8192):
+                self.iter_calls += 1
+                yield b'{"response":'
+                raise requests.exceptions.ChunkedEncodingError(
+                    "stream cut mid-response"
+                )
+
+        response = _StreamingChunkedEncodingResponse(
+            json.dumps({"ok": True})
+        )
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ):
+            with self.assertRaises(QueryLlmConnectionError):
+                QueryLlm(settings=_settings()).request("hola")
+        self.assertTrue(response.closed)
+
+    def test_streaming_read_timeout_subclass_preserves_timeout_error(
+        self,
+    ) -> None:
+        class _StreamingReadTimeoutResponse(_FakeStreamingResponse):
+            def iter_content(self, chunk_size: int = 8192):
+                self.iter_calls += 1
+                raise requests.exceptions.ReadTimeout("read deadline")
+
+        response = _StreamingReadTimeoutResponse(
+            json.dumps({"ok": True})
+        )
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ):
+            with self.assertRaises(QueryLlmTimeoutError):
+                QueryLlm(settings=_settings()).request("hola")
+        self.assertTrue(response.closed)
+
+    def test_streaming_unexpected_exception_still_wraps_into_query_llm_error(
+        self,
+    ) -> None:
+        class _StreamingRuntimeErrorResponse(_FakeStreamingResponse):
+            def iter_content(self, chunk_size: int = 8192):
+                self.iter_calls += 1
+                raise RuntimeError("non-requests exception")
+
+        response = _StreamingRuntimeErrorResponse(
+            json.dumps({"ok": True})
+        )
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ):
+            with self.assertRaises(QueryLlmError) as ctx:
+                QueryLlm(settings=_settings()).request("hola")
+        self.assertNotIsInstance(ctx.exception, QueryLlmTimeoutError)
+        self.assertNotIsInstance(ctx.exception, QueryLlmConnectionError)
+        self.assertTrue(response.closed)
 
 
 if __name__ == "__main__":

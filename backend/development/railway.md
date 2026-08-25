@@ -236,6 +236,65 @@ outbound row. The auditor labels it as an observation and does **not**
 infer a root cause; correlate it manually with the Railway log timeline
 and with the Twilio message status before drawing any conclusion.
 
+### `llm_request_transport_phase` closed vocabulary
+
+The `:class:`backend.llm.query_llm.QueryLlm`` boundary emits a closed,
+privacy-safe sequence of `llm_request_transport_phase` events so the
+operator can locate the last client-visible HTTP boundary the integrated
+worker reached on every turn. The sequence uses Requests response
+streaming only as an observation seam; the Ollama payload remains
+`"stream": false` and the parsed business contract is unchanged.
+
+The closed vocabulary has seven tokens; six of them are observed
+during a successful turn and `response_received` is both observed on
+success and retained as the historical compatibility token the
+diagnostic emits after `body_completed` to preserve the previous
+non-streaming `response_received` semantics:
+
+1. `request_started` — `requests.post` was issued (no body bytes yet).
+2. `response_headers_received` — the response status line and headers
+   reached the client. Carries `http_status` (and only `http_status`
+   besides `elapsed_ms` and `correlation_id`).
+3. `first_body_chunk` — the first non-empty body chunk returned by
+   `iter_content`. Carries `chunk_count=1`. Emitted at most once.
+4. `body_completed` — the body iterator finished normally (no read
+   timeout, no chunked-encoding error). Carries the final bounded
+   `chunk_count` and `response_bytes`.
+5. `response_received` — historical compatibility token. In the
+   streaming path it now signals that the full HTTP response was
+   received (i.e. emitted only after `body_completed`, before
+   `json_extracted`). The parser continues to accept historical
+   `response_received` lines from the previous non-streaming
+   release.
+6. `json_extracted` — the Ollama JSON envelope was decoded into the
+   inner `response` field.
+7. `result_parsed` — `_parse` returned a dict (the worker is the only
+   caller that reads the result).
+
+`response_headers_received` reports headers available; `response_received`
+reports body fully received. The two are deliberately distinct so
+operators can correlate a partial body trace with the previous
+release's `response_received` semantics.
+
+Any other phase token is rejected by `build_event`. If `iter_content`
+raises before the iterator finishes, the trace stops at the last
+reached phase and never fabricates `body_completed`, `response_received`,
+`json_extracted` or `result_parsed`. If `requests.post` raises before
+headers arrive, the trace stops at `request_started`.
+
+Allowed optional fields are limited to `elapsed_ms`, `http_status`,
+`response_bytes`, `chunk_count` and the existing opaque correlation
+identifier. The emission path is fail-soft: a misconfigured emitter
+cannot break the surrounding business flow.
+
+The streaming `iter_content` reader classifies `requests.exceptions`
+in the same way the initial `requests.post` call does: `Timeout`
+becomes `QueryLlmTimeoutError`, `ConnectionError` (including
+`ChunkedEncodingError` and other subclasses Requests uses for a
+read-timeout during streaming) becomes `QueryLlmConnectionError`. The
+classification is centralised so the historical contract remains
+identical on every code path; no retry or second request is added.
+
 ### What the CLI does not do
 
 * It does not read stdout from `supernova-ia`. Correlate the printed
