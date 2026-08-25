@@ -354,7 +354,14 @@ _EVENTS_WITH_COMMERCE_INSTALLATION_FIELDS: frozenset[str] = frozenset(
 # provider/customers identifiers, runner names or caller-supplied
 # labels.
 _LIVENESS_PHASES: frozenset[str] = frozenset(
-    {"readiness", "inbound", "outbound", "sleep"}
+    {
+        "readiness",
+        "inbound",
+        "inbound_runner",
+        "outbound",
+        "cycle_summary",
+        "sleep",
+    }
 )
 _LIVENESS_PHASE_OUTCOMES: frozenset[str] = frozenset(
     {"phase_started", "phase_completed", "phase_failed"}

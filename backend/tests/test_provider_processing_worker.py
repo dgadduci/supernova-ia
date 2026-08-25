@@ -2561,9 +2561,13 @@ class WorkerLivenessReadyCycleTest(unittest.TestCase):
             outcomes,
             [
                 ("inbound", "phase_started"),
+                ("inbound_runner", "phase_started"),
+                ("inbound_runner", "phase_completed"),
                 ("inbound", "phase_completed"),
                 ("outbound", "phase_started"),
                 ("outbound", "phase_completed"),
+                ("cycle_summary", "phase_started"),
+                ("cycle_summary", "phase_completed"),
             ],
             f"unexpected liveness sequence: {outcomes}",
         )
@@ -2608,9 +2612,13 @@ class WorkerLivenessReadyCycleTest(unittest.TestCase):
                 ("readiness", "phase_started"),
                 ("readiness", "phase_completed"),
                 ("inbound", "phase_started"),
+                ("inbound_runner", "phase_started"),
+                ("inbound_runner", "phase_completed"),
                 ("inbound", "phase_completed"),
                 ("outbound", "phase_started"),
                 ("outbound", "phase_completed"),
+                ("cycle_summary", "phase_started"),
+                ("cycle_summary", "phase_completed"),
                 (None, "cycle_completed"),
                 ("sleep", "phase_started"),
                 ("sleep", "phase_completed"),
@@ -2730,6 +2738,8 @@ class WorkerLivenessNotReadyCycleTest(unittest.TestCase):
                 ("readiness", "phase_completed"),
                 ("outbound", "phase_started"),
                 ("outbound", "phase_completed"),
+                ("cycle_summary", "phase_started"),
+                ("cycle_summary", "phase_completed"),
                 (None, "cycle_completed"),
             ],
             f"unexpected liveness sequence: {outcomes}",
@@ -2803,14 +2813,22 @@ class WorkerLivenessPhaseFailureTest(unittest.TestCase):
             for event in liveness
             if event.get("outcome") == "phase_failed"
         ]
-        self.assertEqual(len(failed), 1)
-        event = failed[0]
-        self.assertEqual(event["phase"], "inbound")
-        self.assertEqual(event["failure_category"], "worker_exception")
-        self.assertEqual(event["exception_type"], "RuntimeError")
-        self.assertEqual(event["cycle_index"], 1)
-        self.assertIsInstance(event["elapsed_ms"], int)
-        self.assertGreaterEqual(event["elapsed_ms"], 0)
+        self.assertEqual(
+            len(failed),
+            2,
+            "inbound raise MUST surface as both inbound_runner and "
+            "inbound phase_failed",
+        )
+        self.assertEqual(
+            [event["phase"] for event in failed],
+            ["inbound_runner", "inbound"],
+        )
+        for event in failed:
+            self.assertEqual(event["failure_category"], "worker_exception")
+            self.assertEqual(event["exception_type"], "RuntimeError")
+            self.assertEqual(event["cycle_index"], 1)
+            self.assertIsInstance(event["elapsed_ms"], int)
+            self.assertGreaterEqual(event["elapsed_ms"], 0)
 
         completed = [
             event
@@ -2832,6 +2850,17 @@ class WorkerLivenessPhaseFailureTest(unittest.TestCase):
             cycle_completed,
             [],
             "cycle_completed must NOT be emitted when a phase fails",
+        )
+
+        cycle_summary = [
+            event
+            for event in liveness
+            if event.get("phase") == "cycle_summary"
+        ]
+        self.assertEqual(
+            cycle_summary,
+            [],
+            "cycle_summary MUST NOT be emitted when the inbound pass fails",
         )
 
     def test_outbound_runner_exception_emits_phase_failed(self) -> None:
@@ -2877,8 +2906,9 @@ class WorkerLivenessPhaseFailureTest(unittest.TestCase):
         ]
         self.assertEqual(
             [event.get("phase") for event in completed],
-            ["inbound"],
-            "inbound phase_completed is allowed, outbound must NOT",
+            ["inbound_runner", "inbound"],
+            "inbound_runner and inbound phase_completed are allowed, "
+            "outbound must NOT",
         )
 
     def test_no_phase_completed_after_failure(self) -> None:
@@ -3310,9 +3340,13 @@ class WorkerInboundTimeoutTest(unittest.TestCase):
             outcomes,
             [
                 ("inbound", "phase_started"),
+                ("inbound_runner", "phase_started"),
+                ("inbound_runner", "phase_completed"),
                 ("inbound", "phase_completed"),
                 ("outbound", "phase_started"),
                 ("outbound", "phase_completed"),
+                ("cycle_summary", "phase_started"),
+                ("cycle_summary", "phase_completed"),
             ],
         )
 
@@ -3360,9 +3394,12 @@ class WorkerInboundTimeoutTest(unittest.TestCase):
             outcomes,
             [
                 ("inbound", "phase_started"),
+                ("inbound_runner", "phase_started"),
+                ("inbound_runner", "phase_failed"),
                 ("inbound", "phase_failed"),
             ],
-            "timeout MUST emit phase_failed only; no phase_completed, no outbound",
+            "timeout MUST emit inbound_runner and inbound failure only; "
+            "no phase_completed, no outbound, no cycle_summary",
         )
 
         failed = [
@@ -3370,15 +3407,22 @@ class WorkerInboundTimeoutTest(unittest.TestCase):
             for event in liveness
             if event.get("outcome") == "phase_failed"
         ]
-        self.assertEqual(len(failed), 1)
-        event = failed[0]
-        self.assertEqual(event["phase"], "inbound")
-        self.assertEqual(event["failure_category"], "worker_exception")
         self.assertEqual(
-            event["exception_type"], "_InboundTimeoutError"
+            len(failed),
+            2,
+            "timeout MUST emit both inbound_runner and inbound failure",
         )
-        self.assertEqual(event["cycle_index"], 3)
-        self.assertIsInstance(event["elapsed_ms"], int)
+        self.assertEqual(
+            [event["phase"] for event in failed],
+            ["inbound_runner", "inbound"],
+        )
+        for event in failed:
+            self.assertEqual(event["failure_category"], "worker_exception")
+            self.assertEqual(
+                event["exception_type"], "_InboundTimeoutError"
+            )
+            self.assertEqual(event["cycle_index"], 3)
+            self.assertIsInstance(event["elapsed_ms"], int)
 
         completed = [
             event
@@ -3400,6 +3444,17 @@ class WorkerInboundTimeoutTest(unittest.TestCase):
             cycle_completed,
             [],
             "cycle_completed MUST NOT be emitted after a timeout",
+        )
+
+        cycle_summary = [
+            event
+            for event in liveness
+            if event.get("phase") == "cycle_summary"
+        ]
+        self.assertEqual(
+            cycle_summary,
+            [],
+            "cycle_summary MUST NOT be emitted when the inbound pass times out",
         )
 
     def test_inbound_timeout_restores_signal_handler(self) -> None:
@@ -3785,9 +3840,12 @@ class WorkerInboundTimeoutTraversesInboundCliTest(unittest.TestCase):
             outcomes,
             [
                 ("inbound", "phase_started"),
+                ("inbound_runner", "phase_started"),
+                ("inbound_runner", "phase_failed"),
                 ("inbound", "phase_failed"),
             ],
-            "timeout MUST emit phase_failed only; no phase_completed, no outbound",
+            "timeout MUST emit inbound_runner and inbound failure "
+            "only; no phase_completed, no outbound, no cycle_summary",
         )
         failed = liveness[-1]
         self.assertEqual(failed["failure_category"], "worker_exception")
@@ -3795,6 +3853,22 @@ class WorkerInboundTimeoutTraversesInboundCliTest(unittest.TestCase):
             failed["exception_type"], "_InboundTimeoutError"
         )
         self.assertEqual(failed["cycle_index"], 9)
+        runner_failed = [
+            event
+            for event in liveness
+            if event.get("phase") == "inbound_runner"
+            and event.get("outcome") == "phase_failed"
+        ]
+        self.assertEqual(len(runner_failed), 1)
+        self.assertEqual(
+            runner_failed[0]["exception_type"], "_InboundTimeoutError"
+        )
+        cycle_summary = [
+            event
+            for event in liveness
+            if event.get("phase") == "cycle_summary"
+        ]
+        self.assertEqual(cycle_summary, [])
 
     def test_worker_supervisor_receives_timeout_from_inbound_cli(
         self,
@@ -3919,6 +3993,681 @@ class WorkerInboundTimeoutSettingsTest(unittest.TestCase):
                 inbound_timeout_seconds=120,
             )
         )
+
+
+class WorkerLivenessDiagnosticPhasesTest(unittest.TestCase):
+    """Focused coverage for the nested diagnostic phases
+    (``inbound_runner`` and ``cycle_summary``) introduced by the
+    ``diagnose-provider-worker-progress-stall`` change.
+
+    The contract is narrow:
+
+    * the ``inbound_runner`` phase evidence is nested inside the
+      existing outer ``inbound`` phase and starts only after SIGALRM
+      is installed and the timer is armed;
+    * the ``cycle_summary`` phase evidence is emitted immediately
+      before and after the existing ``cycle_summary_writer`` call
+      and sits between the outbound phase completion and
+      ``cycle_completed``;
+    * a failing ``inbound_runner`` or ``cycle_summary_writer`` MUST
+      surface as a ``phase_failed`` with safe metadata, MUST NOT
+      fabricate a ``phase_completed`` afterwards and MUST propagate
+      the original exception through the existing supervisor path;
+    * the fail-soft ``emit_event`` path MUST NOT re-invoke a
+      runner or writer, MUST NOT alter the previous behavior and
+      MUST NOT touch the inbound timeout or signal restoration
+      semantics.
+    """
+
+    def setUp(self) -> None:
+        self._previous_sigterm = signal.getsignal(signal.SIGTERM)
+        self._previous_sigint = signal.getsignal(signal.SIGINT)
+
+    def tearDown(self) -> None:
+        signal.signal(signal.SIGTERM, self._previous_sigterm)
+        signal.signal(signal.SIGINT, self._previous_sigint)
+        signal.setitimer(signal.ITIMER_REAL, 0)
+
+    def test_normal_cycle_nests_inbound_runner_and_emits_cycle_summary(
+        self,
+    ) -> None:
+        """The diagnostic contract: a normal ready cycle emits
+        ``inbound_runner`` evidence nested inside ``inbound`` and
+        emits ``cycle_summary`` evidence after the outbound phase
+        completion and before ``cycle_completed``. The terminal
+        ``phase_completed`` events for both diagnostic phases MUST
+        carry a bounded ``elapsed_ms`` integer so Railway operators
+        can correlate the duration of the inner runner pass and the
+        summary writer call exactly as they already do for the
+        outer ``inbound`` / ``outbound`` / ``sleep`` phases.
+        """
+        inbound_calls: list[int] = []
+        outbound_calls: list[int] = []
+        writer_calls: list[dict[str, Any]] = []
+
+        def _inbound(bound: int) -> int:
+            inbound_calls.append(bound)
+            return 0
+
+        def _outbound(bound: int) -> int:
+            outbound_calls.append(bound)
+            return 0
+
+        def _writer(summary: dict[str, Any]) -> None:
+            writer_calls.append(summary)
+
+        with _capture_stdout() as stdout:
+            summary = run_cycle(
+                settings=_settings(inbound_bound=3, outbound_bound=12),
+                cycle_index=1,
+                inbound_runner=_inbound,
+                outbound_runner=_outbound,
+                sleep_decision=lambda _settings, _cycle: False,
+                cycle_summary_writer=_writer,
+            )
+
+        self.assertEqual(inbound_calls, [3])
+        self.assertEqual(outbound_calls, [12])
+        self.assertEqual(writer_calls, [summary])
+
+        liveness = _liveness_events(stdout.getvalue())
+        outcomes = [
+            (event.get("phase"), event.get("outcome"))
+            for event in liveness
+        ]
+        self.assertEqual(
+            outcomes,
+            [
+                ("inbound", "phase_started"),
+                ("inbound_runner", "phase_started"),
+                ("inbound_runner", "phase_completed"),
+                ("inbound", "phase_completed"),
+                ("outbound", "phase_started"),
+                ("outbound", "phase_completed"),
+                ("cycle_summary", "phase_started"),
+                ("cycle_summary", "phase_completed"),
+            ],
+            f"unexpected liveness sequence: {outcomes}",
+        )
+
+        # ``phase_completed(inbound_runner)`` and
+        # ``phase_completed(cycle_summary)`` are the new diagnostic
+        # terminal events; each MUST carry a non-negative integer
+        # ``elapsed_ms`` so the measurement remains consistent with
+        # the existing ``inbound`` / ``outbound`` / ``sleep``
+        # terminals.
+        completed_by_phase = {
+            event.get("phase"): event
+            for event in liveness
+            if event.get("outcome") == "phase_completed"
+        }
+        self.assertIn("inbound_runner", completed_by_phase)
+        self.assertIn("cycle_summary", completed_by_phase)
+        for phase_name in ("inbound_runner", "cycle_summary"):
+            event = completed_by_phase[phase_name]
+            self.assertIn(
+                "elapsed_ms",
+                event,
+                f"phase_completed({phase_name}) MUST include elapsed_ms",
+            )
+            elapsed_ms = event["elapsed_ms"]
+            self.assertIsInstance(
+                elapsed_ms,
+                int,
+                f"phase_completed({phase_name}) MUST carry an integer "
+                f"elapsed_ms, got {type(elapsed_ms).__name__}: {elapsed_ms!r}",
+            )
+            self.assertGreaterEqual(
+                elapsed_ms,
+                0,
+                f"phase_completed({phase_name}) elapsed_ms MUST be "
+                f"non-negative, got {elapsed_ms}",
+            )
+
+        # The runner, outbound and writer are each invoked exactly
+        # once per cycle - the diagnostic must not duplicate seams.
+        self.assertEqual(inbound_calls, [3])
+        self.assertEqual(outbound_calls, [12])
+        self.assertEqual(len(writer_calls), 1)
+
+    def test_inbound_runner_emitted_only_after_sigalarm_armed(self) -> None:
+        """``phase_started(inbound_runner)`` MUST be emitted AFTER
+        the existing SIGALRM handler is installed and
+        ``ITIMER_REAL`` is armed, but BEFORE the runner is called.
+        A failure before SIGALRM arming cannot emit the event.
+        The ``phase_failed(inbound_runner)`` terminal MUST carry a
+        non-negative integer ``elapsed_ms``.
+        """
+
+        class _ProbeError(RuntimeError):
+            pass
+
+        def _broken(_bound: int) -> int:
+            raise _ProbeError("forced non-timeout failure")
+
+        captured_stdout = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(captured_stdout):
+                with self.assertRaises(_ProbeError):
+                    worker_cli._run_inbound_with_timeout(
+                        _broken, 1, 60, cycle_index=7
+                    )
+        finally:
+            pass
+
+        liveness = _liveness_events(captured_stdout.getvalue())
+        runner_started = [
+            event
+            for event in liveness
+            if event.get("phase") == "inbound_runner"
+            and event.get("outcome") == "phase_started"
+        ]
+        self.assertEqual(
+            len(runner_started),
+            1,
+            "phase_started(inbound_runner) MUST be emitted exactly "
+            "once when cycle_index is provided",
+        )
+        runner_failed = [
+            event
+            for event in liveness
+            if event.get("phase") == "inbound_runner"
+            and event.get("outcome") == "phase_failed"
+        ]
+        self.assertEqual(
+            len(runner_failed),
+            1,
+            "phase_failed(inbound_runner) MUST be emitted exactly "
+            "once when the runner raises",
+        )
+        runner_completed = [
+            event
+            for event in liveness
+            if event.get("phase") == "inbound_runner"
+            and event.get("outcome") == "phase_completed"
+        ]
+        self.assertEqual(
+            runner_completed,
+            [],
+            "phase_completed(inbound_runner) MUST NOT be fabricated "
+            "after a runner failure",
+        )
+
+        failed_event = runner_failed[0]
+        self.assertIn(
+            "elapsed_ms",
+            failed_event,
+            "phase_failed(inbound_runner) MUST include elapsed_ms so "
+            "the operator can correlate the diagnostic with the "
+            "existing measurement contract",
+        )
+        elapsed_ms = failed_event["elapsed_ms"]
+        self.assertIsInstance(
+            elapsed_ms,
+            int,
+            "phase_failed(inbound_runner) elapsed_ms MUST be an "
+            f"integer, got {type(elapsed_ms).__name__}: {elapsed_ms!r}",
+        )
+        self.assertGreaterEqual(
+            elapsed_ms,
+            0,
+            "phase_failed(inbound_runner) elapsed_ms MUST be "
+            f"non-negative, got {elapsed_ms}",
+        )
+
+    def test_inbound_runner_failure_does_not_invoke_outbound(
+        self,
+    ) -> None:
+        """A failing inbound runner MUST keep the previous
+        semantic: no outbound pass, no cycle summary, no
+        ``cycle_completed``. The diagnostic only adds evidence.
+        """
+        inbound_calls: list[int] = []
+        outbound_calls: list[int] = []
+        writer_calls: list[dict[str, Any]] = []
+
+        def _inbound(_bound: int) -> int:
+            inbound_calls.append(1)
+            raise RuntimeError("forced inbound failure")
+
+        def _outbound(bound: int) -> int:
+            outbound_calls.append(bound)
+            return 0
+
+        def _writer(summary: dict[str, Any]) -> None:
+            writer_calls.append(summary)
+
+        with _capture_stdout() as stdout:
+            with self.assertRaises(RuntimeError):
+                run_cycle(
+                    settings=_settings(),
+                    cycle_index=4,
+                    inbound_runner=_inbound,
+                    outbound_runner=_outbound,
+                    sleep_decision=lambda _settings, _cycle: False,
+                    cycle_summary_writer=_writer,
+                )
+
+        self.assertEqual(inbound_calls, [1])
+        self.assertEqual(
+            outbound_calls,
+            [],
+            "outbound runner MUST NOT be invoked when the inbound "
+            "runner fails",
+        )
+        self.assertEqual(
+            writer_calls,
+            [],
+            "cycle_summary_writer MUST NOT be invoked when the "
+            "inbound runner fails",
+        )
+
+        liveness = _liveness_events(stdout.getvalue())
+        outcomes = [
+            (event.get("phase"), event.get("outcome"))
+            for event in liveness
+        ]
+        self.assertEqual(
+            outcomes,
+            [
+                ("inbound", "phase_started"),
+                ("inbound_runner", "phase_started"),
+                ("inbound_runner", "phase_failed"),
+                ("inbound", "phase_failed"),
+            ],
+            f"unexpected liveness sequence: {outcomes}",
+        )
+        for event in liveness:
+            if event.get("outcome") == "phase_failed":
+                self.assertEqual(
+                    event["exception_type"], "RuntimeError"
+                )
+                self.assertEqual(
+                    event["failure_category"], "worker_exception"
+                )
+        cycle_completed = [
+            event
+            for event in liveness
+            if event.get("outcome") == "cycle_completed"
+        ]
+        self.assertEqual(cycle_completed, [])
+        cycle_summary = [
+            event
+            for event in liveness
+            if event.get("phase") == "cycle_summary"
+        ]
+        self.assertEqual(cycle_summary, [])
+
+    def test_inbound_timeout_failure_restores_signal_and_preserves_evidence(
+        self,
+    ) -> None:
+        """A timed-out inbound pass MUST still restore the SIGALRM
+        handler and the ITIMER_REAL timer exactly as before. The
+        new ``inbound_runner`` evidence MUST coexist with the
+        existing outer inbound failure evidence.
+        """
+        sentinel_handler = signal.SIG_DFL
+        previous = signal.signal(signal.SIGALRM, sentinel_handler)
+
+        def _slow_inbound(_bound: int) -> int:
+            time.sleep(2.0)
+            return 0
+
+        try:
+            with self.assertRaises(worker_cli._InboundTimeoutError):
+                worker_cli._run_inbound_with_timeout(
+                    _slow_inbound, 1, 1, cycle_index=5
+                )
+        finally:
+            signal.signal(signal.SIGALRM, previous)
+
+        restored = signal.getsignal(signal.SIGALRM)
+        self.assertEqual(
+            restored,
+            sentinel_handler,
+            "SIGALRM handler MUST be restored to the previous value "
+            "even when the diagnostic phase is in scope",
+        )
+        remaining = signal.setitimer(signal.ITIMER_REAL, 0)
+        self.assertEqual(
+            remaining,
+            (0.0, 0.0),
+            "ITIMER_REAL MUST be cancelled after the timeout path "
+            "even when the diagnostic phase is in scope",
+        )
+
+    def test_cycle_summary_failure_emits_only_phase_failed(
+        self,
+    ) -> None:
+        """A failing ``cycle_summary_writer`` MUST surface as
+        ``phase_failed(cycle_summary)`` with safe metadata, MUST
+        NOT emit ``cycle_completed`` and MUST propagate the
+        original exception. The terminal ``phase_failed`` MUST
+        carry a non-negative integer ``elapsed_ms`` so the
+        diagnostic contract matches the rest of the lifecycle
+        terminals.
+        """
+        inbound_calls: list[int] = []
+        outbound_calls: list[int] = []
+        writer_calls: list[dict[str, Any]] = []
+
+        def _inbound(bound: int) -> int:
+            inbound_calls.append(bound)
+            return 0
+
+        def _outbound(bound: int) -> int:
+            outbound_calls.append(bound)
+            return 0
+
+        def _writer(summary: dict[str, Any]) -> None:
+            writer_calls.append(summary)
+            raise OSError("forced writer failure")
+
+        with _capture_stdout() as stdout:
+            with self.assertRaises(OSError):
+                run_cycle(
+                    settings=_settings(),
+                    cycle_index=6,
+                    inbound_runner=_inbound,
+                    outbound_runner=_outbound,
+                    sleep_decision=lambda _settings, _cycle: False,
+                    cycle_summary_writer=_writer,
+                )
+
+        self.assertEqual(inbound_calls, [1])
+        self.assertEqual(outbound_calls, [16])
+        self.assertEqual(
+            len(writer_calls),
+            1,
+            "cycle_summary_writer MUST be invoked exactly once even "
+            "when it raises",
+        )
+
+        liveness = _liveness_events(stdout.getvalue())
+        outcomes = [
+            (event.get("phase"), event.get("outcome"))
+            for event in liveness
+        ]
+        self.assertEqual(
+            outcomes,
+            [
+                ("inbound", "phase_started"),
+                ("inbound_runner", "phase_started"),
+                ("inbound_runner", "phase_completed"),
+                ("inbound", "phase_completed"),
+                ("outbound", "phase_started"),
+                ("outbound", "phase_completed"),
+                ("cycle_summary", "phase_started"),
+                ("cycle_summary", "phase_failed"),
+            ],
+            f"unexpected liveness sequence: {outcomes}",
+        )
+
+        cycle_summary_failed = [
+            event
+            for event in liveness
+            if event.get("phase") == "cycle_summary"
+            and event.get("outcome") == "phase_failed"
+        ]
+        self.assertEqual(len(cycle_summary_failed), 1)
+        event = cycle_summary_failed[0]
+        self.assertEqual(event["exception_type"], "OSError")
+        self.assertEqual(event["failure_category"], "worker_exception")
+        self.assertEqual(event["cycle_index"], 6)
+        self.assertIn(
+            "elapsed_ms",
+            event,
+            "phase_failed(cycle_summary) MUST include elapsed_ms so "
+            "the diagnostic carries the same measurement contract "
+            "as the other worker failure terminals",
+        )
+        elapsed_ms = event["elapsed_ms"]
+        self.assertIsInstance(
+            elapsed_ms,
+            int,
+            "phase_failed(cycle_summary) elapsed_ms MUST be an "
+            f"integer, got {type(elapsed_ms).__name__}: {elapsed_ms!r}",
+        )
+        self.assertGreaterEqual(
+            elapsed_ms,
+            0,
+            "phase_failed(cycle_summary) elapsed_ms MUST be "
+            f"non-negative, got {elapsed_ms}",
+        )
+
+        cycle_summary_completed = [
+            event
+            for event in liveness
+            if event.get("phase") == "cycle_summary"
+            and event.get("outcome") == "phase_completed"
+        ]
+        self.assertEqual(
+            cycle_summary_completed,
+            [],
+            "phase_completed(cycle_summary) MUST NOT be emitted when "
+            "the writer raises",
+        )
+
+        cycle_completed = [
+            event
+            for event in liveness
+            if event.get("outcome") == "cycle_completed"
+        ]
+        self.assertEqual(
+            cycle_completed,
+            [],
+            "cycle_completed MUST NOT be fabricated after a writer "
+            "failure",
+        )
+
+    def test_fail_soft_emit_does_not_invoke_runner_or_writer_twice(
+        self,
+    ) -> None:
+        """The fail-soft ``_emit_liveness_event`` helper must NOT
+        trigger a second runner, a second outbound, a second
+        summary writer or any other side effect on the worker's
+        cycle. The diagnostic only writes a single event line
+        per boundary; the rest of the cycle keeps the existing
+        contract.
+        """
+        inbound_calls: list[int] = []
+        outbound_calls: list[int] = []
+        writer_calls: list[dict[str, Any]] = []
+
+        def _inbound(bound: int) -> int:
+            inbound_calls.append(bound)
+            return 0
+
+        def _outbound(bound: int) -> int:
+            outbound_calls.append(bound)
+            return 0
+
+        def _writer(summary: dict[str, Any]) -> None:
+            writer_calls.append(summary)
+
+        # Force the fail-soft path by patching the helper to
+        # return ``False`` (validation failure mode) so the
+        # surrounding business flow is unchanged.
+        original_emit = worker_cli._emit_liveness_event
+
+        def _degraded_emit(**kwargs: Any) -> bool:
+            return False
+
+        stdout_value = ""
+        with mock.patch.object(
+            worker_cli, "_emit_liveness_event", _degraded_emit
+        ):
+            with _capture_stdout() as stdout:
+                run_cycle(
+                    settings=_settings(),
+                    cycle_index=8,
+                    inbound_runner=_inbound,
+                    outbound_runner=_outbound,
+                    sleep_decision=lambda _settings, _cycle: False,
+                    cycle_summary_writer=_writer,
+                )
+            stdout_value = stdout.getvalue()
+
+        # Restore for the rest of the suite; the patch is
+        # scoped to the ``with`` block above.
+        worker_cli._emit_liveness_event = original_emit
+
+        # Each seam MUST have been invoked exactly once even
+        # when every diagnostic emission degraded to ``False``.
+        self.assertEqual(inbound_calls, [1])
+        self.assertEqual(outbound_calls, [16])
+        self.assertEqual(len(writer_calls), 1)
+
+        # The fail-soft path must NOT print any line: the
+        # diagnostic helper is required to be silent on
+        # validation failure, exactly as the existing
+        # ``emit_event`` helper already is.
+        self.assertEqual(stdout_value, "")
+
+    def test_lifecycle_does_not_change_inbound_phase_completed_order(
+        self,
+    ) -> None:
+        """The new ``inbound_runner`` and ``cycle_summary`` events
+        MUST NOT be reordered relative to the existing
+        ``inbound`` / ``outbound`` / ``cycle_completed`` phases.
+        The diagnostic must be a pure additive observation.
+        """
+        order: list[str] = []
+
+        def _inbound(_bound: int) -> int:
+            order.append("inbound_call")
+            return 0
+
+        def _outbound(_bound: int) -> int:
+            order.append("outbound_call")
+            return 0
+
+        def _writer(_summary: dict[str, Any]) -> None:
+            order.append("writer_call")
+
+        with _capture_stdout() as stdout:
+            run_forever(
+                settings=_settings(),
+                inbound_runner=_inbound,
+                outbound_runner=_outbound,
+                sleeper=lambda _seconds: None,
+                sleep_decision=lambda _settings, _cycle: False,
+                cycle_summary_writer=_writer,
+                stop_predicate=lambda: len(order) >= 3,
+                readiness_probe=worker_cli._always_ready_probe,
+            )
+
+        self.assertEqual(
+            order,
+            ["inbound_call", "outbound_call", "writer_call"],
+        )
+
+        liveness = _liveness_events(stdout.getvalue())
+        outcomes = [
+            (event.get("phase"), event.get("outcome"))
+            for event in liveness
+        ]
+        cycle_summary_index = next(
+            index
+            for index, (phase, outcome) in enumerate(outcomes)
+            if phase == "cycle_summary" and outcome == "phase_started"
+        )
+        cycle_completed_index = next(
+            index
+            for index, (phase, outcome) in enumerate(outcomes)
+            if phase is None and outcome == "cycle_completed"
+        )
+        self.assertLess(
+            cycle_summary_index,
+            cycle_completed_index,
+            "cycle_summary MUST be emitted before cycle_completed",
+        )
+        inbound_runner_started_index = next(
+            index
+            for index, (phase, outcome) in enumerate(outcomes)
+            if phase == "inbound_runner" and outcome == "phase_started"
+        )
+        inbound_completed_index = next(
+            index
+            for index, (phase, outcome) in enumerate(outcomes)
+            if phase == "inbound" and outcome == "phase_completed"
+        )
+        self.assertLess(
+            inbound_runner_started_index,
+            inbound_completed_index,
+            "inbound_runner MUST start before the outer inbound phase "
+            "completes",
+        )
+
+    def test_diagnostic_payload_does_not_leak_sensitive_values(
+        self,
+    ) -> None:
+        """A liveness trace that exercises the new diagnostic
+        phases MUST NOT include any sensitive token, sentinel or
+        exception message. The diagnostic remains privacy-safe.
+        """
+        secret_message = (
+            "leak: secret-auth-token-value / "
+            "AC00000000000000000000000000000000 / +5491100000000 / "
+            "inbound body / outbound body / prompt / exception message"
+        )
+
+        def _inbound(_bound: int) -> int:
+            raise RuntimeError(secret_message)
+
+        def _outbound(_bound: int) -> int:
+            return 0
+
+        def _writer(_summary: dict[str, Any]) -> None:
+            raise OSError(secret_message)
+
+        sentinels = (
+            "secret-auth-token-value",
+            "AC00000000000000000000000000000000",
+            "+5491100000000",
+            "inbound body",
+            "outbound body",
+            "prompt",
+            "exception message",
+        )
+
+        with _capture_stdout() as stdout:
+            with self.assertRaises(RuntimeError):
+                run_cycle(
+                    settings=_settings(),
+                    cycle_index=11,
+                    inbound_runner=_inbound,
+                    outbound_runner=_outbound,
+                    sleep_decision=lambda _settings, _cycle: False,
+                    cycle_summary_writer=lambda _summary: None,
+                )
+
+        rendered = stdout.getvalue()
+        for token in sentinels:
+            self.assertNotIn(
+                token,
+                rendered,
+                f"sentinel {token!r} leaked in liveness output",
+            )
+
+        with _capture_stdout() as stdout:
+            with self.assertRaises(OSError):
+                run_cycle(
+                    settings=_settings(),
+                    cycle_index=12,
+                    inbound_runner=lambda _bound: 0,
+                    outbound_runner=lambda _bound: 0,
+                    sleep_decision=lambda _settings, _cycle: False,
+                    cycle_summary_writer=_writer,
+                )
+
+        rendered = stdout.getvalue()
+        for token in sentinels:
+            self.assertNotIn(
+                token,
+                rendered,
+                f"sentinel {token!r} leaked in liveness output",
+            )
 
 
 if __name__ == "__main__":
