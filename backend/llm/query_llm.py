@@ -1,9 +1,9 @@
 import json
 import logging
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 import requests
 
@@ -189,6 +189,7 @@ def _emit_llm_transport_phase(
     http_status: int | None,
     response_bytes: int | None,
     correlation_id: str | None,
+    chunk_count: int | None = None,
 ) -> None:
     """Emit one bounded ``llm_request_transport_phase`` observation.
 
@@ -198,9 +199,10 @@ def _emit_llm_transport_phase(
     payload is allowlist-bounded and privacy-safe by construction:
     only the closed phase token, bounded elapsed milliseconds,
     optional bounded HTTP status, optional bounded response byte
-    count and the existing opaque correlation identifier are
-    permitted. No prompt, response body, URL, proxy value, header,
-    credential or exception text is ever included.
+    count, optional bounded chunk count and the existing opaque
+    correlation identifier are permitted. No prompt, response body,
+    URL, proxy value, header, credential or exception text is ever
+    included.
 
     The helper MUST NOT mutate the surrounding business state. The
     existing ``emit_event`` contract already swallows validation
@@ -216,6 +218,7 @@ def _emit_llm_transport_phase(
             elapsed_ms=elapsed_ms,
             http_status=http_status,
             response_bytes=response_bytes,
+            chunk_count=chunk_count,
             correlation_id=correlation_id,
         )
     except Exception:
@@ -247,6 +250,57 @@ class QueryLlmHttpError(QueryLlmError):
 
 class QueryLlmResponseError(QueryLlmError):
     """Raised when the upstream LLM returns an empty or invalid JSON response."""
+
+
+def _classify_post_exception(
+    exc: BaseException,
+    *,
+    timeout_seconds: float,
+) -> QueryLlmError:
+    """Map a Requests exception to its canonical ``QueryLlmError``.
+
+    The helper centralizes the mapping the boundary has used since
+    before the diagnostic phases were introduced so the initial
+    ``requests.post`` call and the subsequent ``iter_content``
+    reading classify the same Requests failure mode into the same
+    :class:`QueryLlmError` subtype. The classification is
+    deliberate and matches the historical contract:
+
+    * ``requests.exceptions.Timeout`` (which subsumes
+      ``ReadTimeout``; ``ConnectTimeout`` is also a ``Timeout``
+      subclass) → ``QueryLlmTimeoutError``.
+    * ``requests.exceptions.ConnectionError`` (which subsumes
+      ``ProxyError`` and ``SSLError``) →
+      ``QueryLlmConnectionError``. A read timeout that Requests
+      surfaces as a wrapped ``ConnectionError`` therefore still
+      classifies consistently with the previous contract.
+    * ``requests.exceptions.ChunkedEncodingError`` is the form
+      Requests uses for an invalid chunked-encoding response,
+      including the read-timeout-during-streaming shape the
+      caller wants classified deliberately. Newer requests
+      versions promote it to a direct ``RequestException``
+      subclass (no longer a ``ConnectionError``); the explicit
+      check keeps the mapping consistent across versions and
+      consistent with the historical contract that wrapped
+      ``ChunkedEncodingError`` as a ``ConnectionError``.
+
+    The helper returns the mapped exception; the caller MUST
+    ``raise ... from exc`` to preserve the chained traceback.
+    The original exception is re-raised unchanged when the type
+    does not match the closed Requests failure modes the
+    boundary classifies (e.g. ``HTTPError`` is handled separately
+    upstream and must not be wrapped into a timeout/connection
+    error).
+    """
+    if isinstance(exc, requests.exceptions.Timeout):
+        return QueryLlmTimeoutError(
+            f"LLM request timed out after {timeout_seconds}s"
+        )
+    if isinstance(exc, requests.exceptions.ChunkedEncodingError):
+        return QueryLlmConnectionError(f"LLM connection error: {exc}")
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return QueryLlmConnectionError(f"LLM connection error: {exc}")
+    raise exc
 
 
 class QueryLlm:
@@ -283,6 +337,7 @@ class QueryLlm:
                 self._settings.llm_url,
                 json=payload,
                 timeout=self._settings.llm_timeout,
+                stream=True,
                 **(
                     {
                         "proxies": {
@@ -294,10 +349,10 @@ class QueryLlm:
                     else {}
                 ),
             )
-        except requests.exceptions.Timeout as exc:
-            raise QueryLlmTimeoutError(f"LLM request timed out after {self._settings.llm_timeout}s") from exc
-        except requests.exceptions.ConnectionError as exc:
-            raise QueryLlmConnectionError(f"LLM connection error: {exc}") from exc
+        except requests.exceptions.RequestException as exc:
+            raise _classify_post_exception(
+                exc, timeout_seconds=self._settings.llm_timeout
+            ) from exc
 
     def _parse(self, body: str) -> dict[str, Any]:
         body = body.strip()
@@ -351,6 +406,9 @@ class QueryLlm:
         started = self._clock()
         status_code: int | None = None
         body = ""
+        response = None
+        body_bytes_count = 0
+        chunk_count = 0
         try:
             _emit_llm_transport_phase(
                 phase="request_started",
@@ -360,34 +418,149 @@ class QueryLlm:
                 correlation_id=effective_correlation_id,
             )
             response = self._post(payload)
+            status_code = getattr(response, "status_code", None)
             _emit_llm_transport_phase(
-                phase="response_received",
+                phase="response_headers_received",
                 elapsed_ms=int((self._clock() - started) * 1000),
-                http_status=getattr(response, "status_code", None),
+                http_status=int(status_code) if status_code is not None else None,
                 response_bytes=None,
                 correlation_id=effective_correlation_id,
             )
-            if self._transport is not None and hasattr(response, "raise_for_status"):
-                status_code = getattr(response, "status_code", None)
+            iter_content = getattr(response, "iter_content", None)
+            if callable(iter_content):
+                iter_content_fn = cast(
+                    Callable[..., Iterator[bytes]], iter_content
+                )
+                # Streaming path: real ``requests.Response`` returns
+                # after headers are available. ``stream=True`` keeps
+                # the Ollama payload ``stream: false`` (the LLM server
+                # side still emits a single JSON envelope); we read it
+                # incrementally here only to observe the receipt
+                # boundary, never to enable Ollama NDJSON streaming.
                 response.raise_for_status()
+                body_chunks: list[bytes] = []
                 try:
-                    data = response.json()
-                except ValueError:
-                    data = {"response": getattr(response, "text", "")}
-                body = (data.get("response") or "") if isinstance(data, dict) else ""
+                    for chunk in iter_content_fn(chunk_size=8192):
+                        if not chunk:
+                            continue
+                        body_chunks.append(chunk)
+                        body_bytes_count += len(chunk)
+                        chunk_count += 1
+                        if chunk_count == 1:
+                            _emit_llm_transport_phase(
+                                phase="first_body_chunk",
+                                elapsed_ms=int(
+                                    (self._clock() - started) * 1000
+                                ),
+                                http_status=(
+                                    int(status_code)
+                                    if status_code is not None
+                                    else None
+                                ),
+                                response_bytes=None,
+                                chunk_count=chunk_count,
+                                correlation_id=effective_correlation_id,
+                            )
+                except requests.exceptions.RequestException as exc:
+                    raise _classify_post_exception(
+                        exc, timeout_seconds=self._settings.llm_timeout
+                    ) from exc
+                body_bytes = b"".join(body_chunks)
+                try:
+                    envelope_text = body_bytes.decode("utf-8")
+                except UnicodeDecodeError:
+                    envelope_text = body_bytes.decode(
+                        "utf-8", errors="replace"
+                    )
+                # Reconstruct the same inner response the prior
+                # ``response.json()`` extraction produced. The
+                # classification mirrors the legacy contract:
+                #   * envelope JSON dict → ``envelope_data["response"]``
+                #   * envelope JSON valid non-dict (``[]``, ``null``,
+                #     number, string) → ``body = ""`` so the
+                #     subsequent ``_parse`` raises
+                #     ``QueryLlmResponseError``, exactly as the old
+                #     ``body = "" if not isinstance(data, dict) else ...``
+                #     branch behaved. The classification deliberately
+                #     distinguishes a non-decodable envelope from a
+                #     JSON ``null`` envelope so a malformed Ollama
+                #     response cannot silently succeed as ``None``.
+                #   * envelope not JSON-decodable → fall back to the
+                #     raw envelope text so ``_parse`` can recover the
+                #     first balanced JSON object, matching the
+                #     previous ``ValueError`` fallback that fed
+                #     ``response.text`` back into ``_parse``.
+                if envelope_text:
+                    try:
+                        envelope_data: Any = json.loads(envelope_text)
+                        envelope_decoded = True
+                    except json.JSONDecodeError:
+                        envelope_data = None
+                        envelope_decoded = False
+                else:
+                    envelope_data = None
+                    envelope_decoded = False
+                if envelope_decoded and isinstance(envelope_data, dict):
+                    body = envelope_data.get("response") or ""
+                elif not envelope_decoded:
+                    body = envelope_text
+                else:
+                    body = ""
             else:
-                status_code = getattr(response, "status_code", None)
+                # Eager adapter seam: an injected ``transport`` stub
+                # returns a complete response without ``iter_content``.
+                # Mirror the previous eager read so the existing test
+                # stubs continue to work without a second business
+                # path; the final string handed to ``_parse`` is the
+                # same as ``response.text`` would have produced. The
+                # non-dict branch mirrors the streaming path: a valid
+                # JSON envelope that is not an object becomes an empty
+                # body so ``_parse`` raises ``QueryLlmResponseError``,
+                # equivalent to the legacy ``response.json()`` call.
                 response.raise_for_status()
                 try:
                     data = response.json()
                 except ValueError:
                     data = {"response": getattr(response, "text", "")}
-                body = (data.get("response") or "") if isinstance(data, dict) else ""
+                if isinstance(data, dict):
+                    body = data.get("response") or ""
+                else:
+                    body = ""
+                body_bytes_count = len(body.encode("utf-8"))
+                chunk_count = 1 if body else 0
+                if chunk_count > 0:
+                    _emit_llm_transport_phase(
+                        phase="first_body_chunk",
+                        elapsed_ms=int((self._clock() - started) * 1000),
+                        http_status=(
+                            int(status_code)
+                            if status_code is not None
+                            else None
+                        ),
+                        response_bytes=None,
+                        chunk_count=chunk_count,
+                        correlation_id=effective_correlation_id,
+                    )
+            _emit_llm_transport_phase(
+                phase="body_completed",
+                elapsed_ms=int((self._clock() - started) * 1000),
+                http_status=int(status_code) if status_code is not None else None,
+                response_bytes=body_bytes_count,
+                chunk_count=chunk_count,
+                correlation_id=effective_correlation_id,
+            )
+            _emit_llm_transport_phase(
+                phase="response_received",
+                elapsed_ms=int((self._clock() - started) * 1000),
+                http_status=int(status_code) if status_code is not None else None,
+                response_bytes=body_bytes_count,
+                correlation_id=effective_correlation_id,
+            )
             _emit_llm_transport_phase(
                 phase="json_extracted",
                 elapsed_ms=int((self._clock() - started) * 1000),
                 http_status=int(status_code) if status_code is not None else None,
-                response_bytes=len(body.encode("utf-8")) if body else 0,
+                response_bytes=body_bytes_count,
                 correlation_id=effective_correlation_id,
             )
             result = self._parse(body)
@@ -395,7 +568,7 @@ class QueryLlm:
                 phase="result_parsed",
                 elapsed_ms=int((self._clock() - started) * 1000),
                 http_status=int(status_code) if status_code is not None else None,
-                response_bytes=len(body.encode("utf-8")) if body else 0,
+                response_bytes=body_bytes_count,
                 correlation_id=effective_correlation_id,
             )
         except requests.exceptions.HTTPError as exc:
@@ -486,6 +659,12 @@ class QueryLlm:
             elapsed = self._clock() - started
             logger.error("llm request failure duration=%s", elapsed)
             raise QueryLlmError(str(exc)) from exc
+        finally:
+            if response is not None:
+                try:
+                    response.close()
+                except Exception:
+                    logger.exception("llm_response_close_failed")
         elapsed = self._clock() - started
         logger.info(
             "llm request success duration=%s status=%s response_length=%s",
