@@ -261,6 +261,88 @@ outbound row. The auditor labels it as an observation and does **not**
 infer a root cause; correlate it manually with the Railway log timeline
 and with the Twilio message status before drawing any conclusion.
 
+### Worker progress liveness read-only query
+
+The provider worker emits the closed `provider_worker_liveness` event
+at every cycle and phase boundary. The vocabulary is bounded to
+`cycle_started`, `phase_started`, `phase_completed`, `phase_failed`
+and `cycle_completed`; the closed phase allowlist is `readiness`,
+`inbound`, `inbound_runner`, `outbound`, `cycle_summary` and `sleep`.
+The event payload carries only `cycle_index` (a process-local counter),
+bounded `elapsed_ms`, and on failure the safe `worker_exception`
+category and the bounded `exception_type` class name. The event never
+includes message bodies, phone numbers, provider SIDs, prompts, model
+responses, URLs, proxies, credentials, exception messages or
+tracebacks.
+
+Use the bounded Railway log filter below to locate the last worker
+boundary reached inside one process. The query is read-only, never
+mutates Railway state, and only filters the structured `provider_worker_liveness`
+event emitted by the worker. Do not pipe the output to a different
+service and do not write the result back into the Railway project.
+
+```sh
+railway logs --service supernova-ia --since 30m | \
+  grep '"event":"provider_worker_liveness"' | \
+  python -c "
+import json, sys
+last = {}
+for line in sys.stdin:
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if event.get('event') != 'provider_worker_liveness':
+        continue
+    cycle_index = event.get('cycle_index')
+    if cycle_index is None:
+        continue
+    entry = last.setdefault(cycle_index, [])
+    entry.append((event.get('phase'), event.get('outcome')))
+for cycle_index in sorted(last):
+    print(f'cycle_index={cycle_index} ' + ' '.join(
+        f'{phase or \"-\"}:{outcome}'
+        for phase, outcome in last[cycle_index]
+    ))
+"
+```
+
+The script only filters the structured liveness event line and prints
+the per-cycle phase ordering. It never prints a raw Railway line, a
+sensitive value, a payload, an exception message or a traceback. The
+`provider_worker_liveness` event is the only event this script reads;
+the read-only ``audit_provider_flow_live`` CLI above remains the
+authoritative source for per-receipt diagnostics and the closed
+`llm_request_transport_phase` event remains the authoritative source
+for HTTP transport boundaries.
+
+#### Interpreting an incomplete trace
+
+Correlate only the bounded `cycle_index` within one process lifetime
+and the timestamp ordering. Do not infer a cause or a recovery action
+from a missing event; the diagnostic is observational only and does
+not trigger any automatic restart, lease release or replay.
+
+| Last evidence observed | Safe narrow conclusion | Not supported |
+|---|---|---|
+| `inbound` `phase_started` | the bounded pass began | that a row was claimed or the LLM was reached |
+| `inbound_runner` `phase_started` | the runner invocation began after SIGALRM was armed | that the core coordinator or the LLM was reached |
+| `inbound_runner` `phase_completed` | the whole inbound CLI pass returned | that a particular item succeeded |
+| `inbound_runner` `phase_failed` | the runner raised; the safe class name and elapsed time are recorded | that the failure is recoverable, retryable or terminal |
+| `outbound` `phase_completed` and `cycle_summary` `phase_started` | the outbound pass and the safe cycle-summary construction returned | that the summary line was written |
+| `cycle_summary` `phase_completed` | the cycle summary writer returned | why a later cycle is absent |
+| `cycle_summary` `phase_failed` | the writer raised; the safe class name is recorded | that the failure is recoverable, retryable or terminal |
+| `cycle_completed` followed by `sleep` `phase_started` with no completion | the existing sleeper seam did not return | a recovery action |
+| completed `sleep` with no next `cycle_started` | the outer-loop gap is the last reached boundary | a root cause or automatic remediation |
+
+The diagnostic MUST NOT be the basis for an automatic restart, lease
+release, retry, replay, watchdog action or any other recovery. Pair
+the trace with the existing durable audit, the separate
+`diagnose-core-inbound-pre-llm-stall` core checkpoint change, the
+`llm_request_transport_phase` HTTP transport events, the bounded
+`audit_provider_flow_live` CLI and the Twilio message status before
+drawing any conclusion.
+
 ### `llm_request_transport_phase` closed vocabulary
 
 The `:class:`backend.llm.query_llm.QueryLlm`` boundary emits a closed,

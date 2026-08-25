@@ -189,6 +189,8 @@ def _run_inbound_with_timeout(
     inbound_runner: InboundRunner,
     bound: int,
     timeout_seconds: int,
+    *,
+    cycle_index: int | None = None,
 ) -> int:
     """Invoke one bounded inbound pass under a positive SIGALRM bound.
 
@@ -209,6 +211,19 @@ def _run_inbound_with_timeout(
     the worker validation step rejects an enabled worker with a
     non-positive inbound timeout, so the helper may treat the value
     as already validated by the caller.
+
+    When ``cycle_index`` is provided the helper emits the bounded
+    ``inbound_runner`` phase evidence around the single
+    ``inbound_runner`` invocation: ``phase_started`` only after
+    SIGALRM is installed and the timer is armed and immediately
+    before the runner is called, ``phase_completed`` only after the
+    runner returns, and ``phase_failed`` only when the runner
+    raises. The existing ``finally`` continues to cancel the timer
+    and restore the previous signal handler exactly as today, so a
+    missing ``phase_completed`` is the only safe evidence that the
+    real inbound runner did not return. The emissions are skipped
+    when ``cycle_index`` is ``None`` so focused tests that drive
+    the helper directly keep their existing shape.
     """
     if timeout_seconds <= 0:
         # Defensive guard only: the worker startup validation
@@ -222,11 +237,48 @@ def _run_inbound_with_timeout(
         )
     previous_handler = signal.signal(signal.SIGALRM, _raise_inbound_timeout)
     signal.setitimer(signal.ITIMER_REAL, float(int(timeout_seconds)))
+    if cycle_index is not None:
+        _emit_liveness_event(
+            outcome="phase_started",
+            cycle_index=int(cycle_index),
+            phase="inbound_runner",
+        )
+    inbound_runner_started = time.monotonic()
     try:
-        return int(inbound_runner(int(bound)))
+        result = int(inbound_runner(int(bound)))
+    except BaseException:
+        if cycle_index is not None:
+            try:
+                inbound_runner_exception_type = (
+                    sys.exc_info()[1].__class__.__name__  # type: ignore[union-attr]
+                )
+            except Exception:  # noqa: BLE001 - defensive only
+                inbound_runner_exception_type = "Exception"
+            inbound_runner_elapsed_ms = int(
+                (time.monotonic() - inbound_runner_started) * 1000
+            )
+            _emit_liveness_event(
+                outcome="phase_failed",
+                cycle_index=int(cycle_index),
+                phase="inbound_runner",
+                elapsed_ms=inbound_runner_elapsed_ms,
+                exception_type=inbound_runner_exception_type,
+            )
+        raise
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous_handler)
+    if cycle_index is not None:
+        inbound_runner_completed_elapsed_ms = int(
+            (time.monotonic() - inbound_runner_started) * 1000
+        )
+        _emit_liveness_event(
+            outcome="phase_completed",
+            cycle_index=int(cycle_index),
+            phase="inbound_runner",
+            elapsed_ms=inbound_runner_completed_elapsed_ms,
+        )
+    return result
 
 
 class _WorkerOutboundAggregateCell:
@@ -667,6 +719,7 @@ def run_cycle(
                 int(
                     settings.provider_processing_worker_inbound_timeout_seconds
                 ),
+                cycle_index=cycle_index,
             )
         except BaseException:
             inbound_elapsed_ms = int(
@@ -756,7 +809,41 @@ def run_cycle(
         probe_duration_seconds=probe_duration_seconds,
         outbound_cycle_aggregate=outbound_cycle_aggregate,
     )
-    cycle_summary_writer(summary)
+    _emit_liveness_event(
+        outcome="phase_started",
+        cycle_index=cycle_index,
+        phase="cycle_summary",
+    )
+    cycle_summary_started = time.monotonic()
+    try:
+        cycle_summary_writer(summary)
+    except BaseException:
+        try:
+            cycle_summary_exception_type = (
+                sys.exc_info()[1].__class__.__name__  # type: ignore[union-attr]
+            )
+        except Exception:  # noqa: BLE001 - defensive only
+            cycle_summary_exception_type = "Exception"
+        cycle_summary_failed_elapsed_ms = int(
+            (time.monotonic() - cycle_summary_started) * 1000
+        )
+        _emit_liveness_event(
+            outcome="phase_failed",
+            cycle_index=cycle_index,
+            phase="cycle_summary",
+            elapsed_ms=cycle_summary_failed_elapsed_ms,
+            exception_type=cycle_summary_exception_type,
+        )
+        raise
+    cycle_summary_completed_elapsed_ms = int(
+        (time.monotonic() - cycle_summary_started) * 1000
+    )
+    _emit_liveness_event(
+        outcome="phase_completed",
+        cycle_index=cycle_index,
+        phase="cycle_summary",
+        elapsed_ms=cycle_summary_completed_elapsed_ms,
+    )
     return summary
 
 

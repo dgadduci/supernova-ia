@@ -2040,7 +2040,14 @@ class ProviderWorkerLivenessEventTest(unittest.TestCase):
     )
 
     _ACCEPTED_PHASES: ClassVar[frozenset[str]] = frozenset(
-        {"readiness", "inbound", "outbound", "sleep"}
+        {
+            "readiness",
+            "inbound",
+            "inbound_runner",
+            "outbound",
+            "cycle_summary",
+            "sleep",
+        }
     )
 
     _PHASE_OUTCOMES: ClassVar[frozenset[str]] = frozenset(
@@ -2131,6 +2138,206 @@ class ProviderWorkerLivenessEventTest(unittest.TestCase):
         self.assertEqual(payload["failure_category"], "worker_exception")
         self.assertEqual(payload["exception_type"], "RuntimeError")
         self.assertEqual(payload["elapsed_ms"], 120)
+
+    def test_inbound_runner_phase_round_trips_for_all_outcomes(
+        self,
+    ) -> None:
+        """The new diagnostic ``inbound_runner`` phase MUST be
+        accepted by the closed allowlist for every phase outcome
+        (``phase_started``, ``phase_completed``, ``phase_failed``).
+        """
+        for outcome in self._PHASE_OUTCOMES:
+            with self.subTest(outcome=outcome):
+                kwargs: dict[str, Any] = {
+                    "phase": "inbound_runner",
+                    "cycle_index": 1,
+                }
+                if outcome == "phase_failed":
+                    kwargs["failure_category"] = "worker_exception"
+                    kwargs["exception_type"] = "RuntimeError"
+                elif outcome == "phase_completed":
+                    kwargs["elapsed_ms"] = 12
+                payload = build_event(
+                    event=EVENT_WORKER_LIVENESS,
+                    component=COMPONENT_WORKER,
+                    outcome=outcome,
+                    **kwargs,
+                )
+                self.assertEqual(payload["phase"], "inbound_runner")
+                self.assertEqual(payload["outcome"], outcome)
+                self.assertEqual(payload["cycle_index"], 1)
+                serialized = json.dumps(
+                    payload, sort_keys=True, separators=(",", ":")
+                )
+                self.assertEqual(parse_event(serialized), payload)
+
+    def test_cycle_summary_phase_round_trips_for_all_outcomes(
+        self,
+    ) -> None:
+        """The new diagnostic ``cycle_summary`` phase MUST be
+        accepted by the closed allowlist for every phase outcome
+        (``phase_started``, ``phase_completed``, ``phase_failed``).
+        """
+        for outcome in self._PHASE_OUTCOMES:
+            with self.subTest(outcome=outcome):
+                kwargs: dict[str, Any] = {
+                    "phase": "cycle_summary",
+                    "cycle_index": 2,
+                }
+                if outcome == "phase_failed":
+                    kwargs["failure_category"] = "worker_exception"
+                    kwargs["exception_type"] = "OSError"
+                elif outcome == "phase_completed":
+                    kwargs["elapsed_ms"] = 7
+                payload = build_event(
+                    event=EVENT_WORKER_LIVENESS,
+                    component=COMPONENT_WORKER,
+                    outcome=outcome,
+                    **kwargs,
+                )
+                self.assertEqual(payload["phase"], "cycle_summary")
+                self.assertEqual(payload["outcome"], outcome)
+                self.assertEqual(payload["cycle_index"], 2)
+                serialized = json.dumps(
+                    payload, sort_keys=True, separators=(",", ":")
+                )
+                self.assertEqual(parse_event(serialized), payload)
+
+    def test_new_phases_terminal_events_require_non_negative_elapsed_ms(
+        self,
+    ) -> None:
+        """The new diagnostic phases (``inbound_runner`` and
+        ``cycle_summary``) MUST surface ``elapsed_ms`` on the
+        ``phase_completed`` and ``phase_failed`` terminals as a
+        non-negative integer. The contract is local to the new
+        emissions and does NOT change the existing catalogue
+        policy that allows ``elapsed_ms`` to be omitted on
+        ``phase_started`` and cycle outcomes.
+        """
+        cases = (
+            (
+                "inbound_runner",
+                "phase_completed",
+                {"elapsed_ms": 12},
+            ),
+            (
+                "inbound_runner",
+                "phase_failed",
+                {
+                    "failure_category": "worker_exception",
+                    "exception_type": "RuntimeError",
+                    "elapsed_ms": 34,
+                },
+            ),
+            (
+                "cycle_summary",
+                "phase_completed",
+                {"elapsed_ms": 7},
+            ),
+            (
+                "cycle_summary",
+                "phase_failed",
+                {
+                    "failure_category": "worker_exception",
+                    "exception_type": "OSError",
+                    "elapsed_ms": 0,
+                },
+            ),
+        )
+        for phase, outcome, extra in cases:
+            with self.subTest(phase=phase, outcome=outcome):
+                payload = build_event(
+                    event=EVENT_WORKER_LIVENESS,
+                    component=COMPONENT_WORKER,
+                    outcome=outcome,
+                    phase=phase,
+                    cycle_index=1,
+                    **extra,
+                )
+                self.assertIn("elapsed_ms", payload)
+                elapsed_ms = payload["elapsed_ms"]
+                self.assertIsInstance(
+                    elapsed_ms,
+                    int,
+                    f"{outcome}({phase}) elapsed_ms MUST be an int, "
+                    f"got {type(elapsed_ms).__name__}",
+                )
+                self.assertGreaterEqual(
+                    elapsed_ms,
+                    0,
+                    f"{outcome}({phase}) elapsed_ms MUST be "
+                    f"non-negative, got {elapsed_ms}",
+                )
+
+    def test_new_phases_reject_sensitive_payload_fields(self) -> None:
+        """The new diagnostic phases MUST keep the existing privacy
+        contract: forbidden fields, arbitrary tokens, exception
+        messages and tracebacks are still rejected.
+        """
+        for new_phase in ("inbound_runner", "cycle_summary"):
+            with self.subTest(phase=new_phase):
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=EVENT_WORKER_LIVENESS,
+                        component=COMPONENT_WORKER,
+                        outcome="phase_started",
+                        phase=new_phase,
+                        cycle_index=1,
+                        outbox_id=1,
+                    )
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=EVENT_WORKER_LIVENESS,
+                        component=COMPONENT_WORKER,
+                        outcome="phase_started",
+                        phase=new_phase,
+                        cycle_index=1,
+                        correlation_id="corr-abc",
+                    )
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=EVENT_WORKER_LIVENESS,
+                        component=COMPONENT_WORKER,
+                        outcome="phase_failed",
+                        phase=new_phase,
+                        cycle_index=1,
+                        failure_category="worker_exception",
+                        exception_type="RuntimeError: leak: secret",
+                    )
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=EVENT_WORKER_LIVENESS,
+                        component=COMPONENT_WORKER,
+                        outcome="phase_failed",
+                        phase=new_phase,
+                        cycle_index=1,
+                        failure_category="worker_exception",
+                        exception_type="+5491100000000",
+                    )
+
+    def test_new_phases_reject_arbitrary_token_values(self) -> None:
+        """Tokens that resemble the new phases but are not in the
+        closed allowlist MUST be rejected.
+        """
+        for forbidden_phase in (
+            "inbound_runners",
+            "CycleSummary",
+            "cycle_summaries",
+            "inbound-runner",
+            "inbound_runner_phase",
+            "cycle summary",
+            "inboundRunner",
+            "",
+        ):
+            with self.subTest(phase=forbidden_phase):
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=EVENT_WORKER_LIVENESS,
+                        component=COMPONENT_WORKER,
+                        outcome="phase_started",
+                        phase=forbidden_phase,
+                        cycle_index=1,
+                    )
 
     def test_each_outcome_round_trips_through_parse_event(self) -> None:
         for outcome in self._ACCEPTED_OUTCOMES:
