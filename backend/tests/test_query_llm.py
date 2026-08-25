@@ -91,6 +91,16 @@ class QueryLlmPayloadTest(unittest.TestCase):
             {"http": "socks5h://127.0.0.1:1055", "https": "socks5h://127.0.0.1:1055"},
         )
 
+    def test_real_transport_uses_loopback_http_proxy(self):
+        response = _FakeResponse(json.dumps({"ok": True}))
+        settings = _settings(ollama_proxy_url="http://127.0.0.1:1056")
+        with mock.patch("backend.llm.query_llm.requests.post", return_value=response) as post:
+            QueryLlm(settings=settings).request("hola")
+        self.assertEqual(
+            post.call_args.kwargs["proxies"],
+            {"http": "http://127.0.0.1:1056", "https": "http://127.0.0.1:1056"},
+        )
+
     def test_real_transport_has_no_proxy_when_unset(self):
         response = _FakeResponse(json.dumps({"ok": True}))
         with mock.patch("backend.llm.query_llm.requests.post", return_value=response) as post:
@@ -101,6 +111,14 @@ class QueryLlmPayloadTest(unittest.TestCase):
         transport = mock.Mock(return_value=_FakeResponse(json.dumps({"ok": True})))
         QueryLlm(
             settings=_settings(ollama_proxy_url="socks5h://127.0.0.1:1055"),
+            transport=transport,
+        ).request("hola")
+        self.assertNotIn("proxies", transport.call_args.kwargs)
+
+    def test_injected_transport_does_not_receive_http_proxy_keyword(self):
+        transport = mock.Mock(return_value=_FakeResponse(json.dumps({"ok": True})))
+        QueryLlm(
+            settings=_settings(ollama_proxy_url="http://127.0.0.1:1056"),
             transport=transport,
         ).request("hola")
         self.assertNotIn("proxies", transport.call_args.kwargs)

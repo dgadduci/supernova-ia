@@ -151,13 +151,99 @@ class LoadOllamaProxySettingsTest(unittest.TestCase):
                 "socks5h://127.0.0.1:1055",
             )
 
+    def test_valid_socks5_scheme_is_accepted(self):
+        with mock.patch.dict(
+            os.environ,
+            {"OLLAMA_PROXY_URL": "socks5://127.0.0.1:1055"},
+            clear=True,
+        ):
+            self.assertEqual(
+                load_settings().ollama_proxy_url,
+                "socks5://127.0.0.1:1055",
+            )
+
+    def test_valid_loopback_http_proxy_is_accepted(self):
+        with mock.patch.dict(
+            os.environ,
+            {"OLLAMA_PROXY_URL": "http://127.0.0.1:1056"},
+            clear=True,
+        ):
+            self.assertEqual(
+                load_settings().ollama_proxy_url,
+                "http://127.0.0.1:1056",
+            )
+
+    def test_http_proxy_strips_surrounding_whitespace(self):
+        with mock.patch.dict(
+            os.environ,
+            {"OLLAMA_PROXY_URL": "  http://127.0.0.1:1056  "},
+            clear=True,
+        ):
+            self.assertEqual(
+                load_settings().ollama_proxy_url,
+                "http://127.0.0.1:1056",
+            )
+
     def test_invalid_proxy_is_rejected(self):
         for value in (
             "",
             "   ",
             "/relative",
             "https://proxy.test",
-            "http://127.0.0.1:1055",
+            "ftp://127.0.0.1:1055",
+            "HTTP_PROXY=http://127.0.0.1:1056",
+        ):
+            with self.subTest(value=value), mock.patch.dict(
+                os.environ,
+                {"OLLAMA_PROXY_URL": value},
+                clear=True,
+            ):
+                with self.assertRaisesRegex(ValueError, "OLLAMA_PROXY_URL"):
+                    load_settings()
+
+    def test_proxy_with_credentials_is_rejected(self):
+        with mock.patch.dict(
+            os.environ,
+            {"OLLAMA_PROXY_URL": "http://user:pass@127.0.0.1:1056"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ValueError, "OLLAMA_PROXY_URL"):
+                load_settings()
+
+    def test_proxy_with_path_query_or_fragment_is_rejected(self):
+        for value in (
+            "http://127.0.0.1:1056/api",
+            "http://127.0.0.1:1056?hub=1",
+            "http://127.0.0.1:1056#frag",
+        ):
+            with self.subTest(value=value), mock.patch.dict(
+                os.environ,
+                {"OLLAMA_PROXY_URL": value},
+                clear=True,
+            ):
+                with self.assertRaisesRegex(ValueError, "OLLAMA_PROXY_URL"):
+                    load_settings()
+
+    def test_proxy_without_host_is_rejected(self):
+        with mock.patch.dict(
+            os.environ,
+            {"OLLAMA_PROXY_URL": "http://"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ValueError, "OLLAMA_PROXY_URL"):
+                load_settings()
+
+    def test_http_proxy_requires_loopback_host(self):
+        """The Railway HTTP Tailscale listener is local-only on
+        ``127.0.0.1:1056``. A remote HTTP proxy host would defeat the
+        loopback boundary and is therefore rejected before the
+        Ollama clients ever see the value.
+        """
+        for value in (
+            "http://proxy.example:8080",
+            "http://100.113.65.40:1056",
+            "http://localhost:1056",
+            "http://[::1]:1056",
         ):
             with self.subTest(value=value), mock.patch.dict(
                 os.environ,

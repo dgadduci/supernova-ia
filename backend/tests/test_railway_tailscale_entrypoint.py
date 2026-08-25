@@ -21,12 +21,35 @@ class RailwayTailscaleEntrypointTest(unittest.TestCase):
         self.assertIn("--tun=userspace-networking", source)
         self.assertIn("--state=mem:", source)
         self.assertIn("--socks5-server=127.0.0.1:1055", source)
+        self.assertIn("--outbound-http-proxy-listen=127.0.0.1:1056", source)
         self.assertIn("json.load(sys.stdin).get", source)
         self.assertNotIn("socket.create_connection", source)
         self.assertNotIn("HTTP_PROXY=", source)
         self.assertNotIn("HTTPS_PROXY=", source)
         self.assertNotIn("ALL_PROXY=", source)
         self.assertIn("required_var OLLAMA_PROXY_URL", source)
+
+    def test_entrypoint_starts_both_loopback_listeners(self):
+        """Both the SOCKS5 and HTTP Tailscale userspace listeners
+        MUST be loopback-only, on the same ``tailscaled`` invocation,
+        and remain after the existing SOCKS5 listener so the
+        application can pick either transport via ``OLLAMA_PROXY_URL``.
+        """
+        source = (_ROOT / "docker-entrypoint.sh").read_text()
+        self.assertIn("--socks5-server=127.0.0.1:1055", source)
+        self.assertIn("--outbound-http-proxy-listen=127.0.0.1:1056", source)
+        self.assertNotIn("--socks5-server=0.0.0.0:1055", source)
+        self.assertNotIn("--outbound-http-proxy-listen=0.0.0.0:1056", source)
+        socks_idx = source.index("--socks5-server=127.0.0.1:1055")
+        http_idx = source.index(
+            "--outbound-http-proxy-listen=127.0.0.1:1056"
+        )
+        self.assertLess(
+            socks_idx,
+            http_idx,
+            "HTTP listener must be declared alongside the existing SOCKS5 listener",
+        )
+        self.assertIn("tailscaled_pid=$!", source)
 
     def test_railway_manifest_has_no_pre_deploy_command(self):
         railway_toml = (_ROOT / "railway.toml").read_text()
@@ -103,6 +126,99 @@ class RailwayTailscaleEntrypointTest(unittest.TestCase):
         self.assertIn("http_status=200", output.getvalue())
         self.assertIn("received_bytes=0", output.getvalue())
         self.assertIn("category=empty_response", output.getvalue())
+
+    def test_embed_target_accepts_loopback_http_proxy(self):
+        from backend.scripts.check_railway_ollama_contracts import (
+            run_transport_diagnostic,
+        )
+
+        response = SimpleNamespace(
+            status_code=200,
+            iter_content=lambda chunk_size: [b"ok"],
+            close=lambda: None,
+        )
+        settings = SimpleNamespace(
+            ollama_proxy_url="http://127.0.0.1:1056",
+            embedding_url="http://100.113.65.40:11434/api/embed",
+            embedding_model="all-minilm:latest",
+            embedding_timeout_seconds=30,
+        )
+        output = io.StringIO()
+        with patch(
+            "backend.scripts.check_railway_ollama_contracts.requests.post",
+            return_value=response,
+        ) as post, contextlib.redirect_stdout(output):
+            result = run_transport_diagnostic(settings)
+
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("transport=embed", rendered)
+        self.assertIn("category=response_bytes_received", rendered)
+        self.assertEqual(
+            post.call_args.kwargs["proxies"]["http"],
+            "http://127.0.0.1:1056",
+        )
+        self.assertEqual(
+            post.call_args.kwargs["proxies"]["https"],
+            "http://127.0.0.1:1056",
+        )
+
+    def test_embed_target_rejects_unsupported_proxy_scheme(self):
+        from backend.scripts.check_railway_ollama_contracts import (
+            run_transport_diagnostic,
+        )
+
+        settings = SimpleNamespace(
+            ollama_proxy_url="ftp://127.0.0.1:1055",
+            embedding_url="http://100.113.65.40:11434/api/embed",
+            embedding_model="all-minilm:latest",
+            embedding_timeout_seconds=30,
+        )
+        output = io.StringIO()
+        with patch(
+            "backend.scripts.check_railway_ollama_contracts.requests.post"
+        ) as post, contextlib.redirect_stdout(output):
+            result = run_transport_diagnostic(settings)
+
+        self.assertEqual(result, 1)
+        self.assertIn(
+            "category=invalid_proxy_configuration", output.getvalue()
+        )
+        post.assert_not_called()
+
+    def test_embed_target_rejects_remote_http_proxy(self):
+        """A remote HTTP proxy host is not a supported loopback
+        transport, so the embed diagnostic must report
+        ``invalid_proxy_configuration`` and never invoke
+        ``requests.post``.
+        """
+        from backend.scripts.check_railway_ollama_contracts import (
+            run_transport_diagnostic,
+        )
+
+        settings = SimpleNamespace(
+            ollama_proxy_url="http://100.113.65.40:1056",
+            embedding_url="http://100.113.65.40:11434/api/embed",
+            embedding_model="all-minilm:latest",
+            embedding_timeout_seconds=30,
+        )
+        output = io.StringIO()
+        with patch(
+            "backend.scripts.check_railway_ollama_contracts.requests.post"
+        ) as post, contextlib.redirect_stdout(output):
+            result = run_transport_diagnostic(settings)
+
+        self.assertEqual(result, 1)
+        rendered = output.getvalue()
+        self.assertIn("transport=embed", rendered)
+        self.assertIn("connection=not_attempted", rendered)
+        self.assertIn(
+            "category=invalid_proxy_configuration", rendered
+        )
+        self.assertIn("http_status=none", rendered)
+        self.assertIn("received_bytes=0", rendered)
+        self.assertNotIn("100.113.65.40:1056", rendered)
+        post.assert_not_called()
 
 
 class RailwayGenerateTransportDiagnosticTest(unittest.TestCase):
@@ -286,7 +402,7 @@ class RailwayGenerateTransportDiagnosticTest(unittest.TestCase):
         )
 
         settings = SimpleNamespace(
-            ollama_proxy_url="http://127.0.0.1:9050",
+            ollama_proxy_url="https://127.0.0.1:9050",
             embedding_url="http://100.113.65.40:11434/api/embed",
             embedding_model="all-minilm:latest",
             embedding_timeout_seconds=30,
@@ -307,6 +423,170 @@ class RailwayGenerateTransportDiagnosticTest(unittest.TestCase):
         self.assertIn("category=invalid_proxy_configuration", rendered)
         self.assertIn("http_status=none", rendered)
         self.assertIn("received_bytes=0", rendered)
+        post.assert_not_called()
+
+    def test_generate_accepts_loopback_http_proxy(self):
+        from backend.scripts.check_railway_ollama_contracts import (
+            run_transport_diagnostic,
+        )
+
+        response = SimpleNamespace(
+            status_code=200,
+            iter_content=lambda chunk_size: [b"ok"],
+            close=lambda: None,
+        )
+        settings = SimpleNamespace(
+            ollama_proxy_url="http://127.0.0.1:1056",
+            embedding_url="http://100.113.65.40:11434/api/embed",
+            embedding_model="all-minilm:latest",
+            embedding_timeout_seconds=30,
+            llm_url=self._LLM_URL,
+            llm_model=self._LLM_MODEL,
+            llm_timeout=180,
+        )
+        output = io.StringIO()
+        with patch(
+            "backend.scripts.check_railway_ollama_contracts.requests.post",
+            return_value=response,
+        ) as post, contextlib.redirect_stdout(output):
+            result = run_transport_diagnostic(settings, target="generate")
+
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("target=generate", rendered)
+        self.assertIn("connection=connected", rendered)
+        self.assertIn("category=response_bytes_received", rendered)
+        self.assertNotIn("127.0.0.1:1056", rendered)
+        self.assertNotIn("http://127.0.0.1:1056", rendered)
+        self.assertEqual(
+            post.call_args.kwargs["proxies"]["http"],
+            "http://127.0.0.1:1056",
+        )
+        self.assertEqual(
+            post.call_args.kwargs["proxies"]["https"],
+            "http://127.0.0.1:1056",
+        )
+
+    def test_generate_accepts_socks5_proxy(self):
+        from backend.scripts.check_railway_ollama_contracts import (
+            run_transport_diagnostic,
+        )
+
+        response = SimpleNamespace(
+            status_code=200,
+            iter_content=lambda chunk_size: [b"ok"],
+            close=lambda: None,
+        )
+        settings = SimpleNamespace(
+            ollama_proxy_url="socks5://127.0.0.1:1055",
+            embedding_url="http://100.113.65.40:11434/api/embed",
+            embedding_model="all-minilm:latest",
+            embedding_timeout_seconds=30,
+            llm_url=self._LLM_URL,
+            llm_model=self._LLM_MODEL,
+            llm_timeout=180,
+        )
+        output = io.StringIO()
+        with patch(
+            "backend.scripts.check_railway_ollama_contracts.requests.post",
+            return_value=response,
+        ) as post, contextlib.redirect_stdout(output):
+            result = run_transport_diagnostic(settings, target="generate")
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            post.call_args.kwargs["proxies"]["http"],
+            "socks5://127.0.0.1:1055",
+        )
+
+    def test_generate_rejects_unsupported_proxy_scheme(self):
+        from backend.scripts.check_railway_ollama_contracts import (
+            run_transport_diagnostic,
+        )
+
+        settings = SimpleNamespace(
+            ollama_proxy_url="ftp://127.0.0.1:1055",
+            embedding_url="http://100.113.65.40:11434/api/embed",
+            embedding_model="all-minilm:latest",
+            embedding_timeout_seconds=30,
+            llm_url=self._LLM_URL,
+            llm_model=self._LLM_MODEL,
+            llm_timeout=180,
+        )
+        output = io.StringIO()
+        with patch(
+            "backend.scripts.check_railway_ollama_contracts.requests.post"
+        ) as post, contextlib.redirect_stdout(output):
+            result = run_transport_diagnostic(settings, target="generate")
+
+        self.assertEqual(result, 1)
+        self.assertIn(
+            "category=invalid_proxy_configuration", output.getvalue()
+        )
+        post.assert_not_called()
+
+    def test_generate_rejects_remote_http_proxy(self):
+        """A remote HTTP proxy host is not a supported loopback
+        transport, so the generate diagnostic must report
+        ``invalid_proxy_configuration`` and never invoke
+        ``requests.post``.
+        """
+        from backend.scripts.check_railway_ollama_contracts import (
+            run_transport_diagnostic,
+        )
+
+        settings = SimpleNamespace(
+            ollama_proxy_url="http://100.113.65.40:1056",
+            embedding_url="http://100.113.65.40:11434/api/embed",
+            embedding_model="all-minilm:latest",
+            embedding_timeout_seconds=30,
+            llm_url=self._LLM_URL,
+            llm_model=self._LLM_MODEL,
+            llm_timeout=180,
+        )
+        output = io.StringIO()
+        with patch(
+            "backend.scripts.check_railway_ollama_contracts.requests.post"
+        ) as post, contextlib.redirect_stdout(output):
+            result = run_transport_diagnostic(settings, target="generate")
+
+        self.assertEqual(result, 1)
+        rendered = output.getvalue()
+        self.assertIn("target=generate", rendered)
+        self.assertIn("connection=not_attempted", rendered)
+        self.assertIn(
+            "category=invalid_proxy_configuration", rendered
+        )
+        self.assertIn("http_status=none", rendered)
+        self.assertIn("received_bytes=0", rendered)
+        self.assertNotIn("100.113.65.40:1056", rendered)
+        post.assert_not_called()
+
+    def test_generate_rejects_proxy_with_credentials(self):
+        from backend.scripts.check_railway_ollama_contracts import (
+            run_transport_diagnostic,
+        )
+
+        settings = SimpleNamespace(
+            ollama_proxy_url="http://user:pass@127.0.0.1:1056",
+            embedding_url="http://100.113.65.40:11434/api/embed",
+            embedding_model="all-minilm:latest",
+            embedding_timeout_seconds=30,
+            llm_url=self._LLM_URL,
+            llm_model=self._LLM_MODEL,
+            llm_timeout=180,
+        )
+        output = io.StringIO()
+        with patch(
+            "backend.scripts.check_railway_ollama_contracts.requests.post"
+        ) as post, contextlib.redirect_stdout(output):
+            result = run_transport_diagnostic(settings, target="generate")
+
+        self.assertEqual(result, 1)
+        self.assertIn(
+            "category=invalid_proxy_configuration", output.getvalue()
+        )
+        self.assertNotIn("user:pass", output.getvalue())
         post.assert_not_called()
 
     def test_generate_closes_response_after_iteration(self):

@@ -4,6 +4,7 @@ import argparse
 import sys
 import time
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import requests
 
@@ -179,6 +180,36 @@ def _run_transport_probe(
     return connection, status_code, received_bytes, category, elapsed
 
 
+def _is_supported_proxy_url(value: object) -> bool:
+    """Return True when ``value`` is a non-empty absolute URL whose
+    scheme is one of the operator-supported transports for the Railway
+    loopback proxy boundary.
+
+    The helper centralises the supported-scheme contract so the
+    diagnostic never rejects a valid HTTP proxy value. It performs no
+    I/O, never logs, and never echoes the proxy value.
+    """
+    if not isinstance(value, str) or not value:
+        return False
+    candidate = value.strip()
+    if not candidate:
+        return False
+    parsed = urlparse(candidate)
+    if parsed.scheme.lower() not in {"socks5", "socks5h", "http"}:
+        return False
+    if not parsed.netloc:
+        return False
+    if parsed.scheme.lower() == "http" and parsed.hostname != "127.0.0.1":
+        return False
+    return not (
+        parsed.username
+        or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    )
+
+
 def run_transport_diagnostic(settings, *, target: str = "embed") -> int:
     """Run the bounded operator transport diagnostic.
 
@@ -188,11 +219,17 @@ def run_transport_diagnostic(settings, *, target: str = "embed") -> int:
     controlled prompt and reports a closed six-field result category.
     The diagnostic never prints the prompt, the response body, the URL,
     the proxy value, credentials, headers, exception text, or tracebacks.
+
+    The diagnostic accepts every supported proxy scheme (``socks5``,
+    ``socks5h`` or ``http``). It refuses to start the transport probe
+    only when ``Settings.ollama_proxy_url`` is missing or uses an
+    unsupported, malformed or credentialed scheme; the closed category
+    for that refusal remains ``invalid_proxy_configuration``.
     """
     if target not in _TRANSPORT_TARGETS:
         raise ValueError(f"Unknown transport target: {target!r}")
 
-    if settings.ollama_proxy_url != "socks5h://127.0.0.1:1055":
+    if not _is_supported_proxy_url(settings.ollama_proxy_url):
         if target == _TRANSPORT_TARGET_EMBED:
             print(
                 "transport=embed connection=not_attempted http_status=none "

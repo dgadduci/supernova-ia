@@ -97,6 +97,17 @@ class OllamaEmbeddingClientPayloadTest(unittest.TestCase):
             {"http": "socks5h://127.0.0.1:1055", "https": "socks5h://127.0.0.1:1055"},
         )
 
+    def test_real_transport_uses_loopback_http_proxy(self):
+        settings = _settings(ollama_proxy_url="http://127.0.0.1:1056")
+        with mock.patch(
+            "requests.post", return_value=_ok_response([_vector(1.0)])
+        ) as post:
+            OllamaEmbeddingClient(settings=settings).embed_query("hola")
+        self.assertEqual(
+            post.call_args.kwargs["proxies"],
+            {"http": "http://127.0.0.1:1056", "https": "http://127.0.0.1:1056"},
+        )
+
     def test_real_transport_has_no_proxy_when_unset(self):
         with mock.patch(
             "requests.post", return_value=_ok_response([_vector(1.0)])
@@ -108,6 +119,14 @@ class OllamaEmbeddingClientPayloadTest(unittest.TestCase):
         transport = mock.Mock(return_value=_ok_response([_vector(1.0)]))
         OllamaEmbeddingClient(
             settings=_settings(ollama_proxy_url="socks5h://127.0.0.1:1055"),
+            transport=transport,
+        ).embed_query("hola")
+        self.assertNotIn("proxies", transport.call_args.kwargs)
+
+    def test_injected_transport_does_not_receive_http_proxy_keyword(self):
+        transport = mock.Mock(return_value=_ok_response([_vector(1.0)]))
+        OllamaEmbeddingClient(
+            settings=_settings(ollama_proxy_url="http://127.0.0.1:1056"),
             transport=transport,
         ).embed_query("hola")
         self.assertNotIn("proxies", transport.call_args.kwargs)

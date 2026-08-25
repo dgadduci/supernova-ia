@@ -165,12 +165,16 @@ def _ollama_proxy_url_env(name: str) -> str | None:
     cleaned = raw.strip()
     if not cleaned:
         raise ValueError(
-            f"{name} must be a non-empty absolute socks5 or socks5h URL when provided"
+            f"{name} must be a non-empty absolute socks5, socks5h, or http URL when provided"
         )
     parsed = urlparse(cleaned)
-    if parsed.scheme.lower() not in {"socks5", "socks5h"} or not parsed.netloc:
+    if parsed.scheme.lower() not in {"socks5", "socks5h", "http"} or not parsed.netloc:
         raise ValueError(
-            f"{name} must be an absolute socks5 or socks5h URL when provided"
+            f"{name} must be an absolute socks5, socks5h, or http URL when provided"
+        )
+    if parsed.scheme.lower() == "http" and parsed.hostname != "127.0.0.1":
+        raise ValueError(
+            f"{name} http proxy host must be 127.0.0.1 (loopback only) when provided"
         )
     if (
         parsed.username
