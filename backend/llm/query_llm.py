@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterator, Mapping
 from datetime import datetime, timezone
 from typing import Any, cast
 
+import httpx
 import requests
 
 from backend.config.settings import Settings, load_settings
@@ -303,6 +304,121 @@ def _classify_post_exception(
     raise exc
 
 
+def _translate_httpx_exception(
+    exc: BaseException,
+) -> requests.exceptions.RequestException:
+    """Map a synchronous :mod:`httpx` exception to its Requests sibling.
+
+    The translation keeps the established
+    :func:`_classify_post_exception` mapper authoritative so the
+    :class:`QueryLlm` boundary reports the same closed technical
+    errors for both transports. The mapping is deliberately narrow:
+
+    * ``httpx.TimeoutException`` (which subsumes ``ConnectTimeout``,
+      ``ReadTimeout``, ``WriteTimeout`` and ``PoolTimeout``) →
+      :class:`requests.exceptions.Timeout`.
+    * every other :class:`httpx.HTTPError` (network, proxy, stream
+      and protocol errors — including ``ConnectError``,
+      ``ProxyError``, ``NetworkError``, ``RemoteProtocolError`` and
+      ``ReadError``) and the streaming-only
+      :class:`httpx.StreamError` (which is not a
+      ``HTTPError`` subclass despite being a connection failure)
+      → :class:`requests.exceptions.ConnectionError`, matching
+      the historical Requests branch that classified ``ProxyError``,
+      ``SSLError`` and ``ChunkedEncodingError`` as connection
+      failures.
+
+    The original exception is re-raised unchanged when its type
+    does not match the closed HTTPX failure modes the boundary
+    classifies (HTTP-status errors are handled separately by the
+    :class:`_HttpxResponseAdapter` and never reach this helper).
+    """
+    if isinstance(exc, httpx.TimeoutException):
+        return requests.exceptions.Timeout(str(exc))
+    if isinstance(exc, httpx.HTTPError):
+        return requests.exceptions.ConnectionError(str(exc))
+    if isinstance(exc, httpx.StreamError):
+        return requests.exceptions.ConnectionError(str(exc))
+    raise exc
+
+
+class _HttpxResponseAdapter:
+    """Bridge an :class:`httpx.Response` to the ``requests.Response``-shaped
+    interface :meth:`QueryLlm.request` already consumes.
+
+    The adapter is intentionally narrow:
+
+    * ``status_code``, ``text``, ``json()`` and ``close()`` are
+      delegated verbatim so the surrounding :class:`QueryLlm`
+      flow keeps reading the same attributes.
+    * :meth:`iter_content` yields bytes from the underlying
+      :meth:`httpx.Response.iter_bytes` and translates mid-stream
+      transport / protocol / read-timeout failures into the
+      :mod:`requests.exceptions` siblings the existing
+      :func:`_classify_post_exception` mapper already understands.
+    * :meth:`raise_for_status` raises
+      :class:`requests.exceptions.HTTPError` (with the adapter
+      attached as the ``response`` attribute, the exact pattern
+      the existing tests already exercise) so the :class:`QueryLlm`
+      HTTP-error branch keeps working unchanged.
+
+    The adapter keeps a reference to the underlying
+    :class:`httpx.Client` and closes both the response stream and
+    the client pool on :meth:`close` — the client must outlive the
+    ``client.send(stream=True)`` call so the streaming body
+    iteration that :meth:`QueryLlm.request` performs after
+    :meth:`_post_httpx` returns still has a live connection pool to
+    drain.
+    """
+
+    def __init__(
+        self,
+        response: httpx.Response,
+        client: httpx.Client,
+    ) -> None:
+        self._response = response
+        self._client = client
+        self.status_code = int(response.status_code)
+        self.closed = False
+
+    @property
+    def text(self) -> str:
+        return self._response.text
+
+    def json(self) -> Any:
+        return self._response.json()
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            err = requests.exceptions.HTTPError(
+                f"{self.status_code} HTTP Error"
+            )
+            # The ``HTTPError.response`` attribute is typed as a
+            # real :class:`requests.Response`, but the QueryLlm
+            # boundary has always treated it as the duck-typed
+            # response object that raised the error. The cast
+            # keeps the existing ``exc.response.status_code``
+            # access in :meth:`QueryLlm.request` working without
+            # rebuilding the requests-shaped contract.
+            err.response = cast(Any, self)
+            raise err
+
+    def iter_content(self, chunk_size: int = 8192):
+        try:
+            yield from self._response.iter_bytes(chunk_size)
+        except (httpx.HTTPError, httpx.StreamError) as exc:
+            raise _translate_httpx_exception(exc) from exc
+
+    def close(self) -> None:
+        try:
+            self._response.close()
+        finally:
+            try:
+                self._client.close()
+            finally:
+                self.closed = True
+
+
 class QueryLlm:
     def __init__(
         self,
@@ -333,26 +449,85 @@ class QueryLlm:
         try:
             if self._transport is not None:
                 return self._transport(self._settings.llm_url, json=payload, timeout=self._settings.llm_timeout)
-            return requests.post(
-                self._settings.llm_url,
-                json=payload,
-                timeout=self._settings.llm_timeout,
-                stream=True,
-                **(
-                    {
-                        "proxies": {
-                            "http": self._settings.ollama_proxy_url,
-                            "https": self._settings.ollama_proxy_url,
-                        }
-                    }
-                    if self._settings.ollama_proxy_url is not None
-                    else {}
-                ),
-            )
+            if self._settings.llm_http_client == "httpx":
+                return self._post_httpx(payload)
+            return self._post_requests(payload)
         except requests.exceptions.RequestException as exc:
             raise _classify_post_exception(
                 exc, timeout_seconds=self._settings.llm_timeout
             ) from exc
+
+    def _post_requests(self, payload: Mapping[str, Any]) -> Any:
+        """Issue the historical Requests streaming POST.
+
+        Preserved verbatim so the existing default transport and
+        test seam keep behaving identically when ``LLM_HTTP_CLIENT``
+        is absent or explicitly ``requests``.
+        """
+        return requests.post(
+            self._settings.llm_url,
+            json=payload,
+            timeout=self._settings.llm_timeout,
+            stream=True,
+            **(
+                {
+                    "proxies": {
+                        "http": self._settings.ollama_proxy_url,
+                        "https": self._settings.ollama_proxy_url,
+                    }
+                }
+                if self._settings.ollama_proxy_url is not None
+                else {}
+            ),
+        )
+
+    def _post_httpx(self, payload: Mapping[str, Any]) -> Any:
+        """Issue exactly one synchronous HTTPX streaming POST.
+
+        The helper preserves the existing URL, the non-streaming
+        Ollama payload (``stream: false`` is sent verbatim), the
+        total ``LLM_TIMEOUT`` budget and the optional
+        ``OLLAMA_PROXY_URL`` scope. The proxy URL is forwarded
+        unchanged so httpcore honours the historical
+        ``socks5://`` and ``socks5h://`` contract — the underlying
+        ``Socks5Connection`` resolves the target with the same
+        address type ``socksio`` already negotiates, and an IP
+        literal is sent to the proxy as-is while a domain name is
+        always forwarded as ``DOMAIN_NAME`` (i.e. remote DNS
+        resolution). The proxy is therefore never downgraded to
+        direct traffic and never leaks into a process-wide
+        ``HTTP_PROXY`` environment variable.
+
+        The helper never invokes :mod:`requests` and never falls
+        back to the Requests transport on failure — a single
+        HTTPX attempt is the only network operation it performs.
+        The returned adapter keeps a reference to the live
+        :class:`httpx.Client` so the streaming body iteration
+        :meth:`request` performs next still has a live connection
+        pool to drain; both the response stream and the client are
+        closed when the adapter's :meth:`close` runs from the
+        surrounding :meth:`request` ``finally`` block.
+        """
+        proxy = self._settings.ollama_proxy_url
+        timeout = self._settings.llm_timeout
+        client_kwargs: dict[str, Any] = {"timeout": timeout}
+        if proxy is not None:
+            client_kwargs["proxy"] = proxy
+        client = httpx.Client(**client_kwargs)
+        try:
+            try:
+                request = client.build_request(
+                    "POST",
+                    self._settings.llm_url,
+                    json=payload,
+                )
+                response = client.send(request, stream=True)
+            except httpx.HTTPError as exc:
+                raise _translate_httpx_exception(exc) from exc
+        except BaseException:
+            client.close()
+            raise
+        return _HttpxResponseAdapter(response=response, client=client)
 
     def _parse(self, body: str) -> dict[str, Any]:
         body = body.strip()
