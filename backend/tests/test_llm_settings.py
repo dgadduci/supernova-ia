@@ -3,7 +3,11 @@ import unittest
 from dataclasses import FrozenInstanceError
 from unittest import mock
 
-from backend.config.settings import Settings, load_settings
+from backend.config.settings import (
+    DEFAULT_LLM_HTTP_CLIENT,
+    Settings,
+    load_settings,
+)
 from backend.services.exceptions import (
     InvalidTwilioWebhookAuthToken,
     InvalidTwilioWebhookBaseUrl,
@@ -240,6 +244,123 @@ class LoadTwilioIngressSettingsTest(unittest.TestCase):
             settings.twilio_auth_token = "other"  # type: ignore[misc]
         with self.assertRaises(FrozenInstanceError):
             settings.twilio_webhook_base_url = "other"  # type: ignore[misc]
+
+
+class LoadLlmHttpClientSettingsTest(unittest.TestCase):
+    """Closed vocabulary for the QueryLlm transport selection.
+
+    The setting exists to drive an opt-in, reversible Test-only
+    HTTPX experiment behind ``LLM_HTTP_CLIENT=httpx``; the
+    Requests transport remains the production default. The value
+    is never treated as an endpoint, proxy, header, credential or
+    customer input and is rejected explicitly so a
+    misconfiguration never reaches an HTTP request.
+    """
+
+    def test_default_is_requests_when_absent(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            settings = load_settings()
+        self.assertEqual(settings.llm_http_client, "requests")
+        self.assertEqual(settings.llm_http_client, DEFAULT_LLM_HTTP_CLIENT)
+        self.assertEqual(DEFAULT_LLM_HTTP_CLIENT, "requests")
+
+    def test_blank_value_resolves_to_requests(self):
+        for raw in ("", "   "):
+            with self.subTest(raw=raw), mock.patch.dict(
+                os.environ, {"LLM_HTTP_CLIENT": raw}, clear=True
+            ):
+                settings = load_settings()
+            self.assertEqual(settings.llm_http_client, "requests")
+
+    def test_explicit_requests_value_is_accepted(self):
+        with mock.patch.dict(
+            os.environ, {"LLM_HTTP_CLIENT": "requests"}, clear=True
+        ):
+            settings = load_settings()
+        self.assertEqual(settings.llm_http_client, "requests")
+
+    def test_explicit_httpx_value_is_accepted(self):
+        with mock.patch.dict(
+            os.environ, {"LLM_HTTP_CLIENT": "httpx"}, clear=True
+        ):
+            settings = load_settings()
+        self.assertEqual(settings.llm_http_client, "httpx")
+
+    def test_value_is_normalised_lowercase_and_stripped(self):
+        for raw, expected in (
+            ("  httpx  ", "httpx"),
+            ("HTTPX", "httpx"),
+            ("\trequests\n", "requests"),
+            ("Requests", "requests"),
+        ):
+            with self.subTest(raw=raw), mock.patch.dict(
+                os.environ, {"LLM_HTTP_CLIENT": raw}, clear=True
+            ):
+                settings = load_settings()
+            self.assertEqual(settings.llm_http_client, expected)
+
+    def test_invalid_value_is_rejected_before_request(self):
+        for raw in (
+            "curl",
+            "urllib",
+            "aiohttp",
+            "http",
+            "requests2",
+            "requests,httpx",
+        ):
+            with self.subTest(raw=raw), mock.patch.dict(
+                os.environ, {"LLM_HTTP_CLIENT": raw}, clear=True
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "LLM_HTTP_CLIENT"
+                ) as ctx:
+                    load_settings()
+                rendered = str(ctx.exception).lower()
+                self.assertNotIn("://", rendered)
+                self.assertNotIn("socks5", rendered)
+                self.assertNotIn("proxy=", rendered)
+                self.assertNotIn("bearer", rendered)
+                self.assertNotIn("authorization", rendered)
+
+    def test_invalid_value_message_does_not_leak_secret_markers(self):
+        """The error MUST surface the closed vocabulary clearly without
+        echoing secret-shaped input verbatim. Echoing the raw
+        ``LLM_HTTP_CLIENT`` value is allowed because the field is
+        a transport selector and not a credential, but the helper
+        MUST avoid secret-marker leakage that the operator could
+        mistake for a credential echo.
+        """
+        with mock.patch.dict(
+            os.environ,
+            {"LLM_HTTP_CLIENT": "bearer-token-should-not-echo-as-credential"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ValueError, "LLM_HTTP_CLIENT") as ctx:
+                load_settings()
+        rendered = str(ctx.exception)
+        self.assertNotIn("Authorization", rendered)
+        self.assertNotIn("Bearer bearer-token", rendered)
+        self.assertNotIn("secret=", rendered)
+        self.assertNotIn("password=", rendered)
+
+    def test_settings_is_frozen_for_llm_http_client(self):
+        with mock.patch.dict(
+            os.environ, {"LLM_HTTP_CLIENT": "httpx"}, clear=True
+        ):
+            settings = load_settings()
+        with self.assertRaises(FrozenInstanceError):
+            settings.llm_http_client = "requests"  # type: ignore[misc]
+
+    def test_settings_field_coexists_with_existing_fields(self):
+        with mock.patch.dict(
+            os.environ, {"LLM_HTTP_CLIENT": "httpx"}, clear=True
+        ):
+            settings = load_settings()
+        self.assertEqual(settings.llm_http_client, "httpx")
+        self.assertEqual(settings.llm_url, "http://localhost:11434/api/generate")
+        self.assertEqual(settings.llm_model, "qwen2.5-coder:7b-ctx8192")
+        self.assertEqual(settings.llm_timeout, 180)
+        self.assertIsNone(settings.ollama_proxy_url)
 
 
 if __name__ == "__main__":

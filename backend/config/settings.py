@@ -74,6 +74,7 @@ def _float_env(name: str, default: float) -> float:
 
 
 _RECOGNIZER_MODES = ("fuzzy", "shadow", "hybrid_authoritative")
+_LLM_HTTP_CLIENTS = ("requests", "httpx")
 
 
 def _product_recognizer_mode_env(name: str, default: str) -> tuple[str, str]:
@@ -493,6 +494,7 @@ DEFAULT_COMMERCE_ISOLATED_OUTBOUND_ENABLED = False
 DEFAULT_COMMERCE_ISOLATED_TC_BASE_URL: str | None = None
 DEFAULT_COMMERCE_ISOLATED_HTTP_TIMEOUT_SECONDS = 5
 DEFAULT_TWILIO_PROVIDER_MODE: Literal["real", "emulator"] = "real"
+DEFAULT_LLM_HTTP_CLIENT: Literal["requests", "httpx"] = "requests"
 DEFAULT_TWILIO_EMULATOR_BASE_URL: str | None = None
 DEFAULT_TWILIO_EMULATOR_ACCOUNT_SID: str | None = None
 DEFAULT_TWILIO_EMULATOR_AUTH_TOKEN: str | None = None
@@ -651,6 +653,34 @@ def _twilio_provider_mode_env(
     return cast(Literal["real", "emulator"], cleaned)
 
 
+def _llm_http_client_env(
+    name: str, default: Literal["requests", "httpx"]
+) -> Literal["requests", "httpx"]:
+    """Resolve the closed ``LLM_HTTP_CLIENT`` selection.
+
+    The helper enforces the closed transport vocabulary that drives
+    the :class:`backend.llm.query_llm.QueryLlm` boundary: absent or
+    blank resolves to the Requests default; any other value raises a
+    secret-free configuration error before any HTTP request is
+    attempted. The value is never treated as a URL, proxy, header,
+    credential or customer input.
+    """
+    raw = os.environ.get(name)
+    if raw is None or (isinstance(raw, str) and raw.strip() == ""):
+        return default
+    if not isinstance(raw, str):
+        raise TypeError(
+            f"{name} must be 'requests' or 'httpx' when provided "
+            f"(got {type(raw).__name__})"
+        )
+    cleaned = raw.strip().lower()
+    if cleaned not in _LLM_HTTP_CLIENTS:
+        raise ValueError(
+            f"{name} must be 'requests' or 'httpx' (got {raw!r})"
+        )
+    return cast(Literal["requests", "httpx"], cleaned)
+
+
 def _twilio_emulator_https_url_env(name: str) -> str | None:
     raw = _optional_str_env(name, None)
     if raw is None:
@@ -726,6 +756,7 @@ class Settings:
     llm_num_predict: int
     llm_log_content: bool
     llm_log_max_chars: int
+    llm_http_client: Literal["requests", "httpx"] = DEFAULT_LLM_HTTP_CLIENT
     ollama_proxy_url: str | None = None
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
     embedding_dimension: int = DEFAULT_EMBEDDING_DIMENSION
@@ -844,6 +875,9 @@ def load_settings() -> Settings:
         llm_num_predict=_int_env("LLM_NUM_PREDICT", 1500),
         llm_log_content=_bool_env("LLM_LOG_CONTENT", False),
         llm_log_max_chars=_int_env("LLM_LOG_MAX_CHARS", 1000),
+        llm_http_client=_llm_http_client_env(
+            "LLM_HTTP_CLIENT", DEFAULT_LLM_HTTP_CLIENT
+        ),
         ollama_proxy_url=_ollama_proxy_url_env("OLLAMA_PROXY_URL"),
         embedding_model=_str_env("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
         embedding_dimension=_positive_int_env(
@@ -1097,6 +1131,7 @@ __all__ = [
     "DEFAULT_EMBEDDING_TIMEOUT_SECONDS",
     "DEFAULT_EMBEDDING_URL",
     "DEFAULT_HYBRID_AUTHORITATIVE_POLICY_PATH",
+    "DEFAULT_LLM_HTTP_CLIENT",
     "DEFAULT_PRODUCT_RECOGNIZER_MODE",
     "DEFAULT_PROVIDER_PROCESSING_WORKER_ENABLED",
     "DEFAULT_PROVIDER_PROCESSING_WORKER_INBOUND_MAX_ITEMS_PER_PASS",

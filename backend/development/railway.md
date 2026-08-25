@@ -245,6 +245,39 @@ worker reached on every turn. The sequence uses Requests response
 streaming only as an observation seam; the Ollama payload remains
 `"stream": false` and the parsed business contract is unchanged.
 
+### Reversible HTTPX QueryLlm transport experiment (Test only)
+
+The opt-in, reversible HTTPX experiment gates a synchronous HTTPX
+streaming path behind `LLM_HTTP_CLIENT=httpx`. The closed vocabulary is
+exactly `requests` (default) and `httpx`; any other value fails settings
+loading with a secret-free configuration error before any HTTP request
+is attempted. Requests remains the production default and the committed
+code is inert until the variable is set.
+
+Activation (Test only):
+
+1. Set `LLM_HTTP_CLIENT=httpx` in Railway Test for the integrated web
+   service and redeploy/restart.
+2. Run controlled turns and correlate the seven closed
+   `llm_request_transport_phase` events with the Ollama journal.
+3. Do not enable the setting in production during this experiment.
+
+Operational rollback (Test):
+
+1. Remove `LLM_HTTP_CLIENT` (or set it to `LLM_HTTP_CLIENT=requests`) in
+   Railway Test and redeploy/restart. The next process start selects
+   Requests by default without any code, schema, migration, timeout,
+   proxy, Tailscale, Twilio or worker change.
+
+The HTTPX branch is intentionally minimal: one synchronous
+`httpx.Client` driving `build_request(...)` + `send(..., stream=True)`, the same `OLLAMA_PROXY_URL` scope
+(`socks5://` or `socks5h://`), the same total `LLM_TIMEOUT`, the same
+seven-phase event order, the same closed error categories
+(`QueryLlmTimeoutError`, `QueryLlmConnectionError`,
+`QueryLlmHttpError`, `QueryLlmResponseError`) and no Requests fallback.
+A failed HTTPX attempt never invokes Requests and never issues a second
+LLM request.
+
 The closed vocabulary has seven tokens; six of them are observed
 during a successful turn and `response_received` is both observed on
 success and retained as the historical compatibility token the

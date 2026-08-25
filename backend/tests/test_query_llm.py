@@ -5,6 +5,7 @@ import os
 import unittest
 from unittest import mock
 
+import httpx
 import requests
 
 from backend.config.settings import Settings, load_settings
@@ -99,6 +100,48 @@ class _FakeStreamingResponse:
             err = requests.exceptions.HTTPError(f"{self.status_code} error")
             err.response = self
             raise err
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeHttpxStreamingResponse:
+    """Streaming-capable fake response shaped like :class:`httpx.Response`.
+
+    The class mirrors :class:`_FakeStreamingResponse` but exposes
+    :meth:`iter_bytes` instead of :meth:`iter_content` so the
+    :class:`_HttpxResponseAdapter` in :mod:`backend.llm.query_llm`
+    can consume it. The wrapper also tracks ``close`` and ``iter``
+    calls so tests can assert success / failure close semantics.
+    """
+
+    def __init__(
+        self,
+        inner_body: str,
+        *,
+        status_code: int = 200,
+        chunk_size: int = 4,
+    ) -> None:
+        self._inner_body = inner_body
+        self._envelope = json.dumps({"response": inner_body})
+        self.status_code = int(status_code)
+        self._chunk_size = chunk_size
+        self.closed = False
+        self.iter_calls = 0
+
+    @property
+    def text(self) -> str:
+        return self._envelope
+
+    def iter_bytes(self, chunk_size: int = 8192):
+        self.iter_calls += 1
+        data = self._envelope.encode("utf-8")
+        size = self._chunk_size if self._chunk_size > 0 else chunk_size
+        for i in range(0, len(data), size):
+            yield data[i:i + size]
+
+    def json(self):
+        return {"response": self._inner_body}
 
     def close(self):
         self.closed = True
@@ -2000,6 +2043,881 @@ class QueryLlmStreamingExceptionMappingTest(unittest.TestCase):
         self.assertNotIsInstance(ctx.exception, QueryLlmTimeoutError)
         self.assertNotIsInstance(ctx.exception, QueryLlmConnectionError)
         self.assertTrue(response.closed)
+
+
+class QueryLlmHttpxTransportTest(unittest.TestCase):
+    """Closed HTTPX experiment for the QueryLlm boundary.
+
+    The transport is opt-in via ``LLM_HTTP_CLIENT=httpx``; the
+    Requests path remains the production default. The test suite
+    exercises the HTTPX branch without any real network: every
+    :class:`httpx.Client` instance is replaced with a recording
+    fake that captures the URL, payload, timeout, proxy and body
+    iterator, mirrors a synthetic :class:`httpx.Response`-shaped
+    object, and asserts the equivalence contract:
+
+    * the existing :class:`QueryLlm` injected-test seam keeps
+      winning over the configuration selector so legacy tests stay
+      green;
+    * the HTTPX path forwards the URL, payload, total timeout and
+      optional ``OLLAMA_PROXY_URL`` verbatim;
+    * a successful turn emits the seven closed transport phases
+      in the same order and closes the response;
+    * timeout, connection / proxy and stream errors map to the
+      existing :class:`QueryLlmTimeoutError` /
+      :class:`QueryLlmConnectionError` categories without invoking
+      :mod:`requests` as a fallback;
+    * HTTP status errors keep the existing :class:`QueryLlmHttpError`
+      contract;
+    * the closed ``socks5://`` and ``socks5h://`` schemes are both
+      accepted by the proxy argument without downgrading to direct
+      traffic;
+    * the privacy contract remains intact — no URL, proxy,
+      credential or prompt text is logged or surfaced through the
+      phase events.
+    """
+
+    def setUp(self) -> None:
+        reset_llm_timing_recorder()
+
+    def tearDown(self) -> None:
+        reset_llm_timing_recorder()
+
+    def _capture_emit_events(self) -> tuple[list[dict], object]:
+        captured: list[dict] = []
+
+        def _capture(*, event: str, **kwargs: object) -> bool:
+            from backend.observability.events import build_event
+
+            payload = build_event(event=event, **kwargs)
+            captured.append(payload)
+            return True
+
+        return captured, _capture
+
+    def _phases(self, captured: list[dict]) -> list[str]:
+        return [
+            ev["phase"]
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+        ]
+
+    def _phase(self, captured: list[dict], name: str) -> dict:
+        return next(
+            ev
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+            and ev["phase"] == name
+        )
+
+    def test_default_settings_select_requests_transport(self) -> None:
+        settings = _settings()
+        self.assertEqual(settings.llm_http_client, "requests")
+
+    def test_injected_transport_wins_over_httpx_selector(self) -> None:
+        transport = mock.Mock(
+            return_value=_FakeResponse(json.dumps({"ok": True}))
+        )
+        settings = _settings(llm_http_client="httpx")
+        with mock.patch(
+            "backend.llm.query_llm.httpx.Client"
+        ) as fake_client:
+            QueryLlm(settings=settings, transport=transport).request("hola")
+        fake_client.assert_not_called()
+
+    def test_httpx_selector_invokes_httpx_client_with_proxy_url(
+        self,
+    ) -> None:
+        captured_client_kwargs: dict = {}
+        captured_send_kwargs: dict = {}
+        captured_request: dict = {}
+
+        class _RecordingClient:
+            def __init__(self, *args, **kwargs):
+                captured_client_kwargs.update(kwargs)
+
+            def build_request(self, method, url, json=None, **kw):
+                captured_request["method"] = method
+                captured_request["url"] = url
+                captured_request["json"] = json
+                return mock.Mock(name="built-request")
+
+            def send(self, request, stream=False):
+                captured_send_kwargs["stream"] = stream
+                return _FakeHttpxStreamingResponse(
+                    json.dumps({"ok": True})
+                )
+
+            def close(self):
+                pass
+
+        with mock.patch(
+            "backend.llm.query_llm.httpx.Client",
+            side_effect=_RecordingClient,
+        ):
+            QueryLlm(
+                settings=_settings(
+                    llm_http_client="httpx",
+                    ollama_proxy_url="socks5h://127.0.0.1:1055",
+                ),
+            ).request("hola")
+
+        self.assertEqual(
+            captured_client_kwargs.get("proxy"),
+            "socks5h://127.0.0.1:1055",
+        )
+        self.assertEqual(captured_client_kwargs.get("timeout"), 30)
+        self.assertEqual(captured_request["url"], "http://llm.test/api/generate")
+        self.assertEqual(captured_request["method"], "POST")
+        payload = captured_request["json"]
+        self.assertEqual(payload["model"], "test-model")
+        self.assertEqual(payload["prompt"], "hola")
+        self.assertEqual(payload["stream"], False)
+        self.assertEqual(payload["think"], False)
+        self.assertEqual(payload["format"], "json")
+        self.assertEqual(payload["options"]["temperature"], 0)
+        self.assertEqual(payload["options"]["num_predict"], 256)
+        self.assertEqual(payload["options"]["num_ctx"], 2048)
+        self.assertTrue(captured_send_kwargs["stream"])
+
+    def test_httpx_selector_without_proxy_omits_proxy_kwarg(self) -> None:
+        captured_client_kwargs: dict = {}
+
+        class _RecordingClient:
+            def __init__(self, *args, **kwargs):
+                captured_client_kwargs.update(kwargs)
+
+            def build_request(self, method, url, json=None, **kw):
+                return mock.Mock(name="built-request")
+
+            def send(self, request, stream=False):
+                return _FakeHttpxStreamingResponse(
+                    json.dumps({"ok": True})
+                )
+
+            def close(self):
+                pass
+
+        with mock.patch(
+            "backend.llm.query_llm.httpx.Client",
+            side_effect=_RecordingClient,
+        ):
+            QueryLlm(
+                settings=_settings(llm_http_client="httpx"),
+            ).request("hola")
+
+        self.assertNotIn("proxy", captured_client_kwargs)
+        self.assertEqual(captured_client_kwargs.get("timeout"), 30)
+
+    def test_httpx_success_emits_seven_phases_and_closes(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        response = _FakeHttpxStreamingResponse(
+            json.dumps({"intents": ["a", "b"]}), chunk_size=4
+        )
+        with mock.patch(
+            "backend.llm.query_llm.httpx.Client"
+        ) as client_factory:
+            client_instance = mock.Mock()
+            client_instance.build_request.return_value = mock.Mock()
+            client_instance.send.return_value = response
+            client_factory.return_value = client_instance
+            with mock.patch(
+                "backend.llm.query_llm.emit_event",
+                side_effect=capture_fn,
+            ):
+                result = QueryLlm(
+                    settings=_settings(llm_http_client="httpx"),
+                ).request("hola", correlation_id="SYN-HTTPX-OK")
+
+        self.assertEqual(result, {"intents": ["a", "b"]})
+        self.assertEqual(
+            self._phases(captured),
+            [
+                "request_started",
+                "response_headers_received",
+                "first_body_chunk",
+                "body_completed",
+                "response_received",
+                "json_extracted",
+                "result_parsed",
+            ],
+        )
+        self.assertTrue(response.closed)
+        for ev in (
+            self._phase(captured, "response_headers_received"),
+            self._phase(captured, "first_body_chunk"),
+            self._phase(captured, "body_completed"),
+        ):
+            self.assertEqual(ev["correlation_id"], "SYN-HTTPX-OK")
+
+    def test_httpx_success_matches_requests_parsed_result(self) -> None:
+        inner_body = json.dumps({"intents": [{"name": "agregar"}]})
+
+        class _StreamingHttpxClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def build_request(self, method, url, json=None, **kw):
+                return mock.Mock()
+
+            def send(self, request, stream=False):
+                return _FakeHttpxStreamingResponse(
+                    inner_body, chunk_size=4
+                )
+
+            def close(self):
+                pass
+
+        with mock.patch(
+            "backend.llm.query_llm.httpx.Client",
+            side_effect=_StreamingHttpxClient,
+        ):
+            httpx_result = QueryLlm(
+                settings=_settings(llm_http_client="httpx"),
+            ).request("hola")
+
+        requests_result = QueryLlm(
+            settings=_settings(llm_http_client="requests"),
+            transport=mock.Mock(
+                return_value=_FakeResponse(inner_body)
+            ),
+        ).request("hola")
+
+        self.assertEqual(httpx_result, requests_result)
+
+    def test_httpx_request_does_not_call_requests_post(self) -> None:
+        class _StreamingHttpxClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def build_request(self, method, url, json=None, **kw):
+                return mock.Mock()
+
+            def send(self, request, stream=False):
+                return _FakeHttpxStreamingResponse(
+                    json.dumps({"ok": True})
+                )
+
+            def close(self):
+                pass
+
+        with mock.patch(
+            "backend.llm.query_llm.httpx.Client",
+            side_effect=_StreamingHttpxClient,
+        ):
+            with mock.patch(
+                "backend.llm.query_llm.requests.post"
+            ) as requests_post:
+                QueryLlm(
+                    settings=_settings(llm_http_client="httpx"),
+                ).request("hola")
+        requests_post.assert_not_called()
+
+    def test_httpx_initial_timeout_maps_to_query_llm_timeout_error(
+        self,
+    ) -> None:
+        class _TimeoutHttpxClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def build_request(self, method, url, json=None, **kw):
+                raise httpx.ConnectTimeout("connect timeout")
+
+            def send(self, request, stream=False):
+                return mock.Mock()
+
+            def close(self):
+                pass
+
+        with mock.patch(
+            "backend.llm.query_llm.httpx.Client",
+            side_effect=_TimeoutHttpxClient,
+        ):
+            with mock.patch(
+                "backend.llm.query_llm.requests.post"
+            ) as requests_post:
+                with self.assertRaises(QueryLlmTimeoutError):
+                    QueryLlm(
+                        settings=_settings(llm_http_client="httpx"),
+                    ).request("hola")
+        requests_post.assert_not_called()
+
+    def test_httpx_initial_read_timeout_maps_to_query_llm_timeout_error(
+        self,
+    ) -> None:
+        class _ReadTimeoutHttpxClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def build_request(self, method, url, json=None, **kw):
+                return mock.Mock()
+
+            def send(self, request, stream=False):
+                raise httpx.ReadTimeout("read deadline")
+
+            def close(self):
+                pass
+
+        with mock.patch(
+            "backend.llm.query_llm.httpx.Client",
+            side_effect=_ReadTimeoutHttpxClient,
+        ):
+            with mock.patch(
+                "backend.llm.query_llm.requests.post"
+            ) as requests_post:
+                with self.assertRaises(QueryLlmTimeoutError):
+                    QueryLlm(
+                        settings=_settings(llm_http_client="httpx"),
+                    ).request("hola")
+        requests_post.assert_not_called()
+
+    def test_httpx_connect_error_maps_to_query_llm_connection_error(
+        self,
+    ) -> None:
+        class _ConnectErrorHttpxClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def build_request(self, method, url, json=None, **kw):
+                raise httpx.ConnectError("connection refused")
+
+            def send(self, request, stream=False):
+                return mock.Mock()
+
+            def close(self):
+                pass
+
+        with mock.patch(
+            "backend.llm.query_llm.httpx.Client",
+            side_effect=_ConnectErrorHttpxClient,
+        ):
+            with mock.patch(
+                "backend.llm.query_llm.requests.post"
+            ) as requests_post:
+                with self.assertRaises(QueryLlmConnectionError):
+                    QueryLlm(
+                        settings=_settings(llm_http_client="httpx"),
+                    ).request("hola")
+        requests_post.assert_not_called()
+
+    def test_httpx_proxy_error_maps_to_query_llm_connection_error(
+        self,
+    ) -> None:
+        class _ProxyErrorHttpxClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def build_request(self, method, url, json=None, **kw):
+                raise httpx.ProxyError("proxy refused connection")
+
+            def send(self, request, stream=False):
+                return mock.Mock()
+
+            def close(self):
+                pass
+
+        with mock.patch(
+            "backend.llm.query_llm.httpx.Client",
+            side_effect=_ProxyErrorHttpxClient,
+        ):
+            with mock.patch(
+                "backend.llm.query_llm.requests.post"
+            ) as requests_post:
+                with self.assertRaises(QueryLlmConnectionError):
+                    QueryLlm(
+                        settings=_settings(
+                            llm_http_client="httpx",
+                            ollama_proxy_url="socks5h://127.0.0.1:1055",
+                        ),
+                    ).request("hola")
+        requests_post.assert_not_called()
+
+    def test_httpx_stream_iteration_error_maps_to_connection_error(
+        self,
+    ) -> None:
+        class _StreamErrorStreamingResponse(_FakeHttpxStreamingResponse):
+            def iter_bytes(self, chunk_size: int = 8192):
+                self.iter_calls += 1
+                yield b'{"response":'
+                raise httpx.StreamError("stream cut mid-response")
+
+        class _StreamingStreamErrorClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def build_request(self, method, url, json=None, **kw):
+                return mock.Mock()
+
+            def send(self, request, stream=False):
+                return _StreamErrorStreamingResponse(
+                    json.dumps({"ok": True})
+                )
+
+            def close(self):
+                pass
+
+        captured, capture_fn = self._capture_emit_events()
+        with mock.patch(
+            "backend.llm.query_llm.httpx.Client",
+            side_effect=_StreamingStreamErrorClient,
+        ):
+            with mock.patch(
+                "backend.llm.query_llm.emit_event",
+                side_effect=capture_fn,
+            ):
+                with self.assertRaises(QueryLlmConnectionError):
+                    QueryLlm(
+                        settings=_settings(llm_http_client="httpx"),
+                    ).request(
+                        "hola", correlation_id="SYN-HTTPX-STREAM"
+                    )
+
+        self.assertIn("first_body_chunk", self._phases(captured))
+        self.assertNotIn("body_completed", self._phases(captured))
+        self.assertNotIn("response_received", self._phases(captured))
+
+    def test_httpx_stream_read_timeout_maps_to_query_llm_timeout_error(
+        self,
+    ) -> None:
+        class _ReadTimeoutStreamingResponse(_FakeHttpxStreamingResponse):
+            def iter_bytes(self, chunk_size: int = 8192):
+                self.iter_calls += 1
+                yield b'{"response":'
+                raise httpx.ReadTimeout("read deadline")
+
+        class _StreamingReadTimeoutClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def build_request(self, method, url, json=None, **kw):
+                return mock.Mock()
+
+            def send(self, request, stream=False):
+                return _ReadTimeoutStreamingResponse(
+                    json.dumps({"ok": True})
+                )
+
+            def close(self):
+                pass
+
+        with mock.patch(
+            "backend.llm.query_llm.httpx.Client",
+            side_effect=_StreamingReadTimeoutClient,
+        ):
+            with self.assertRaises(QueryLlmTimeoutError):
+                QueryLlm(
+                    settings=_settings(llm_http_client="httpx"),
+                ).request("hola")
+
+    def test_httpx_http_status_error_raises_query_llm_http_error(
+        self,
+    ) -> None:
+        class _HttpErrorHttpxClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def build_request(self, method, url, json=None, **kw):
+                return mock.Mock()
+
+            def send(self, request, stream=False):
+                return _FakeHttpxStreamingResponse(
+                    json.dumps({"ok": True}), status_code=503
+                )
+
+            def close(self):
+                pass
+
+        with mock.patch(
+            "backend.llm.query_llm.httpx.Client",
+            side_effect=_HttpErrorHttpxClient,
+        ):
+            with self.assertRaises(QueryLlmHttpError) as ctx:
+                QueryLlm(
+                    settings=_settings(llm_http_client="httpx"),
+                ).request("hola")
+        self.assertEqual(ctx.exception.status_code, 503)
+
+    def test_httpx_invalid_envelope_raises_response_error(self) -> None:
+        class _InvalidEnvelopeHttpxClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def build_request(self, method, url, json=None, **kw):
+                return mock.Mock()
+
+            def send(self, request, stream=False):
+                return _FakeHttpxStreamingResponse("not-json")
+
+            def close(self):
+                pass
+
+        with mock.patch(
+            "backend.llm.query_llm.httpx.Client",
+            side_effect=_InvalidEnvelopeHttpxClient,
+        ):
+            with self.assertRaises(QueryLlmResponseError):
+                QueryLlm(
+                    settings=_settings(llm_http_client="httpx"),
+                ).request("hola")
+
+    def test_httpx_failure_does_not_invoke_requests_as_fallback(self) -> None:
+        class _FailingHttpxClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def build_request(self, method, url, json=None, **kw):
+                raise httpx.ConnectError("connection refused")
+
+            def send(self, request, stream=False):
+                return mock.Mock()
+
+            def close(self):
+                pass
+
+        with mock.patch(
+            "backend.llm.query_llm.httpx.Client",
+            side_effect=_FailingHttpxClient,
+        ):
+            with mock.patch(
+                "backend.llm.query_llm.requests.post"
+            ) as requests_post:
+                with self.assertRaises(QueryLlmConnectionError):
+                    QueryLlm(
+                        settings=_settings(llm_http_client="httpx"),
+                    ).request("hola")
+        self.assertEqual(requests_post.call_count, 0)
+
+    def test_httpx_phase_events_omit_url_proxy_and_secrets(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        settings = _settings(
+            llm_http_client="httpx",
+            llm_url="http://secret-host.invalid/api/generate",
+            ollama_proxy_url="socks5h://user:pass@127.0.0.1:9050",
+            llm_log_content=True,
+        )
+
+        class _StreamingHttpxClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def build_request(self, method, url, json=None, **kw):
+                return mock.Mock()
+
+            def send(self, request, stream=False):
+                return _FakeHttpxStreamingResponse(
+                    json.dumps({"intents": ["x"]})
+                )
+
+            def close(self):
+                pass
+
+        with mock.patch(
+            "backend.llm.query_llm.httpx.Client",
+            side_effect=_StreamingHttpxClient,
+        ):
+            with mock.patch(
+                "backend.llm.query_llm.emit_event",
+                side_effect=capture_fn,
+            ):
+                QueryLlm(settings=settings).request("super-secret-prompt")
+
+        phase_events = [
+            ev
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+        ]
+        self.assertGreater(len(phase_events), 0)
+        for ev in phase_events:
+            serialized = json.dumps(ev, sort_keys=True)
+            self.assertNotIn("super-secret-prompt", serialized)
+            self.assertNotIn("intents", serialized)
+            self.assertNotIn("super-secret-url", serialized)
+            self.assertNotIn("socks5h", serialized)
+            self.assertNotIn("secret-host.invalid", serialized)
+            self.assertNotIn("user:pass", serialized)
+            self.assertNotIn("Bearer", serialized)
+            self.assertNotIn("Authorization", serialized)
+            self.assertNotIn("api/generate", serialized)
+
+    def test_httpx_accepts_both_socks5_and_socks5h_schemes(self) -> None:
+        for scheme in ("socks5", "socks5h"):
+            with self.subTest(scheme=scheme):
+                captured_client_kwargs: dict = {}
+
+                class _RecordingClient:
+                    def __init__(
+                        self,
+                        *args,
+                        _sink=captured_client_kwargs,
+                        **kwargs,
+                    ):
+                        _sink.update(kwargs)
+
+                    def build_request(self, method, url, json=None, **kw):
+                        return mock.Mock()
+
+                    def send(self, request, stream=False):
+                        return _FakeHttpxStreamingResponse(
+                            json.dumps({"ok": True})
+                        )
+
+                    def close(self):
+                        pass
+
+                proxy_url = f"{scheme}://127.0.0.1:1055"
+                with mock.patch(
+                    "backend.llm.query_llm.httpx.Client",
+                    side_effect=_RecordingClient,
+                ):
+                    QueryLlm(
+                        settings=_settings(
+                            llm_http_client="httpx",
+                            ollama_proxy_url=proxy_url,
+                        ),
+                    ).request("hola")
+                self.assertEqual(
+                    captured_client_kwargs.get("proxy"), proxy_url
+                )
+
+    def test_httpx_proxy_url_is_forwarded_verbatim(self) -> None:
+        captured_client_kwargs: dict = {}
+
+        class _RecordingClient:
+            def __init__(self, *args, **kwargs):
+                captured_client_kwargs.update(kwargs)
+
+            def build_request(self, method, url, json=None, **kw):
+                return mock.Mock()
+
+            def send(self, request, stream=False):
+                return _FakeHttpxStreamingResponse(
+                    json.dumps({"ok": True})
+                )
+
+            def close(self):
+                pass
+
+        proxy_url = "socks5h://127.0.0.1:1055"
+        with mock.patch(
+            "backend.llm.query_llm.httpx.Client",
+            side_effect=_RecordingClient,
+        ):
+            QueryLlm(
+                settings=_settings(
+                    llm_http_client="httpx",
+                    ollama_proxy_url=proxy_url,
+                ),
+            ).request("hola")
+        self.assertEqual(captured_client_kwargs.get("proxy"), proxy_url)
+
+    def test_httpx_does_not_set_process_wide_proxy(self) -> None:
+        import os as _os
+
+        class _RecordingClient:
+            def __init__(self, *args, **kwargs):
+                self.kwargs = kwargs
+
+            def build_request(self, method, url, json=None, **kw):
+                return mock.Mock()
+
+            def send(self, request, stream=False):
+                return _FakeHttpxStreamingResponse(
+                    json.dumps({"ok": True})
+                )
+
+            def close(self):
+                pass
+
+        with mock.patch.dict(
+            _os.environ, {}, clear=True
+        ), mock.patch(
+            "backend.llm.query_llm.httpx.Client",
+            side_effect=_RecordingClient,
+        ):
+            QueryLlm(
+                settings=_settings(
+                    llm_http_client="httpx",
+                    ollama_proxy_url="socks5h://127.0.0.1:1055",
+                ),
+            ).request("hola")
+        self.assertNotIn("HTTP_PROXY", _os.environ)
+        self.assertNotIn("HTTPS_PROXY", _os.environ)
+        self.assertNotIn("ALL_PROXY", _os.environ)
+
+    def test_httpx_client_is_closed_on_uncaught_exception(self) -> None:
+        close_calls = {"count": 0}
+
+        class _StreamingHttpxClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def build_request(self, method, url, json=None, **kw):
+                raise httpx.ConnectError("connection refused")
+
+            def send(self, request, stream=False):
+                return mock.Mock()
+
+            def close(self):
+                close_calls["count"] += 1
+
+        with mock.patch(
+            "backend.llm.query_llm.httpx.Client",
+            side_effect=_StreamingHttpxClient,
+        ):
+            with self.assertRaises(QueryLlmConnectionError):
+                QueryLlm(
+                    settings=_settings(llm_http_client="httpx"),
+                ).request("hola")
+        self.assertEqual(close_calls["count"], 1)
+
+    def test_httpx_http_status_error_does_not_double_request(self) -> None:
+        send_calls = {"count": 0}
+
+        class _HttpErrorHttpxClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def build_request(self, method, url, json=None, **kw):
+                return mock.Mock()
+
+            def send(self, request, stream=False):
+                send_calls["count"] += 1
+                return _FakeHttpxStreamingResponse(
+                    json.dumps({"ok": True}), status_code=502
+                )
+
+            def close(self):
+                pass
+
+        with mock.patch(
+            "backend.llm.query_llm.httpx.Client",
+            side_effect=_HttpErrorHttpxClient,
+        ):
+            with self.assertRaises(QueryLlmHttpError):
+                QueryLlm(
+                    settings=_settings(llm_http_client="httpx"),
+                ).request("hola")
+        self.assertEqual(send_calls["count"], 1)
+
+
+class QueryLlmHttpxLoggingTest(unittest.TestCase):
+    """Privacy contract for the HTTPX QueryLlm transport path.
+
+    The HTTPX branch MUST honour the same log-content contract the
+    Requests branch has enforced since the historical seam: no
+    prompt, response, URL, proxy, header, credential or raw
+    exception message may appear in any log line.
+    """
+
+    def setUp(self) -> None:
+        reset_llm_timing_recorder()
+
+    def tearDown(self) -> None:
+        reset_llm_timing_recorder()
+
+    def _make_client(self, **setting_overrides) -> QueryLlm:
+        settings = _settings(llm_http_client="httpx", **setting_overrides)
+        return QueryLlm(settings=settings)
+
+    def test_httpx_debug_logs_never_contain_prompt_or_response(self) -> None:
+        class _StreamingHttpxClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def build_request(self, method, url, json=None, **kw):
+                return mock.Mock()
+
+            def send(self, request, stream=False):
+                return _FakeHttpxStreamingResponse(
+                    json.dumps({"ok": "RESPONSE-SENTINEL-QWERTY-99"})
+                )
+
+            def close(self):
+                pass
+
+        client = self._make_client(llm_log_content=True)
+        with mock.patch(
+            "backend.llm.query_llm.httpx.Client",
+            side_effect=_StreamingHttpxClient,
+        ):
+            with self.assertLogs(
+                "backend.llm.query_llm", level="DEBUG"
+            ) as captured:
+                client.request("PROMPT-SENTINEL-XYZZY-42")
+        joined = "\n".join(captured.output)
+        self.assertNotIn("PROMPT-SENTINEL-XYZZY-42", joined)
+        self.assertNotIn("RESPONSE-SENTINEL-QWERTY-99", joined)
+
+    def test_httpx_failure_logs_carry_duration_without_exception_message(
+        self,
+    ) -> None:
+        class _ConnectErrorHttpxClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def build_request(self, method, url, json=None, **kw):
+                raise httpx.ConnectError("secret-detail-leaked")
+
+            def send(self, request, stream=False):
+                return mock.Mock()
+
+            def close(self):
+                pass
+
+        client = self._make_client(llm_log_content=True)
+        with mock.patch(
+            "backend.llm.query_llm.httpx.Client",
+            side_effect=_ConnectErrorHttpxClient,
+        ):
+            with self.assertLogs(
+                "backend.llm.query_llm", level="DEBUG"
+            ) as captured:
+                with self.assertRaises(QueryLlmConnectionError):
+                    client.request("hola")
+        joined = "\n".join(captured.output)
+        self.assertIn("llm request failure", joined)
+        self.assertIn("duration=", joined)
+        self.assertNotIn("secret-detail-leaked", joined)
+
+    def test_httpx_logs_do_not_leak_url_proxy_or_credentials(self) -> None:
+        class _StreamingHttpxClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def build_request(self, method, url, json=None, **kw):
+                return mock.Mock()
+
+            def send(self, request, stream=False):
+                return _FakeHttpxStreamingResponse(
+                    json.dumps({"ok": True})
+                )
+
+            def close(self):
+                pass
+
+        client = self._make_client(
+            llm_url="http://secret-host.invalid/api/generate",
+            ollama_proxy_url="socks5h://user:pass@127.0.0.1:9050",
+            llm_log_content=True,
+        )
+        with mock.patch(
+            "backend.llm.query_llm.httpx.Client",
+            side_effect=_StreamingHttpxClient,
+        ):
+            with self.assertLogs(
+                "backend.llm.query_llm", level="DEBUG"
+            ) as captured:
+                client.request("hola")
+        joined = "\n".join(captured.output)
+        for forbidden in (
+            "secret-host.invalid",
+            "socks5h",
+            "127.0.0.1",
+            "user:pass",
+            "9050",
+            "/api/generate",
+        ):
+            self.assertNotIn(forbidden, joined)
 
 
 if __name__ == "__main__":
