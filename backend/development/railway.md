@@ -38,8 +38,8 @@ outbound clients remain direct.
 
 6. Set `TS_HOSTNAME` to a stable operator-recognizable hostname, such as
    `novaorders-railway`. The ephemeral node's Tailscale IP is not stable.
-7. Set `OLLAMA_PROXY_URL=socks5h://127.0.0.1:1055` and retain the configured
-   private Ollama URLs/models:
+7. Set `OLLAMA_PROXY_URL` to exactly one of the supported transport
+   values and retain the configured private Ollama URLs/models:
 
    - `LLM_URL=http://100.113.65.40:11434/api/generate`
    - `LLM_MODEL=qwen-27b-coding:latest`
@@ -47,18 +47,43 @@ outbound clients remain direct.
    - `EMBEDDING_MODEL=all-minilm:latest`
    - `EMBEDDING_DIMENSION=384`
 
+   Supported `OLLAMA_PROXY_URL` selections (loopback-only, both
+   listeners are started by the same userspace `tailscaled` process):
+
+   - SOCKS5 (default, current path): `socks5h://127.0.0.1:1055`
+   - HTTP (A/B alternative): `http://127.0.0.1:1056`
+
+   The single configured value is the authoritative transport
+   selection. The application MUST NOT fall back automatically to
+   the other listener, to a public route, or to direct Ollama
+   access on a transport failure; a misconfigured or unreachable
+   proxy remains a configuration/transport error visible to the
+   existing client/worker error and retry semantics.
+
+   The HTTP listener is intended only for a controlled operator-run
+   A/B test of the intermittent `requests.post` boundary failure.
+   Roll back to the existing SOCKS5 selection by restoring
+   `OLLAMA_PROXY_URL=socks5h://127.0.0.1:1055` and redeploying the
+   same implementation; no code or database rollback is required.
+
 Remove the previous `OLLAMA_HTTP_PROXY` variable. Do not assign a public domain
-or exposed port to the Tailscale proxy. Do not set `HTTP_PROXY`, `HTTPS_PROXY`,
-`ALL_PROXY`, or `NO_PROXY` for this service.
+or exposed port to either Tailscale proxy listener. Do not set `HTTP_PROXY`,
+`HTTPS_PROXY`, `ALL_PROXY`, or `NO_PROXY` for this service. The proxy is
+scoped only to the existing Ollama generate and embedding clients.
 
 ## Deployment lifecycle
 
 The Docker image starts `tailscaled` in userspace mode and binds its SOCKS5
-proxy to `127.0.0.1:1055`. It fails before Uvicorn starts unless the
-database, auth key, hostname, and Railway port are present and Tailscale is
-ready within 30 seconds (override only with positive `TS_READY_TIMEOUT_SECONDS`).
-If Tailscale exits after readiness, the entrypoint stops Uvicorn so Railway can
-restart or fail the deployment.
+proxy to `127.0.0.1:1055` and its outbound HTTP proxy to `127.0.0.1:1056`.
+Both listeners are loopback-only and run on the same `tailscaled` process;
+neither is exposed through a Railway public port. The application uses
+exactly the transport selected by `OLLAMA_PROXY_URL` and MUST NOT fall back
+between listeners, to a public route, or to direct Ollama access. The
+entrypoint fails before Uvicorn starts unless the database, auth key,
+hostname, and Railway port are present and Tailscale is ready within
+30 seconds (override only with positive `TS_READY_TIMEOUT_SECONDS`).
+If Tailscale exits after readiness, the entrypoint stops Uvicorn so Railway
+can restart or fail the deployment.
 
 `railway.toml` no longer declares an independent pre-deploy command. The
 Docker entrypoint is the single repository-managed migration authority:

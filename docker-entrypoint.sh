@@ -50,7 +50,8 @@ tailscaled \
     --tun=userspace-networking \
     --state=mem: \
     --socket="$socket_path" \
-    --socks5-server=127.0.0.1:1055 &
+    --socks5-server=127.0.0.1:1055 \
+    --outbound-http-proxy-listen=127.0.0.1:1056 &
 tailscaled_pid=$!
 
 stop_processes() {
