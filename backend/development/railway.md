@@ -38,8 +38,8 @@ outbound clients remain direct.
 
 6. Set `TS_HOSTNAME` to a stable operator-recognizable hostname, such as
    `novaorders-railway`. The ephemeral node's Tailscale IP is not stable.
-7. Set `OLLAMA_PROXY_URL=socks5h://127.0.0.1:1055` and retain the configured
-   private Ollama URLs/models:
+7. Set `OLLAMA_PROXY_URL` to exactly one of the supported transport
+   values and retain the configured private Ollama URLs/models:
 
    - `LLM_URL=http://100.113.65.40:11434/api/generate`
    - `LLM_MODEL=qwen-27b-coding:latest`
@@ -47,18 +47,43 @@ outbound clients remain direct.
    - `EMBEDDING_MODEL=all-minilm:latest`
    - `EMBEDDING_DIMENSION=384`
 
+   Supported `OLLAMA_PROXY_URL` selections (loopback-only, both
+   listeners are started by the same userspace `tailscaled` process):
+
+   - SOCKS5 (default, current path): `socks5h://127.0.0.1:1055`
+   - HTTP (A/B alternative): `http://127.0.0.1:1056`
+
+   The single configured value is the authoritative transport
+   selection. The application MUST NOT fall back automatically to
+   the other listener, to a public route, or to direct Ollama
+   access on a transport failure; a misconfigured or unreachable
+   proxy remains a configuration/transport error visible to the
+   existing client/worker error and retry semantics.
+
+   The HTTP listener is intended only for a controlled operator-run
+   A/B test of the intermittent `requests.post` boundary failure.
+   Roll back to the existing SOCKS5 selection by restoring
+   `OLLAMA_PROXY_URL=socks5h://127.0.0.1:1055` and redeploying the
+   same implementation; no code or database rollback is required.
+
 Remove the previous `OLLAMA_HTTP_PROXY` variable. Do not assign a public domain
-or exposed port to the Tailscale proxy. Do not set `HTTP_PROXY`, `HTTPS_PROXY`,
-`ALL_PROXY`, or `NO_PROXY` for this service.
+or exposed port to either Tailscale proxy listener. Do not set `HTTP_PROXY`,
+`HTTPS_PROXY`, `ALL_PROXY`, or `NO_PROXY` for this service. The proxy is
+scoped only to the existing Ollama generate and embedding clients.
 
 ## Deployment lifecycle
 
 The Docker image starts `tailscaled` in userspace mode and binds its SOCKS5
-proxy to `127.0.0.1:1055`. It fails before Uvicorn starts unless the
-database, auth key, hostname, and Railway port are present and Tailscale is
-ready within 30 seconds (override only with positive `TS_READY_TIMEOUT_SECONDS`).
-If Tailscale exits after readiness, the entrypoint stops Uvicorn so Railway can
-restart or fail the deployment.
+proxy to `127.0.0.1:1055` and its outbound HTTP proxy to `127.0.0.1:1056`.
+Both listeners are loopback-only and run on the same `tailscaled` process;
+neither is exposed through a Railway public port. The application uses
+exactly the transport selected by `OLLAMA_PROXY_URL` and MUST NOT fall back
+between listeners, to a public route, or to direct Ollama access. The
+entrypoint fails before Uvicorn starts unless the database, auth key,
+hostname, and Railway port are present and Tailscale is ready within
+30 seconds (override only with positive `TS_READY_TIMEOUT_SECONDS`).
+If Tailscale exits after readiness, the entrypoint stops Uvicorn so Railway
+can restart or fail the deployment.
 
 `railway.toml` no longer declares an independent pre-deploy command. The
 Docker entrypoint is the single repository-managed migration authority:
@@ -619,3 +644,118 @@ If a single isolated observation is reported, do **not** treat it as a
 root cause. Correlate the four-way boundary (Twilio inbound timestamp,
 CLI snapshot, Railway log line, Twilio status callback) before drawing
 any conclusion.
+
+## Repeated HTTP transport diagnostic at the local SOCKS5 boundary
+
+When intermittent `QueryLlm` request loss cannot be narrowed by the
+single-shot `--transport-diagnostic --target generate` probe, run the
+bounded repeated-transport diagnostic below to compare the
+production-shaped `requests.post` call shape against a diagnostic-only
+reused `requests.Session`. The probe sits below the production
+`QueryLlm` boundary so it can observe the exact `requests` →
+`socks5h://127.0.0.1:1055` call shape without depending on the worker,
+the coordinator, the database, Twilio, Tailscale or Ollama.
+
+### Pre-flight
+
+1. Open the Railway shell for the integrated web service in the `core`
+   project, `test` environment, `supernova-ia` service.
+2. Confirm `LLM_URL`, `OLLAMA_PROXY_URL` and the SOCKS5 daemon are still
+   configured exactly as the deployment runbook prescribes. The probe
+   reads them through `Settings` and never prints them.
+3. Pick a bounded attempt count. The default is `10` so each run stays
+   under a minute; raise it only when you need to reproduce a known
+   intermittent failure pattern.
+
+### Command — fresh mode (matches the current application shape)
+
+```sh
+PYTHONPATH=. python -m backend.scripts.probe_railway_socks5_repeated \
+  --mode fresh \
+  --count 10 \
+  --connect-timeout-seconds 5 \
+  --read-timeout-seconds 20
+```
+
+`fresh` invokes the top-level `requests.post` once per attempt, exactly
+the same call shape `QueryLlm._post` uses today. It does not own a
+session, so every attempt opens a fresh proxy-side connection.
+
+### Command — session mode (diagnostic-only comparison)
+
+```sh
+PYTHONPATH=. python -m backend.scripts.probe_railway_socks5_repeated \
+  --mode session \
+  --count 10 \
+  --connect-timeout-seconds 5 \
+  --read-timeout-seconds 20
+```
+
+`session` creates one `requests.Session` for the bounded run and reuses
+it across the loop. The session is **diagnostic-only**; it is not used
+by `QueryLlm`, the worker or the coordinator.
+
+### Arguments
+
+* `--mode` — `fresh` (default) or `session`. Anything else exits `2`
+  without issuing any request.
+* `--count` — positive integer (default `10`). Must be a positive
+  integer; zero or negative values exit `2`.
+* `--connect-timeout-seconds` — positive finite number (default `5`).
+* `--read-timeout-seconds` — positive finite number (default `20`).
+
+The probe forwards the timeouts as the tuple
+`(connect_timeout_seconds, read_timeout_seconds)` so the connect phase
+and the response-read phase are bounded independently.
+
+### Safe output
+
+Each attempt prints a single bounded line containing only:
+
+* `mode` (`fresh` or `session`).
+* `attempt` (1-based index).
+* `inicio_utc`, `fin_utc` (ISO-8601 UTC with `Z` suffix).
+* `duracion_ms` (elapsed milliseconds for the attempt).
+* `phase` (`returned` or `exception`).
+* `http_status` (when a response was returned).
+* `received_bytes` (when a response was returned).
+* `outcome` (closed token — `success`, `empty_response`, `http_status`,
+  `connect_timeout`, `read_timeout`, `proxy_error`, `connection_error`,
+  `request_error`, `configuration_error`).
+* `exception_class` (closed Requests class label when an exception is
+  classified).
+
+The probe NEVER prints the target URL, proxy URL, request body, response
+body, headers, credentials, customer/order data, exception text or
+tracebacks. Each attempt is independent: a failed attempt is recorded
+and the next bounded attempt still runs.
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0`  | All requested attempts returned a successful HTTP response with at least one byte. |
+| `1`  | At least one attempt reported a non-`success` outcome (timeout, HTTP failure, empty response, transport error). |
+| `2`  | Invalid arguments (`--count`, `--mode`, timeouts). No request or `requests.Session` was created. |
+
+### Reading the two runs
+
+Compare the bounded output from a `fresh` run against a `session` run
+executed back-to-back under the same Railway conditions:
+
+| Observation | Narrow interpretation |
+| --- | --- |
+| `fresh` fails and `session` succeeds | Repeated fresh connection setup is implicated. Do not yet infer a specific infrastructure cause. |
+| Both modes fail with `connect_timeout`, `proxy_error` or `connection_error` | The failure occurs before a usable HTTP response at the local proxy boundary. |
+| Both modes fail with `read_timeout` | The HTTP call was established but no response completed within the read bound; the destination remains a black box. |
+| Both modes succeed repeatedly | This isolated boundary is not reproducing the issue under that run; revisit the worker, the lease/finalize transaction, the observability seam or the destination service. |
+
+These outcomes are diagnostic evidence only. They must not trigger a
+runtime fix automatically. Do not correlate against `tailscale ping`,
+Ollama access logs or a single attempt in isolation.
+
+### Stopping the probe
+
+The probe terminates cleanly when the bounded attempt count finishes.
+`Ctrl-C` (SIGINT) aborts the in-flight attempt and exits non-zero with
+no further output.
