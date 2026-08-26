@@ -7,6 +7,14 @@ from typing import Any, cast
 
 import httpx
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.contrib.socks import (
+    SOCKSConnection,
+    SOCKSHTTPConnectionPool,
+    SOCKSHTTPSConnection,
+    SOCKSHTTPSConnectionPool,
+    SOCKSProxyManager,
+)
 
 from backend.config.settings import Settings, load_settings
 from backend.observability import (
@@ -227,6 +235,399 @@ def _emit_llm_transport_phase(
             "llm_transport_phase_emit_failed",
             extra={"phase": phase},
         )
+
+
+class _SocksPhaseObserverMixin:
+    """Mixin that emits the closed SOCKS / HTTP-writer phase events
+    around the existing seams.
+
+    The mixin is private to :mod:`backend.llm.query_llm` and only
+    participates in the QueryLlm default Requests path when the
+    configured ``OLLAMA_PROXY_URL`` selects the SOCKS scheme. Two
+    hooks from the supported, pinned urllib3 / PySocks stack are
+    wrapped:
+
+    * ``_new_conn()`` is the existing SOCKS connect / negotiation
+      seam (delegates to ``socks.create_connection`` and the existing
+      PySocks handshake). The start event is emitted on entry and the
+      completion event only after a usable socket has been returned.
+      A blocked or failed seam therefore never fabricates the
+      completion event.
+    * ``request()`` is the existing HTTP request writer (the single
+      call that hands request bytes to the socket layer via
+      ``putrequest`` / ``putheader`` / ``endheaders`` / ``send``).
+      The start event is emitted on entry and the completion event
+      only after the writer returned successfully. A blocked or
+      failed write never fabricates the completion event and never
+      leaks there because ``requests.post`` already classifies the
+      underlying exception through the unchanged
+      :func:`_classify_post_exception` mapper.
+
+    The mixin mirrors the real stack order:
+    ``request_write_started`` is emitted when the inherited writer is
+    entered; ``http.client.HTTPConnection.send`` then lazily invokes
+    :meth:`connect` (which routes through
+    :class:`SOCKSConnection._new_conn`) so the SOCKS pair fires only
+    after the writer has already been entered; the SOCKS pair is
+    followed by ``request_write_completed`` once the writer returns.
+    When the same connection already has a cached socket the lazy
+    connect step is skipped, the SOCKS pair is omitted (and never
+    fabricated) and only the writer pair fires. The mixin never
+    forces DNS, TCP, SOCKS, TLS or the target connection ahead of
+    the stack's lazy ordering, never duplicates the connection, the
+    writer or the request, and never mutates business state.
+
+    The mixin never raises from the observation helper itself: the
+    existing ``_emit_llm_transport_phase`` helper swallows emitter
+    failures and the new helper additionally guards against any
+    unexpected attribute / clock error so a misconfigured observer
+    cannot duplicate the request, the writer or the connection.
+    The helper never logs URL, host, IP, port, proxy, credential,
+    SOCKS bytes, headers, prompt, body, response text, exception
+    text or traceback and never mutates business state.
+    """
+
+    def _new_conn(self):  # type: ignore[override]
+        _emit_socks_phase_observation(
+            "socks_connect_started",
+            elapsed_ms=0,
+        )
+        _socks_seam_clock = __import__("time").monotonic
+        started = _socks_seam_clock()
+        connected = super()._new_conn()  # type: ignore[misc]
+        _emit_socks_phase_observation(
+            "socks_connect_completed",
+            elapsed_ms=_bounded_elapsed_ms(_socks_seam_clock() - started),
+        )
+        return connected
+
+    def request(  # type: ignore[override]
+        self,
+        method: str,
+        url: str,
+        body: Any = None,
+        headers: Any = None,
+        *,
+        chunked: bool = False,
+        preload_content: bool = True,
+        decode_content: bool = True,
+        enforce_content_length: bool = True,
+    ) -> None:
+        # The stack is lazy: ``http.client.HTTPConnection.send`` invokes
+        # :meth:`connect` on demand, which routes through
+        # :class:`SOCKSConnection._new_conn` for the SOCKS scheme. The
+        # mixin therefore observes the real order
+        # (``request_write_started`` → ``socks_connect_started`` →
+        # ``socks_connect_completed`` (only on return) →
+        # ``request_write_completed`` (only on return)). Forcing
+        # :meth:`connect` ahead of the writer would only invert the
+        # real stack order and pre-allocate a socket the writer is
+        # perfectly capable of opening lazily, so the seam must not
+        # touch ``self.connect`` here. When the same connection
+        # already has a cached socket the SOCKS pair is omitted and
+        # only the writer pair fires.
+        _emit_socks_phase_observation(
+            "request_write_started",
+            elapsed_ms=0,
+        )
+        _writer_clock = __import__("time").monotonic
+        started = _writer_clock()
+        super().request(  # type: ignore[misc]
+            method,
+            url,
+            body=body,
+            headers=headers,
+            chunked=chunked,
+            preload_content=preload_content,
+            decode_content=decode_content,
+            enforce_content_length=enforce_content_length,
+        )
+        _emit_socks_phase_observation(
+            "request_write_completed",
+            elapsed_ms=_bounded_elapsed_ms(_writer_clock() - started),
+        )
+
+
+class _ObservingSocksHTTPConnection(
+    _SocksPhaseObserverMixin, SOCKSConnection
+):
+    """Plain HTTP SOCKS connection with the observer mixin applied.
+
+    The class is wired to :class:`_ObservingSocksHTTPConnectionPool`
+    so the existing urllib3 ``SOCKSHTTPConnectionPool`` keeps
+    driving it. Only the two observed seams are wrapped; every other
+    inherited attribute (``host``, ``port``, ``timeout``,
+    ``_socks_options``, ``_tunnel_host`` / ``_tunnel_port`` /
+    ``_tunnel_scheme``) is delegated unchanged.
+    """
+
+
+class _ObservingSocksHTTPSConnection(
+    _SocksPhaseObserverMixin, SOCKSHTTPSConnection
+):
+    """HTTPS SOCKS connection with the observer mixin applied.
+
+    Mirrors :class:`_ObservingSocksHTTPConnection` for the TLS
+    scheme. The mixin method-resolution order ensures ``_new_conn``
+    still routes through :class:`SOCKSConnection._new_conn`
+    (SOCKSHTTPSConnection does not redefine it) and ``request``
+    still routes through :class:`HTTPConnection.request`, so the
+    TLS handshake and the body writer stay on the existing pinned
+    code paths.
+    """
+
+
+class _ObservingSocksHTTPConnectionPool(SOCKSHTTPConnectionPool):
+    """Plain HTTP SOCKS pool wired to
+    :class:`_ObservingSocksHTTPConnection`.
+
+    Only the connection class is swapped; everything else (pool
+    sizing, retry, headers, host routing) is delegated unchanged.
+    """
+
+    ConnectionCls = _ObservingSocksHTTPConnection
+
+
+class _ObservingSocksHTTPSConnectionPool(SOCKSHTTPSConnectionPool):
+    """HTTPS SOCKS pool wired to
+    :class:`_ObservingSocksHTTPSConnection`.
+
+    Mirrors :class:`_ObservingSocksHTTPConnectionPool` for the TLS
+    scheme. The TLS handshake itself is delegated to the existing
+    urllib3 / PySocks path; the class only observes the wrapped
+    :meth:`SOCKSConnection._new_conn` seam.
+    """
+
+    ConnectionCls = _ObservingSocksHTTPSConnection
+
+
+class _ObservingSocksProxyManager(SOCKSProxyManager):
+    """SOCKS proxy manager that routes every pool through the observing
+    connection class.
+
+    Only ``pool_classes_by_scheme`` is overridden; the parsed proxy
+    options, username / password extraction, pool sizing and all
+    other behaviour come from the existing
+    :class:`SOCKSProxyManager` base class. The :meth:`__init__` mirror
+    is required because :class:`SOCKSProxyManager.__init__` rewrites
+    ``pool_classes_by_scheme`` to the base mapping after
+    ``super().__init__`` runs, so a class-level override alone would
+    be silently discarded.
+    """
+
+    pool_classes_by_scheme = {  # noqa: RUF012 - mirrors SOCKSProxyManager
+        "http": _ObservingSocksHTTPConnectionPool,
+        "https": _ObservingSocksHTTPSConnectionPool,
+    }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pool_classes_by_scheme = _ObservingSocksProxyManager.pool_classes_by_scheme
+
+
+class _ObservingSocksAdapter(HTTPAdapter):
+    """Adapter that wires :class:`_ObservingSocksProxyManager` for SOCKS
+    proxy URLs only.
+
+    Non-SOCKS proxies continue to use the historical
+    :class:`HTTPAdapter.proxy_manager_for` path so the change is
+    fully backward compatible and never touches the no-proxy or the
+    HTTPX branches. The adapter caches the proxy manager by URL the
+    same way the parent does, so repeated calls reuse the same
+    observing pool.
+    """
+
+    def proxy_manager_for(self, proxy, **proxy_kwargs):  # type: ignore[override]
+        if proxy in self.proxy_manager:
+            return self.proxy_manager[proxy]
+        if proxy.lower().startswith("socks"):
+            username, password = requests.utils.get_auth_from_url(proxy)
+            manager: Any = _ObservingSocksProxyManager(
+                proxy,
+                username=username,
+                password=password,
+                num_pools=self._pool_connections,
+                maxsize=self._pool_maxsize,
+                block=self._pool_block,
+                **proxy_kwargs,
+            )
+            self.proxy_manager[proxy] = manager
+            return manager
+        return super().proxy_manager_for(proxy, **proxy_kwargs)
+
+
+class _SocksPhaseObserverSession(requests.Session):
+    """Private Session that mounts :class:`_ObservingSocksAdapter` for
+    every URL scheme.
+
+    The adapter only activates for SOCKS proxy URLs; non-SOCKS
+    traffic goes through the standard :class:`HTTPAdapter` path.
+    The session is constructed per-call by
+    :meth:`QueryLlm._post_requests` when the configured
+    ``OLLAMA_PROXY_URL`` selects the SOCKS scheme so two consecutive
+    requests never share a session, an adapter, a proxy manager, a
+    connection pool or a socket. The session lives only as long as
+    the single request it serves; the surrounding
+    :meth:`QueryLlm.request` ``finally`` block closes the response
+    through :class:`_SocksResponseSessionCloser`, which closes
+    both the response and its private session exactly once.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        adapter = _ObservingSocksAdapter()
+        self.mount("http://", adapter)
+        self.mount("https://", adapter)
+
+
+def _is_socks_proxy_url(proxy_url: Any) -> bool:
+    """Return ``True`` when the proxy URL selects the SOCKS scheme.
+
+    Mirrors the historical Requests / urllib3 prefix check so the
+    observer is only applied to the SOCKS code path that already
+    routes through :class:`SOCKSProxyManager`. ``None``, empty
+    strings and non-SOCKS schemes resolve to ``False`` so the
+    no-proxy, injected-transport, HTTPX and non-SOCKS proxy
+    branches continue to use the historical ``requests.post``
+    call site unchanged.
+    """
+    if not isinstance(proxy_url, str):
+        return False
+    if not proxy_url:
+        return False
+    return proxy_url.lower().startswith("socks")
+
+
+class _SocksResponseSessionCloser:
+    """Wrapper that delegates every attribute to the wrapped
+    ``requests.Response`` and closes both the response and its
+    private :class:`_SocksPhaseObserverSession` exactly once when
+    the surrounding :meth:`QueryLlm.request` ``finally`` block
+    closes the response.
+
+    The wrapper is intentionally fail-soft and silent: a
+    ``close()`` failure on the response or the session is swallowed
+    without logging so the surrounding business flow cannot crash
+    because of the observability seam and no traceback, exception
+    text or sensitive value can leak through the diagnostic channel.
+    The wrapper never reopens the session, never duplicates the
+    response, never logs URL / host / IP / port / proxy /
+    credential / SOCKS bytes / headers / prompt / body / response
+    text / exception text / traceback and never mutates business
+    state. Two consecutive wrappers over different requests are
+    independent objects, so closing one cannot affect the other.
+    """
+
+    def __init__(
+        self,
+        *,
+        response: requests.Response,
+        session: requests.Session,
+    ) -> None:
+        self._response = response
+        self._session = session
+        self._closed = False
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._response, name)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._response.close()
+        except Exception:  # noqa: BLE001, S110 - silent fail-soft by privacy contract
+            pass
+        try:
+            self._session.close()
+        except Exception:  # noqa: BLE001, S110 - silent fail-soft by privacy contract
+            pass
+
+
+def _bounded_elapsed_ms(seconds: float) -> int:
+    """Convert a monotonically non-negative elapsed time into the
+    closed ``[0, _MAX_ELAPSED_MS]`` integer range the
+    ``llm_request_transport_phase`` validator enforces.
+
+    The helper is a local duplicate of the closed contract used by
+    :mod:`backend.observability.events` so the urllib3 layer cannot
+    leak a Python float or an out-of-range value into the event.
+    """
+    try:
+        elapsed = int(seconds * 1000)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    if elapsed < 0:
+        return 0
+    if elapsed > 24 * 60 * 60 * 1000:
+        return 24 * 60 * 60 * 1000
+    return elapsed
+
+
+def _emit_socks_phase_observation(
+    phase: str,
+    *,
+    elapsed_ms: int,
+) -> None:
+    """Emit one bounded SOCKS / writer observation.
+
+    The helper mirrors the safe-emission pattern used by
+    :func:`_emit_llm_transport_phase` and never raises so a
+    misconfigured emitter cannot duplicate the connection, the
+    writer or the request. The correlation value is read from the
+    existing thread-local installed by the provider coordinator so
+    every observation shares the same opaque synthetic inbound
+    identifier as the surrounding ``llm_request`` event. The phase
+    payload is privacy-safe by construction: no URL, host, IP,
+    port, proxy, credential, SOCKS handshake byte, header, prompt,
+    body, response text, exception text or traceback is included.
+
+    Emission failures are swallowed silently to honour the change's
+    privacy contract: no traceback, no ``logger.exception``, no
+    interpolation of the exception or its arguments, URL, host,
+    proxy, credential, header, payload or any other sensitive
+    value is allowed on this code path. A misconfigured emitter
+    MUST never duplicate the connection, the writer or the
+    request, and MUST never leak diagnostic context through the
+    logging seam.
+    """
+    try:
+        correlation_id = _current_llm_correlation_id()
+        emit_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase=phase,
+            elapsed_ms=elapsed_ms,
+            http_status=None,
+            response_bytes=None,
+            chunk_count=None,
+            correlation_id=correlation_id,
+        )
+    except Exception:  # noqa: BLE001, S110 - silent fail-soft by privacy contract
+        pass
+
+
+def _close_socks_session_safely(session: requests.Session) -> None:
+    """Close a SOCKS observer session exactly once, swallowing all
+    errors silently.
+
+    The helper is the safe companion of
+    :class:`_SocksResponseSessionCloser` used when ``session.post``
+    itself raises and there is no response wrapper to drive the
+    close path. It honours the same fail-soft, silent contract:
+    no ``logger.exception``, no ``exc_info``, no interpolation of
+    the exception or its arguments, URL, host, proxy, credential,
+    header, payload or any other sensitive value. A close failure
+    is dropped because the original exception raised by
+    ``session.post`` is the one the surrounding
+    :meth:`QueryLlm.request` flow is expected to classify; the
+    diagnostic seam MUST NOT mask, alter or substitute it.
+    """
+    try:
+        session.close()
+    except Exception:  # noqa: BLE001, S110 - silent fail-soft by privacy contract
+        pass
 
 
 class QueryLlmError(RuntimeError):
@@ -463,22 +864,73 @@ class QueryLlm:
         Preserved verbatim so the existing default transport and
         test seam keep behaving identically when ``LLM_HTTP_CLIENT``
         is absent or explicitly ``requests``.
+
+        When the configured ``OLLAMA_PROXY_URL`` selects the SOCKS
+        scheme the call is routed through a private
+        :class:`_SocksPhaseObserverSession` constructed per-request
+        so the existing SOCKS connect seam
+        (``urllib3.contrib.socks.SOCKSConnection._new_conn``) and the
+        existing HTTP writer seam (``HTTPConnection.request``) emit
+        the closed SOCKS-boundary phases around their returns. A
+        fresh session / adapter / proxy manager / connection pool is
+        built on every call so two consecutive SOCKS requests never
+        share a session, a pool, an adapter, a manager or a socket.
+        The response is wrapped with
+        :class:`_SocksResponseSessionCloser` so the surrounding
+        :meth:`QueryLlm.request` ``finally`` block closes both the
+        response and its private session exactly once. The
+        non-SOCKS proxy and no-proxy branches continue to use
+        ``requests.post`` verbatim so the change is fully backward
+        compatible.
         """
+        proxy_url = self._settings.ollama_proxy_url
+        if _is_socks_proxy_url(proxy_url):
+            session = _SocksPhaseObserverSession()
+            try:
+                response = session.post(
+                    self._settings.llm_url,
+                    json=payload,
+                    timeout=self._settings.llm_timeout,
+                    stream=True,
+                    proxies={  # type: ignore[arg-type]
+                        "http": proxy_url,
+                        "https": proxy_url,
+                    },
+                )
+            except BaseException:
+                # ``session.post`` can raise ``Timeout``,
+                # ``ConnectionError``, ``ProxyError`` or any other
+                # :mod:`requests.exceptions.RequestException` while
+                # there is no response to wrap; the private
+                # observer session MUST still be closed exactly
+                # once to honour the per-request lifecycle. The
+                # original exception is re-raised unchanged so the
+                # existing ``_classify_post_exception`` mapper in
+                # :meth:`_post` keeps producing the canonical
+                # ``QueryLlm*Error`` subtype and no second request,
+                # no fabricated completion / header phases and no
+                # response wrapper are produced.
+                _close_socks_session_safely(session)
+                raise
+            return _SocksResponseSessionCloser(
+                response=response, session=session
+            )
+        proxy_kwargs: dict[str, Any] = (
+            {
+                "proxies": {
+                    "http": proxy_url,
+                    "https": proxy_url,
+                }
+            }
+            if proxy_url is not None
+            else {}
+        )
         return requests.post(
             self._settings.llm_url,
             json=payload,
             timeout=self._settings.llm_timeout,
             stream=True,
-            **(
-                {
-                    "proxies": {
-                        "http": self._settings.ollama_proxy_url,
-                        "https": self._settings.ollama_proxy_url,
-                    }
-                }
-                if self._settings.ollama_proxy_url is not None
-                else {}
-            ),
+            **proxy_kwargs,
         )
 
     def _post_httpx(self, payload: Mapping[str, Any]) -> Any:

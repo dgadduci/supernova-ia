@@ -378,10 +378,21 @@ _LIVENESS_CYCLE_OUTCOMES: frozenset[str] = frozenset(
 # request/response cycle (Ollama 200 vs client timeout gap). The
 # contract forbids arbitrary phase tokens, prompt/response fragments,
 # URLs, proxy values, headers, credentials, customer/provider
-# identifiers and exception text.
+# identifiers and exception text. The four SOCKS-boundary tokens
+# (``socks_connect_started`` / ``socks_connect_completed`` /
+# ``request_write_started`` / ``request_write_completed``) are only
+# emitted by the QueryLlm-scoped Requests observer when the
+# configured ``OLLAMA_PROXY_URL`` selects the SOCKS scheme; they
+# never carry ``http_status``, ``response_bytes`` or ``chunk_count``
+# because those values are not available at the SOCKS connect and
+# HTTP-writer seams and the contract forbids fabrication.
 _LLM_REQUEST_TRANSPORT_PHASES: frozenset[str] = frozenset(
     {
         "request_started",
+        "socks_connect_started",
+        "socks_connect_completed",
+        "request_write_started",
+        "request_write_completed",
         "response_headers_received",
         "first_body_chunk",
         "body_completed",
@@ -1837,6 +1848,34 @@ def build_event(
                 f"allowlist {sorted(_LLM_REQUEST_TRANSPORT_PHASES)}"
             )
         payload["phase"] = phase
+        # The four SOCKS-boundary phases carry only ``elapsed_ms`` and
+        # the existing opaque correlation; ``http_status``,
+        # ``response_bytes`` and ``chunk_count`` are not produced at the
+        # SOCKS connect or HTTP writer seams and the contract forbids
+        # fabricating them. ``request_started`` is also a start
+        # observation with no body data, so the same restriction
+        # applies (the historical implementation already omits those
+        # fields on the start event, the closed rule formalises it).
+        if phase in (
+            "socks_connect_started",
+            "socks_connect_completed",
+            "request_write_started",
+            "request_write_completed",
+            "request_started",
+        ):
+            _forbidden_start_seam_fields = {
+                "http_status": http_status,
+                "response_bytes": response_bytes,
+                "chunk_count": chunk_count,
+            }
+            for field_name, field_value in _forbidden_start_seam_fields.items():
+                if field_value is not None:
+                    raise EventValidationError(
+                        f"phase {phase!r} does not accept {field_name!r} "
+                        "because the closed SOCKS / writer start or "
+                        "request-start seam does not observe body or "
+                        "response metadata"
+                    )
 
     if any(
         value is not None

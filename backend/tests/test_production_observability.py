@@ -3962,6 +3962,10 @@ class LlmRequestTransportPhaseEventTest(unittest.TestCase):
     _ALLOWED_PHASES: ClassVar[frozenset[str]] = frozenset(
         {
             "request_started",
+            "socks_connect_started",
+            "socks_connect_completed",
+            "request_write_started",
+            "request_write_completed",
             "response_headers_received",
             "first_body_chunk",
             "body_completed",
@@ -4470,6 +4474,236 @@ class LlmRequestTransportPhaseEventTest(unittest.TestCase):
             stream=_BrokenStream(),
         )
         self.assertFalse(ok)
+
+    def test_socks_connect_started_round_trips(self) -> None:
+        payload = build_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="socks_connect_started",
+            elapsed_ms=0,
+            correlation_id="SYN-SOCKS-1",
+        )
+        self.assertEqual(payload["phase"], "socks_connect_started")
+        self.assertEqual(payload["elapsed_ms"], 0)
+        self.assertEqual(payload["correlation_id"], "SYN-SOCKS-1")
+        self.assertNotIn("http_status", payload)
+        self.assertNotIn("response_bytes", payload)
+        self.assertNotIn("chunk_count", payload)
+        self.assertNotIn("outcome", payload)
+        self.assertNotIn("failure_category", payload)
+
+    def test_socks_connect_completed_round_trips(self) -> None:
+        payload = build_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="socks_connect_completed",
+            elapsed_ms=42,
+            correlation_id="SYN-SOCKS-2",
+        )
+        self.assertEqual(payload["phase"], "socks_connect_completed")
+        self.assertEqual(payload["elapsed_ms"], 42)
+        self.assertEqual(payload["correlation_id"], "SYN-SOCKS-2")
+        self.assertNotIn("http_status", payload)
+        self.assertNotIn("response_bytes", payload)
+        self.assertNotIn("chunk_count", payload)
+
+    def test_request_write_started_round_trips(self) -> None:
+        payload = build_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="request_write_started",
+            elapsed_ms=0,
+            correlation_id="SYN-WRITER-1",
+        )
+        self.assertEqual(payload["phase"], "request_write_started")
+        self.assertEqual(payload["elapsed_ms"], 0)
+        self.assertNotIn("http_status", payload)
+        self.assertNotIn("response_bytes", payload)
+        self.assertNotIn("chunk_count", payload)
+
+    def test_request_write_completed_round_trips(self) -> None:
+        payload = build_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="request_write_completed",
+            elapsed_ms=17,
+            correlation_id="SYN-WRITER-2",
+        )
+        self.assertEqual(payload["phase"], "request_write_completed")
+        self.assertEqual(payload["elapsed_ms"], 17)
+        self.assertNotIn("http_status", payload)
+        self.assertNotIn("response_bytes", payload)
+        self.assertNotIn("chunk_count", payload)
+
+    def test_all_eleven_phases_accepted(self) -> None:
+        for phase in self._ALLOWED_PHASES:
+            with self.subTest(phase=phase):
+                payload = build_event(
+                    event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                    component=COMPONENT_LLM,
+                    phase=phase,
+                    elapsed_ms=0,
+                )
+                self.assertEqual(payload["phase"], phase)
+
+    def test_socks_connect_started_parse_event_round_trips(self) -> None:
+        payload = build_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="socks_connect_started",
+            elapsed_ms=0,
+            correlation_id="SYN-SOCKS-PARSE",
+        )
+        line = json.dumps(
+            payload, sort_keys=True, separators=(",", ":")
+        )
+        parsed = parse_event(line)
+        self.assertEqual(parsed, payload)
+        self.assertEqual(parsed["phase"], "socks_connect_started")
+
+    def test_request_write_completed_parse_event_round_trips(self) -> None:
+        payload = build_event(
+            event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+            component=COMPONENT_LLM,
+            phase="request_write_completed",
+            elapsed_ms=23,
+            correlation_id="SYN-WRITER-PARSE",
+        )
+        line = json.dumps(
+            payload, sort_keys=True, separators=(",", ":")
+        )
+        parsed = parse_event(line)
+        self.assertEqual(parsed, payload)
+        self.assertEqual(parsed["phase"], "request_write_completed")
+
+    def test_socks_phase_rejects_http_status(self) -> None:
+        for phase in (
+            "socks_connect_started",
+            "socks_connect_completed",
+            "request_write_started",
+            "request_write_completed",
+        ):
+            with self.subTest(phase=phase):
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                        component=COMPONENT_LLM,
+                        phase=phase,
+                        elapsed_ms=0,
+                        http_status=200,
+                    )
+
+    def test_socks_phase_rejects_response_bytes(self) -> None:
+        for phase in (
+            "socks_connect_started",
+            "socks_connect_completed",
+            "request_write_started",
+            "request_write_completed",
+        ):
+            with self.subTest(phase=phase):
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                        component=COMPONENT_LLM,
+                        phase=phase,
+                        elapsed_ms=0,
+                        response_bytes=4096,
+                    )
+
+    def test_socks_phase_rejects_chunk_count(self) -> None:
+        for phase in (
+            "socks_connect_started",
+            "socks_connect_completed",
+            "request_write_started",
+            "request_write_completed",
+        ):
+            with self.subTest(phase=phase):
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                        component=COMPONENT_LLM,
+                        phase=phase,
+                        elapsed_ms=0,
+                        chunk_count=1,
+                    )
+
+    def test_request_started_rejects_http_status(self) -> None:
+        """``request_started`` is a start observation with no body or
+        response metadata; the closed rule forbids fabricating those
+        fields at this seam either."""
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                component=COMPONENT_LLM,
+                phase="request_started",
+                elapsed_ms=0,
+                http_status=200,
+            )
+
+    def test_socks_phase_rejects_negative_elapsed_ms(self) -> None:
+        for phase in (
+            "socks_connect_completed",
+            "request_write_completed",
+        ):
+            with self.subTest(phase=phase):
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                        component=COMPONENT_LLM,
+                        phase=phase,
+                        elapsed_ms=-1,
+                    )
+
+    def test_socks_phase_elapsed_ms_zero_accepted_on_start(self) -> None:
+        """Start observations carry ``elapsed_ms=0`` by contract; the
+        validator must accept that for every SOCKS start phase."""
+        for phase in (
+            "socks_connect_started",
+            "request_write_started",
+        ):
+            with self.subTest(phase=phase):
+                payload = build_event(
+                    event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                    component=COMPONENT_LLM,
+                    phase=phase,
+                    elapsed_ms=0,
+                )
+                self.assertEqual(payload["elapsed_ms"], 0)
+
+    def test_socks_phase_arbitrary_token_rejected(self) -> None:
+        for token in (
+            "socks_connect_done",
+            "request_written",
+            "writer_started",
+            "socks_negotiated",
+        ):
+            with self.subTest(token=token):
+                with self.assertRaises(EventValidationError):
+                    build_event(
+                        event=EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+                        component=COMPONENT_LLM,
+                        phase=token,
+                        elapsed_ms=0,
+                    )
+
+    def test_socks_phase_sensitive_field_rejected(self) -> None:
+        """URL / proxy / credential / prompt tokens must NEVER appear in
+        any phase event — the contract forbids them and the parser
+        rejects unknown keys outright."""
+        with self.assertRaises(EventValidationError):
+            parse_event(
+                '{"event":"llm_request_transport_phase","schema_version":1,'
+                '"component":"query_llm","phase":"socks_connect_started",'
+                '"timestamp":"2026-08-25T00:00:00+00:00",'
+                '"prompt":"super-secret-prompt"}'
+            )
+        with self.assertRaises(EventValidationError):
+            parse_event(
+                '{"event":"llm_request_transport_phase","schema_version":1,'
+                '"component":"query_llm","phase":"request_write_completed",'
+                '"timestamp":"2026-08-25T00:00:00+00:00",'
+                '"proxy":"socks5h://127.0.0.1:1055"}'
+            )
 
 
 if __name__ == "__main__":
