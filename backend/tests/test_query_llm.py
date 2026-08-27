@@ -175,15 +175,121 @@ class QueryLlmPayloadTest(unittest.TestCase):
         self.assertEqual(payload["options"]["num_ctx"], 2048)
         self.assertEqual(result, {"ok": True})
 
-    def test_real_transport_uses_configured_proxy(self):
+    def test_real_transport_uses_configured_non_socks_proxy(self):
+        """Non-SOCKS proxies continue to be forwarded verbatim through
+        ``requests.post(proxies=...)`` so the legacy ``requests`` /
+        ``urllib3`` HTTP proxy path is preserved untouched."""
         response = _FakeResponse(json.dumps({"ok": True}))
-        settings = _settings(ollama_proxy_url="socks5h://127.0.0.1:1055")
-        with mock.patch("backend.llm.query_llm.requests.post", return_value=response) as post:
+        settings = _settings(ollama_proxy_url="http://127.0.0.1:3128")
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", return_value=response
+        ) as post:
             QueryLlm(settings=settings).request("hola")
         self.assertEqual(
             post.call_args.kwargs["proxies"],
-            {"http": "socks5h://127.0.0.1:1055", "https": "socks5h://127.0.0.1:1055"},
+            {"http": "http://127.0.0.1:3128", "https": "http://127.0.0.1:3128"},
         )
+
+    def test_real_transport_routes_socks_proxy_through_observer_session(
+        self,
+    ):
+        """A SOCKS proxy URL routes through a fresh private observer
+        session; ``requests.post`` is not invoked so the legacy
+        ``proxies=`` kwarg path stays out of the SOCKS branch.
+
+        The session is constructed per call (``_post_requests`` does
+        not cache it) so the patched constructor must be exercised
+        exactly once and the response ``close`` path must close the
+        patched session too."""
+        response = _FakeResponse(json.dumps({"ok": True}))
+        observer_session = mock.Mock()
+        observer_session.post.return_value = response
+        settings = _settings(ollama_proxy_url="socks5h://127.0.0.1:1055")
+        with mock.patch(
+            "backend.llm.query_llm._SocksPhaseObserverSession",
+            return_value=observer_session,
+        ) as session_factory:
+            with mock.patch(
+                "backend.llm.query_llm.requests.post"
+            ) as legacy_post:
+                QueryLlm(settings=settings).request("hola")
+        session_factory.assert_called_once_with()
+        observer_session.post.assert_called_once()
+        legacy_post.assert_not_called()
+        # The proxy URL is forwarded through the session so requests
+        # can route through our adapter instead of direct traffic.
+        self.assertEqual(
+            observer_session.post.call_args.kwargs.get("proxies"),
+            {
+                "http": "socks5h://127.0.0.1:1055",
+                "https": "socks5h://127.0.0.1:1055",
+            },
+        )
+        self.assertEqual(
+            observer_session.post.call_args.args[0], settings.llm_url
+        )
+        self.assertEqual(
+            observer_session.post.call_args.kwargs.get("timeout"),
+            settings.llm_timeout,
+        )
+        self.assertTrue(observer_session.post.call_args.kwargs.get("stream"))
+        # The wrapper must close the patched session exactly once
+        # when the surrounding ``finally`` block closes the response.
+        observer_session.close.assert_called_once_with()
+
+    def test_real_transport_socks_session_is_closed_with_response(
+        self,
+    ):
+        """The private SOCKS session MUST be closed when the response
+        is closed by the surrounding ``QueryLlm.request`` ``finally``
+        block. The wrapper is idempotent so a second ``close`` call
+        does NOT re-close the session."""
+        response = _FakeResponse(json.dumps({"ok": True}))
+        observer_session = mock.Mock()
+        observer_session.post.return_value = response
+        settings = _settings(ollama_proxy_url="socks5h://127.0.0.1:1055")
+        with mock.patch(
+            "backend.llm.query_llm._SocksPhaseObserverSession",
+            return_value=observer_session,
+        ):
+            QueryLlm(settings=settings).request("hola")
+            # Simulate a second close() pass on the response object
+            # so the wrapper's idempotent guard is exercised.
+            response.close()
+        observer_session.close.assert_called_once_with()
+
+    def test_real_transport_two_socks_calls_build_independent_sessions(
+        self,
+    ):
+        """Two consecutive ``QueryLlm`` SOCKS requests MUST build
+        independent session resources and MUST NOT share a session
+        / pool / adapter / proxy manager / socket."""
+        from backend.llm import query_llm as _query_llm_module
+
+        response_a = _FakeResponse(json.dumps({"first": True}))
+        response_b = _FakeResponse(json.dumps({"second": True}))
+        session_a = mock.Mock()
+        session_a.post.return_value = response_a
+        session_b = mock.Mock()
+        session_b.post.return_value = response_b
+        constructor = mock.Mock(side_effect=[session_a, session_b])
+        settings = _settings(ollama_proxy_url="socks5h://127.0.0.1:1055")
+        with mock.patch.object(
+            _query_llm_module, "_SocksPhaseObserverSession", constructor
+        ):
+            first = QueryLlm(settings=settings).request(
+                "hola", correlation_id="SYN-SOCKS-DUP-A"
+            )
+            second = QueryLlm(settings=settings).request(
+                "hola", correlation_id="SYN-SOCKS-DUP-B"
+            )
+
+        self.assertEqual(first, {"first": True})
+        self.assertEqual(second, {"second": True})
+        self.assertEqual(constructor.call_count, 2)
+        self.assertIsNot(session_a, session_b)
+        session_a.close.assert_called_once_with()
+        session_b.close.assert_called_once_with()
 
     def test_real_transport_uses_loopback_http_proxy(self):
         response = _FakeResponse(json.dumps({"ok": True}))
@@ -2936,6 +3042,1367 @@ class QueryLlmHttpxLoggingTest(unittest.TestCase):
             "/api/generate",
         ):
             self.assertNotIn(forbidden, joined)
+
+
+class _SocksPhaseObserverSeamTests(unittest.TestCase):
+    """Direct tests for the private ``_SocksPhaseObserverMixin`` used by
+    :class:`backend.llm.query_llm._ObservingSocksHTTPConnection` and
+    :class:`_ObservingSocksHTTPSConnection`.
+
+    The tests patch the underlying ``urllib3.contrib.socks`` and
+    ``urllib3.connection`` seams (the supported, pinned extension
+    points the design adopted) so the observer logic can be exercised
+    without a real SOCKS server or any open socket. The session is
+    constructed per call (no process-local cache), so there is no
+    cached observer session to reset between tests.
+    """
+
+    def setUp(self) -> None:
+        reset_llm_timing_recorder()
+        from backend.llm import query_llm as _query_llm_module
+
+        self._query_llm_module = _query_llm_module
+
+    def tearDown(self) -> None:
+        reset_llm_timing_recorder()
+
+    def _capture_emit_events(self) -> tuple[list[dict], object]:
+        captured: list[dict] = []
+
+        def _capture(*, event: str, **kwargs: object) -> bool:
+            from backend.observability.events import build_event
+
+            payload = build_event(event=event, **kwargs)
+            captured.append(payload)
+            return True
+
+        return captured, _capture
+
+    def _phases(self, captured: list[dict]) -> list[str]:
+        return [
+            ev["phase"]
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+        ]
+
+    def _phase_payloads(self, captured: list[dict]) -> dict[str, dict]:
+        return {
+            ev["phase"]: ev
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+        }
+
+    def test_socks_connect_started_emitted_with_zero_elapsed(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        with mock.patch(
+            "urllib3.contrib.socks.SOCKSConnection._new_conn",
+            return_value=mock.Mock(),
+        ), mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            from backend.llm.query_llm import _ObservingSocksHTTPConnection
+
+            conn = _ObservingSocksHTTPConnection(
+                host="127.0.0.1",
+                port=11434,
+                _socks_options={
+                    "socks_version": 2,
+                    "proxy_host": "127.0.0.1",
+                    "proxy_port": "1055",
+                    "username": None,
+                    "password": None,
+                    "rdns": True,
+                },
+            )
+            conn._new_conn()
+        started = next(
+            ev
+            for ev in captured
+            if ev["phase"] == "socks_connect_started"
+        )
+        self.assertEqual(started["elapsed_ms"], 0)
+        self.assertNotIn("http_status", started)
+        self.assertNotIn("response_bytes", started)
+        self.assertNotIn("chunk_count", started)
+
+    def test_socks_connect_completed_emitted_with_non_negative_elapsed(
+        self,
+    ) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        with mock.patch(
+            "urllib3.contrib.socks.SOCKSConnection._new_conn",
+            return_value=mock.Mock(),
+        ), mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            from backend.llm.query_llm import _ObservingSocksHTTPConnection
+
+            conn = _ObservingSocksHTTPConnection(
+                host="127.0.0.1",
+                port=11434,
+                _socks_options={
+                    "socks_version": 2,
+                    "proxy_host": "127.0.0.1",
+                    "proxy_port": "1055",
+                    "username": None,
+                    "password": None,
+                    "rdns": True,
+                },
+            )
+            conn._new_conn()
+        completed = next(
+            ev
+            for ev in captured
+            if ev["phase"] == "socks_connect_completed"
+        )
+        self.assertIsInstance(completed["elapsed_ms"], int)
+        self.assertGreaterEqual(completed["elapsed_ms"], 0)
+        self.assertNotIn("http_status", completed)
+        self.assertNotIn("response_bytes", completed)
+        self.assertNotIn("chunk_count", completed)
+
+    def test_socks_seam_failure_does_not_emit_completion(self) -> None:
+        """When the SOCKS connect seam raises, the completion / writer /
+        header evidence must never be fabricated."""
+        captured, capture_fn = self._capture_emit_events()
+
+        def _boom_new_conn(self):
+            raise requests.exceptions.ProxyError("proxy refused")
+
+        with mock.patch(
+            "urllib3.contrib.socks.SOCKSConnection._new_conn",
+            _boom_new_conn,
+        ), mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            from backend.llm.query_llm import _ObservingSocksHTTPConnection
+
+            conn = _ObservingSocksHTTPConnection(
+                host="127.0.0.1",
+                port=11434,
+                _socks_options={
+                    "socks_version": 2,
+                    "proxy_host": "127.0.0.1",
+                    "proxy_port": "1055",
+                    "username": None,
+                    "password": None,
+                    "rdns": True,
+                },
+            )
+            with self.assertRaises(requests.exceptions.ProxyError):
+                conn._new_conn()
+
+        phases = self._phases(captured)
+        self.assertEqual(phases, ["socks_connect_started"])
+        self.assertNotIn("socks_connect_completed", phases)
+        self.assertNotIn("request_write_started", phases)
+        self.assertNotIn("request_write_completed", phases)
+        self.assertNotIn("response_headers_received", phases)
+
+    def test_request_write_started_emitted_with_zero_elapsed(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        with mock.patch(
+            "urllib3.connection.HTTPConnection.request",
+            return_value=None,
+        ), mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            from backend.llm.query_llm import _ObservingSocksHTTPConnection
+
+            conn = _ObservingSocksHTTPConnection(
+                host="127.0.0.1",
+                port=11434,
+                _socks_options={
+                    "socks_version": 2,
+                    "proxy_host": "127.0.0.1",
+                    "proxy_port": "1055",
+                    "username": None,
+                    "password": None,
+                    "rdns": True,
+                },
+            )
+            conn.sock = mock.Mock()
+            conn.request("POST", "/api/generate", body=b"{}", headers={})
+        started = next(
+            ev
+            for ev in captured
+            if ev["phase"] == "request_write_started"
+        )
+        self.assertEqual(started["elapsed_ms"], 0)
+        self.assertNotIn("http_status", started)
+        self.assertNotIn("response_bytes", started)
+        self.assertNotIn("chunk_count", started)
+
+    def test_request_write_completed_emitted_with_non_negative_elapsed(
+        self,
+    ) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        with mock.patch(
+            "urllib3.connection.HTTPConnection.request",
+            return_value=None,
+        ), mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            from backend.llm.query_llm import _ObservingSocksHTTPConnection
+
+            conn = _ObservingSocksHTTPConnection(
+                host="127.0.0.1",
+                port=11434,
+                _socks_options={
+                    "socks_version": 2,
+                    "proxy_host": "127.0.0.1",
+                    "proxy_port": "1055",
+                    "username": None,
+                    "password": None,
+                    "rdns": True,
+                },
+            )
+            conn.sock = mock.Mock()
+            conn.request("POST", "/api/generate", body=b"{}", headers={})
+        completed = next(
+            ev
+            for ev in captured
+            if ev["phase"] == "request_write_completed"
+        )
+        self.assertIsInstance(completed["elapsed_ms"], int)
+        self.assertGreaterEqual(completed["elapsed_ms"], 0)
+        self.assertNotIn("http_status", completed)
+        self.assertNotIn("response_bytes", completed)
+        self.assertNotIn("chunk_count", completed)
+
+    def test_request_writer_failure_does_not_emit_completion(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+
+        def _boom_request(self, *args, **kwargs):
+            raise requests.exceptions.ConnectionError("writer failed")
+
+        with mock.patch(
+            "urllib3.connection.HTTPConnection.request",
+            _boom_request,
+        ), mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            from backend.llm.query_llm import _ObservingSocksHTTPConnection
+
+            conn = _ObservingSocksHTTPConnection(
+                host="127.0.0.1",
+                port=11434,
+                _socks_options={
+                    "socks_version": 2,
+                    "proxy_host": "127.0.0.1",
+                    "proxy_port": "1055",
+                    "username": None,
+                    "password": None,
+                    "rdns": True,
+                },
+            )
+            conn.sock = mock.Mock()
+            with self.assertRaises(requests.exceptions.ConnectionError):
+                conn.request("POST", "/api/generate", body=b"{}", headers={})
+
+        phases = self._phases(captured)
+        self.assertEqual(phases, ["request_write_started"])
+        self.assertNotIn("request_write_completed", phases)
+        self.assertNotIn("response_headers_received", phases)
+
+
+class QueryLlmSocksProxyIntegrationTest(unittest.TestCase):
+    """End-to-end ``QueryLlm`` coverage for the SOCKS observer path.
+
+    The tests pin the documented strict-order guarantee:
+    ``request_started`` → ``request_write_started`` → SOCKS start /
+    completed → ``request_write_completed`` → ``response_headers_received``
+    (and the rest of the legacy phase envelope), and the
+    no-proxy / injected-transport / blocked-SOCKS / writer-failure /
+    emission-failure contracts. The private session is built per
+    request so two consecutive calls never share a session, an
+    adapter, a manager or a socket.
+    """
+
+    def setUp(self) -> None:
+        reset_llm_timing_recorder()
+        from backend.llm import query_llm as _query_llm_module
+
+        self._query_llm_module = _query_llm_module
+
+    def tearDown(self) -> None:
+        reset_llm_timing_recorder()
+
+    def _capture_emit_events(self) -> tuple[list[dict], object]:
+        captured: list[dict] = []
+
+        def _capture(*, event: str, **kwargs: object) -> bool:
+            from backend.observability.events import build_event
+
+            payload = build_event(event=event, **kwargs)
+            captured.append(payload)
+            return True
+
+        return captured, _capture
+
+    def _phases(self, captured: list[dict]) -> list[str]:
+        return [
+            ev["phase"]
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+        ]
+
+    def _patch_urllib3_for_socks(
+        self,
+        *,
+        body_bytes: bytes,
+        new_conn_side_effect=None,
+        getresponse_status: int = 200,
+    ) -> object:
+        """Build the urllib3 mock context manager required to drive the
+        observer end-to-end without opening a real socket.
+
+        ``new_conn_side_effect`` lets the test raise from the patched
+        SOCKS connect seam to exercise the blocked-failure contract.
+        The default returns a ``Mock`` socket so the writer seam can
+        run.
+        """
+        fake_socket = mock.Mock()
+        if new_conn_side_effect is None:
+            new_conn_return = fake_socket
+        else:
+            new_conn_return = mock.Mock(side_effect=new_conn_side_effect)
+
+        fake_response = mock.Mock()
+        fake_response.status = getresponse_status
+        fake_response.headers = {"Content-Type": "application/json"}
+        fake_response.chunked = False
+        fake_response.length_remaining = len(body_bytes)
+        fake_response.read_chunked = mock.Mock(return_value=[body_bytes])
+        fake_response.release_conn = mock.Mock()
+        return mock.patch.multiple(
+            "urllib3.contrib.socks.SOCKSConnection",
+            _new_conn=new_conn_return,
+        ), mock.patch(
+            "urllib3.connection.HTTPConnection.getresponse",
+            return_value=fake_response,
+        )
+
+    def test_socks_success_emits_strict_phase_order(self) -> None:
+        import io
+
+        import urllib3
+
+        inner_body = json.dumps({"ok": True})
+        body_bytes = json.dumps({"response": inner_body}).encode("utf-8")
+        real_response = urllib3.HTTPResponse(
+            body=io.BytesIO(body_bytes),
+            headers={"Content-Type": "application/json"},
+            status=200,
+            preload_content=False,
+        )
+        fake_socket = mock.Mock()
+
+        captured, capture_fn = self._capture_emit_events()
+        settings = _settings(ollama_proxy_url="socks5h://127.0.0.1:1055")
+        new_conn_patch = mock.patch(
+            "urllib3.contrib.socks.SOCKSConnection._new_conn",
+            return_value=fake_socket,
+        )
+        getresponse_patch = mock.patch(
+            "urllib3.connection.HTTPConnection.getresponse",
+            return_value=real_response,
+        )
+        with new_conn_patch, getresponse_patch, mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            install_llm_timing_recorder(
+                mock.Mock(), correlation_id="SYN-SOCKS-OK"
+            )
+            try:
+                result = QueryLlm(settings=settings).request(
+                    "hola", correlation_id="SYN-SOCKS-OK"
+                )
+            finally:
+                reset_llm_timing_recorder()
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(
+            self._phases(captured),
+            [
+                "request_started",
+                "request_write_started",
+                "socks_connect_started",
+                "socks_connect_completed",
+                "request_write_completed",
+                "response_headers_received",
+                "first_body_chunk",
+                "body_completed",
+                "response_received",
+                "json_extracted",
+                "result_parsed",
+            ],
+        )
+
+        phase_payloads = {
+            ev["phase"]: ev
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+        }
+        socks_started = phase_payloads["socks_connect_started"]
+        socks_completed = phase_payloads["socks_connect_completed"]
+        writer_started = phase_payloads["request_write_started"]
+        writer_completed = phase_payloads["request_write_completed"]
+
+        # elapsed_ms is integer / non-negative on every SOCKS / writer phase
+        for ev in (
+            socks_started,
+            socks_completed,
+            writer_started,
+            writer_completed,
+        ):
+            self.assertEqual(ev["correlation_id"], "SYN-SOCKS-OK")
+            self.assertIsInstance(ev["elapsed_ms"], int)
+            self.assertGreaterEqual(ev["elapsed_ms"], 0)
+            self.assertNotIn("http_status", ev)
+            self.assertNotIn("response_bytes", ev)
+            self.assertNotIn("chunk_count", ev)
+
+        self.assertEqual(socks_started["elapsed_ms"], 0)
+        self.assertEqual(writer_started["elapsed_ms"], 0)
+        self.assertGreaterEqual(socks_completed["elapsed_ms"], 0)
+        self.assertGreaterEqual(writer_completed["elapsed_ms"], 0)
+
+    def test_socks_seam_blocked_does_not_fabricate_subsequent_phases(
+        self,
+    ) -> None:
+        """When the SOCKS seam does not return, the trace stops at
+        ``socks_connect_started`` and no completion / writer / header
+        evidence is fabricated. The exception classification the
+        surrounding ``QueryLlm.request`` already performs remains
+        authoritative."""
+
+        def _boom_new_conn(*args, **kwargs):
+            raise requests.exceptions.ProxyError("proxy refused")
+
+        captured, capture_fn = self._capture_emit_events()
+        settings = _settings(ollama_proxy_url="socks5h://127.0.0.1:1055")
+        with mock.patch(
+            "urllib3.contrib.socks.SOCKSConnection._new_conn",
+            side_effect=_boom_new_conn,
+        ), mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            install_llm_timing_recorder(
+                mock.Mock(), correlation_id="SYN-SOCKS-BLOCK"
+            )
+            try:
+                with self.assertRaises(QueryLlmConnectionError):
+                    QueryLlm(settings=settings).request(
+                        "hola", correlation_id="SYN-SOCKS-BLOCK"
+                    )
+            finally:
+                reset_llm_timing_recorder()
+
+        phases = self._phases(captured)
+        self.assertEqual(
+            phases,
+            [
+                "request_started",
+                "request_write_started",
+                "socks_connect_started",
+            ],
+        )
+        self.assertNotIn("socks_connect_completed", phases)
+        self.assertNotIn("request_write_completed", phases)
+        self.assertNotIn("response_headers_received", phases)
+
+        lifecycle_events = [
+            ev
+            for ev in captured
+            if ev.get("event") == "llm_request"
+        ]
+        self.assertEqual(len(lifecycle_events), 2)
+        self.assertEqual(
+            lifecycle_events[1]["failure_category"], "connection"
+        )
+        self.assertEqual(
+            lifecycle_events[1]["correlation_id"], "SYN-SOCKS-BLOCK"
+        )
+
+    def test_writer_failure_does_not_fabricate_completion_or_headers(
+        self,
+    ) -> None:
+        """A writer failure BEFORE the lazy SOCKS connect runs leaves
+        the trace at ``request_write_started``. No SOCKS evidence is
+        emitted because the lazy connect step was never reached; no
+        completion, no header evidence, no second request."""
+
+        import io
+
+        import urllib3
+
+        body_bytes = json.dumps({"response": json.dumps({"ok": True})}).encode(
+            "utf-8"
+        )
+        real_response = urllib3.HTTPResponse(
+            body=io.BytesIO(body_bytes),
+            headers={"Content-Type": "application/json"},
+            status=200,
+            preload_content=False,
+        )
+        fake_socket = mock.Mock()
+
+        def _boom_request(self, *args, **kwargs):
+            raise requests.exceptions.ConnectionError("writer failed")
+
+        captured, capture_fn = self._capture_emit_events()
+        settings = _settings(ollama_proxy_url="socks5h://127.0.0.1:1055")
+        with mock.patch(
+            "urllib3.contrib.socks.SOCKSConnection._new_conn",
+            return_value=fake_socket,
+        ), mock.patch(
+            "urllib3.connection.HTTPConnection.request",
+            side_effect=_boom_request,
+        ), mock.patch(
+            "urllib3.connection.HTTPConnection.getresponse",
+            return_value=real_response,
+        ), mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            install_llm_timing_recorder(
+                mock.Mock(), correlation_id="SYN-SOCKS-WRITER"
+            )
+            try:
+                with self.assertRaises(QueryLlmConnectionError):
+                    QueryLlm(settings=settings).request(
+                        "hola", correlation_id="SYN-SOCKS-WRITER"
+                    )
+            finally:
+                reset_llm_timing_recorder()
+
+        phases = self._phases(captured)
+        self.assertEqual(
+            phases,
+            [
+                "request_started",
+                "request_write_started",
+            ],
+        )
+        self.assertNotIn("socks_connect_started", phases)
+        self.assertNotIn("socks_connect_completed", phases)
+        self.assertNotIn("request_write_completed", phases)
+        self.assertNotIn("response_headers_received", phases)
+        self.assertNotIn("first_body_chunk", phases)
+
+    def test_no_proxy_does_not_emit_socks_phases(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        captured_post = mock.Mock(return_value=_FakeStreamingResponse(
+            json.dumps({"ok": True}), chunk_size=4
+        ))
+        with mock.patch(
+            "backend.llm.query_llm.requests.post", new=captured_post
+        ), mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            QueryLlm(settings=_settings()).request(
+                "hola", correlation_id="SYN-NOPROXY"
+            )
+
+        phases = self._phases(captured)
+        self.assertNotIn("socks_connect_started", phases)
+        self.assertNotIn("socks_connect_completed", phases)
+        self.assertNotIn("request_write_started", phases)
+        self.assertNotIn("request_write_completed", phases)
+        self.assertEqual(phases[0], "request_started")
+
+    def test_injected_transport_does_not_emit_socks_phases(self) -> None:
+        captured, capture_fn = self._capture_emit_events()
+        transport = mock.Mock(
+            return_value=_FakeStreamingResponse(
+                json.dumps({"ok": True}), chunk_size=4
+            )
+        )
+        with mock.patch(
+            "backend.llm.query_llm.requests.post"
+        ) as legacy_post, mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            QueryLlm(
+                settings=_settings(
+                    ollama_proxy_url="socks5h://127.0.0.1:1055"
+                ),
+                transport=transport,
+            ).request("hola", correlation_id="SYN-INJ")
+
+        phases = self._phases(captured)
+        self.assertNotIn("socks_connect_started", phases)
+        self.assertNotIn("socks_connect_completed", phases)
+        self.assertNotIn("request_write_started", phases)
+        self.assertNotIn("request_write_completed", phases)
+        transport.assert_called_once()
+        legacy_post.assert_not_called()
+
+    def test_httpx_does_not_emit_socks_phases(self) -> None:
+        """The HTTPX branch MUST NOT emit the SOCKS-boundary phases
+        because the diagnostic only observes the default Requests +
+        SOCKS path."""
+        captured, capture_fn = self._capture_emit_events()
+
+        class _StreamingHttpxClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def build_request(self, method, url, json=None, **kw):
+                return mock.Mock()
+
+            def send(self, request, stream=False):
+                return _FakeHttpxStreamingResponse(
+                    json.dumps({"ok": True}), chunk_size=4
+                )
+
+            def close(self):
+                pass
+
+        settings = _settings(
+            llm_http_client="httpx",
+            ollama_proxy_url="socks5h://127.0.0.1:1055",
+        )
+        with mock.patch(
+            "backend.llm.query_llm.httpx.Client",
+            side_effect=_StreamingHttpxClient,
+        ), mock.patch(
+            "backend.llm.query_llm.requests.post"
+        ) as legacy_post, mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            QueryLlm(settings=settings).request(
+                "hola", correlation_id="SYN-HTTPX-SOCKS"
+            )
+
+        phases = self._phases(captured)
+        self.assertNotIn("socks_connect_started", phases)
+        self.assertNotIn("socks_connect_completed", phases)
+        self.assertNotIn("request_write_started", phases)
+        self.assertNotIn("request_write_completed", phases)
+        legacy_post.assert_not_called()
+
+    def test_socks_request_does_not_duplicate_connection_writer_or_request(
+        self,
+    ) -> None:
+        """A single SOCKS ``QueryLlm.request`` MUST NOT duplicate the
+        connection, the writer, or the request. The SOCKS connect
+        seam and the inherited writer seam MUST each fire exactly
+        once; no fabricated phase pair is allowed."""
+        import io
+
+        import urllib3
+
+        body_bytes = json.dumps({"response": json.dumps({"ok": True})}).encode(
+            "utf-8"
+        )
+        real_response = urllib3.HTTPResponse(
+            body=io.BytesIO(body_bytes),
+            headers={"Content-Type": "application/json"},
+            status=200,
+            preload_content=False,
+        )
+        fake_socket = mock.Mock()
+        captured, capture_fn = self._capture_emit_events()
+        settings = _settings(ollama_proxy_url="socks5h://127.0.0.1:1055")
+        new_conn_spy = mock.Mock(return_value=fake_socket)
+        with mock.patch(
+            "urllib3.contrib.socks.SOCKSConnection._new_conn",
+            new=new_conn_spy,
+        ), mock.patch(
+            "urllib3.connection.HTTPConnection.getresponse",
+            return_value=real_response,
+        ), mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            install_llm_timing_recorder(
+                mock.Mock(), correlation_id="SYN-SOCKS-1X"
+            )
+            try:
+                result = QueryLlm(settings=settings).request(
+                    "hola", correlation_id="SYN-SOCKS-1X"
+                )
+            finally:
+                reset_llm_timing_recorder()
+
+        self.assertEqual(result, {"ok": True})
+        # The connect seam fires exactly once: the previous forced
+        # ``self.connect()`` pre-allocated a socket that the writer
+        # would otherwise open lazily and could double-count on a
+        # reused socket.
+        self.assertEqual(new_conn_spy.call_count, 1)
+        # Each SOCKS / writer phase fires exactly once. The SOCKS
+        # pair is emitted after the writer entry, never before, and
+        # no duplicate emission is allowed.
+        phases = self._phases(captured)
+        self.assertEqual(
+            phases.count("socks_connect_started"),
+            1,
+        )
+        self.assertEqual(
+            phases.count("socks_connect_completed"),
+            1,
+        )
+        self.assertEqual(
+            phases.count("request_write_started"),
+            1,
+        )
+        self.assertEqual(
+            phases.count("request_write_completed"),
+            1,
+        )
+
+    def test_socks_response_wrapper_close_is_idempotent(self) -> None:
+        """Calling :meth:`close` on the response wrapper twice MUST
+        close the underlying session exactly once. The wrapper is
+        fail-soft so the surrounding business flow cannot crash
+        because the SOCKS observer is reused."""
+        from backend.llm import query_llm as _query_llm_module
+
+        response = mock.Mock()
+        session = mock.Mock()
+        wrapper = _query_llm_module._SocksResponseSessionCloser(
+            response=response, session=session
+        )
+        wrapper.close()
+        wrapper.close()
+        wrapper.close()
+        self.assertEqual(session.close.call_count, 1)
+        self.assertEqual(response.close.call_count, 1)
+
+    def test_socks_response_wrapper_close_swallows_session_error(
+        self,
+    ) -> None:
+        """A session close() error MUST NOT propagate through the
+        wrapper; the wrapper is intentionally fail-soft so an
+        observability seam cannot crash the surrounding
+        ``QueryLlm.request`` flow."""
+        from backend.llm import query_llm as _query_llm_module
+
+        response = mock.Mock()
+        session = mock.Mock()
+        session.close.side_effect = RuntimeError("session close boom")
+        wrapper = _query_llm_module._SocksResponseSessionCloser(
+            response=response, session=session
+        )
+        wrapper.close()
+        # Response close must still have run regardless of the
+        # session close failure.
+        response.close.assert_called_once_with()
+
+    def test_socks_observer_emission_failure_does_not_break_request(
+        self,
+    ) -> None:
+        """An emission failure on the SOCKS / writer helper MUST NOT
+        change the invocation count, payload, timeout, exception
+        mapping or parsed result."""
+        import io
+
+        import urllib3
+
+        body_bytes = json.dumps({"response": json.dumps({"ok": True})}).encode(
+            "utf-8"
+        )
+        real_response = urllib3.HTTPResponse(
+            body=io.BytesIO(body_bytes),
+            headers={"Content-Type": "application/json"},
+            status=200,
+            preload_content=False,
+        )
+        fake_socket = mock.Mock()
+
+        def _explode_socks_phase_only(*, event: str, **kwargs):
+            if (
+                event == "llm_request_transport_phase"
+                and kwargs.get("phase", "").startswith(
+                    ("socks_", "request_write_")
+                )
+            ):
+                raise RuntimeError("socks phase emitter boom")
+            from backend.observability.events import build_event
+
+            build_event(event=event, **kwargs)
+            return True
+
+        captured = mock.Mock()
+        captured.attach_mock(mock.Mock(), "_")
+        settings = _settings(ollama_proxy_url="socks5h://127.0.0.1:1055")
+        with mock.patch(
+            "urllib3.contrib.socks.SOCKSConnection._new_conn",
+            return_value=fake_socket,
+        ), mock.patch(
+            "urllib3.connection.HTTPConnection.getresponse",
+            return_value=real_response,
+        ), mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=_explode_socks_phase_only,
+        ):
+            result = QueryLlm(settings=settings).request("hola")
+
+        self.assertEqual(result, {"ok": True})
+
+    def test_socks_observer_does_not_log_sensitive_values(self) -> None:
+        import io
+
+        import urllib3
+
+        body_bytes = json.dumps({"response": json.dumps({"ok": True})}).encode(
+            "utf-8"
+        )
+        real_response = urllib3.HTTPResponse(
+            body=io.BytesIO(body_bytes),
+            headers={"Content-Type": "application/json"},
+            status=200,
+            preload_content=False,
+        )
+        fake_socket = mock.Mock()
+        settings = _settings(
+            ollama_proxy_url="socks5h://user:pass@127.0.0.1:1055",
+            llm_url="http://secret-host.invalid/api/generate",
+        )
+        with mock.patch(
+            "urllib3.contrib.socks.SOCKSConnection._new_conn",
+            return_value=fake_socket,
+        ), mock.patch(
+            "urllib3.connection.HTTPConnection.getresponse",
+            return_value=real_response,
+        ):
+            with self.assertLogs("backend.llm.query_llm", level="DEBUG") as captured:
+                QueryLlm(settings=settings).request("hola")
+        joined = "\n".join(captured.output)
+        for forbidden in (
+            "user:pass",
+            "127.0.0.1",
+            "1055",
+            "secret-host.invalid",
+            "socks5h",
+            "/api/generate",
+        ):
+            self.assertNotIn(forbidden, joined)
+
+    def test_socks_observer_session_mounts_observing_adapter(self) -> None:
+        from backend.llm.query_llm import (
+            _ObservingSocksAdapter,
+            _SocksPhaseObserverSession,
+        )
+
+        session = _SocksPhaseObserverSession()
+        try:
+            http_adapter = session.get_adapter("http://example.test")
+            https_adapter = session.get_adapter("https://example.test")
+            self.assertIsInstance(http_adapter, _ObservingSocksAdapter)
+            self.assertIsInstance(https_adapter, _ObservingSocksAdapter)
+        finally:
+            session.close()
+
+    def test_socks_observer_sessions_are_constructed_per_call(self) -> None:
+        """Two consecutive ``_SocksPhaseObserverSession`` constructions
+        MUST produce independent session / adapter / proxy manager
+        resources. There is no process-local cache."""
+        from backend.llm.query_llm import (
+            _ObservingSocksAdapter,
+            _SocksPhaseObserverSession,
+        )
+
+        first = _SocksPhaseObserverSession()
+        second = _SocksPhaseObserverSession()
+        try:
+            self.assertIsNot(first, second)
+            self.assertIsInstance(first, _SocksPhaseObserverSession)
+            self.assertIsInstance(second, _SocksPhaseObserverSession)
+            # The adapter instance MUST differ between the two
+            # sessions — the cache the diagnostic removed was the one
+            # that previously pinned a single adapter across calls.
+            first_adapter = first.get_adapter("http://example.test")
+            second_adapter = second.get_adapter("http://example.test")
+            self.assertIsInstance(first_adapter, _ObservingSocksAdapter)
+            self.assertIsInstance(second_adapter, _ObservingSocksAdapter)
+            self.assertIsNot(first_adapter, second_adapter)
+        finally:
+            first.close()
+            second.close()
+
+    def test_is_socks_proxy_url_only_matches_socks_schemes(self) -> None:
+        from backend.llm.query_llm import _is_socks_proxy_url
+
+        self.assertTrue(_is_socks_proxy_url("socks5h://127.0.0.1:1055"))
+        self.assertTrue(_is_socks_proxy_url("socks5://127.0.0.1:1055"))
+        self.assertTrue(_is_socks_proxy_url("socks4a://127.0.0.1:1055"))
+        self.assertTrue(_is_socks_proxy_url("socks4://127.0.0.1:1055"))
+        self.assertTrue(_is_socks_proxy_url("SOCKS5H://127.0.0.1:1055"))
+        self.assertFalse(_is_socks_proxy_url(None))
+        self.assertFalse(_is_socks_proxy_url(""))
+        self.assertFalse(_is_socks_proxy_url("http://127.0.0.1:3128"))
+        self.assertFalse(_is_socks_proxy_url("https://127.0.0.1:3128"))
+        self.assertFalse(_is_socks_proxy_url(123))
+        self.assertFalse(_is_socks_proxy_url([]))
+
+
+class QueryLlmSocksSessionFailureTest(unittest.TestCase):
+    """Focused coverage for the SOCKS observer session lifecycle when
+    :meth:`_SocksPhaseObserverSession.post` raises before a response
+    object exists to drive :meth:`_SocksResponseSessionCloser.close`.
+
+    Each scenario proves that:
+
+    * the private observer session is closed exactly once,
+    * no :class:`_SocksResponseSessionCloser` wrapper is produced,
+    * the original :mod:`requests.exceptions.RequestException`
+      subclass is preserved and re-raised so the
+      :func:`_classify_post_exception` mapper keeps producing the
+      canonical :class:`QueryLlmTimeoutError` /
+      :class:`QueryLlmConnectionError` subtype,
+    * no second request, no fabricated completion / header phases
+      and no SOCKS pair completion are emitted by the failure,
+    * no traceback, exception text or sensitive payload leaks into
+      the logging channel.
+    """
+
+    _PROXY_URL = "socks5h://127.0.0.1:1055"
+    _LLM_URL = "http://llm.test/api/generate"
+    _SENTINEL = "SOCKS-SESSION-CLOSE-LEAK-SENTINEL-XYZ-99"
+
+    def setUp(self) -> None:
+        reset_llm_timing_recorder()
+
+    def tearDown(self) -> None:
+        reset_llm_timing_recorder()
+
+    def _capture_emit_events(self) -> tuple[list[dict], object]:
+        captured: list[dict] = []
+
+        def _capture(*, event: str, **kwargs: object) -> bool:
+            from backend.observability.events import build_event
+
+            payload = build_event(event=event, **kwargs)
+            captured.append(payload)
+            return True
+
+        return captured, _capture
+
+    def _phases(self, captured: list[dict]) -> list[str]:
+        return [
+            ev["phase"]
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+        ]
+
+    def _build_post_mock(
+        self, *, side_effect: BaseException
+    ) -> tuple[mock.Mock, mock.Mock]:
+        """Return a ``(session_factory_mock, post_mock)`` pair that
+        mimics the private observer session contract used by
+        :meth:`QueryLlm._post_requests` so the failure path of
+        ``session.post(...)`` is exercised without opening a real
+        socket. ``post_mock.call_count`` doubles as a no-second-
+        request guard for the assertions below.
+        """
+        session = mock.Mock()
+        session.post.side_effect = side_effect
+        return session, session.post
+
+    def test_socks_session_post_timeout_closes_session_once(self) -> None:
+        """``requests.exceptions.Timeout`` raised by
+        ``session.post`` MUST close the observer session exactly
+        once and re-raise the original exception so the surrounding
+        mapper produces ``QueryLlmTimeoutError``. No response
+        wrapper is produced and the trace stops before any
+        fabricated SOCKS completion / writer completion / response
+        header evidence.
+        """
+        captured, capture_fn = self._capture_emit_events()
+        session, post_mock = self._build_post_mock(
+            side_effect=requests.exceptions.Timeout(
+                f"{self._SENTINEL} timeout-detail"
+            )
+        )
+        settings = _settings(ollama_proxy_url=self._PROXY_URL)
+        with mock.patch(
+            "backend.llm.query_llm._SocksPhaseObserverSession",
+            return_value=session,
+        ), mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            with self.assertRaises(QueryLlmTimeoutError):
+                QueryLlm(settings=settings).request("hola")
+
+        # ``session.post`` was invoked exactly once and no response
+        # wrapper ever existed for the surrounding ``finally`` block
+        # to close, so the session MUST have been closed by the
+        # per-call helper exactly once.
+        self.assertEqual(post_mock.call_count, 1)
+        self.assertEqual(session.close.call_count, 1)
+
+        phases = self._phases(captured)
+        # ``request_started`` is the QueryLlm boundary observation
+        # emitted before ``_post_requests`` runs. ``session.post``
+        # failed before the writer / SOCKS seams were entered, so no
+        # additional phase may be fabricated.
+        self.assertEqual(phases, ["request_started"])
+        self.assertNotIn("request_write_started", phases)
+        self.assertNotIn("request_write_completed", phases)
+        self.assertNotIn("socks_connect_started", phases)
+        self.assertNotIn("socks_connect_completed", phases)
+        self.assertNotIn("response_headers_received", phases)
+
+    def test_socks_session_post_connection_error_closes_session_once(
+        self,
+    ) -> None:
+        """``requests.exceptions.ConnectionError`` raised by
+        ``session.post`` MUST close the observer session exactly
+        once and re-raise the original exception so the surrounding
+        mapper produces ``QueryLlmConnectionError``."""
+        captured, capture_fn = self._capture_emit_events()
+        session, post_mock = self._build_post_mock(
+            side_effect=requests.exceptions.ConnectionError(
+                f"{self._SENTINEL} connection-detail"
+            )
+        )
+        settings = _settings(ollama_proxy_url=self._PROXY_URL)
+        with mock.patch(
+            "backend.llm.query_llm._SocksPhaseObserverSession",
+            return_value=session,
+        ), mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            with self.assertRaises(QueryLlmConnectionError):
+                QueryLlm(settings=settings).request("hola")
+
+        self.assertEqual(post_mock.call_count, 1)
+        self.assertEqual(session.close.call_count, 1)
+        phases = self._phases(captured)
+        self.assertEqual(phases, ["request_started"])
+        self.assertNotIn("request_write_started", phases)
+        self.assertNotIn("request_write_completed", phases)
+        self.assertNotIn("socks_connect_started", phases)
+        self.assertNotIn("socks_connect_completed", phases)
+        self.assertNotIn("response_headers_received", phases)
+
+    def test_socks_session_post_proxy_error_closes_session_once(
+        self,
+    ) -> None:
+        """``requests.exceptions.ProxyError`` is a
+        :class:`ConnectionError` sibling; the change MUST preserve the
+        existing classification into ``QueryLlmConnectionError``
+        instead of swallowing it. ``ProxyError`` carries the
+        sentinel-bearing text that would leak through any
+        ``logger.exception`` call — the test verifies the session
+        is closed once and the exception type is authoritative.
+        """
+        captured, capture_fn = self._capture_emit_events()
+        session, post_mock = self._build_post_mock(
+            side_effect=requests.exceptions.ProxyError(
+                f"{self._SENTINEL} proxy-detail"
+            )
+        )
+        settings = _settings(ollama_proxy_url=self._PROXY_URL)
+        with mock.patch(
+            "backend.llm.query_llm._SocksPhaseObserverSession",
+            return_value=session,
+        ), mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            with self.assertRaises(QueryLlmConnectionError):
+                QueryLlm(settings=settings).request("hola")
+
+        self.assertEqual(post_mock.call_count, 1)
+        self.assertEqual(session.close.call_count, 1)
+        phases = self._phases(captured)
+        self.assertEqual(phases, ["request_started"])
+
+    def test_socks_session_post_failure_does_not_leak_sensitive_text(
+        self,
+    ) -> None:
+        """The failure path MUST NOT log the ``Timeout`` /
+        ``ConnectionError`` / ``ProxyError`` exception text, its
+        arguments, the proxy URL, the proxy host or port. The
+        contract forbids ``logger.exception`` and any interpolation
+        of the exception on the SOCKS observer code path.
+        """
+        session, _ = self._build_post_mock(
+            side_effect=requests.exceptions.Timeout(
+                f"{self._SENTINEL} must-not-appear-anywhere"
+            )
+        )
+        settings = _settings(
+            ollama_proxy_url=self._PROXY_URL,
+            llm_url="http://secret-host.invalid/api/generate",
+        )
+        with mock.patch(
+            "backend.llm.query_llm._SocksPhaseObserverSession",
+            return_value=session,
+        ):
+            with self.assertLogs(
+                "backend.llm.query_llm", level="DEBUG"
+            ) as captured:
+                with self.assertRaises(QueryLlmTimeoutError):
+                    QueryLlm(settings=settings).request("hola")
+        joined = "\n".join(captured.output)
+        for forbidden in (
+            self._SENTINEL,
+            "must-not-appear-anywhere",
+            "secret-host.invalid",
+            "/api/generate",
+            "socks5h",
+            "127.0.0.1",
+            "1055",
+            "Traceback",
+        ):
+            self.assertNotIn(forbidden, joined)
+
+    def test_two_consecutive_socks_post_failures_have_independent_sessions(
+        self,
+    ) -> None:
+        """Two consecutive ``QueryLlm`` SOCKS requests whose
+        ``session.post`` raises MUST each build an independent observer
+        session. Both calls close their own session exactly once;
+        closing one MUST NOT bleed into the other; both calls
+        MUST re-raise the original exception so the existing
+        mapper keeps producing the canonical ``QueryLlm*Error``
+        subtype."""
+        from backend.llm import query_llm as _query_llm_module
+
+        captured, capture_fn = self._capture_emit_events()
+        session_a = mock.Mock()
+        session_a.post.side_effect = requests.exceptions.Timeout("a")
+        session_b = mock.Mock()
+        session_b.post.side_effect = requests.exceptions.ConnectionError(
+            "b"
+        )
+        constructor = mock.Mock(side_effect=[session_a, session_b])
+        settings = _settings(ollama_proxy_url=self._PROXY_URL)
+        with mock.patch.object(
+            _query_llm_module,
+            "_SocksPhaseObserverSession",
+            constructor,
+        ), mock.patch(
+            "backend.llm.query_llm.emit_event",
+            side_effect=capture_fn,
+        ):
+            with self.assertRaises(QueryLlmTimeoutError):
+                QueryLlm(settings=settings).request(
+                    "hola", correlation_id="SYN-SOCKS-FAIL-A"
+                )
+            with self.assertRaises(QueryLlmConnectionError):
+                QueryLlm(settings=settings).request(
+                    "hola", correlation_id="SYN-SOCKS-FAIL-B"
+                )
+
+        self.assertEqual(constructor.call_count, 2)
+        self.assertIsNot(session_a, session_b)
+        # Both sessions were closed exactly once. The per-call
+        # helper honoured the lifecycle on each request, never
+        # reused and never skipped a session.
+        self.assertEqual(session_a.close.call_count, 1)
+        self.assertEqual(session_b.close.call_count, 1)
+        # No second ``session.post`` invocation leaked across the
+        # two failures.
+        self.assertEqual(session_a.post.call_count, 1)
+        self.assertEqual(session_b.post.call_count, 1)
+        # Each request kept the original exception: ``Timeout`` mapped
+        # to ``QueryLlmTimeoutError`` on the first call and
+        # ``ConnectionError`` mapped to ``QueryLlmConnectionError``
+        # on the second call.
+        phases_a = [
+            ev
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+            and ev.get("correlation_id") == "SYN-SOCKS-FAIL-A"
+        ]
+        phases_b = [
+            ev
+            for ev in captured
+            if ev.get("event") == "llm_request_transport_phase"
+            and ev.get("correlation_id") == "SYN-SOCKS-FAIL-B"
+        ]
+        self.assertEqual([ev["phase"] for ev in phases_a], ["request_started"])
+        self.assertEqual([ev["phase"] for ev in phases_b], ["request_started"])
+
+    def test_socks_observer_session_close_failure_does_not_log_sentinel(
+        self,
+    ) -> None:
+        """The per-call helper that closes a SOCKS observer session
+        when ``session.post`` itself raises MUST NOT leak the
+        sentinel exception text or a traceback through the
+        ``backend.llm.query_llm`` logger. The helper is
+        intentionally fail-soft and silent.
+
+        The test exercises the helper directly (rather than through
+        ``QueryLlm.request``) so the assertion focuses on the
+        observer close path instead of the surrounding business
+        flow's failure-classification branch.
+        """
+        from backend.llm import query_llm as _query_llm_module
+
+        captured_records: list[logging.LogRecord] = []
+        handler = self._RecordingHandler(captured_records)
+        observer_logger = logging.getLogger("backend.llm.query_llm")
+        previous_level = observer_logger.level
+        observer_logger.setLevel(logging.DEBUG)
+        observer_logger.addHandler(handler)
+        try:
+            sentinel_exc = RuntimeError(self._SENTINEL)
+            session = mock.Mock()
+            session.close.side_effect = sentinel_exc
+            # MUST NOT raise, MUST NOT log.
+            _query_llm_module._close_socks_session_safely(session)
+        finally:
+            observer_logger.removeHandler(handler)
+            observer_logger.setLevel(previous_level)
+
+        self.assertEqual(session.close.call_count, 1)
+        joined = self._join_records(captured_records)
+        for forbidden in (
+            self._SENTINEL,
+            "RuntimeError",
+            "Traceback",
+            "close boom",
+            "llm_socks_session_close_failed",
+        ):
+            self.assertNotIn(forbidden, joined)
+
+    def test_socks_response_wrapper_close_failure_does_not_log_sentinel(
+        self,
+    ) -> None:
+        """A ``response.close()`` failure on the wrapper MUST NOT
+        leak the sentinel exception text or a traceback through the
+        ``backend.llm.query_llm`` logger. The wrapper is
+        intentionally fail-soft and silent so the surrounding
+        business flow keeps running and the privacy contract holds.
+        """
+        from backend.llm import query_llm as _query_llm_module
+
+        captured_records: list[logging.LogRecord] = []
+        handler = self._RecordingHandler(captured_records)
+        observer_logger = logging.getLogger("backend.llm.query_llm")
+        previous_level = observer_logger.level
+        observer_logger.setLevel(logging.DEBUG)
+        observer_logger.addHandler(handler)
+        try:
+            response = mock.Mock()
+            response.status_code = 200
+            response.text = json.dumps({"ok": True})
+            response.raise_for_status = mock.Mock()
+            response.close.side_effect = RuntimeError(self._SENTINEL)
+            session = mock.Mock()
+            session.close.side_effect = RuntimeError(
+                f"{self._SENTINEL} session"
+            )
+            wrapper = _query_llm_module._SocksResponseSessionCloser(
+                response=response, session=session
+            )
+            wrapper.close()
+        finally:
+            observer_logger.removeHandler(handler)
+            observer_logger.setLevel(previous_level)
+
+        # The idempotency guard still holds: the wrapper closed the
+        # response and the session exactly once each, regardless of
+        # both close failures.
+        self.assertEqual(response.close.call_count, 1)
+        self.assertEqual(session.close.call_count, 1)
+        joined = self._join_records(captured_records)
+        for forbidden in (
+            self._SENTINEL,
+            "RuntimeError",
+            "Traceback",
+            "llm_socks_response_close_failed",
+            "llm_socks_session_close_failed",
+        ):
+            self.assertNotIn(forbidden, joined)
+
+    def test_socks_phase_observation_failure_does_not_log_sentinel(
+        self,
+    ) -> None:
+        """A failure raised by ``emit_event`` from inside the new
+        SOCKS / writer observation helper MUST NOT leak the
+        sentinel exception text or a traceback through the
+        ``backend.llm.query_llm`` logger. The helper is
+        intentionally fail-soft and silent.
+        """
+        from backend.llm.query_llm import _emit_socks_phase_observation
+
+        captured_records: list[logging.LogRecord] = []
+        handler = self._RecordingHandler(captured_records)
+        observer_logger = logging.getLogger("backend.llm.query_llm")
+        previous_level = observer_logger.level
+        observer_logger.setLevel(logging.DEBUG)
+        observer_logger.addHandler(handler)
+        try:
+
+            def _explode(*, event: str, **kwargs: object) -> bool:
+                if (
+                    event == "llm_request_transport_phase"
+                    and kwargs.get("phase") == "socks_connect_started"
+                ):
+                    raise RuntimeError(self._SENTINEL)
+                return True
+
+            with mock.patch(
+                "backend.llm.query_llm.emit_event",
+                side_effect=_explode,
+            ):
+                # MUST NOT raise and MUST NOT leak the sentinel.
+                _emit_socks_phase_observation(
+                    "socks_connect_started", elapsed_ms=0
+                )
+        finally:
+            observer_logger.removeHandler(handler)
+            observer_logger.setLevel(previous_level)
+
+        joined = self._join_records(captured_records)
+        for forbidden in (
+            self._SENTINEL,
+            "RuntimeError",
+            "Traceback",
+            "llm_socks_phase_observation_failed",
+        ):
+            self.assertNotIn(forbidden, joined)
+
+    class _RecordingHandler(logging.Handler):
+        """Minimal log handler that captures every record emitted on
+        ``backend.llm.query_llm`` while the observer close /
+        emission path runs.
+
+        ``unittest.TestCase.assertLogs`` requires at least one log
+        record to succeed, so it cannot be used to prove that no
+        record was emitted. The handler records every record verbatim
+        and the assertions scan the formatted output for any leaked
+        sentinel, exception text or traceback.
+        """
+
+        def __init__(self, sink: list[logging.LogRecord]) -> None:
+            super().__init__(level=logging.DEBUG)
+            self._sink = sink
+
+        def emit(self, record: logging.LogRecord) -> None:
+            self._sink.append(record)
+
+    def _join_records(
+        self, records: list[logging.LogRecord]
+    ) -> str:
+        formatter = logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s %(message)s"
+        )
+        return "\n".join(
+            formatter.format(record) for record in records
+        )
 
 
 if __name__ == "__main__":

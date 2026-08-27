@@ -352,6 +352,88 @@ worker reached on every turn. The sequence uses Requests response
 streaming only as an observation seam; the Ollama payload remains
 `"stream": false` and the parsed business contract is unchanged.
 
+#### SOCKS-boundary closed phases
+
+When `OLLAMA_PROXY_URL` selects the SOCKS scheme and the QueryLlm
+default Requests transport is active, the boundary emits four
+additional closed phases around the existing Requests / urllib3 /
+PySocks seams so the operator can locate whether the request stalled
+before the SOCKS connect, during the connect, inside the HTTP writer
+or after the bytes were handed to the socket layer. The four
+boundary tokens are emitted only by the QueryLlm-scoped Requests
+observer; they never appear when the proxy is unset, when an
+injected test transport is used, or when the reversible HTTPX
+experiment is enabled:
+
+1. `socks_connect_started` — the scoped SOCKS / urllib3 connect
+   seam was entered. `elapsed_ms=0`. No `http_status`,
+   `response_bytes` or `chunk_count` is attached.
+2. `socks_connect_completed` — the SOCKS / urllib3 connect seam
+   returned a usable target socket. Bounded non-negative
+   `elapsed_ms`. A blocked or failed seam never fabricates this
+   event.
+3. `request_write_started` — the inherited HTTP writer was entered.
+   `elapsed_ms=0`. No `http_status`, `response_bytes` or
+   `chunk_count` is attached.
+4. `request_write_completed` — the inherited HTTP writer returned
+   after handing request bytes to the socket layer. Bounded
+   non-negative `elapsed_ms`. A blocked or failed writer never
+   fabricates this event.
+
+The full strict-order contract on a successful turn is:
+
+```text
+request_started
+request_write_started
+socks_connect_started
+socks_connect_completed
+request_write_completed
+response_headers_received
+first_body_chunk
+body_completed
+response_received
+json_extracted
+result_parsed
+```
+
+The order is the real order of the Requests / urllib3 / PySocks
+stack: `HTTPConnection.request` enters the inherited writer seam
+first, then the lazy `send` path triggers `connect()` which routes
+through `SOCKSConnection._new_conn`, and only when that seam
+returns does the writer resume and complete. The observer does not
+force `connect()` ahead of the writer and does not pre-allocate a
+socket the writer is perfectly capable of opening lazily.
+
+The QueryLlm SOCKS branch constructs a fresh
+`_SocksPhaseObserverSession` per call so two consecutive SOCKS
+requests never share a session, an adapter, a proxy manager, a
+connection pool or a socket. A connection that already has a cached
+socket skips the lazy `connect()` step, so the SOCKS pair is
+omitted (and never fabricated) and only the writer pair fires.
+The per-call session is closed exactly once by a private
+`_SocksResponseSessionCloser` wrapper that the surrounding
+`QueryLlm.request` `finally` block closes together with the
+response; a second `close` on the response is idempotent and does
+not re-close the session. All four new phases share the existing
+opaque synthetic inbound correlation value (`correlation_id`) and
+never carry URL, host, IP, port, proxy, credential, SOCKS
+handshake byte, header, prompt, message text, response text,
+exception text or traceback.
+
+#### Narrow interpretation rules
+
+The SOCKS-boundary tokens narrow what the trace establishes; they
+never claim physical delivery to Ollama. The safe conclusions are:
+
+| Last phase reached | Establishes | Does not establish |
+|---|---|---|
+| `request_started` only | QueryLlm entered the request boundary | that any socket activity happened |
+| `request_write_started` only | the inherited HTTP writer was entered | that the lazy `connect()` step ran or that any SOCKS seam fired |
+| `socks_connect_started` only | the scoped SOCKS / urllib3 seam was entered | that proxy TCP, SOCKS negotiation or proxy-to-target connection succeeded |
+| `socks_connect_completed` | the scoped seam returned a target socket | that HTTP bytes reached Ollama |
+| `request_write_completed` | the inherited writer returned after handing bytes to the socket layer | that the proxy forwarded the bytes or that Ollama received them |
+| `response_headers_received` | the existing body / parser diagnostics remain authoritative | complete body or parsed result |
+
 ### Reversible HTTPX QueryLlm transport experiment (Test only)
 
 The opt-in, reversible HTTPX experiment gates a synchronous HTTPX
@@ -434,6 +516,110 @@ becomes `QueryLlmTimeoutError`, `ConnectionError` (including
 read-timeout during streaming) becomes `QueryLlmConnectionError`. The
 classification is centralised so the historical contract remains
 identical on every code path; no retry or second request is added.
+
+### Correlating Railway SOCKS-boundary evidence with proxy / host captures
+
+`request_write_completed` confirms the client handed the request
+bytes to its local socket layer; it does **not** prove the proxy
+forwarded the bytes or that Ollama received them. Locating a stall
+in the proxy-to-Ollama / Tailscale leg requires a separate read-only
+capture on the operator-controlled host where the proxy or Ollama
+runs. The capture must remain time-bounded, observability-only and
+free of secrets in this runbook.
+
+#### Closed preflight
+
+1. Confirm the SOCKS proxy / Ollama host capture is run on the
+   machine where the proxy (`OLLAMA_PROXY_URL`) or the Ollama
+   service is actually running. The Railway web service container
+   does **not** host the proxy or Ollama and is not the right
+   host. Capture on the wrong host yields no useful correlation.
+2. Verify the operator has approved read-only access to the target
+   host (admin / sudo) and a recorded time window long enough to
+   cover the slowest expected round trip plus manual steps. Stop
+   the capture the moment the diagnostic window elapses.
+3. Decide the bounded UTC start timestamp and capture duration
+   before issuing the command; the capture must NOT run unattended
+   and MUST NOT write to the Railway project or to any database.
+4. Identify the bounded client evidence already collected: the
+   `correlation_id` (the existing opaque synthetic inbound
+   identifier) and the UTC timestamp of the
+   `llm_request_transport_phase` lines printed in Railway logs.
+   The capture is only meaningful when its UTC window brackets
+   those timestamps.
+
+#### Read-only capture recipes (illustrative shapes only)
+
+The exact command depends on the host's available tooling; the
+recipes below are illustrative and must be adapted by an operator
+with read-only access. They MUST NOT include hosts, URLs, IPs,
+credentials, ports, interface names, or any other identifier from
+this runbook. Substitute the operator-approved target at run time.
+
+* On the host running the SOCKS proxy or Ollama, run the equivalent
+  of `journalctl` or the platform's journal reader scoped to the
+  proxy / Ollama service unit, restricted to a bounded UTC window
+  bracketing the `correlation_id` recorded by the Railway log line.
+  Stop the read the moment the diagnostic window elapses. Do not
+  redirect the journal output to a persistent file or to the
+  Railway project.
+* On the same host, run the equivalent of `tcpdump` (or the
+  platform's packet capture tool) on the operator-approved
+  interface, restricted to the closed port pair (proxy listen port
+  and Ollama listen port) and to a bounded UTC window. Apply the
+  standard `tcpdump` `-W` / `-G` ring-buffer arguments so the
+  capture self-stops at the configured boundary. Run as a user
+  that does NOT have permission to write persistent state; the
+  capture MUST terminate at the ring-buffer boundary and MUST NOT
+  be replayed or archived by the Railway service.
+
+#### Correlation rules
+
+1. Map the `correlation_id` from the Railway
+   `llm_request` / `llm_request_transport_phase` line to the
+   proxy / Ollama access log entry inside the same bounded UTC
+   window. A matching ingress at the proxy proves the bytes
+   reached the proxy; a matching entry at Ollama proves the bytes
+   reached Ollama.
+2. The four SOCKS-boundary phases narrow the last client-side
+   observation:
+
+   * `request_started` without `request_write_started` — the
+     client never reached the inherited writer seam; the local
+     failure happened before any socket activity.
+   * `request_write_started` without `socks_connect_started` —
+     the inherited writer was entered but the lazy SOCKS connect
+     never ran (e.g. the writer raised before the first
+     `send`); the writer seam is the last reached boundary.
+   * `socks_connect_started` without `socks_connect_completed` —
+     the local-to-proxy TCP, the SOCKS negotiation, or the
+     proxy-to-target connection stalled; the four application
+     telemetry phases cannot split those three operations.
+   * `socks_connect_completed` without `request_write_completed`
+     — the client established the proxy session but the writer
+     did not return; the stall is in the local writer seam.
+   * `request_write_completed` without
+     `response_headers_received` — the client handed bytes to
+     the socket layer; only the proxy / Ollama host capture can
+     establish whether the bytes reached Ollama. The absence of a
+     matching ingress at the proxy or at Ollama inside the same
+     bounded UTC window narrows the issue to that network leg.
+   * `response_headers_received` — the existing body / parser
+     diagnostics remain authoritative.
+
+3. Do not infer a root cause or trigger any restart, lease release,
+   retry, replay or automatic remediation from a single bounded
+   correlation. Pair the trace with the existing durable audit,
+   the separate `diagnose-core-inbound-pre-llm-stall` core
+   checkpoint change, the bounded `audit_provider_flow_live`
+   CLI, the Twilio message status and the proxy / Ollama host
+   capture before drawing any conclusion. A single isolated
+   observation is not a root cause.
+4. The capture is purely diagnostic; it MUST NOT modify Railway
+   variables, `OLLAMA_PROXY_URL`, `OLLAMA_HTTP_PROXY`,
+   `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, the
+   Tailscale ACL, the proxy configuration or any other
+   operational state.
 
 ### What the CLI does not do
 
