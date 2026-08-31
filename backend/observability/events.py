@@ -74,6 +74,7 @@ EVENT_TWILIO_EMULATOR_OUTBOUND_OUTCOME = "twilio_emulator_outbound_outcome"
 EVENT_ADMIN_PILOT_EMULATOR_OUTCOME = "admin_pilot_emulator_outcome"
 EVENT_PROCESSING_OUTCOME = "provider_inbound_processing_outcome"
 EVENT_PROVIDER_INBOUND_STAGE = "provider_inbound_stage"
+EVENT_PROVIDER_INBOUND_CHECKPOINT = "provider_inbound_checkpoint"
 
 
 # ``EVENT_COMMERCE_INSTALLATION_INBOUND_OUTCOME`` is emitted by BOTH
@@ -109,6 +110,7 @@ _EVENT_CATALOGUE: dict[str, str | frozenset[str]] = {
     EVENT_ADMIN_PILOT_EMULATOR_OUTCOME: COMPONENT_ADMIN_PILOT_EMULATOR,
     EVENT_PROCESSING_OUTCOME: COMPONENT_WORKER,
     EVENT_PROVIDER_INBOUND_STAGE: COMPONENT_WORKER,
+    EVENT_PROVIDER_INBOUND_CHECKPOINT: COMPONENT_WORKER,
 }
 
 
@@ -331,7 +333,11 @@ _RECOGNITION_FALLBACK_CATEGORIES: frozenset[str] = frozenset(
 
 
 _EVENTS_WITHOUT_OUTCOME_OR_FAILURE: frozenset[str] = frozenset(
-    {EVENT_SHADOW_PRODUCT_RECOGNITION, EVENT_LLM_REQUEST_TRANSPORT_PHASE}
+    {
+        EVENT_SHADOW_PRODUCT_RECOGNITION,
+        EVENT_LLM_REQUEST_TRANSPORT_PHASE,
+        EVENT_PROVIDER_INBOUND_CHECKPOINT,
+    }
 )
 _EVENTS_WITH_RECOGNITION_FIELDS: frozenset[str] = frozenset(
     {EVENT_SHADOW_PRODUCT_RECOGNITION}
@@ -415,6 +421,9 @@ _EVENTS_WITH_PROVIDER_INBOUND_STAGE_FIELDS: frozenset[str] = frozenset(
 _EVENTS_WITH_LLM_REQUEST_TRANSPORT_PHASE_FIELDS: frozenset[str] = frozenset(
     {EVENT_LLM_REQUEST_TRANSPORT_PHASE}
 )
+_EVENTS_WITH_PROVIDER_INBOUND_CHECKPOINT_FIELDS: frozenset[str] = frozenset(
+    {EVENT_PROVIDER_INBOUND_CHECKPOINT}
+)
 _PROCESSING_OUTCOME_PROCESSED_VALUES: frozenset[str] = frozenset(
     {"processed_with_response", "processed_without_response"}
 )
@@ -440,6 +449,25 @@ _PROVIDER_INBOUND_STAGE_STAGES: frozenset[str] = frozenset(
         "outbound_staging",
         "processing_finalization",
     }
+)
+
+_PROVIDER_INBOUND_CHECKPOINTS: frozenset[str] = frozenset(
+    {
+        "availability_evaluated",
+        "session_loaded",
+        "draft_stage_decision",
+        "session_order_flushed",
+        "business_dispatch_started",
+    }
+)
+_PROVIDER_INBOUND_AVAILABILITY_STATUSES: frozenset[str] = frozenset(
+    {"available", "unavailable"}
+)
+_PROVIDER_INBOUND_AVAILABILITY_REASONS: frozenset[str] = frozenset(
+    {"blocked_state", "trial_expired", "trial_quota_exhausted"}
+)
+_PROVIDER_INBOUND_DISPATCH_BRANCHES: frozenset[str] = frozenset(
+    {"initial", "pending_context", "unsupported"}
 )
 
 
@@ -496,6 +524,20 @@ _OPTIONAL_FIELDS_BY_EVENT: dict[str, frozenset[str]] = {
     ),
     EVENT_PROVIDER_INBOUND_STAGE: frozenset(
         {"stage", "elapsed_ms", "exception_type", "correlation_id"}
+    ),
+    EVENT_PROVIDER_INBOUND_CHECKPOINT: frozenset(
+        {
+            "checkpoint",
+            "availability_status",
+            "availability_reason",
+            "session_present",
+            "pedido_present",
+            "pedido_created",
+            "flush_completed",
+            "dispatch_branch",
+            "elapsed_ms",
+            "correlation_id",
+        }
     ),
 }
 
@@ -557,6 +599,14 @@ _ALLOWED_PAYLOAD_KEYS: frozenset[str] = frozenset(
         "stage",
         "response_bytes",
         "chunk_count",
+        "checkpoint",
+        "availability_status",
+        "availability_reason",
+        "session_present",
+        "pedido_present",
+        "pedido_created",
+        "flush_completed",
+        "dispatch_branch",
     }
 )
 
@@ -1284,6 +1334,147 @@ def _validate_provider_inbound_stage_event_fields(
     return fields
 
 
+def _validate_provider_inbound_checkpoint_event_fields(
+    *,
+    checkpoint: Any,
+    availability_status: Any,
+    availability_reason: Any,
+    session_present: Any,
+    pedido_present: Any,
+    pedido_created: Any,
+    flush_completed: Any,
+    dispatch_branch: Any,
+    elapsed_ms: Any,
+    correlation_id: Any,
+) -> dict[str, Any]:
+    """Validate the closed ``provider_inbound_checkpoint`` payload.
+
+    Each checkpoint has one exact bounded shape. The booleans expose
+    presence/creation state only; they never carry database identifiers or
+    business values. ``elapsed_ms`` and the existing opaque correlation value
+    are optional common fields.
+    """
+    if (
+        not isinstance(checkpoint, str)
+        or checkpoint not in _PROVIDER_INBOUND_CHECKPOINTS
+    ):
+        raise EventValidationError(
+            "checkpoint must be one of the catalogued provider-inbound "
+            f"tokens (got {checkpoint!r})"
+        )
+
+    supplied_fields = {
+        "availability_status": availability_status,
+        "availability_reason": availability_reason,
+        "session_present": session_present,
+        "pedido_present": pedido_present,
+        "pedido_created": pedido_created,
+        "flush_completed": flush_completed,
+        "dispatch_branch": dispatch_branch,
+    }
+    allowed_by_checkpoint = {
+        "availability_evaluated": {
+            "availability_status",
+            "availability_reason",
+        },
+        "session_loaded": {"session_present", "pedido_present"},
+        "draft_stage_decision": {"pedido_present", "pedido_created"},
+        "session_order_flushed": {"flush_completed"},
+        "business_dispatch_started": {"dispatch_branch"},
+    }
+    allowed_fields = allowed_by_checkpoint[checkpoint]
+    unexpected_fields = {
+        name
+        for name, value in supplied_fields.items()
+        if value is not None and name not in allowed_fields
+    }
+    if unexpected_fields:
+        raise EventValidationError(
+            f"checkpoint {checkpoint!r} does not accept fields "
+            f"{sorted(unexpected_fields)}"
+        )
+
+    if checkpoint == "availability_evaluated":
+        if (
+            not isinstance(availability_status, str)
+            or availability_status not in _PROVIDER_INBOUND_AVAILABILITY_STATUSES
+        ):
+            raise EventValidationError(
+                "availability_status is required and must be 'available' "
+                f"or 'unavailable' (got {availability_status!r})"
+            )
+        if availability_status == "unavailable":
+            if (
+                not isinstance(availability_reason, str)
+                or availability_reason
+                not in _PROVIDER_INBOUND_AVAILABILITY_REASONS
+            ):
+                raise EventValidationError(
+                    "unavailable availability requires a closed "
+                    f"availability_reason (got {availability_reason!r})"
+                )
+        elif availability_reason is not None:
+            raise EventValidationError(
+                "availability_reason is only allowed for unavailable results"
+            )
+    elif checkpoint == "session_loaded":
+        if type(session_present) is not bool:
+            raise EventValidationError(
+                "session_present is required and must be a boolean"
+            )
+        if type(pedido_present) is not bool:
+            raise EventValidationError(
+                "pedido_present is required and must be a boolean"
+            )
+    elif checkpoint == "draft_stage_decision":
+        if type(pedido_present) is not bool:
+            raise EventValidationError(
+                "pedido_present is required and must be a boolean"
+            )
+        if type(pedido_created) is not bool:
+            raise EventValidationError(
+                "pedido_created is required and must be a boolean"
+            )
+        if pedido_created and not pedido_present:
+            raise EventValidationError(
+                "pedido_created cannot be true when pedido_present is false"
+            )
+    elif checkpoint == "session_order_flushed":
+        if flush_completed is not True:
+            raise EventValidationError(
+                "session_order_flushed requires flush_completed=true"
+            )
+    elif checkpoint == "business_dispatch_started":
+        if (
+            not isinstance(dispatch_branch, str)
+            or dispatch_branch not in _PROVIDER_INBOUND_DISPATCH_BRANCHES
+        ):
+            raise EventValidationError(
+                "dispatch_branch is required and must be one of the "
+                f"catalogued branches (got {dispatch_branch!r})"
+            )
+
+    fields: dict[str, Any] = {"checkpoint": checkpoint}
+    for name, value in supplied_fields.items():
+        if value is not None:
+            fields[name] = value
+
+    if elapsed_ms is not None:
+        if not _is_safe_optional_field("elapsed_ms", elapsed_ms):
+            raise EventValidationError(
+                f"invalid value for field 'elapsed_ms': {elapsed_ms!r}"
+            )
+        fields["elapsed_ms"] = elapsed_ms
+    if correlation_id is not None:
+        if not _is_safe_optional_field("correlation_id", correlation_id):
+            raise EventValidationError(
+                f"invalid value for field 'correlation_id': {correlation_id!r}"
+            )
+        fields["correlation_id"] = correlation_id
+
+    return fields
+
+
 def build_event(
     *,
     event: str,
@@ -1327,6 +1518,14 @@ def build_event(
     stage: str | None = None,
     response_bytes: int | None = None,
     chunk_count: int | None = None,
+    checkpoint: str | None = None,
+    availability_status: str | None = None,
+    availability_reason: str | None = None,
+    session_present: bool | None = None,
+    pedido_present: bool | None = None,
+    pedido_created: bool | None = None,
+    flush_completed: bool | None = None,
+    dispatch_branch: str | None = None,
 ) -> dict[str, Any]:
     """Validate the input and return the JSON-ready payload.
 
@@ -1379,9 +1578,29 @@ def build_event(
     is_provider_inbound_stage_event = (
         event in _EVENTS_WITH_PROVIDER_INBOUND_STAGE_FIELDS
     )
+    is_provider_inbound_checkpoint_event = (
+        event in _EVENTS_WITH_PROVIDER_INBOUND_CHECKPOINT_FIELDS
+    )
     allows_no_outcome_or_failure = (
         event in _EVENTS_WITHOUT_OUTCOME_OR_FAILURE
     )
+
+    checkpoint_fields = (
+        checkpoint,
+        availability_status,
+        availability_reason,
+        session_present,
+        pedido_present,
+        pedido_created,
+        flush_completed,
+        dispatch_branch,
+    )
+    if not is_provider_inbound_checkpoint_event and any(
+        value is not None for value in checkpoint_fields
+    ):
+        raise EventValidationError(
+            f"event {event!r} does not accept provider-inbound checkpoint fields"
+        )
 
     if is_recognition_event or allows_no_outcome_or_failure:
         if outcome is not None:
@@ -1564,6 +1783,65 @@ def build_event(
             )
 
     is_pending_context_event = event in _EVENTS_WITH_PENDING_CONTEXT_FIELDS
+
+    if is_provider_inbound_checkpoint_event:
+        if any(
+            value is not None
+            for value in (
+                outbox_id,
+                attempt,
+                durable_state,
+                provider_code,
+                http_status,
+                exception_type,
+                configured_mode,
+                effective_mode,
+                authoritative_strategy,
+                hybrid_decision,
+                fallback,
+                fallback_category,
+                fuzzy_latency_ms,
+                embedding_latency_ms,
+                vector_latency_ms,
+                context_kind,
+                status_before,
+                status_after,
+                candidate_count_before,
+                candidate_count_after,
+                context_cleared,
+                flavor_code,
+                eligible_count,
+                applied_count,
+                outbound_style_prompt_template_version,
+                outbound_style_prompt_template_hash,
+                reason,
+                phase,
+                cycle_index,
+                response_count,
+                outbox_row_count,
+                stage,
+                response_bytes,
+                chunk_count,
+            )
+        ):
+            raise EventValidationError(
+                f"event {event!r} does not accept extra fields; only the "
+                "closed checkpoint/elapsed_ms/correlation_id payload is allowed"
+            )
+        checkpoint_payload = _validate_provider_inbound_checkpoint_event_fields(
+            checkpoint=checkpoint,
+            availability_status=availability_status,
+            availability_reason=availability_reason,
+            session_present=session_present,
+            pedido_present=pedido_present,
+            pedido_created=pedido_created,
+            flush_completed=flush_completed,
+            dispatch_branch=dispatch_branch,
+            elapsed_ms=elapsed_ms,
+            correlation_id=correlation_id,
+        )
+        payload.update(checkpoint_payload)
+        return payload
 
     if is_pending_context_event:
         if any(
@@ -2030,6 +2308,14 @@ def parse_event(line: str) -> dict[str, Any]:
         stage=decoded.get("stage"),
         response_bytes=decoded.get("response_bytes"),
         chunk_count=decoded.get("chunk_count"),
+        checkpoint=decoded.get("checkpoint"),
+        availability_status=decoded.get("availability_status"),
+        availability_reason=decoded.get("availability_reason"),
+        session_present=decoded.get("session_present"),
+        pedido_present=decoded.get("pedido_present"),
+        pedido_created=decoded.get("pedido_created"),
+        flush_completed=decoded.get("flush_completed"),
+        dispatch_branch=decoded.get("dispatch_branch"),
     )
 
 
@@ -2105,6 +2391,14 @@ def emit_event(
     stage: str | None = None,
     response_bytes: int | None = None,
     chunk_count: int | None = None,
+    checkpoint: str | None = None,
+    availability_status: str | None = None,
+    availability_reason: str | None = None,
+    session_present: bool | None = None,
+    pedido_present: bool | None = None,
+    pedido_created: bool | None = None,
+    flush_completed: bool | None = None,
+    dispatch_branch: str | None = None,
     stream: Any = None,
 ) -> bool:
     """Build and emit a single JSON event line to the supplied stream.
@@ -2164,6 +2458,14 @@ def emit_event(
             stage=stage,
             response_bytes=response_bytes,
             chunk_count=chunk_count,
+            checkpoint=checkpoint,
+            availability_status=availability_status,
+            availability_reason=availability_reason,
+            session_present=session_present,
+            pedido_present=pedido_present,
+            pedido_created=pedido_created,
+            flush_completed=flush_completed,
+            dispatch_branch=dispatch_branch,
         )
     except EventValidationError as exc:
         try:
@@ -2224,6 +2526,7 @@ __all__ = [
     "EVENT_OUTBOUND_STYLE",
     "EVENT_PENDING_CONTEXT_TRANSITION",
     "EVENT_PRODUCT_ADD_EXECUTION",
+    "EVENT_PROVIDER_INBOUND_CHECKPOINT",
     "EVENT_PROVIDER_INBOUND_STAGE",
     "EVENT_SHADOW_PRODUCT_RECOGNITION",
     "EVENT_TWILIO_EMULATOR_OUTBOUND_OUTCOME",

@@ -50,6 +50,7 @@ from backend.observability import (
     EVENT_PENDING_CONTEXT_TRANSITION,
     EVENT_PROCESSING_OUTCOME,
     EVENT_PRODUCT_ADD_EXECUTION,
+    EVENT_PROVIDER_INBOUND_CHECKPOINT,
     EVENT_PROVIDER_INBOUND_STAGE,
     EVENT_SHADOW_PRODUCT_RECOGNITION,
     EVENT_WORKER_CYCLE,
@@ -3935,6 +3936,146 @@ class ProviderInboundStageEventTest(unittest.TestCase):
             stream=_BrokenStream(),
         )
         self.assertFalse(ok)
+
+
+class ProviderInboundCheckpointEventTest(unittest.TestCase):
+    """Closed contract tests for core provider-inbound checkpoints."""
+
+    _BASE: ClassVar[dict[str, Any]] = {
+        "event": EVENT_PROVIDER_INBOUND_CHECKPOINT,
+        "component": COMPONENT_WORKER,
+        "correlation_id": "SM-CHECKPOINT-1",
+    }
+
+    def _build(self, **overrides: Any) -> dict[str, Any]:
+        kwargs = dict(self._BASE)
+        kwargs.update(overrides)
+        return build_event(**kwargs)
+
+    def test_event_belongs_to_provider_worker_component(self) -> None:
+        from backend.observability.events import _EVENT_CATALOGUE
+
+        self.assertEqual(
+            _EVENT_CATALOGUE[EVENT_PROVIDER_INBOUND_CHECKPOINT],
+            COMPONENT_WORKER,
+        )
+
+    def test_each_checkpoint_round_trips(self) -> None:
+        cases = (
+            {
+                "checkpoint": "availability_evaluated",
+                "availability_status": "available",
+            },
+            {
+                "checkpoint": "availability_evaluated",
+                "availability_status": "unavailable",
+                "availability_reason": "trial_expired",
+            },
+            {
+                "checkpoint": "session_loaded",
+                "session_present": True,
+                "pedido_present": False,
+            },
+            {
+                "checkpoint": "draft_stage_decision",
+                "pedido_present": True,
+                "pedido_created": True,
+            },
+            {
+                "checkpoint": "draft_stage_decision",
+                "pedido_present": True,
+                "pedido_created": False,
+            },
+            {
+                "checkpoint": "session_order_flushed",
+                "flush_completed": True,
+            },
+            {
+                "checkpoint": "business_dispatch_started",
+                "dispatch_branch": "pending_context",
+            },
+        )
+        for fields in cases:
+            with self.subTest(checkpoint=fields["checkpoint"]):
+                payload = self._build(**fields, elapsed_ms=12)
+                self.assertEqual(parse_event(json.dumps(payload)), payload)
+                _no_payload_leaks(
+                    payload, event=EVENT_PROVIDER_INBOUND_CHECKPOINT
+                )
+
+    def test_checkpoint_shape_is_closed(self) -> None:
+        invalid_cases = (
+            {"checkpoint": "unknown", "availability_status": "available"},
+            {"checkpoint": "availability_evaluated"},
+            {
+                "checkpoint": "availability_evaluated",
+                "availability_status": "available",
+                "availability_reason": "trial_expired",
+            },
+            {
+                "checkpoint": "availability_evaluated",
+                "availability_status": "unavailable",
+                "availability_reason": "customer_text",
+            },
+            {
+                "checkpoint": "session_loaded",
+                "session_present": 1,
+                "pedido_present": False,
+            },
+            {
+                "checkpoint": "draft_stage_decision",
+                "pedido_present": False,
+                "pedido_created": True,
+            },
+            {
+                "checkpoint": "session_order_flushed",
+                "flush_completed": False,
+            },
+            {
+                "checkpoint": "business_dispatch_started",
+                "dispatch_branch": "classifier_name",
+            },
+            {
+                "checkpoint": "session_loaded",
+                "session_present": True,
+                "pedido_present": False,
+                "outbox_id": 7,
+            },
+            {
+                "checkpoint": "business_dispatch_started",
+                "dispatch_branch": "initial",
+                "reason": "inbound body",
+            },
+        )
+        for fields in invalid_cases:
+            with self.subTest(fields=fields):
+                with self.assertRaises(EventValidationError):
+                    self._build(**fields)
+
+    def test_checkpoint_rejects_extra_checkpoint_fields_on_other_events(
+        self,
+    ) -> None:
+        with self.assertRaises(EventValidationError):
+            build_event(
+                event=EVENT_PROCESSING_OUTCOME,
+                component=COMPONENT_WORKER,
+                outcome="lease_lost",
+                checkpoint="session_loaded",
+            )
+
+    def test_emit_event_degrades_on_invalid_checkpoint(self) -> None:
+        sink = io.StringIO()
+        ok = emit_event(
+            event=EVENT_PROVIDER_INBOUND_CHECKPOINT,
+            component=COMPONENT_WORKER,
+            checkpoint="session_loaded",
+            session_present=True,
+            stream=sink,
+        )
+        self.assertFalse(ok)
+        parsed = json.loads(sink.getvalue().strip())
+        self.assertEqual(parsed["event"], EVENT_OBSERVABILITY_EMIT_FAILED)
+        self.assertEqual(parsed["failure_category"], "validation")
 
 
 class LlmRequestTransportPhaseEventTest(unittest.TestCase):
