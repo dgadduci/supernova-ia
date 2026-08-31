@@ -73,6 +73,7 @@ from backend.models.procesamiento_mensaje_proveedor import (
 from backend.observability import (
     COMPONENT_WORKER,
     EVENT_PROCESSING_OUTCOME,
+    EVENT_PROVIDER_INBOUND_CHECKPOINT,
     EVENT_PROVIDER_INBOUND_STAGE,
     emit_event,
 )
@@ -107,6 +108,7 @@ from backend.services.exceptions import (
 from backend.services.outbound_response_mapper import (
     stage_outbound_rows,
 )
+from backend.sessions.enums.context_type import ContextType
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +155,20 @@ _STAGE_SESSION_ORDER = "session_order"
 _STAGE_BUSINESS_PIPELINE = "business_pipeline"
 _STAGE_OUTBOUND_STAGING = "outbound_staging"
 _STAGE_PROCESSING_FINALIZATION = "processing_finalization"
+_SUPPORTED_DISPATCH_CONTEXTS = frozenset(
+    context_type.value for context_type in ContextType
+)
+
+
+def _business_dispatch_branch(session_row: Any) -> str:
+    """Return the closed branch selected by the existing orchestrator."""
+    context_type = getattr(session_row, "context_type", None)
+    if context_type is None:
+        return "initial"
+    context_value = getattr(context_type, "value", context_type)
+    if context_value in _SUPPORTED_DISPATCH_CONTEXTS:
+        return "pending_context"
+    return "unsupported"
 
 
 @dataclass(frozen=True)
@@ -518,12 +534,27 @@ class ProviderInboundMessageCoordinator:
         correlation_id = str(receipt.identificador_recepcion or "")
 
         try:
+            def _evaluate_availability() -> Any:
+                result = CommerceAvailabilityService(
+                    self._session
+                ).evaluate(comercio_id)
+                self._emit_inbound_checkpoint(
+                    checkpoint="availability_evaluated",
+                    correlation_id=correlation_id,
+                    availability_status=result.status.value,
+                    availability_reason=(
+                        result.reason.value
+                        if result.status is CommerceAvailabilityStatus.UNAVAILABLE
+                        and result.reason is not None
+                        else None
+                    ),
+                )
+                return result
+
             availability = self._run_stage(
                 stage=_STAGE_AVAILABILITY,
                 correlation_id=correlation_id,
-                fn=lambda: CommerceAvailabilityService(
-                    self._session
-                ).evaluate(comercio_id),
+                fn=_evaluate_availability,
             )
         except Exception as exc:  # noqa: BLE001 - coordinator owns the rollback
             try:
@@ -606,16 +637,26 @@ class ProviderInboundMessageCoordinator:
                     stage=_STAGE_SESSION_ORDER,
                     correlation_id=correlation_id,
                     fn=lambda: self._stage_session_order(
-                        comercio_id, cliente_id
+                        comercio_id,
+                        cliente_id,
+                        correlation_id=correlation_id,
                     ),
                 )
+
+                def _run_business_pipeline() -> Any:
+                    self._emit_inbound_checkpoint(
+                        checkpoint="business_dispatch_started",
+                        correlation_id=correlation_id,
+                        dispatch_branch=_business_dispatch_branch(session_row),
+                    )
+                    return process_incoming_message(
+                        self._session, session_row, body
+                    )
 
                 intents = self._run_stage(
                     stage=_STAGE_BUSINESS_PIPELINE,
                     correlation_id=correlation_id,
-                    fn=lambda: process_incoming_message(
-                        self._session, session_row, body
-                    ),
+                    fn=_run_business_pipeline,
                 )
 
                 def _stage_outbound() -> list:
@@ -986,7 +1027,13 @@ class ProviderInboundMessageCoordinator:
             return self._now
         return datetime.now(tz=_utc())
 
-    def _stage_session_order(self, comercio_id: int, cliente_id: int) -> Any:
+    def _stage_session_order(
+        self,
+        comercio_id: int,
+        cliente_id: int,
+        *,
+        correlation_id: str | None = None,
+    ) -> Any:
         """Stage the active session and, when required, the draft
         pedido. Mirrors the existing coordinator sequence so the
         ``session_order`` stage wrapper observes the same flush
@@ -995,7 +1042,15 @@ class ProviderInboundMessageCoordinator:
         session_row = self._session_repo.stage_active(
             comercio_id, cliente_id
         )
-        if session_row.id_pedido is None:
+        pedido_present_before = session_row.id_pedido is not None
+        self._emit_inbound_checkpoint(
+            checkpoint="session_loaded",
+            correlation_id=correlation_id,
+            session_present=True,
+            pedido_present=pedido_present_before,
+        )
+        pedido_created = False
+        if not pedido_present_before:
             if session_row.id is None:
                 self._session.flush()
             pedido_row = self._pedido_repo.stage_draft_for_session(
@@ -1003,8 +1058,56 @@ class ProviderInboundMessageCoordinator:
             )
             self._session.flush()
             session_row.id_pedido = int(pedido_row.id)
+            pedido_created = True
+        self._emit_inbound_checkpoint(
+            checkpoint="draft_stage_decision",
+            correlation_id=correlation_id,
+            pedido_present=session_row.id_pedido is not None,
+            pedido_created=pedido_created,
+        )
         self._session.flush()
+        self._emit_inbound_checkpoint(
+            checkpoint="session_order_flushed",
+            correlation_id=correlation_id,
+            flush_completed=True,
+        )
         return session_row
+
+    def _emit_inbound_checkpoint(
+        self,
+        *,
+        checkpoint: str,
+        correlation_id: str | None = None,
+        availability_status: str | None = None,
+        availability_reason: str | None = None,
+        session_present: bool | None = None,
+        pedido_present: bool | None = None,
+        pedido_created: bool | None = None,
+        flush_completed: bool | None = None,
+        dispatch_branch: str | None = None,
+    ) -> None:
+        """Best-effort emitter for core inbound checkpoints.
+
+        The event carries only closed tokens, booleans and the existing opaque
+        provider correlation. Any observability failure is swallowed so this
+        diagnostic cannot affect the caller-owned transaction or business flow.
+        """
+        try:
+            emit_event(
+                event=EVENT_PROVIDER_INBOUND_CHECKPOINT,
+                component=COMPONENT_WORKER,
+                checkpoint=checkpoint,
+                correlation_id=correlation_id,
+                availability_status=availability_status,
+                availability_reason=availability_reason,
+                session_present=session_present,
+                pedido_present=pedido_present,
+                pedido_created=pedido_created,
+                flush_completed=flush_completed,
+                dispatch_branch=dispatch_branch,
+            )
+        except Exception:  # noqa: BLE001 - diagnostics must be fail-soft
+            return
 
     def _emit_processing_outcome(
         self,

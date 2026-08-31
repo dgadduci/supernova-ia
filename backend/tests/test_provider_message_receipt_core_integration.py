@@ -69,7 +69,10 @@ from backend.models import (
 )
 from backend.observability import (
     COMPONENT_WORKER,
+    EVENT_LLM_REQUEST,
+    EVENT_LLM_REQUEST_TRANSPORT_PHASE,
     EVENT_PROCESSING_OUTCOME,
+    EVENT_PROVIDER_INBOUND_CHECKPOINT,
     EVENT_PROVIDER_INBOUND_STAGE,
 )
 from backend.repositories.recepcion_mensaje_proveedor_repository import (
@@ -3117,6 +3120,15 @@ class ProviderInboundStageEventEmissionTest(unittest.TestCase):
             if event.get("event") == EVENT_PROVIDER_INBOUND_STAGE
         ]
 
+    def _checkpoint_events(
+        self, captured: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        return [
+            event
+            for event in captured
+            if event.get("event") == EVENT_PROVIDER_INBOUND_CHECKPOINT
+        ]
+
     def _stage_pairs(
         self, captured: list[dict[str, Any]]
     ) -> list[
@@ -3225,12 +3237,75 @@ class ProviderInboundStageEventEmissionTest(unittest.TestCase):
         # right after the last stage event and assert the
         # processing_outcome sits there.
         events_in_order = [event.get("event") for event in captured]
-        stage_event_count = events_in_order.count(
-            EVENT_PROVIDER_INBOUND_STAGE
+        finalization_completed_position = max(
+            index
+            for index, event in enumerate(captured)
+            if event.get("event") == EVENT_PROVIDER_INBOUND_STAGE
+            and event.get("stage") == "processing_finalization"
+            and event.get("outcome") == "completed"
         )
-        self.assertEqual(stage_event_count, 10)
-        outcome_after_finalization = events_in_order[stage_event_count]
+        outcome_after_finalization = events_in_order[
+            finalization_completed_position + 1
+        ]
         self.assertEqual(outcome_after_finalization, EVENT_PROCESSING_OUTCOME)
+
+        checkpoints = self._checkpoint_events(captured)
+        self.assertEqual(
+            [checkpoint["checkpoint"] for checkpoint in checkpoints],
+            [
+                "availability_evaluated",
+                "session_loaded",
+                "draft_stage_decision",
+                "session_order_flushed",
+                "business_dispatch_started",
+            ],
+        )
+        self.assertTrue(all(
+            checkpoint["correlation_id"] == self.identificador
+            for checkpoint in checkpoints
+        ))
+        self.assertEqual(
+            checkpoints[0]["availability_status"], "available"
+        )
+        self.assertEqual(
+            checkpoints[1]["session_present"], True
+        )
+        self.assertEqual(
+            checkpoints[1]["pedido_present"], False
+        )
+        self.assertEqual(checkpoints[2]["pedido_present"], True)
+        self.assertEqual(checkpoints[2]["pedido_created"], True)
+        self.assertEqual(checkpoints[3]["flush_completed"], True)
+        self.assertEqual(
+            checkpoints[4]["dispatch_branch"], "initial"
+        )
+
+    def test_checkpoint_emission_failure_does_not_change_processing(self) -> None:
+        self._accept()
+
+        staged_row = StagedOutboundRow(
+            mensaje_proveedor_saliente_id=1,
+            sequence=0,
+            customer_response=CustomerResponse(
+                message="ok",
+                intent="noop",
+                status="executed",
+            ),
+        )
+
+        def _fail_only_checkpoint(*, event: str, **_kwargs: Any) -> bool:
+            if event == EVENT_PROVIDER_INBOUND_CHECKPOINT:
+                raise RuntimeError("checkpoint emitter failed")
+            return True
+
+        result, _captured = self._claim_and_process(
+            staged_rows=[staged_row],
+            emit_side_effect=_fail_only_checkpoint,
+        )
+        self.assertEqual(
+            result.outcome,
+            ProviderInboundProcessingOutcome.PROCESSED,
+        )
 
     def test_business_pipeline_failure_emits_failed_and_re_raises(
         self,
@@ -4539,6 +4614,9 @@ class ProviderInboundProcessingFinalizationStageEventTest(unittest.TestCase):
                 def raise_for_status(self) -> None:
                     return None
 
+                def close(self) -> None:
+                    return None
+
             settings = Settings(
                 llm_url="http://llm.test/api/generate",
                 llm_model="test-model",
@@ -4571,12 +4649,26 @@ class ProviderInboundProcessingFinalizationStageEventTest(unittest.TestCase):
             install_llm_timing_recorder(None)
             session.close()
 
-        # Neither ``started`` nor ``completed`` event from the
-        # direct ``QueryLlm`` call may carry the stale provider
-        # correlation_id.
-        self.assertEqual(len(captured_after), 2)
-        self.assertNotIn("correlation_id", captured_after[0])
-        self.assertNotIn("correlation_id", captured_after[1])
+        # The direct ``QueryLlm`` call emits the two authoritative
+        # request events plus the existing transport-phase observations.
+        request_events = [
+            event
+            for event in captured_after
+            if event.get("event") == EVENT_LLM_REQUEST
+        ]
+        transport_events = [
+            event
+            for event in captured_after
+            if event.get("event") == EVENT_LLM_REQUEST_TRANSPORT_PHASE
+        ]
+        self.assertEqual(len(request_events), 2)
+        self.assertEqual(len(transport_events), 7)
+
+        # Neither the authoritative request events nor their transport
+        # observations may carry the stale provider correlation_id.
+        self.assertTrue(
+            all("correlation_id" not in event for event in captured_after)
+        )
 
 
 class FinalizationOrderingTest(unittest.TestCase):
